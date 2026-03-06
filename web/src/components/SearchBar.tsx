@@ -1,41 +1,63 @@
-import { useState, useCallback } from "react";
-
 interface SearchBarProps {
-  onSearch: (query: string) => void;
+  value: string;
   loading?: boolean;
+  ariaLabel: string;
+  placeholder: string;
+  submitLabel: string;
+  submittingLabel: string;
+  clearLabel: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  onClear: () => void;
 }
 
-export default function SearchBar({ onSearch, loading }: SearchBarProps) {
-  const [value, setValue] = useState("");
-
-  const handleSubmit = useCallback(
-    (e: React.FormEvent) => {
-      e.preventDefault();
-      if (value.trim()) onSearch(value.trim());
-    },
-    [value, onSearch]
-  );
-
+export default function SearchBar({
+  value,
+  loading,
+  ariaLabel,
+  placeholder,
+  submitLabel,
+  submittingLabel,
+  clearLabel,
+  onChange,
+  onSubmit,
+  onClear,
+}: SearchBarProps) {
   return (
-    <form onSubmit={handleSubmit} className="flex gap-2 w-full">
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        onSubmit();
+      }}
+      className="flex flex-col gap-3 xl:flex-row"
+    >
+      <label className="sr-only" htmlFor="search-input">
+        {ariaLabel}
+      </label>
       <input
+        id="search-input"
         type="text"
         value={value}
-        onChange={(e) => setValue(e.target.value)}
-        placeholder="Search across all history sources..."
-        className="flex-1 bg-gray-800 border border-gray-700 rounded-lg px-4 py-2.5 text-sm
-                   text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2
-                   focus:ring-violet-500/50 focus:border-violet-500 transition-colors"
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        className="flex-1 rounded-lg border border-[var(--border)] bg-[var(--bg-input)] px-4 py-2.5 text-sm text-slate-200 outline-none transition placeholder:text-[var(--text-muted)] focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent-soft)]"
       />
-      <button
-        type="submit"
-        disabled={loading || !value.trim()}
-        className="px-5 py-2.5 bg-violet-600 hover:bg-violet-500 disabled:bg-gray-700
-                   disabled:text-gray-500 text-white rounded-lg text-sm font-medium
-                   transition-colors"
-      >
-        {loading ? "..." : "Search"}
-      </button>
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={loading || !value.trim()}
+          className="rounded-lg bg-[var(--accent)] px-5 py-2.5 text-sm font-semibold text-[var(--bg-deep)] transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {loading ? submittingLabel : submitLabel}
+        </button>
+        <button
+          type="button"
+          onClick={onClear}
+          className="rounded-lg border border-[var(--border)] bg-[var(--bg-elevated)] px-4 py-2.5 text-sm font-medium text-[var(--text-secondary)] transition hover:border-[var(--border-hover)] hover:text-slate-200"
+        >
+          {clearLabel}
+        </button>
+      </div>
     </form>
   );
 }

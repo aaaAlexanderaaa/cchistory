@@ -1,10 +1,19 @@
-import type { HistoryEntry, SearchResult, SourceInfo } from "../types";
+import type {
+  DistillArtifact,
+  DistillSessionRequest,
+  EntryDetail,
+  EntryPage,
+  SearchResult,
+  SourceInfo,
+} from "../types";
 
 const BASE = "/api";
 
-async function fetchJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
+  const res = await fetch(url, init);
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  }
   return res.json();
 }
 
@@ -16,25 +25,31 @@ export async function getProjects(): Promise<Record<string, string[]>> {
   return fetchJSON(`${BASE}/sources/projects`);
 }
 
-export async function getHistory(params: {
+export async function getEntries(params: {
   limit?: number;
-  offset?: number;
+  cursor?: string;
   source?: string;
   project?: string;
-}): Promise<HistoryEntry[]> {
+}): Promise<EntryPage> {
   const qs = new URLSearchParams();
   if (params.limit) qs.set("limit", String(params.limit));
-  if (params.offset) qs.set("offset", String(params.offset));
+  if (params.cursor) qs.set("cursor", params.cursor);
   if (params.source) qs.set("source", params.source);
   if (params.project) qs.set("project", params.project);
-  return fetchJSON(`${BASE}/history?${qs}`);
+
+  const res = await fetch(`${BASE}/entries?${qs}`);
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+  }
+
+  return {
+    entries: await res.json(),
+    nextCursor: res.headers.get("X-Next-Cursor"),
+  };
 }
 
-export async function getEntry(
-  sourceName: string,
-  entryId: string
-): Promise<HistoryEntry> {
-  return fetchJSON(`${BASE}/history/${sourceName}/${entryId}`);
+export async function getEntry(entryId: string): Promise<EntryDetail> {
+  return fetchJSON(`${BASE}/entries/${entryId}`);
 }
 
 export async function search(params: {
@@ -53,4 +68,16 @@ export async function search(params: {
   if (params.limit) qs.set("limit", String(params.limit));
   if (params.offset) qs.set("offset", String(params.offset));
   return fetchJSON(`${BASE}/search?${qs}`);
+}
+
+export async function runDistill(
+  payload: DistillSessionRequest
+): Promise<DistillArtifact> {
+  return fetchJSON(`${BASE}/distill/session`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
 }

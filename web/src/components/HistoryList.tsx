@@ -1,96 +1,141 @@
-import type { HistoryEntry } from "../types";
+import { Fragment } from "react";
+
+import type { EntrySummary, Mode, SearchHit } from "../types";
+import type { UiCopy } from "../i18n";
+import { splitHighlightedSnippet } from "../searchSnippet";
 import SourceBadge from "./SourceBadge";
 
+type EntryListItem = EntrySummary | SearchHit;
+
 interface HistoryListProps {
-  entries: HistoryEntry[];
-  onSelect: (entry: HistoryEntry) => void;
-  selectedId?: string;
+  mode: Mode;
+  entries: EntryListItem[];
+  onSelect: (entry: EntryListItem) => void;
+  selectedId?: string | null;
   loading?: boolean;
+  loadingMore?: boolean;
+  locale: string;
+  copy: Pick<UiCopy, "history" | "entryTypes">;
+  emptyMessage: string;
+  hasMore?: boolean;
+  onLoadMore?: () => void;
 }
 
-function formatDate(ts: string): string {
-  const d = new Date(ts);
-  const now = new Date();
-  const diff = now.getTime() - d.getTime();
-  const hours = diff / (1000 * 60 * 60);
-
-  if (hours < 1) return `${Math.floor(diff / 60000)}m ago`;
-  if (hours < 24) return `${Math.floor(hours)}h ago`;
-  if (hours < 48) return "Yesterday";
-  return d.toLocaleDateString(undefined, {
+function formatDate(timestamp: string, locale: string): string {
+  const value = new Date(timestamp);
+  return value.toLocaleString(locale, {
     month: "short",
     day: "numeric",
-    year: d.getFullYear() !== now.getFullYear() ? "numeric" : undefined,
+    hour: "numeric",
+    minute: "2-digit",
   });
 }
 
-function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+function Snippet({ snippet }: { snippet?: string }) {
+  if (!snippet) return null;
+
+  const parts = splitHighlightedSnippet(snippet);
+  return (
+    <p className="text-sm leading-6 text-[var(--text-secondary)]">
+      {parts.map((part, index) =>
+        part.highlighted ? (
+          <mark key={index}>{part.text}</mark>
+        ) : (
+          <Fragment key={index}>{part.text}</Fragment>
+        )
+      )}
+    </p>
+  );
 }
 
 export default function HistoryList({
+  mode,
   entries,
   onSelect,
   selectedId,
   loading,
+  loadingMore,
+  locale,
+  copy,
+  emptyMessage,
+  hasMore,
+  onLoadMore,
 }: HistoryListProps) {
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-40 text-gray-500">
-        Loading...
+      <div className="app-card flex min-h-[20rem] items-center justify-center p-6 text-[var(--text-muted)]">
+        {copy.history.loading}
       </div>
     );
   }
 
   if (entries.length === 0) {
     return (
-      <div className="flex items-center justify-center h-40 text-gray-600">
-        No history entries found
+      <div className="app-card flex min-h-[20rem] items-center justify-center p-6 text-center text-[var(--text-muted)]">
+        {emptyMessage}
       </div>
     );
   }
 
   return (
-    <div className="divide-y divide-gray-800/50">
+    <div className="space-y-2">
       {entries.map((entry) => (
         <button
-          key={entry.id}
+          key={entry.entry_id}
+          type="button"
           onClick={() => onSelect(entry)}
-          className={`w-full text-left px-4 py-3 transition-colors hover:bg-gray-800/50 ${
-            selectedId === entry.id ? "bg-gray-800/70 border-l-2 border-violet-500" : ""
-          }`}
+          className={`list-card ${selectedId === entry.entry_id ? "is-selected" : ""}`}
         >
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex flex-wrap items-center gap-2">
             <SourceBadge source={entry.source} />
-            {entry.type === "conversation" && (
-              <span className="text-xs text-gray-600">
-                {entry.messages?.length || 0} msgs
+            <span className="rounded-md bg-slate-800 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-[var(--text-muted)]">
+              {copy.entryTypes[entry.type]}
+            </span>
+            {mode === "search" && entry.score != null && (
+              <span className="ml-auto rounded-md bg-[var(--accent-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--accent)]">
+                {(entry.score ?? 0).toFixed(2)}
               </span>
             )}
-            <span className="text-xs text-gray-600 ml-auto">
-              {formatDate(entry.timestamp)}
+            <span className="ml-auto text-xs text-[var(--text-muted)]">
+              {formatDate(entry.timestamp, locale)}
             </span>
           </div>
-          <div className="text-sm text-gray-200 truncate">{entry.title}</div>
-          {entry.project && (
-            <div className="text-xs text-gray-500 mt-0.5 truncate">
-              {entry.project}
-            </div>
-          )}
-          {entry.url && (
-            <div className="text-xs text-gray-600 mt-0.5 truncate">
-              {entry.url}
-            </div>
-          )}
-          {entry.duration_seconds != null && entry.duration_seconds > 0 && (
-            <div className="text-xs text-gray-600 mt-0.5">
-              Duration: {formatDuration(entry.duration_seconds)}
+
+          <div className="mt-2.5 text-left">
+            <h3 className="text-[15px] font-semibold text-slate-100">{entry.title}</h3>
+            {entry.project && (
+              <p className="mt-0.5 text-xs text-[var(--text-muted)]">{entry.project}</p>
+            )}
+          </div>
+
+          <div className="mt-2 text-left">
+            <Snippet snippet={entry.snippet} />
+          </div>
+
+          {(entry.tags?.length ?? 0) > 0 && (
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {entry.tags.slice(0, 4).map((tag) => (
+                <span
+                  key={tag}
+                  className="rounded-md border border-[var(--border)] bg-[var(--bg-elevated)] px-2 py-0.5 text-[10px] font-medium text-[var(--text-muted)]"
+                >
+                  {tag}
+                </span>
+              ))}
             </div>
           )}
         </button>
       ))}
+
+      {hasMore && onLoadMore && (
+        <button
+          type="button"
+          onClick={onLoadMore}
+          className="app-card flex w-full items-center justify-center gap-2 p-3 text-sm font-semibold text-[var(--accent)] transition hover:bg-[var(--bg-elevated)]"
+        >
+          {loadingMore ? copy.history.loadingMore : copy.history.loadMore}
+        </button>
+      )}
     </div>
   );
 }

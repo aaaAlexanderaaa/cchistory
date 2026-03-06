@@ -10,6 +10,7 @@ from typing import Any, Dict, List
 class SourceConfig:
     type: str
     name: str
+    id: str | None = None
     enabled: bool = True
     params: Dict[str, Any] = field(default_factory=dict)
 
@@ -19,6 +20,10 @@ class AppConfig:
     host: str = "0.0.0.0"
     port: int = 8765
     cors_origins: List[str] = field(default_factory=lambda: ["http://localhost:5173"])
+    sync_interval_seconds: int | None = field(
+        default_factory=lambda: _optional_positive_int(os.getenv("CCHISTORY_SYNC_INTERVAL_SECONDS"))
+    )
+    database_url: str = field(default_factory=lambda: os.getenv("CCHISTORY_DB_URL", _default_database_url()))
     sources: List[SourceConfig] = field(default_factory=list)
 
     @classmethod
@@ -75,3 +80,15 @@ def _chrome_history_path() -> str:
         if c.exists():
             return str(c)
     return ""
+
+
+def _default_database_url() -> str:
+    db_path = Path.home() / ".cchistory" / "index.sqlite3"
+    return f"sqlite:///{db_path}"
+
+
+def _optional_positive_int(value: str | None) -> int | None:
+    if value is None or not value.strip():
+        return None
+    parsed = int(value)
+    return parsed if parsed > 0 else None

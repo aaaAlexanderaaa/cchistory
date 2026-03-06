@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import shutil
 import sqlite3
@@ -37,9 +36,13 @@ class BraveSource(DataSource):
     def __init__(self) -> None:
         self._db_path: Optional[str] = None
         self._tmp_copy: Optional[str] = None
+        self._source_name = "Brave"
+        self._source_id = "brave"
 
     async def connect(self, params: Dict[str, Any]) -> None:
         self._db_path = params.get("history_db", "")
+        self._source_name = params.get("source_name", self._source_name)
+        self._source_id = params.get("source_id", self._source_id)
         if not self._db_path or not Path(self._db_path).exists():
             logger.warning(f"Brave history DB not found: {self._db_path}")
             self._db_path = None
@@ -80,22 +83,20 @@ class BraveSource(DataSource):
         visit_duration = row["visit_duration"] if "visit_duration" in row.keys() else 0
         duration_sec = int(visit_duration / 1_000_000) if visit_duration else None
 
-        stable_id = hashlib.sha256(
-            f"brave:{row['visit_id']}:{row['url_id']}".encode()
-        ).hexdigest()[:16]
-
         return HistoryEntry(
-            id=f"brave-{stable_id}",
-            source="Brave",
-            source_id=str(row["visit_id"]),
+            id=f"{self._source_id}:{row['visit_id']}",
+            source=self._source_name,
+            source_id=self._source_id,
             type=EntryType.VISIT,
             title=title,
             url=url,
             timestamp=visit_time,
             duration_seconds=duration_sec,
+            origin_primary_key=str(row["visit_id"]),
+            origin_payload_ref=url,
             metadata={
-                "visit_count": row.get("visit_count", 0),
-                "typed_count": row.get("typed_count", 0),
+                "visit_count": row["visit_count"] if "visit_count" in row.keys() else 0,
+                "typed_count": row["typed_count"] if "typed_count" in row.keys() else 0,
             },
             tags=["brave", "browser"],
         )
@@ -116,7 +117,7 @@ class BraveSource(DataSource):
                        v.visit_time, v.visit_duration, u.visit_count, u.typed_count
                 FROM visits v
                 JOIN urls u ON v.url = u.id
-                ORDER BY v.visit_time DESC
+                ORDER BY v.visit_time DESC, v.id DESC
                 LIMIT ? OFFSET ?
             """
             cursor = conn.execute(query, (limit, offset))
@@ -128,7 +129,7 @@ class BraveSource(DataSource):
         if not self._db_path:
             return None
 
-        raw_id = entry_id.replace("brave-", "")
+        raw_id = entry_id.rsplit(":", 1)[-1]
         conn = self._get_connection()
         try:
             cursor = conn.execute(
@@ -160,7 +161,7 @@ class BraveSource(DataSource):
                 FROM visits v
                 JOIN urls u ON v.url = u.id
                 WHERE (u.url LIKE ? OR u.title LIKE ?)
-                ORDER BY v.visit_time DESC
+                ORDER BY v.visit_time DESC, v.id DESC
                 LIMIT ?
             """
             pattern = f"%{query.query}%"

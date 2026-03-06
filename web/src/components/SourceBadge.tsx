@@ -3,19 +3,19 @@ interface SourceBadgeProps {
 }
 
 const SOURCE_COLORS: Record<string, string> = {
-  "Claude Code": "bg-violet-600/20 text-violet-300 border-violet-500/30",
-  Brave: "bg-orange-600/20 text-orange-300 border-orange-500/30",
-  Chrome: "bg-blue-600/20 text-blue-300 border-blue-500/30",
-  LobeChat: "bg-emerald-600/20 text-emerald-300 border-emerald-500/30",
-  Codex: "bg-cyan-600/20 text-cyan-300 border-cyan-500/30",
+  "Claude Code": "border-teal-500/30 bg-teal-500/10 text-teal-400",
+  Brave: "border-amber-500/30 bg-amber-500/10 text-amber-400",
+  Chrome: "border-sky-500/30 bg-sky-500/10 text-sky-400",
+  LobeChat: "border-emerald-500/30 bg-emerald-500/10 text-emerald-400",
+  Codex: "border-cyan-500/30 bg-cyan-500/10 text-cyan-400",
 };
 
 export default function SourceBadge({ source }: SourceBadgeProps) {
   const colors =
-    SOURCE_COLORS[source] || "bg-gray-600/20 text-gray-300 border-gray-500/30";
+    SOURCE_COLORS[source] || "border-slate-500/30 bg-slate-500/10 text-slate-400";
   return (
     <span
-      className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium border ${colors}`}
+      className={`inline-flex items-center rounded-md border px-2 py-0.5 text-[10px] font-semibold tracking-[0.14em] uppercase ${colors}`}
     >
       {source}
     </span>
