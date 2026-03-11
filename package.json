@@ -1,0 +1,21 @@
+{
+  "name": "cchistory",
+  "private": true,
+  "packageManager": "pnpm@10.30.3",
+  "scripts": {
+    "build": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/storage build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/api build",
+    "build:all:safe": "pnpm run build && pnpm --filter @cchistory/api-client build && NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build",
+    "cli": "node apps/cli/dist/index.js",
+    "dev:api": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/storage build && pnpm --filter @cchistory/api dev",
+    "dev:web": "pnpm --filter @cchistory/api-client build && pnpm --filter @cchistory/web dev",
+    "restart:web": "bash scripts/restart-web-dev.sh",
+    "restart:web:preview": "bash scripts/restart-web-preview.sh",
+    "probe:smoke": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && node scripts/probe-smoke.mjs",
+    "validate:core": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/api build",
+    "test": "pnpm --filter @cchistory/source-adapters test"
+  },
+  "devDependencies": {
+    "@types/node": "^24.2.0",
+    "typescript": "^5.9.3"
+  }
+}

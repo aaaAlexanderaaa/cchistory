@@ -1,0 +1,24 @@
+{
+  "name": "@cchistory/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/storage build && tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "test": "pnpm run build && node --test dist/app.test.js"
+  },
+  "dependencies": {
+    "@cchistory/domain": "workspace:*",
+    "@cchistory/source-adapters": "workspace:*",
+    "@cchistory/storage": "workspace:*",
+    "@fastify/cors": "^11.1.0",
+    "fastify": "^5.6.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.2.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.3"
+  }
+}

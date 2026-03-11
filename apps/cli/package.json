@@ -1,0 +1,22 @@
+{
+  "name": "@cchistory/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "cchistory": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/storage build && tsc -p tsconfig.json",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@cchistory/domain": "workspace:*",
+    "@cchistory/source-adapters": "workspace:*",
+    "@cchistory/storage": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.2.0",
+    "typescript": "^5.9.3"
+  }
+}

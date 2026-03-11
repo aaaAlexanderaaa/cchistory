@@ -1,0 +1,91 @@
+@import "tailwindcss";
+
+@theme {
+  /* CCHistory Design System - Tactile Archival */
+  --color-ink: #1A1A1A;
+  --color-paper: #F2F0EB;
+  --color-card: #FFFFFF;
+  --color-surface-hover: #EBEBEB;
+  --color-text: #2B2B2B;
+  --color-muted: #757575;
+  --color-border: #E0E0E0;
+  --color-accent: #0057FF;
+  --color-accent-hover: #0046CC;
+  --color-warning: #FF4800;
+  --color-success: #008F45;
+  --color-candidate: #F59E0B;
+  --color-background: var(--color-paper);
+  --color-foreground: var(--color-text);
+  --color-primary: var(--color-accent);
+  --color-primary-foreground: #FFFFFF;
+  --color-secondary: var(--color-surface-hover);
+  --color-secondary-foreground: var(--color-text);
+  --color-destructive: var(--color-warning);
+  --color-destructive-foreground: #FFFFFF;
+  --shadow-hard: 3px 3px 0px rgba(0,0,0,0.1);
+  --shadow-hover: 5px 5px 0px rgba(0,0,0,0.15);
+  --shadow-pressed: 1px 1px 0px rgba(0,0,0,0.1);
+  --spacing-unit: 8px;
+  --radius: 0px;
+  --radius-slight: 2px;
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', monospace;
+  --font-display: 'Space Grotesk', system-ui, sans-serif;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  
+  body {
+    @apply bg-paper text-text antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  
+  ::-webkit-scrollbar-track {
+    background: var(--color-paper);
+  }
+  
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border);
+    border: 1px solid var(--color-paper);
+  }
+  
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-muted);
+  }
+}
+
+@layer utilities {
+  .shadow-hard {
+    box-shadow: var(--shadow-hard);
+  }
+  .shadow-hover {
+    box-shadow: var(--shadow-hover);
+  }
+  .shadow-pressed {
+    box-shadow: var(--shadow-pressed);
+  }
+  .stamp-text {
+    font-family: var(--font-display);
+    font-weight: 700;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  
+  .mono-text {
+    font-family: var(--font-mono);
+    font-size: 12px;
+  }
+  .display-heading {
+    font-family: var(--font-display);
+    font-weight: 700;
+  }
+}

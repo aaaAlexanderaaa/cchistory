@@ -33,3 +33,27 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Repo-local non-code content
+archive/
+frontend_demo/
+tasks.csv
+task.CSV
+
+# Local runtime data
+.cchistory/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.pid
+.tmp-*.html
+apps/api/.dev/
+
+# Build caches
+.next/
+.turbo/
+.cache/
+.vite/
+.vite-root-cache/
+coverage/
+*.tsbuildinfo
