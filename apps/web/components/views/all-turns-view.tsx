@@ -320,8 +320,9 @@ export function AllTurnsView() {
         </div>
 
         {selectedTurn && panelMode === 'turn' && (
-          <ResponsiveSidePanel onDismiss={() => setSelectedTurnId(null)} className="lg:w-[460px] lg:flex-shrink-0">
+          <ResponsiveSidePanel onDismiss={() => setSelectedTurnId(null)} className="lg:w-[34rem] lg:flex-shrink-0 xl:w-[38rem]">
             <TurnDetailPanel
+              key={selectedTurn.id}
               turn={selectedTurn}
               context={selectedContext}
               session={selectedSession}
@@ -332,14 +333,15 @@ export function AllTurnsView() {
                 }
               }}
               onClose={() => setSelectedTurnId(null)}
-              className="h-full lg:w-[460px] lg:flex-shrink-0"
+              className="h-full lg:w-[34rem] lg:flex-shrink-0 xl:w-[38rem]"
             />
           </ResponsiveSidePanel>
         )}
 
         {selectedTurn && selectedSession && panelMode === 'session' && (
-          <ResponsiveSidePanel onDismiss={() => setSelectedTurnId(null)} className="lg:w-[460px] lg:flex-shrink-0">
+          <ResponsiveSidePanel onDismiss={() => setSelectedTurnId(null)} className="lg:w-[34rem] lg:flex-shrink-0 xl:w-[38rem]">
             <SessionDetailPanel
+              key={selectedSession.id}
               session={selectedSession}
               turns={selectedSessionTurns}
               selectedTurnId={selectedTurn.id}
@@ -355,7 +357,7 @@ export function AllTurnsView() {
                 setSelectedTurnId(turnId)
                 setDetailMode('turn')
               }}
-              className="h-full lg:w-[460px] lg:flex-shrink-0"
+              className="h-full lg:w-[34rem] lg:flex-shrink-0 xl:w-[38rem]"
             />
           </ResponsiveSidePanel>
         )}

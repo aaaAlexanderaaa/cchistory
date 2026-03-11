@@ -181,8 +181,8 @@ Preferred commands:
 | `@cchistory/api` | validate probe persistence semantics | `pnpm --filter @cchistory/api test` | low to medium |
 | `@cchistory/api` | run local API runtime | `pnpm --filter @cchistory/api dev` | medium |
 | direct smoke probe | inspect one available local source without starting the API | `pnpm run probe:smoke -- --source-id=src-codex --limit=1` | low |
-| live probe | inspect one source without persistence | `curl -s -X POST http://127.0.0.1:4040/api/admin/probe/runs -H 'content-type: application/json' -d '{"source_ids":["codex"],"limit_files_per_source":1,"persist":false}'` | low once API is running |
-| replay | compare one source through replay path | `curl -s -X POST http://127.0.0.1:4040/api/admin/pipeline/replay -H 'content-type: application/json' -d '{"source_ids":["codex"],"limit_files_per_source":1}'` | low once API is running |
+| live probe | inspect one source without persistence | `curl -s -X POST http://127.0.0.1:8040/api/admin/probe/runs -H 'content-type: application/json' -d '{"source_ids":["codex"],"limit_files_per_source":1,"persist":false}'` | low once API is running |
+| replay | compare one source through replay path | `curl -s -X POST http://127.0.0.1:8040/api/admin/pipeline/replay -H 'content-type: application/json' -d '{"source_ids":["codex"],"limit_files_per_source":1}'` | low once API is running |
 | `@cchistory/web` | verify web after real API integration | `NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build` | highest; run alone |
 
 # Adapter Conformance

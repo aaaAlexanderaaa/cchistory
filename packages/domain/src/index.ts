@@ -430,9 +430,20 @@ export interface DisplaySegment {
 export interface TurnContextSummary {
   assistant_reply_count: number;
   tool_call_count: number;
+  token_usage?: TokenUsageSummary;
   total_tokens?: number;
   primary_model?: string;
   has_errors: boolean;
+}
+
+export interface TokenUsageSummary {
+  input_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cached_input_tokens?: number;
+  output_tokens?: number;
+  reasoning_output_tokens?: number;
+  total_tokens?: number;
 }
 
 export interface UserTurnProjection {
@@ -483,6 +494,7 @@ export interface AssistantReplyProjection {
   content: string;
   display_segments: DisplaySegment[];
   content_preview: string;
+  token_usage?: TokenUsageSummary;
   token_count?: number;
   model: string;
   created_at: string;

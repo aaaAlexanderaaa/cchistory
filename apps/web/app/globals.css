@@ -3,12 +3,12 @@
 @theme {
   /* CCHistory Design System - Tactile Archival */
   --color-ink: #1A1A1A;
-  --color-paper: #F2F0EB;
+  --color-paper: #F4F1EA;
   --color-card: #FFFFFF;
-  --color-surface-hover: #EBEBEB;
+  --color-surface-hover: #E7E1D6;
   --color-text: #2B2B2B;
-  --color-muted: #757575;
-  --color-border: #E0E0E0;
+  --color-muted: #5F5C57;
+  --color-border: #D6CFC2;
   --color-accent: #0057FF;
   --color-accent-hover: #0046CC;
   --color-warning: #FF4800;

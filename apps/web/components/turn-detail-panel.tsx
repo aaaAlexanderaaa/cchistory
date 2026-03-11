@@ -1,10 +1,12 @@
 'use client'
 
-import { useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useMemo, useState, type ReactNode } from 'react'
+import { formatTokenUsageSummary } from '@/lib/token-usage'
 import { cn } from '@/lib/utils'
 import { useTurnLineageQuery } from '@/lib/api'
 import type {
   AssistantReply,
+  DisplaySegment,
   ProjectIdentity,
   Session,
   ToolCall,
@@ -57,9 +59,7 @@ export function TurnDetailPanel({
   onOpenSession,
   className,
 }: TurnDetailPanelProps) {
-  const [expandedSections, setExpandedSections] = useState<Set<string>>(
-    new Set(['user-input', 'assistant-timeline']),
-  )
+  const [expandedSections, setExpandedSections] = useState<Set<string>>(() => createInitialExpandedSections(turn))
   const [expandedToolCalls, setExpandedToolCalls] = useState<Set<string>>(new Set())
   const { data: lineage } = useTurnLineageQuery(turn.id)
 
@@ -90,6 +90,14 @@ export function TurnDetailPanel({
   const systemMessageCount = context?.system_messages.length ?? 0
   const assistantReplyCount = context?.assistant_replies.length ?? 0
   const toolCallCount = context?.tool_calls.length ?? 0
+  const tokenSummary = formatTokenUsageSummary(
+    turn.context_summary.token_usage,
+    turn.context_summary.token_usage || turn.context_summary.total_tokens !== undefined ? 1 : 0,
+    1,
+    turn.context_summary.total_tokens,
+  )
+  const hasComplexUserInput = turn.user_messages.length > 1 || turn.user_messages.some((message) => message.is_injected)
+  const userInputBadge = turn.user_messages.length === 1 ? '1 message' : `${turn.user_messages.length} messages`
 
   const timelineEntries = useMemo<TimelineEntry[]>(() => {
     if (!context) {
@@ -139,11 +147,13 @@ export function TurnDetailPanel({
                 </span>
               )}
             </div>
+            <div className="text-sm leading-6 text-ink">{turn.canonical_text}</div>
           </div>
 
           <button
             type="button"
             onClick={onClose}
+            aria-label="Close turn detail"
             className="p-1.5 text-muted transition-colors hover:bg-surface-hover hover:text-ink"
           >
             <X className="w-4 h-4" />
@@ -165,9 +175,7 @@ export function TurnDetailPanel({
           </span>
           <span className="flex items-center gap-1 mono-text">
             <Database className="w-3 h-3" />
-            {turn.context_summary.total_tokens !== undefined
-              ? `${turn.context_summary.total_tokens.toLocaleString()} tokens`
-              : 'token tracking unavailable'}
+            {tokenSummary}
           </span>
         </div>
       </div>
@@ -177,9 +185,10 @@ export function TurnDetailPanel({
           id="user-input"
           title="User Input"
           icon={<User className="w-4 h-4" />}
-          badge={turn.user_messages.length > 1 ? `${turn.user_messages.length} messages` : undefined}
+          badge={userInputBadge}
           isExpanded={expandedSections.has('user-input')}
           onToggle={() => toggleSection('user-input')}
+          defaultCollapsed={!hasComplexUserInput}
         >
           <div className="space-y-3">
             {turn.user_messages.map((message, index) => (
@@ -320,6 +329,7 @@ export function TurnDetailPanel({
           <button
             type="button"
             onClick={onOpenSession}
+            aria-label="Open session detail"
             className="flex w-full items-center gap-2 text-sm text-muted transition-colors hover:text-accent"
           >
             <span className="text-[10px] stamp-text">SESSION:</span>
@@ -358,18 +368,21 @@ function CollapsibleSection({
         type="button"
         onClick={onToggle}
         className={cn(
-          'flex w-full items-center gap-2 px-4 py-3 text-left transition-colors hover:bg-surface-hover',
+          'flex w-full items-start gap-2 px-4 py-3 text-left transition-colors hover:bg-surface-hover',
           defaultCollapsed && !isExpanded && 'bg-surface-hover/50',
         )}
       >
         {isExpanded ? (
-          <ChevronDown className="w-4 h-4 flex-shrink-0 text-muted" />
+          <ChevronDown className="mt-0.5 w-4 h-4 flex-shrink-0 text-muted" />
         ) : (
-          <ChevronRight className="w-4 h-4 flex-shrink-0 text-muted" />
+          <ChevronRight className="mt-0.5 w-4 h-4 flex-shrink-0 text-muted" />
         )}
-        {icon}
-        <span className="text-sm font-medium">{title}</span>
-        {badge && <span className="ml-auto text-[10px] mono-text text-muted">{badge}</span>}
+        <span className="mt-0.5 flex-shrink-0">{icon}</span>
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium">{title}</span>
+          {badge && <span className="mt-0.5 block text-[10px] mono-text text-muted sm:hidden">{badge}</span>}
+        </span>
+        {badge && <span className="ml-auto hidden pt-0.5 text-[10px] mono-text text-muted sm:block">{badge}</span>}
       </button>
 
       {isExpanded && <div className="px-4 pb-4">{children}</div>}
@@ -377,7 +390,20 @@ function CollapsibleSection({
   )
 }
 
+function createInitialExpandedSections(turn: UserTurn) {
+  const sections = new Set<string>(['assistant-timeline'])
+  const hasComplexUserInput = turn.user_messages.length > 1 || turn.user_messages.some((message) => message.is_injected)
+
+  if (hasComplexUserInput) {
+    sections.add('user-input')
+  }
+
+  return sections
+}
+
 function AssistantTimelineItem({ reply, index }: { reply: AssistantReply; index: number }) {
+  const renderReadableReply = shouldRenderReadableReply(reply.display_segments, reply.content)
+
   return (
     <div>
       <div className="mb-2 flex items-center gap-2">
@@ -391,8 +417,12 @@ function AssistantTimelineItem({ reply, index }: { reply: AssistantReply; index:
         )}
       </div>
 
-      <div className="ml-6 border border-border bg-paper p-3">
-        <MaskedContent segments={reply.display_segments} />
+      <div className="ml-6 border border-border bg-paper p-4">
+        {renderReadableReply ? (
+          <ReadableReplyContent content={reply.content} />
+        ) : (
+          <MaskedContent segments={reply.display_segments} />
+        )}
       </div>
     </div>
   )
@@ -527,4 +557,221 @@ function formatLinkReason(reason: ProjectIdentity['link_reason']) {
     case 'metadata_hint':
       return 'metadata hint'
   }
+}
+
+type ReadableBlock =
+  | { type: 'heading'; level: number; content: string }
+  | { type: 'paragraph'; content: string }
+  | { type: 'list'; ordered: boolean; items: string[] }
+  | { type: 'quote'; content: string }
+  | { type: 'code'; language?: string; content: string }
+
+function ReadableReplyContent({ content }: { content: string }) {
+  const blocks = useMemo(() => parseReadableBlocks(content), [content])
+
+  if (blocks.length === 0) {
+    return <div className="whitespace-pre-wrap break-words text-sm leading-7 text-text">{content}</div>
+  }
+
+  return (
+    <div className="space-y-4 text-sm text-text">
+      {blocks.map((block, index) => {
+        if (block.type === 'heading') {
+          return (
+            <h3
+              key={`${block.type}-${index}`}
+              className={cn(
+                'font-display font-bold text-ink',
+                block.level === 1 ? 'text-lg' : block.level === 2 ? 'text-base' : 'text-sm',
+              )}
+            >
+              {renderInlineCode(block.content)}
+            </h3>
+          )
+        }
+
+        if (block.type === 'quote') {
+          return (
+            <blockquote
+              key={`${block.type}-${index}`}
+              className="border-l-2 border-border pl-3 text-sm leading-7 text-muted"
+            >
+              {renderInlineCode(block.content)}
+            </blockquote>
+          )
+        }
+
+        if (block.type === 'code') {
+          return (
+            <div key={`${block.type}-${index}`} className="overflow-hidden border border-border bg-ink text-card">
+              <div className="border-b border-card/15 px-3 py-2 text-[10px] stamp-text text-card/75">
+                {block.language || 'code'}
+              </div>
+              <pre className="overflow-x-auto px-4 py-3 text-xs leading-6 mono-text whitespace-pre-wrap">
+                {block.content}
+              </pre>
+            </div>
+          )
+        }
+
+        if (block.type === 'list') {
+          const ListTag = block.ordered ? 'ol' : 'ul'
+          return (
+            <ListTag
+              key={`${block.type}-${index}`}
+              className={cn(
+                'space-y-2 pl-5 text-[15px] leading-7 text-text',
+                block.ordered ? 'list-decimal' : 'list-disc',
+              )}
+            >
+              {block.items.map((item, itemIndex) => (
+                <li key={`${block.type}-${index}-${itemIndex}`}>{renderInlineCode(item)}</li>
+              ))}
+            </ListTag>
+          )
+        }
+
+        return (
+          <p key={`${block.type}-${index}`} className="whitespace-pre-wrap text-[15px] leading-7 text-text">
+            {renderInlineCode(block.content)}
+          </p>
+        )
+      })}
+    </div>
+  )
+}
+
+function shouldRenderReadableReply(segments: DisplaySegment[], content: string) {
+  if (!content.trim()) {
+    return false
+  }
+
+  if (segments.length === 0) {
+    return true
+  }
+
+  return segments.every((segment) => segment.type === 'text')
+}
+
+function parseReadableBlocks(content: string): ReadableBlock[] {
+  const lines = content.replace(/\r\n/g, '\n').trim().split('\n')
+
+  if (lines.length === 1 && lines[0] === '') {
+    return []
+  }
+
+  const blocks: ReadableBlock[] = []
+  let index = 0
+
+  while (index < lines.length) {
+    const line = lines[index] ?? ''
+    const trimmed = line.trim()
+
+    if (!trimmed) {
+      index += 1
+      continue
+    }
+
+    const codeFenceMatch = trimmed.match(/^```([^\s`]*)\s*$/)
+    if (codeFenceMatch) {
+      index += 1
+      const codeLines: string[] = []
+      while (index < lines.length && !lines[index]!.trim().startsWith('```')) {
+        codeLines.push(lines[index]!)
+        index += 1
+      }
+      if (index < lines.length) {
+        index += 1
+      }
+      blocks.push({
+        type: 'code',
+        language: codeFenceMatch[1] || undefined,
+        content: codeLines.join('\n').trimEnd(),
+      })
+      continue
+    }
+
+    const headingMatch = trimmed.match(/^(#{1,3})\s+(.*)$/)
+    if (headingMatch) {
+      blocks.push({
+        type: 'heading',
+        level: headingMatch[1].length,
+        content: headingMatch[2],
+      })
+      index += 1
+      continue
+    }
+
+    const quoteMatch = trimmed.match(/^>\s?(.*)$/)
+    if (quoteMatch) {
+      const quoteLines: string[] = []
+      while (index < lines.length) {
+        const current = lines[index]!.trim()
+        const currentQuote = current.match(/^>\s?(.*)$/)
+        if (!currentQuote) {
+          break
+        }
+        quoteLines.push(currentQuote[1])
+        index += 1
+      }
+      blocks.push({ type: 'quote', content: quoteLines.join('\n').trim() })
+      continue
+    }
+
+    const listMatch = trimmed.match(/^([-*]|\d+\.)\s+(.*)$/)
+    if (listMatch) {
+      const ordered = /\d+\./.test(listMatch[1])
+      const items: string[] = []
+      while (index < lines.length) {
+        const current = lines[index]!.trim()
+        const currentMatch = current.match(/^([-*]|\d+\.)\s+(.*)$/)
+        if (!currentMatch) {
+          break
+        }
+        items.push(currentMatch[2])
+        index += 1
+      }
+      blocks.push({ type: 'list', ordered, items })
+      continue
+    }
+
+    const paragraphLines: string[] = [line]
+    index += 1
+    while (index < lines.length) {
+      const current = lines[index] ?? ''
+      const currentTrimmed = current.trim()
+      if (!currentTrimmed) {
+        index += 1
+        break
+      }
+      if (
+        /^```/.test(currentTrimmed) ||
+        /^(#{1,3})\s+/.test(currentTrimmed) ||
+        /^>\s?/.test(currentTrimmed) ||
+        /^([-*]|\d+\.)\s+/.test(currentTrimmed)
+      ) {
+        break
+      }
+      paragraphLines.push(current)
+      index += 1
+    }
+    blocks.push({ type: 'paragraph', content: paragraphLines.join('\n').trim() })
+  }
+
+  return blocks
+}
+
+function renderInlineCode(content: string) {
+  return content
+    .split(/(`[^`]+`)/g)
+    .filter(Boolean)
+    .map((part, index) =>
+      part.startsWith('`') && part.endsWith('`') ? (
+        <code key={index} className="rounded-sm bg-surface-hover px-1 py-0.5 mono-text text-[12px] text-ink">
+          {part.slice(1, -1)}
+        </code>
+      ) : (
+        <Fragment key={index}>{part}</Fragment>
+      ),
+    )
 }

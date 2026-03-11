@@ -5,7 +5,6 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { cn, formatAbsoluteDateTime, formatRelativeTime } from '@/lib/utils'
 import type { UserTurn, Session, ProjectIdentity } from '@/lib/types'
 import { MaskedContentPreview } from './masked-content'
-import { SessionBadge } from './session-badge'
 import { 
   MessageSquare, 
   Wrench, 
@@ -15,6 +14,7 @@ import {
   GitCommit,
   HelpCircle,
   Link2Off,
+  PanelsTopLeft,
 } from 'lucide-react'
 interface TurnListVirtualProps {
   turns: UserTurn[]
@@ -129,83 +129,82 @@ function TurnListItem({ turn, session, project, isSelected, onClick }: TurnListI
       type="button"
       onClick={onClick}
       className={cn(
-        'w-full border-b border-border px-4 py-2.5 text-left transition-colors',
+        'w-full border-b border-border px-4 py-3.5 text-left transition-colors sm:px-5',
         isSelected 
-          ? 'bg-accent/5 border-l-2 border-l-accent' 
-          : 'hover:bg-surface-hover border-l-2 border-l-transparent',
+          ? 'border-l-4 border-l-accent bg-accent/5'
+          : 'border-l-4 border-l-transparent hover:bg-surface-hover',
         turn.value_axis === 'archived' && 'opacity-60'
       )}
     >
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,1.7fr)_17rem]">
-        <div className="min-w-0">
-          <div className="mb-1.5 flex flex-wrap items-start gap-2">
-            <LinkStateBadge state={turn.link_state} confidence={turn.project_confidence} />
-            {project && (
-              <span 
-                className="max-w-full truncate px-1.5 py-0.5 text-[10px] stamp-text"
-                style={{ 
-                  backgroundColor: `${project.color}15`,
-                  color: project.color,
-                }}
-              >
-                {project.name}
-              </span>
-            )}
-            {turn.is_flagged && (
-              <Flag className="w-3 h-3 text-warning" />
-            )}
-            {turn.user_messages.length > 1 && (
-              <span className="text-[10px] stamp-text text-muted">
-                {turn.user_messages.length} msgs
-              </span>
-            )}
-          </div>
-
-          <div className="mb-2">
-            <MaskedContentPreview 
-              segments={turn.display_segments} 
-              maxLength={180}
-              className="text-text"
-            />
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted sm:gap-3">
-            <span className="mono-text">{formatAbsoluteDateTime(turn.created_at)}</span>
-            <span>{formatRelativeTime(turn.created_at)}</span>
-            <span className="flex items-center gap-1">
-              <MessageSquare className="w-3 h-3" />
-              {context_summary.assistant_reply_count} replies
+      <div className="flex flex-col gap-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <LinkStateBadge state={turn.link_state} confidence={turn.project_confidence} />
+          {project && (
+            <span
+              className="max-w-full truncate px-1.5 py-0.5 text-[10px] stamp-text"
+              style={{
+                backgroundColor: `${project.color}15`,
+                color: project.color,
+              }}
+            >
+              {project.name}
             </span>
-            {context_summary.tool_call_count > 0 && (
-              <span className="flex items-center gap-1">
-                <Wrench className="w-3 h-3" />
-                {context_summary.tool_call_count} tools
-              </span>
-            )}
-            {context_summary.has_errors && (
-              <span className="flex items-center gap-1 text-warning">
-                <AlertCircle className="w-3 h-3" />
-                Has errors
-              </span>
-            )}
-          </div>
+          )}
+          {turn.is_flagged && <Flag className="w-3 h-3 text-warning" />}
+          {turn.user_messages.length > 1 && (
+            <span className="text-[10px] stamp-text text-muted">
+              {turn.user_messages.length} msgs
+            </span>
+          )}
         </div>
 
-        <div className="flex min-w-0 flex-col gap-2 xl:items-end">
-          {session && (
-            <div className="xl:max-w-full">
-              <SessionBadge session={session} compact className="max-w-full" />
-            </div>
-          )}
+        <MaskedContentPreview
+          segments={turn.display_segments}
+          maxLength={220}
+          className="line-clamp-2 text-[15px] font-medium leading-6 text-ink"
+        />
 
-          <div className="flex w-full items-center justify-between gap-3 text-[10px] text-muted xl:justify-end">
-            {context_summary.primary_model && (
-              <span className="mono-text max-w-full break-all text-[10px] xl:max-w-[12rem] xl:text-right">
-                {context_summary.primary_model}
-              </span>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted">
+          <span>{formatRelativeTime(turn.created_at)}</span>
+          <span className="hidden mono-text lg:inline">{formatAbsoluteDateTime(turn.created_at)}</span>
+          <span className="flex items-center gap-1">
+            <MessageSquare className="w-3 h-3" />
+            {context_summary.assistant_reply_count} replies
+          </span>
+          {context_summary.tool_call_count > 0 && (
+            <span className="flex items-center gap-1">
+              <Wrench className="w-3 h-3" />
+              {context_summary.tool_call_count} tools
+            </span>
+          )}
+          {context_summary.has_errors && (
+            <span className="flex items-center gap-1 text-warning">
+              <AlertCircle className="w-3 h-3" />
+              Has errors
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-start gap-3 text-[10px] text-muted">
+          <div className="min-w-0 flex-1 space-y-2">
+            {session && (
+              <div className="flex min-w-0 max-w-full items-center gap-2 border border-border bg-paper px-2 py-1">
+                <PanelsTopLeft className="h-3 w-3 flex-shrink-0" />
+                <span className="min-w-0 flex-1 truncate" title={session.title || session.id}>
+                  {session.title || `Session ${session.id.slice(0, 8)}`}
+                </span>
+                <span className="mono-text flex-shrink-0 text-[9px]">{session.turn_count} turns</span>
+              </div>
             )}
-            <ChevronRight className="h-3 w-3 flex-shrink-0" />
+
+            {context_summary.primary_model && (
+              <div className="mono-text truncate text-[10px]">
+                {context_summary.primary_model}
+              </div>
+            )}
           </div>
+
+          <ChevronRight className="mt-1 h-3 w-3 flex-shrink-0" />
         </div>
       </div>
     </button>

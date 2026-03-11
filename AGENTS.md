@@ -24,6 +24,15 @@ There is no single repository-wide build target yet. Use commands only for the l
 ## Web Runtime Workflow
 When a user is actively reviewing `apps/web` UI changes, keep the dev server reachable on `0.0.0.0:8085`. After meaningful web code changes that need live verification, restart the web dev server with `pnpm restart:web` unless the user explicitly says not to.
 
+## Browser Automation Policy
+Browser automation for this repository must use the wrapped skill entrypoint or MCP only.
+
+- Always use the Playwright skill wrapper at `/Users/alex_m4/.codex/skills/playwright/scripts/playwright_cli.sh` when driving a browser from the terminal.
+- MCP-based browser automation is also allowed when available and appropriate.
+- Do not invoke `npx playwright`, `playwright-cli`, `node <cached-playwright-cli>`, or any Playwright binary/script from npm cache, global installs, or ad hoc filesystem locations.
+- Do not bypass the wrapper by calling Playwright packages from `~/.npm`, `node_modules/.bin`, `/tmp`, or any non-skill directory.
+- If the wrapped skill is broken or blocked, stop and fix the wrapped skill or ask the user; do not work around it with a different Playwright entrypoint.
+
 ## Memory And Build Constraints
 > This host is memory-constrained. Assume 4 GB RAM and only 3G RAM is usable (avoid OOM) unless a user states otherwise.
 >

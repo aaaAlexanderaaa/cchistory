@@ -110,6 +110,8 @@ interface GitProjectEvidence {
 
 interface TokenUsageMetrics {
   input_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
   cached_input_tokens?: number;
   output_tokens?: number;
   reasoning_output_tokens?: number;
@@ -1829,7 +1831,7 @@ async function extractConversationExportSeeds(
 }
 
 function normalizeTokenUsageObject(value: Record<string, unknown>): TokenUsageMetrics | undefined {
-  const inputTokens = firstDefinedNumber(
+  const rawInputTokens = firstDefinedNumber(
     asNumber(value.input_tokens),
     asNumber(value.inputTokens),
     asNumber(value.prompt_tokens),
@@ -1848,6 +1850,23 @@ function normalizeTokenUsageObject(value: Record<string, unknown>): TokenUsageMe
     asNumber(value.cached_input_tokens),
     asNumber(value.cachedInputTokens),
   );
+  const hasExplicitCacheBreakout =
+    firstDefinedNumber(
+      asNumber(value.cache_creation_input_tokens),
+      asNumber(value.cacheCreationInputTokens),
+      asNumber(value.cacheCreationTokens),
+      asNumber(value.cache_read_input_tokens),
+      asNumber(value.cacheReadInputTokens),
+      asNumber(value.cacheReadTokens),
+    ) !== undefined;
+  const inputIncludesCachedTokens =
+    !hasExplicitCacheBreakout &&
+    (firstDefinedNumber(asNumber(value.cached_input_tokens), asNumber(value.cachedInputTokens)) !== undefined ||
+      firstDefinedNumber(asNumber(value.prompt_tokens), asNumber(value.promptTokens)) !== undefined);
+  const inputTokens =
+    typeof rawInputTokens === "number" && typeof cacheReadTokens === "number" && inputIncludesCachedTokens
+      ? Math.max(rawInputTokens - cacheReadTokens, 0)
+      : rawInputTokens;
   const cachedInputTokens =
     cacheCreationTokens !== undefined || cacheReadTokens !== undefined
       ? (cacheCreationTokens ?? 0) + (cacheReadTokens ?? 0)
@@ -1872,9 +1891,7 @@ function normalizeTokenUsageObject(value: Record<string, unknown>): TokenUsageMe
     asNumber(value.token_count),
     asNumber(value.tokenCount),
   );
-  const totalTokens =
-    explicitTotal ??
-    sumDefinedNumbers(inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens);
+  const totalTokens = explicitTotal ?? sumDefinedNumbers(inputTokens, cacheReadTokens, cacheCreationTokens, outputTokens);
   const model =
     asString(value.model) ??
     asString(value.modelName) ??
@@ -1893,6 +1910,8 @@ function normalizeTokenUsageObject(value: Record<string, unknown>): TokenUsageMe
 
   return {
     input_tokens: inputTokens,
+    cache_read_input_tokens: cacheReadTokens,
+    cache_creation_input_tokens: cacheCreationTokens,
     cached_input_tokens: cachedInputTokens,
     output_tokens: outputTokens,
     reasoning_output_tokens: reasoningOutputTokens,
@@ -2537,6 +2556,39 @@ function extractTokenCountFromPayload(payload: Record<string, unknown>): number 
   );
 }
 
+function extractTokenUsageFromPayload(payload: Record<string, unknown>): TokenUsageMetrics | undefined {
+  const tokenUsage = isObject(payload.token_usage) ? payload.token_usage : undefined;
+  return extractTokenUsage(tokenUsage ?? payload);
+}
+
+function mergeTokenUsageMetrics(
+  current: TokenUsageMetrics | undefined,
+  incoming: TokenUsageMetrics | undefined,
+): TokenUsageMetrics | undefined {
+  if (!current) {
+    return incoming ? { ...incoming } : undefined;
+  }
+  if (!incoming) {
+    return current;
+  }
+  const cacheReadTokens = current.cache_read_input_tokens ?? incoming.cache_read_input_tokens;
+  const cacheCreationTokens = current.cache_creation_input_tokens ?? incoming.cache_creation_input_tokens;
+  const cachedInputTokens =
+    cacheReadTokens !== undefined || cacheCreationTokens !== undefined
+      ? (cacheReadTokens ?? 0) + (cacheCreationTokens ?? 0)
+      : current.cached_input_tokens ?? incoming.cached_input_tokens;
+  return {
+    input_tokens: current.input_tokens ?? incoming.input_tokens,
+    cache_read_input_tokens: cacheReadTokens,
+    cache_creation_input_tokens: cacheCreationTokens,
+    cached_input_tokens: cachedInputTokens,
+    output_tokens: current.output_tokens ?? incoming.output_tokens,
+    reasoning_output_tokens: current.reasoning_output_tokens ?? incoming.reasoning_output_tokens,
+    total_tokens: current.total_tokens ?? incoming.total_tokens,
+    model: current.model ?? incoming.model,
+  };
+}
+
 function extractStopReasonFromPayload(payload: Record<string, unknown>): AssistantStopReason | undefined {
   return normalizeStopReason(payload.stop_reason) ?? normalizeStopReason(payload.stopReason);
 }
@@ -2963,6 +3015,7 @@ function buildTurnsAndContext(
     }
 
     contexts.push(contextProjection);
+    const contextTokenUsage = summarizeAssistantReplyUsage(contextProjection.assistant_replies);
     turns.push({
       id: turnId,
       revision_id: `${turnId}:r1`,
@@ -2985,8 +3038,10 @@ function buildTurnsAndContext(
       context_summary: {
         assistant_reply_count: contextProjection.assistant_replies.length,
         tool_call_count: contextProjection.tool_calls.length,
+        token_usage: contextTokenUsage,
         total_tokens:
-          contextProjection.assistant_replies.reduce((sum, reply) => sum + (reply.token_count ?? 0), 0) || undefined,
+          contextTokenUsage?.total_tokens ??
+          (contextProjection.assistant_replies.reduce((sum, reply) => sum + (reply.token_count ?? 0), 0) || undefined),
         primary_model: draft.model,
         has_errors: contextProjection.assistant_replies.some((reply) => reply.stop_reason === "error"),
       },
@@ -3060,12 +3115,14 @@ function buildTurnContext(
       replyIdByAtomId.set(atom.id, replyId);
       const content = asString(atom.payload.text) ?? "";
       const masked = applyMaskTemplates(content, "assistant_reply");
+      const tokenUsage = extractTokenUsageFromPayload(atom.payload);
       assistantReplies.push({
         id: replyId,
         content,
         display_segments: masked.display_segments,
         content_preview: truncate(masked.canonical_text || content, 140),
-        token_count: extractTokenCountFromPayload(atom.payload),
+        token_usage: tokenUsage,
+        token_count: extractTokenCountFromPayload(atom.payload) ?? tokenUsage?.total_tokens,
         model: draft.model ?? "unknown",
         created_at: atom.time_key,
         tool_call_ids: [],
@@ -3082,11 +3139,13 @@ function buildTurnContext(
     .reverse()
     .find((atom) => asString(atom.payload.scope) !== "session");
   if (lastTurnTokenSignal) {
+    const tokenUsage = extractTokenUsageFromPayload(lastTurnTokenSignal.payload);
     const tokenCount = extractTokenCountFromPayload(lastTurnTokenSignal.payload);
     const stopReason = extractStopReasonFromPayload(lastTurnTokenSignal.payload);
     const lastReply = assistantReplies.at(-1);
     if (lastReply) {
-      lastReply.token_count = lastReply.token_count ?? tokenCount;
+      lastReply.token_usage = mergeTokenUsageMetrics(lastReply.token_usage, tokenUsage);
+      lastReply.token_count = lastReply.token_count ?? tokenCount ?? lastReply.token_usage?.total_tokens;
       lastReply.stop_reason = lastReply.stop_reason ?? stopReason;
     }
   }
@@ -3134,6 +3193,84 @@ function buildTurnContext(
     assistant_replies: assistantReplies,
     tool_calls: toolCalls,
     raw_event_refs: [...rawEventRefs],
+  };
+}
+
+function summarizeAssistantReplyUsage(
+  replies: TurnContextProjection["assistant_replies"],
+): TokenUsageMetrics | undefined {
+  let inputTokens = 0;
+  let cacheReadTokens = 0;
+  let cacheCreationTokens = 0;
+  let cachedInputTokens = 0;
+  let outputTokens = 0;
+  let reasoningOutputTokens = 0;
+  let totalTokens = 0;
+  let hasInputTokens = false;
+  let hasCacheReadTokens = false;
+  let hasCacheCreationTokens = false;
+  let hasCachedInputTokens = false;
+  let hasOutputTokens = false;
+  let hasReasoningOutputTokens = false;
+  let hasTotalTokens = false;
+
+  for (const reply of replies) {
+    if (typeof reply.token_usage?.input_tokens === "number") {
+      inputTokens += reply.token_usage.input_tokens;
+      hasInputTokens = true;
+    }
+    if (typeof reply.token_usage?.cache_read_input_tokens === "number") {
+      cacheReadTokens += reply.token_usage.cache_read_input_tokens;
+      hasCacheReadTokens = true;
+    }
+    if (typeof reply.token_usage?.cache_creation_input_tokens === "number") {
+      cacheCreationTokens += reply.token_usage.cache_creation_input_tokens;
+      hasCacheCreationTokens = true;
+    }
+    const replyCachedInputTokens = firstDefinedNumber(
+      reply.token_usage?.cached_input_tokens,
+      sumDefinedNumbers(reply.token_usage?.cache_read_input_tokens, reply.token_usage?.cache_creation_input_tokens),
+    );
+    if (typeof replyCachedInputTokens === "number") {
+      cachedInputTokens += replyCachedInputTokens;
+      hasCachedInputTokens = true;
+    }
+    if (typeof reply.token_usage?.output_tokens === "number") {
+      outputTokens += reply.token_usage.output_tokens;
+      hasOutputTokens = true;
+    }
+    if (typeof reply.token_usage?.reasoning_output_tokens === "number") {
+      reasoningOutputTokens += reply.token_usage.reasoning_output_tokens;
+      hasReasoningOutputTokens = true;
+    }
+
+    const replyTotalTokens = firstDefinedNumber(reply.token_usage?.total_tokens, reply.token_count);
+    if (typeof replyTotalTokens === "number") {
+      totalTokens += replyTotalTokens;
+      hasTotalTokens = true;
+    }
+  }
+
+  if (
+    !hasInputTokens &&
+    !hasCacheReadTokens &&
+    !hasCacheCreationTokens &&
+    !hasCachedInputTokens &&
+    !hasOutputTokens &&
+    !hasReasoningOutputTokens &&
+    !hasTotalTokens
+  ) {
+    return undefined;
+  }
+
+  return {
+    input_tokens: hasInputTokens ? inputTokens : undefined,
+    cache_read_input_tokens: hasCacheReadTokens ? cacheReadTokens : undefined,
+    cache_creation_input_tokens: hasCacheCreationTokens ? cacheCreationTokens : undefined,
+    cached_input_tokens: hasCachedInputTokens ? cachedInputTokens : undefined,
+    output_tokens: hasOutputTokens ? outputTokens : undefined,
+    reasoning_output_tokens: hasReasoningOutputTokens ? reasoningOutputTokens : undefined,
+    total_tokens: hasTotalTokens ? totalTokens : undefined,
   };
 }
 

@@ -36,6 +36,7 @@ export function SessionDetailPanel({
             <button
               type="button"
               onClick={onBack}
+              aria-label="Back to turn detail"
               className="flex items-center gap-1.5 px-2 py-1 text-xs text-muted transition-colors hover:bg-surface-hover hover:text-ink"
             >
               <ChevronLeft className="h-4 w-4" />
@@ -44,13 +45,23 @@ export function SessionDetailPanel({
             <span className="text-[10px] stamp-text text-muted">SESSION DETAIL</span>
           </div>
 
-          <button type="button" onClick={onClose} className="p-1.5 text-muted transition-colors hover:bg-surface-hover hover:text-ink">
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close session detail"
+            className="p-1.5 text-muted transition-colors hover:bg-surface-hover hover:text-ink"
+          >
             <X className="h-4 w-4" />
           </button>
         </div>
 
         <div className="px-4 pb-4">
-          <h2 className="text-lg font-bold font-display text-ink">{session.title || 'Untitled Session'}</h2>
+          <h2
+            className="line-clamp-3 text-lg font-bold font-display text-ink"
+            title={session.title || 'Untitled Session'}
+          >
+            {session.title || 'Untitled Session'}
+          </h2>
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted">
             <MetaBadge icon={<Layers className="h-3 w-3" />} label={`${turns.length} turns`} />
             <MetaBadge icon={<MonitorSmartphone className="h-3 w-3" />} label={session.source_platform} />
@@ -60,17 +71,6 @@ export function SessionDetailPanel({
       </div>
 
       <div className="flex-1 overflow-y-auto">
-        <section className="border-b border-border px-4 py-4">
-          <div className="mb-3 text-[10px] stamp-text text-muted">SESSION METADATA</div>
-          <div className="grid grid-cols-1 gap-3 text-sm">
-            <MetaRow label="Created" value={format(session.created_at, 'yyyy-MM-dd HH:mm', { locale: zhCN })} />
-            <MetaRow label="Updated" value={format(session.updated_at, 'yyyy-MM-dd HH:mm', { locale: zhCN })} />
-            <MetaRow label="Model" value={session.model || 'Unknown'} />
-            <MetaRow label="Host" value={session.host_id} mono />
-            {session.working_directory && <MetaRow label="Working Dir" value={session.working_directory} mono />}
-          </div>
-        </section>
-
         <section className="px-4 py-4">
           <div className="mb-3 flex items-center justify-between">
             <div className="text-[10px] stamp-text text-muted">TURN SEQUENCE</div>
@@ -111,6 +111,17 @@ export function SessionDetailPanel({
                 No turns loaded for this session.
               </div>
             )}
+          </div>
+        </section>
+
+        <section className="border-t border-border px-4 py-4">
+          <div className="mb-3 text-[10px] stamp-text text-muted">SESSION METADATA</div>
+          <div className="grid grid-cols-1 gap-3 text-sm">
+            <MetaRow label="Created" value={format(session.created_at, 'yyyy-MM-dd HH:mm', { locale: zhCN })} />
+            <MetaRow label="Updated" value={format(session.updated_at, 'yyyy-MM-dd HH:mm', { locale: zhCN })} />
+            <MetaRow label="Model" value={session.model || 'Unknown'} />
+            <MetaRow label="Host" value={session.host_id} mono />
+            {session.working_directory && <MetaRow label="Working Dir" value={session.working_directory} mono />}
           </div>
         </section>
       </div>

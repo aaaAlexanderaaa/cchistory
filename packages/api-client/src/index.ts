@@ -21,9 +21,20 @@ export interface UserMessageProjectionDto {
 export interface TurnContextSummaryDto {
   assistant_reply_count: number;
   tool_call_count: number;
+  token_usage?: TokenUsageSummaryDto;
   total_tokens?: number;
   primary_model?: string;
   has_errors: boolean;
+}
+
+export interface TokenUsageSummaryDto {
+  input_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cached_input_tokens?: number;
+  output_tokens?: number;
+  reasoning_output_tokens?: number;
+  total_tokens?: number;
 }
 
 export interface UserTurnProjectionDto {
@@ -74,6 +85,7 @@ export interface AssistantReplyProjectionDto {
   content: string;
   display_segments: DisplaySegmentDto[];
   content_preview: string;
+  token_usage?: TokenUsageSummaryDto;
   token_count?: number;
   model: string;
   created_at: string;
@@ -577,7 +589,7 @@ export class CCHistoryApiError extends Error {
 }
 
 export function getDefaultApiBaseUrl(): string {
-  return "http://127.0.0.1:4040";
+  return "http://127.0.0.1:8040";
 }
 
 export function createCCHistoryApiClient(options: CCHistoryApiClientOptions = {}) {

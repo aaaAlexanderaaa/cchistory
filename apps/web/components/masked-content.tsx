@@ -227,7 +227,7 @@ export function MaskedContentPreview({
   }
   
   return (
-    <div className={cn('text-sm text-text truncate', className)}>
+    <div className={cn('text-sm leading-6 text-text', className)}>
       {truncatedSegments.map((segment, index) => (
         <span 
           key={index}

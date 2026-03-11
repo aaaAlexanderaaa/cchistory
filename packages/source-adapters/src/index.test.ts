@@ -309,22 +309,49 @@ test("runSourceProbe projects token usage and stop reasons into turn context", a
 
     const codexPayload = payloadsByPlatform.get("codex");
     assert.equal(codexPayload?.turns[0]?.context_summary.total_tokens, 20);
+    assert.equal(codexPayload?.turns[0]?.context_summary.token_usage?.input_tokens, 7);
+    assert.equal(codexPayload?.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 5);
+    assert.equal(codexPayload?.turns[0]?.context_summary.token_usage?.cached_input_tokens, 5);
+    assert.equal(codexPayload?.turns[0]?.context_summary.token_usage?.output_tokens, 8);
+    assert.equal(codexPayload?.turns[0]?.context_summary.token_usage?.reasoning_output_tokens, 3);
     assert.equal(codexPayload?.contexts[0]?.assistant_replies[0]?.token_count, 20);
+    assert.equal(codexPayload?.contexts[0]?.assistant_replies[0]?.token_usage?.input_tokens, 7);
+    assert.equal(codexPayload?.contexts[0]?.assistant_replies[0]?.token_usage?.cache_read_input_tokens, 5);
+    assert.equal(codexPayload?.contexts[0]?.assistant_replies[0]?.token_usage?.output_tokens, 8);
     assert.equal(codexPayload?.contexts[0]?.assistant_replies[0]?.stop_reason, "end_turn");
     assert.ok(codexPayload?.fragments.some((fragment) => fragment.fragment_kind === "token_usage_signal"));
 
     const claudePayload = payloadsByPlatform.get("claude_code");
     assert.equal(claudePayload?.turns[0]?.context_summary.total_tokens, 47);
+    assert.equal(claudePayload?.turns[0]?.context_summary.token_usage?.input_tokens, 30);
+    assert.equal(claudePayload?.turns[0]?.context_summary.token_usage?.cache_creation_input_tokens, 5);
+    assert.equal(claudePayload?.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 2);
+    assert.equal(claudePayload?.turns[0]?.context_summary.token_usage?.cached_input_tokens, 7);
+    assert.equal(claudePayload?.turns[0]?.context_summary.token_usage?.output_tokens, 10);
     assert.equal(claudePayload?.contexts[0]?.assistant_replies[0]?.token_count, 47);
+    assert.equal(claudePayload?.contexts[0]?.assistant_replies[0]?.token_usage?.cache_creation_input_tokens, 5);
+    assert.equal(claudePayload?.contexts[0]?.assistant_replies[0]?.token_usage?.cache_read_input_tokens, 2);
+    assert.equal(claudePayload?.contexts[0]?.assistant_replies[0]?.token_usage?.cached_input_tokens, 7);
     assert.equal(claudePayload?.contexts[0]?.assistant_replies[0]?.stop_reason, "tool_use");
 
     const factoryPayload = payloadsByPlatform.get("factory_droid");
-    assert.equal(factoryPayload?.turns[0]?.context_summary.total_tokens, 21);
-    assert.equal(factoryPayload?.contexts[0]?.assistant_replies[0]?.token_count, 21);
+    assert.equal(factoryPayload?.turns[0]?.context_summary.total_tokens, 18);
+    assert.equal(factoryPayload?.turns[0]?.context_summary.token_usage?.input_tokens, 9);
+    assert.equal(factoryPayload?.turns[0]?.context_summary.token_usage?.cache_creation_input_tokens, 1);
+    assert.equal(factoryPayload?.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 2);
+    assert.equal(factoryPayload?.turns[0]?.context_summary.token_usage?.cached_input_tokens, 3);
+    assert.equal(factoryPayload?.turns[0]?.context_summary.token_usage?.output_tokens, 6);
+    assert.equal(factoryPayload?.turns[0]?.context_summary.token_usage?.reasoning_output_tokens, 3);
+    assert.equal(factoryPayload?.contexts[0]?.assistant_replies[0]?.token_count, 18);
     assert.equal(factoryPayload?.contexts[0]?.assistant_replies[0]?.stop_reason, "end_turn");
 
     const ampPayload = payloadsByPlatform.get("amp");
     assert.equal(ampPayload?.turns[0]?.context_summary.total_tokens, 24);
+    assert.equal(ampPayload?.turns[0]?.context_summary.token_usage?.input_tokens, 14);
+    assert.equal(ampPayload?.turns[0]?.context_summary.token_usage?.cache_creation_input_tokens, 2);
+    assert.equal(ampPayload?.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 1);
+    assert.equal(ampPayload?.turns[0]?.context_summary.token_usage?.cached_input_tokens, 3);
+    assert.equal(ampPayload?.turns[0]?.context_summary.token_usage?.output_tokens, 7);
     assert.equal(ampPayload?.contexts[0]?.assistant_replies[0]?.token_count, 24);
     assert.equal(ampPayload?.contexts[0]?.assistant_replies[0]?.stop_reason, "max_tokens");
   } finally {
@@ -1065,7 +1092,9 @@ async function seedTokenProjectionFixtures(tempRoot: string): Promise<SourceDefi
           info: {
             last_token_usage: {
               input_tokens: 12,
+              cached_input_tokens: 5,
               output_tokens: 8,
+              reasoning_output_tokens: 3,
               total_tokens: 20,
             },
           },

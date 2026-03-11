@@ -2,6 +2,12 @@
 
 import { createElement, type ComponentProps } from 'react'
 import { useMemo, useState } from 'react'
+import {
+  formatTokenUsageOverview,
+  formatTokenUsageSummary,
+  formatTokenValue,
+  summarizeTurnsTokenUsage,
+} from '@/lib/token-usage'
 import { cn, formatRelativeTime } from '@/lib/utils'
 import { SessionMap } from '@/components/session-map'
 import { TurnCard } from '@/components/turn-card'
@@ -304,7 +310,7 @@ function ProjectCard({ project, turns, onClick }: ProjectCardProps) {
           <CompactProjectMetric label="Committed" value={String(project.committed_turn_count)} tone="success" />
           <CompactProjectMetric label="Candidates" value={String(project.candidate_turn_count)} tone="candidate" />
           <CompactProjectMetric label="Active" value={formatDurationCompact(metrics.activeDurationMs)} />
-          <CompactProjectMetric label="Tokens" value={formatTokenValue(metrics.totalTokens)} />
+          <CompactProjectMetric label="Tokens" value={formatTokenValue(metrics.tokenUsage?.total_tokens)} />
         </div>
 
         <div className="flex items-start gap-2 text-xs text-muted">
@@ -358,6 +364,11 @@ function ProjectDetailView({
   const [turnSort, setTurnSort] = useState<ProjectTurnSort>('newest')
   const hasStale = allProjectTurns.some((turn) => turn.sync_axis === 'superseded' || turn.sync_axis === 'source_absent')
   const currentMetrics = summarizeTurnMetrics(currentTurns)
+  const currentTokenSummary = formatTokenUsageOverview(
+    currentMetrics.tokenUsage,
+    currentMetrics.trackedTurns,
+    currentMetrics.turns,
+  )
   const projectSessionCount = countUniqueSessions(allProjectTurns)
   const sortedCurrentTurns = useMemo(() => {
     const items = [...currentTurns]
@@ -506,10 +517,8 @@ function ProjectDetailView({
 
               <div className="text-xs text-muted">
                 {contentMode === 'sessions'
-                  ? `${currentMetrics.turns} turns across ${countUniqueSessions(currentTurns)} sessions in view`
-                  : currentMetrics.totalTokens !== undefined
-                    ? `${formatTokenValue(currentMetrics.totalTokens)} tracked tokens in this view`
-                    : 'Token tracking is partial in this view'}
+                  ? `${currentMetrics.turns} turns across ${countUniqueSessions(currentTurns)} sessions in view · ${currentTokenSummary}`
+                  : `${currentTokenSummary} in this view`}
               </div>
             </div>
           </div>
@@ -551,6 +560,7 @@ function ProjectDetailView({
               selectedTurnId={selectedTurn?.id}
               defaultAxisMode="session"
               showOverview={false}
+              hideProjectPathWhenRedundant
               onTurnSelect={(turn) => onSelectTurn(turn.id)}
             />
           )}
@@ -598,8 +608,7 @@ function CompactProjectMetric({
 }
 
 function summarizeTurnMetrics(turns: UserTurn[]) {
-  let totalTokens = 0
-  let trackedTurns = 0
+  const tokenStats = summarizeTurnsTokenUsage(turns)
   let activeDurationMs = 0
 
   for (const turn of turns) {
@@ -607,16 +616,12 @@ function summarizeTurnMetrics(turns: UserTurn[]) {
       1,
       turn.last_context_activity_at.getTime() - turn.created_at.getTime(),
     )
-    if (typeof turn.context_summary.total_tokens === 'number') {
-      totalTokens += turn.context_summary.total_tokens
-      trackedTurns += 1
-    }
   }
 
   return {
     turns: turns.length,
-    totalTokens: trackedTurns > 0 ? totalTokens : undefined,
-    trackedTurns,
+    tokenUsage: tokenStats.usage,
+    trackedTurns: tokenStats.trackedTurns,
     activeDurationMs,
   }
 }
@@ -640,13 +645,6 @@ function formatDurationCompact(durationMs: number) {
   const days = Math.floor(hours / 24)
   const remainingHours = hours % 24
   return remainingHours === 0 ? `${days}d` : `${days}d ${remainingHours}h`
-}
-
-function formatTokenValue(totalTokens?: number) {
-  if (totalTokens === undefined) {
-    return 'n/a'
-  }
-  return new Intl.NumberFormat('en-US').format(totalTokens)
 }
 
 function ProjectStateBadge({ project }: { project: ProjectIdentity }) {

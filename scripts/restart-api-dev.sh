@@ -2,4 +2,4 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-exec bash "${ROOT_DIR}/scripts/dev-services.sh" restart web
+exec bash "${ROOT_DIR}/scripts/dev-services.sh" restart api

@@ -39,16 +39,21 @@ export function SearchView({
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null)
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(new Set())
   const { data: projects = [] } = useProjectsQuery('all')
-  const { data: results = [] } = useTurnSearchQuery({
-    query,
-    link_states: showCandidates ? ['committed', 'candidate', 'unlinked'] : ['committed'],
-    value_axes: [
-      'active',
-      ...(showCovered ? (['covered'] as const) : []),
-      ...(showArchived ? (['archived'] as const) : []),
-    ],
-    limit: 100,
-  })
+  const hasQuery = query.trim().length > 0
+  const { data: results = [] } = useTurnSearchQuery(
+    hasQuery
+      ? {
+          query,
+          link_states: showCandidates ? ['committed', 'candidate', 'unlinked'] : ['committed'],
+          value_axes: [
+            'active',
+            ...(showCovered ? (['covered'] as const) : []),
+            ...(showArchived ? (['archived'] as const) : []),
+          ],
+          limit: 100,
+        }
+      : {},
+  )
 
   const projectRegistry = useMemo(() => {
     const registry = new Map<string, ProjectIdentity>()
@@ -89,7 +94,17 @@ export function SearchView({
     }
     return [...grouped.entries()]
   }, [results, sortBy])
-  const effectiveSelectedTurnId = query.trim() ? selectedTurnId : null
+  const effectiveSelectedTurnId = useMemo(() => {
+    if (!hasQuery) {
+      return null
+    }
+
+    if (selectedTurnId && results.some((result) => result.turn.id === selectedTurnId)) {
+      return selectedTurnId
+    }
+
+    return results[0]?.turn.id ?? null
+  }, [hasQuery, results, selectedTurnId])
 
   const selectedResult = useMemo(
     () => results.find((result) => result.turn.id === effectiveSelectedTurnId) ?? null,
@@ -156,20 +171,22 @@ export function SearchView({
               <option value="newest">Newest</option>
               <option value="oldest">Oldest</option>
             </select>
-            <span className="w-full text-muted sm:ml-auto sm:w-auto">{query.trim() ? `${results.length} matches` : 'Type to search'}</span>
+            <span className="w-full text-muted sm:ml-auto sm:w-auto">
+              {hasQuery ? `${results.length} matches` : 'Type to search'}
+            </span>
           </div>
         </header>
 
         <div className="flex-1 overflow-y-auto p-4 sm:p-6">
-          {!query.trim() && (
+          {!hasQuery && (
             <EmptyState title="Start typing" detail="Search runs against masked canonical turn text." />
           )}
 
-          {query.trim() && results.length === 0 && (
+          {hasQuery && results.length === 0 && (
             <EmptyState title="No matches" detail="Try broader terms or include archived/candidate turns." />
           )}
 
-          <div className="space-y-4">
+          <div className="space-y-5">
             {groupedResults.map(([projectId, group]) => (
               <section key={projectId} className="border border-border bg-card">
                 <button
@@ -197,22 +214,27 @@ export function SearchView({
                         key={result.turn.id}
                         onClick={() => setSelectedTurnId(result.turn.id)}
                         className={cn(
-                          'w-full px-4 py-3 text-left transition-colors hover:bg-surface-hover',
-                          selectedTurn?.id === result.turn.id && 'bg-accent/5',
+                          'w-full border-l-4 px-4 py-3.5 text-left transition-colors hover:bg-surface-hover',
+                          selectedTurn?.id === result.turn.id ? 'border-l-accent bg-accent/5' : 'border-l-transparent',
                         )}
                       >
-                        <div className="mb-2 flex flex-wrap items-center gap-3 text-xs text-muted">
-                          <span className="mono-text break-all">{result.turn.id}</span>
-                          <span className="mono-text">{formatAbsoluteDateTime(result.turn.created_at)}</span>
+                        <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted">
                           <span>{formatRelativeTime(result.turn.created_at)}</span>
-                          <span>{Math.round(result.relevance_score)} pts</span>
+                          <span className="mono-text">{formatAbsoluteDateTime(result.turn.created_at)}</span>
+                          {result.turn.link_state !== 'committed' && (
+                            <span className="border border-border bg-paper px-1.5 py-0.5 stamp-text text-muted">
+                              {result.turn.link_state}
+                            </span>
+                          )}
                         </div>
-                        <div className="text-sm text-text">{renderHighlightedText(result)}</div>
-                        <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] stamp-text">
-                          <span className="border border-border bg-paper px-1.5 py-0.5 text-muted">{result.turn.link_state}</span>
+                        <div className="line-clamp-3 text-[15px] leading-6 text-text">{renderHighlightedText(result)}</div>
+                        <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] stamp-text">
                           <SessionBadge session={result.session} compact />
                           <span className="border border-border bg-paper px-1.5 py-0.5 text-muted">
                             {result.turn.context_summary.assistant_reply_count} replies
+                          </span>
+                          <span className="border border-border bg-paper px-1.5 py-0.5 text-muted">
+                            {summarizeTurnId(result.turn.id)}
                           </span>
                         </div>
                       </button>
@@ -226,14 +248,14 @@ export function SearchView({
       </div>
 
       {selectedTurn && (
-        <ResponsiveSidePanel onDismiss={() => setSelectedTurnId(null)} className="lg:w-[480px] lg:flex-shrink-0">
+        <ResponsiveSidePanel onDismiss={() => setSelectedTurnId(null)} className="lg:w-[34rem] lg:flex-shrink-0 xl:w-[38rem]">
           <TurnDetailPanel
             turn={selectedTurn}
             context={selectedContext}
             session={selectedSession}
             project={selectedProject}
             onClose={() => setSelectedTurnId(null)}
-            className="h-full lg:w-[480px] lg:flex-shrink-0"
+            className="h-full lg:w-[34rem] lg:flex-shrink-0 xl:w-[38rem]"
           />
         </ResponsiveSidePanel>
       )}
@@ -287,11 +309,16 @@ function renderHighlightedText(result: SearchResult) {
 
   return parts.map((part, index) =>
     part.highlight ? (
-      <mark key={index} className="bg-candidate/20 px-0.5">
+      <mark key={index} className="bg-candidate/25 px-0.5 text-ink">
         {part.text}
       </mark>
     ) : (
       <span key={index}>{part.text}</span>
     ),
   )
+}
+
+function summarizeTurnId(turnId: string) {
+  const suffix = turnId.replace(/^turn-/, '')
+  return `#${suffix.slice(0, 8)}`
 }
