@@ -26,6 +26,7 @@ import {
   formatNumber,
   formatRatio,
   indentBlock,
+  renderBarChart,
   renderKeyValue,
   renderSection,
   renderTable,
@@ -543,19 +544,28 @@ async function handleStats(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput
         throw new Error("`stats usage --by` must be one of model, project, source, host, day, or month.");
       }
       const rollup = storage.listUsageRollup(dimension);
+      const notesText = renderUsageNotes(rollup.rows, dimension);
+      const chartText =
+        dimension === "day" || dimension === "month" ? renderUsageCharts(rollup.rows, dimension) : undefined;
       return {
-        text: renderTable(
-          ["Label", "Turns", "Covered", "Coverage", "Total Tokens", "Input", "Output"],
-          rollup.rows.map((row) => [
-            row.label,
-            String(row.turn_count),
-            String(row.turns_with_token_usage),
-            formatRatio(row.turn_coverage_ratio),
-            formatNumber(row.total_tokens),
-            formatNumber(row.total_input_tokens),
-            formatNumber(row.total_output_tokens),
-          ]),
-        ),
+        text: [
+          renderTable(
+            ["Label", "Turns", "Covered", "Coverage", "Total Tokens", "Input", "Output"],
+            rollup.rows.map((row) => [
+              formatUsageRollupLabel(dimension, row.label),
+              String(row.turn_count),
+              String(row.turns_with_token_usage),
+              formatRatio(row.turn_coverage_ratio),
+              formatNumber(row.total_tokens),
+              formatNumber(row.total_input_tokens),
+              formatNumber(row.total_output_tokens),
+            ]),
+          ),
+          chartText,
+          notesText,
+        ]
+          .filter((value): value is string => Boolean(value))
+          .join("\n\n"),
         json: {
           kind: "stats-usage",
           db_path: layout.dbPath,
@@ -570,6 +580,67 @@ async function handleStats(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput
   } finally {
     await readStore.close();
   }
+}
+
+function renderUsageCharts(
+  rows: Array<{
+    label: string;
+    total_input_tokens: number;
+    total_cached_input_tokens: number;
+    total_output_tokens: number;
+    total_tokens: number;
+  }>,
+  dimension: "day" | "month",
+): string {
+  const metrics = [
+    {
+      title: "Input Tokens",
+      values: rows.map((row) => ({ label: row.label, value: row.total_input_tokens })),
+    },
+    {
+      title: "Cached Input Tokens",
+      values: rows.map((row) => ({ label: row.label, value: row.total_cached_input_tokens })),
+    },
+    {
+      title: "Output Tokens",
+      values: rows.map((row) => ({ label: row.label, value: row.total_output_tokens })),
+    },
+    {
+      title: "Total Tokens",
+      values: rows.map((row) => ({ label: row.label, value: row.total_tokens })),
+    },
+  ];
+
+  return renderSection(
+    `${dimension === "day" ? "Daily" : "Monthly"} Token Charts`,
+    metrics
+      .map((metric) => renderSection(metric.title, renderBarChart(metric.values)))
+      .map((section) => indentBlock(section, 2))
+      .join("\n\n"),
+  );
+}
+
+function formatUsageRollupLabel(dimension: UsageStatsDimension, label: string): string {
+  if (dimension === "model" && label === "<synthetic>") {
+    return "Synthetic Error Reply";
+  }
+  return label;
+}
+
+function renderUsageNotes(
+  rows: Array<{
+    label: string;
+  }>,
+  dimension: UsageStatsDimension,
+): string | undefined {
+  if (dimension !== "model" || !rows.some((row) => row.label === "<synthetic>")) {
+    return undefined;
+  }
+
+  return renderSection(
+    "Notes",
+    "Synthetic Error Reply rows are system-generated local/API error messages preserved as evidence, not provider model calls.",
+  );
 }
 
 async function handleExport(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {

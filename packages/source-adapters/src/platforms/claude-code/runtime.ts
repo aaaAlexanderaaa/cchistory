@@ -38,8 +38,21 @@ export function parseClaudeRecord(
     helpers.asString(message?.role) ??
     (recordType === "assistant" ? "assistant" : recordType === "user" ? "user" : "system");
   const actorKind = helpers.mapRoleToActor(role);
+  const messageModel = helpers.asString(message?.model);
+  if (actorKind === "assistant" && messageModel) {
+    draft.model = messageModel;
+    fragments.push(
+      helpers.createFragment(context, record, fragments.length, "model_signal", timeKey, {
+        model: messageModel,
+      }),
+    );
+  }
   const content = helpers.asArray(message?.content);
-  const usage = helpers.extractTokenUsage(message);
+  const extractedUsage = helpers.extractTokenUsage(message);
+  const usage =
+    messageModel && extractedUsage && !extractedUsage.model
+      ? { ...extractedUsage, model: messageModel }
+      : extractedUsage;
   const stopReason = helpers.normalizeStopReason(message?.stop_reason);
   let usageApplied = false;
   let localSeq = 0;

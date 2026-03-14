@@ -423,12 +423,14 @@ test("runSourceProbe projects token usage and stop reasons into turn context", a
 
     const claudePayload = payloadsByPlatform.get("claude_code");
     assert.equal(claudePayload?.turns[0]?.context_summary.total_tokens, 47);
+    assert.equal(claudePayload?.turns[0]?.context_summary.primary_model, "claude-sonnet-4-6");
     assert.equal(claudePayload?.turns[0]?.context_summary.token_usage?.input_tokens, 30);
     assert.equal(claudePayload?.turns[0]?.context_summary.token_usage?.cache_creation_input_tokens, 5);
     assert.equal(claudePayload?.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 2);
     assert.equal(claudePayload?.turns[0]?.context_summary.token_usage?.cached_input_tokens, 7);
     assert.equal(claudePayload?.turns[0]?.context_summary.token_usage?.output_tokens, 10);
     assert.equal(claudePayload?.contexts[0]?.assistant_replies[0]?.token_count, 47);
+    assert.equal(claudePayload?.contexts[0]?.assistant_replies[0]?.model, "claude-sonnet-4-6");
     assert.equal(claudePayload?.contexts[0]?.assistant_replies[0]?.token_usage?.cache_creation_input_tokens, 5);
     assert.equal(claudePayload?.contexts[0]?.assistant_replies[0]?.token_usage?.cache_read_input_tokens, 2);
     assert.equal(claudePayload?.contexts[0]?.assistant_replies[0]?.token_usage?.cached_input_tokens, 7);
@@ -436,6 +438,7 @@ test("runSourceProbe projects token usage and stop reasons into turn context", a
 
     const factoryPayload = payloadsByPlatform.get("factory_droid");
     assert.equal(factoryPayload?.turns[0]?.context_summary.total_tokens, 18);
+    assert.equal(factoryPayload?.turns[0]?.context_summary.primary_model, "claude-opus-4-6");
     assert.equal(factoryPayload?.turns[0]?.context_summary.token_usage?.input_tokens, 9);
     assert.equal(factoryPayload?.turns[0]?.context_summary.token_usage?.cache_creation_input_tokens, 1);
     assert.equal(factoryPayload?.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 2);
@@ -443,17 +446,39 @@ test("runSourceProbe projects token usage and stop reasons into turn context", a
     assert.equal(factoryPayload?.turns[0]?.context_summary.token_usage?.output_tokens, 6);
     assert.equal(factoryPayload?.turns[0]?.context_summary.token_usage?.reasoning_output_tokens, 3);
     assert.equal(factoryPayload?.contexts[0]?.assistant_replies[0]?.token_count, 18);
+    assert.equal(factoryPayload?.contexts[0]?.assistant_replies[0]?.model, "claude-opus-4-6");
     assert.equal(factoryPayload?.contexts[0]?.assistant_replies[0]?.stop_reason, "end_turn");
 
     const ampPayload = payloadsByPlatform.get("amp");
     assert.equal(ampPayload?.turns[0]?.context_summary.total_tokens, 24);
+    assert.equal(ampPayload?.turns[0]?.context_summary.primary_model, "claude-opus-4-6");
     assert.equal(ampPayload?.turns[0]?.context_summary.token_usage?.input_tokens, 14);
     assert.equal(ampPayload?.turns[0]?.context_summary.token_usage?.cache_creation_input_tokens, 2);
     assert.equal(ampPayload?.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 1);
     assert.equal(ampPayload?.turns[0]?.context_summary.token_usage?.cached_input_tokens, 3);
     assert.equal(ampPayload?.turns[0]?.context_summary.token_usage?.output_tokens, 7);
     assert.equal(ampPayload?.contexts[0]?.assistant_replies[0]?.token_count, 24);
+    assert.equal(ampPayload?.contexts[0]?.assistant_replies[0]?.model, "claude-opus-4-6");
     assert.equal(ampPayload?.contexts[0]?.assistant_replies[0]?.stop_reason, "max_tokens");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe keeps per-turn models when Claude switches models mid-session", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const source = await seedClaudeModelSwitchFixture(tempRoot);
+    const [payload] = (await runSourceProbe({ limit_files_per_source: 1 }, [source])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.turns.length, 2);
+    assert.equal(payload.contexts.length, 2);
+    assert.equal(payload.turns[0]?.context_summary.primary_model, "claude-sonnet-4-6");
+    assert.equal(payload.turns[1]?.context_summary.primary_model, "claude-opus-4-6");
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.model, "claude-sonnet-4-6");
+    assert.equal(payload.contexts[1]?.assistant_replies[0]?.model, "claude-opus-4-6");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -595,11 +620,13 @@ test("runSourceProbe supports cursor antigravity openclaw opencode and lobechat 
   }
 });
 
-test("runSourceProbe preserves real mock_data coverage across codex claude cursor and antigravity roots", async () => {
+test("runSourceProbe preserves real mock_data coverage across codex claude factory amp cursor and antigravity roots", async () => {
   const mockDataRoot = getRepoMockDataRoot();
   const result = await runSourceProbe({}, [
     createSourceDefinition("src-codex-mock-data", "codex", path.join(mockDataRoot, ".codex", "sessions")),
     createSourceDefinition("src-claude-mock-data", "claude_code", path.join(mockDataRoot, ".claude", "projects")),
+    createSourceDefinition("src-factory-mock-data", "factory_droid", path.join(mockDataRoot, ".factory", "sessions")),
+    createSourceDefinition("src-amp-mock-data", "amp", path.join(mockDataRoot, ".local", "share", "amp", "threads")),
     createSourceDefinition(
       "src-cursor-mock-data",
       "cursor",
@@ -613,7 +640,7 @@ test("runSourceProbe preserves real mock_data coverage across codex claude curso
   ]);
   const payloadsByPlatform = new Map(result.sources.map((payload) => [payload.source.platform, payload]));
 
-  assert.equal(result.sources.length, 4);
+  assert.equal(result.sources.length, 6);
 
   const codexPayload = payloadsByPlatform.get("codex");
   assert.ok(codexPayload);
@@ -643,6 +670,32 @@ test("runSourceProbe preserves real mock_data coverage across codex claude curso
   assert.ok(cursorPayload.loss_audits.length >= 20);
   assert.ok(cursorPayload.sessions.some((session) => typeof session.working_directory === "string" && session.working_directory.length > 0));
   assertParserMetadata(cursorPayload);
+
+  const factoryPayload = payloadsByPlatform.get("factory_droid");
+  assert.ok(factoryPayload);
+  assert.equal(factoryPayload.source.sync_status, "healthy");
+  assert.equal(factoryPayload.sessions.length, 1);
+  assert.equal(factoryPayload.turns.length, 1);
+  assert.equal(factoryPayload.contexts.length, 1);
+  assert.ok(factoryPayload.records.length >= 4);
+  assert.equal(factoryPayload.sessions[0]?.working_directory, "/Users/mock_user/workspace/history-lab");
+  assert.equal(factoryPayload.contexts[0]?.system_messages.length, 1);
+  assert.ok(
+    factoryPayload.turns.some((turn) => turn.canonical_text.includes("Factory Droid sidecar behavior")),
+  );
+  assertParserMetadata(factoryPayload);
+
+  const ampPayload = payloadsByPlatform.get("amp");
+  assert.ok(ampPayload);
+  assert.equal(ampPayload.source.sync_status, "healthy");
+  assert.equal(ampPayload.sessions.length, 1);
+  assert.equal(ampPayload.turns.length, 1);
+  assert.equal(ampPayload.contexts.length, 1);
+  assert.ok(ampPayload.records.length >= 5);
+  assert.equal(ampPayload.sessions[0]?.working_directory, "/Users/mock_user/workspace/history-lab");
+  assert.equal(ampPayload.contexts[0]?.tool_calls.length, 1);
+  assert.ok(ampPayload.turns.some((turn) => turn.canonical_text.includes("AMP ingestion gaps")));
+  assertParserMetadata(ampPayload);
 
   const antigravityPayload = payloadsByPlatform.get("antigravity");
   assert.ok(antigravityPayload);
@@ -1773,6 +1826,7 @@ async function seedTokenProjectionFixtures(tempRoot: string): Promise<SourceDefi
         cwd: "/workspace/claude-token",
         message: {
           role: "assistant",
+          model: "claude-sonnet-4-6",
           stop_reason: "tool_use",
           usage: {
             input_tokens: 30,
@@ -1811,6 +1865,7 @@ async function seedTokenProjectionFixtures(tempRoot: string): Promise<SourceDefi
         type: "message",
         message: {
           role: "assistant",
+          model: "claude-opus-4-6",
           stop_reason: "end_turn",
           usage: {
             inputTokens: 9,
@@ -1851,6 +1906,7 @@ async function seedTokenProjectionFixtures(tempRoot: string): Promise<SourceDefi
           role: "assistant",
           stopReason: "max_tokens",
           usage: {
+            model: "claude-opus-4-6",
             inputTokens: 14,
             outputTokens: 7,
             cacheCreationInputTokens: 2,
@@ -1869,6 +1925,70 @@ async function seedTokenProjectionFixtures(tempRoot: string): Promise<SourceDefi
     createSourceDefinition("src-factory-tokens", "factory_droid", factoryDir),
     createSourceDefinition("src-amp-tokens", "amp", ampDir),
   ];
+}
+
+async function seedClaudeModelSwitchFixture(tempRoot: string): Promise<SourceDefinition> {
+  const claudeDir = path.join(tempRoot, "claude-model-switch");
+  await mkdir(claudeDir, { recursive: true });
+
+  await writeFile(
+    path.join(claudeDir, "conversation.jsonl"),
+    [
+      {
+        timestamp: "2026-03-10T04:00:00.000Z",
+        type: "user",
+        cwd: "/workspace/claude-model-switch",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Handle the first turn." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T04:00:01.000Z",
+        type: "assistant",
+        cwd: "/workspace/claude-model-switch",
+        message: {
+          role: "assistant",
+          model: "claude-sonnet-4-6",
+          stop_reason: "end_turn",
+          usage: {
+            input_tokens: 10,
+            output_tokens: 4,
+          },
+          content: [{ type: "text", text: "First Claude reply." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T04:00:02.000Z",
+        type: "user",
+        cwd: "/workspace/claude-model-switch",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Handle the second turn." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T04:00:03.000Z",
+        type: "assistant",
+        cwd: "/workspace/claude-model-switch",
+        message: {
+          role: "assistant",
+          model: "claude-opus-4-6",
+          stop_reason: "end_turn",
+          usage: {
+            input_tokens: 20,
+            output_tokens: 8,
+          },
+          content: [{ type: "text", text: "Second Claude reply." }],
+        },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n"),
+    "utf8",
+  );
+
+  return createSourceDefinition("src-claude-model-switch", "claude_code", claudeDir);
 }
 
 async function seedMultiTurnCodexTokenFixture(tempRoot: string): Promise<SourceDefinition> {

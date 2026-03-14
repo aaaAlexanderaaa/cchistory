@@ -67,6 +67,9 @@ importers:
       '@cchistory/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
+      '@cchistory/presentation':
+        specifier: workspace:*
+        version: link:../../packages/presentation
       '@dnd-kit/core':
         specifier: ^6.3.1
         version: 6.3.1(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -135,6 +138,12 @@ importers:
   packages/api-client: {}
 
   packages/domain: {}
+
+  packages/presentation:
+    dependencies:
+      '@cchistory/api-client':
+        specifier: workspace:*
+        version: link:../api-client
 
   packages/source-adapters:
     dependencies:

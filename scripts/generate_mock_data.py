@@ -207,6 +207,19 @@ def write_jsonl(
             handle.write("\n")
 
 
+def write_json(destination_path: Path, payload: Any) -> None:
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    destination_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def write_jsonl_records(destination_path: Path, records: list[dict[str, Any]]) -> None:
+    destination_path.parent.mkdir(parents=True, exist_ok=True)
+    with destination_path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False))
+            handle.write("\n")
+
+
 def sanitize_sqlite_file(path: Path, replacements: dict[str, str]) -> None:
     connection = sqlite3.connect(path)
     try:
@@ -494,6 +507,215 @@ def main() -> None:
         tricky="A parser that only sees role=`user` will over-count meta noise as intent, even though the user-visible thread itself is warning that those messages are special.",
         paths=[claude_local_command_output],
         visible_roots=[f"{MOCK_HOME}/workspace/chat-ui-kit"],
+    )
+
+    factory_output_dir = OUTPUT_ROOT / ".factory/sessions/-Users-mock-user-workspace-history-lab"
+    factory_session_output = factory_output_dir / "11111111-2222-4333-8444-555555555555.jsonl"
+    factory_settings_output = factory_output_dir / "11111111-2222-4333-8444-555555555555.settings.json"
+    write_jsonl_records(
+        factory_session_output,
+        [
+            {
+                "type": "session_start",
+                "id": "11111111-2222-4333-8444-555555555555",
+                "title": "History lab sidecar fixture",
+                "sessionTitle": "History Lab review",
+                "owner": "mock_user",
+                "version": 2,
+                "cwd": f"{MOCK_HOME}/workspace/history-lab",
+            },
+            {
+                "type": "message",
+                "id": "factory-msg-1",
+                "timestamp": "2026-03-12T10:00:01.000Z",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Review the Factory Droid sidecar behavior for history-lab.",
+                        }
+                    ],
+                },
+            },
+            {
+                "type": "message",
+                "id": "factory-msg-2",
+                "timestamp": "2026-03-12T10:00:02.000Z",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-opus-4-6",
+                    "stop_reason": "end_turn",
+                    "usage": {
+                        "inputTokens": 17,
+                        "outputTokens": 9,
+                        "cacheCreationTokens": 2,
+                        "cacheReadTokens": 4,
+                        "thinkingTokens": 3,
+                    },
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "The sidecar settings file preserves model and cumulative token evidence.",
+                        },
+                        {
+                            "type": "thinking",
+                            "thinking": "Check the session settings and merge token totals.",
+                        },
+                        {
+                            "type": "tool_use",
+                            "id": "factory-tool-1",
+                            "name": "shell",
+                            "input": {"cmd": "pnpm --filter @cchistory/source-adapters test"},
+                        },
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "factory-tool-1",
+                            "content": [{"type": "text", "text": "1 real mock_data fixture covered"}],
+                        },
+                        {
+                            "type": "diagram",
+                            "title": "unsupported",
+                        },
+                    ],
+                },
+            },
+        ],
+    )
+    write_json(
+        factory_settings_output,
+        {
+            "assistantActiveTimeMs": 42000,
+            "autonomyLevel": "medium",
+            "autonomyMode": "execute",
+            "interactionMode": "chat",
+            "model": "claude-opus-4-6",
+            "providerLock": "anthropic",
+            "providerLockTimestamp": "2026-03-12T10:00:00.000Z",
+            "reasoningEffort": "high",
+            "tokenUsage": {
+                "inputTokens": 21,
+                "outputTokens": 34,
+                "cacheCreationTokens": 5,
+                "cacheReadTokens": 89,
+                "thinkingTokens": 8,
+            },
+        },
+    )
+    add_scenario(
+        scenario_rows,
+        id="factory-droid-sidecar-settings",
+        apps=["Factory Droid"],
+        visible_cue="A Factory Droid session stores its transcript as JSONL next to a `.settings.json` sidecar that carries model and cumulative token metadata for the same visible workspace.",
+        tricky="If a parser reads only the conversation file it misses sidecar evidence; if it trusts only settings it loses turn boundaries, tool calls, and hidden thinking fragments.",
+        paths=[factory_session_output, factory_settings_output],
+        visible_roots=[f"{MOCK_HOME}/workspace/history-lab"],
+    )
+
+    amp_output = OUTPUT_ROOT / ".local/share/amp/threads/T-019d19fb-1a2b-7345-8cde-0f1a2b3c4d5e.json"
+    write_json(
+        amp_output,
+        {
+            "v": 1,
+            "id": "T-019d19fb-1a2b-7345-8cde-0f1a2b3c4d5e",
+            "created": 1741770900000,
+            "messages": [
+                {
+                    "timestamp": "2026-03-12T09:15:01.000Z",
+                    "role": "user",
+                    "messageId": "amp-msg-1",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Summarize the AMP ingestion gaps for history-lab.",
+                        }
+                    ],
+                    "userState": {"cwd": f"{MOCK_HOME}/workspace/history-lab"},
+                    "agentMode": "default",
+                    "meta": {"sentAt": 1741770901000},
+                },
+                {
+                    "timestamp": "2026-03-12T09:15:02.000Z",
+                    "role": "assistant",
+                    "messageId": "amp-msg-2",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "amp-tool-1",
+                            "name": "search_repo",
+                            "input": {"query": "history-lab AMP parser"},
+                        }
+                    ],
+                    "state": {"stopReason": "tool_use"},
+                },
+                {
+                    "timestamp": "2026-03-12T09:15:03.000Z",
+                    "role": "user",
+                    "messageId": "amp-msg-3",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "amp-tool-1",
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": "packages/source-adapters/src/platforms/amp/runtime.ts",
+                                }
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "timestamp": "2026-03-12T09:15:04.000Z",
+                    "role": "assistant",
+                    "messageId": "amp-msg-4",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "AMP relies on the root env trees to recover the visible workspace before projecting turns.",
+                        },
+                        {
+                            "type": "chart",
+                            "data": [],
+                        },
+                    ],
+                    "state": {"stopReason": "end_turn"},
+                    "usage": {
+                        "model": "claude-opus-4-6",
+                        "inputTokens": 19,
+                        "outputTokens": 11,
+                        "cacheCreationInputTokens": 3,
+                        "cacheReadInputTokens": 2,
+                    },
+                },
+            ],
+            "agentMode": "default",
+            "nextMessageId": "amp-msg-5",
+            "meta": {"team": "mock-history"},
+            "env": {
+                "initial": {
+                    "trees": [
+                        {
+                            "uri": f"file://{MOCK_HOME}/workspace/history-lab",
+                            "displayName": "history-lab",
+                        }
+                    ],
+                    "platform": "linux",
+                    "tags": ["mock", "amp"],
+                }
+            },
+            "title": "History-lab AMP workspace review",
+            "~debug": {"selectedMode": "default"},
+        },
+    )
+    add_scenario(
+        scenario_rows,
+        id="amp-root-env-thread",
+        apps=["AMP"],
+        visible_cue="An AMP thread keeps the visible workspace only in the root env tree metadata while the actual tool exchange is spread across later message objects in one whole-thread JSON file.",
+        tricky="If a parser only samples message text it loses the workspace root; if it only reads the root metadata it misses the user ask, tool roundtrip, and unsupported content that should stay auditable.",
+        paths=[amp_output],
+        visible_roots=[f"{MOCK_HOME}/workspace/history-lab"],
     )
 
     cursor_shared_source_dir = HOME / "Library/Application Support/Cursor/User/workspaceStorage/639bf876be3d93dd9e0d506aeb0aaff9"

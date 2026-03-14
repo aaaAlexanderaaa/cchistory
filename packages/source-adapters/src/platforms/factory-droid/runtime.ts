@@ -65,7 +65,20 @@ export function parseFactoryRecord(
     const role = helpers.asString(message.role) ?? "assistant";
     const actorKind = helpers.mapRoleToActor(role);
     const content = helpers.asArray(message.content);
-    const usage = helpers.extractTokenUsage(message);
+    const extractedUsage = helpers.extractTokenUsage(message);
+    const messageModel = helpers.asString(message.model) ?? extractedUsage?.model;
+    if (actorKind === "assistant" && messageModel) {
+      draft.model = messageModel;
+      fragments.push(
+        helpers.createFragment(context, record, fragments.length, "model_signal", timeKey, {
+          model: messageModel,
+        }),
+      );
+    }
+    const usage =
+      messageModel && extractedUsage && !extractedUsage.model
+        ? { ...extractedUsage, model: messageModel }
+        : extractedUsage;
     const stopReason = helpers.normalizeStopReason(message.stop_reason);
     let usageApplied = false;
     let localSeq = 0;

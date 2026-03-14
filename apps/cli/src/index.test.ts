@@ -35,6 +35,44 @@ test("sync, ls, search, and stats usage render human-readable output for real so
     assert.equal(statsResult.exitCode, 0);
     assert.match(statsResult.stdout, /Label/);
     assert.match(statsResult.stdout, /gpt-5/);
+    assert.match(statsResult.stdout, /claude-sonnet-4-6/);
+
+    const dayStatsResult = await runCliCapture(["stats", "usage", "--by", "day", "--store", storeDir], tempRoot);
+    assert.equal(dayStatsResult.exitCode, 0);
+    assert.match(dayStatsResult.stdout, /Daily Token Charts/);
+    assert.match(dayStatsResult.stdout, /Input Tokens/);
+    assert.match(dayStatsResult.stdout, /Cached Input Tokens/);
+    assert.match(dayStatsResult.stdout, /2026-03-09/);
+    assert.match(dayStatsResult.stdout, /#/);
+
+    const monthStatsResult = await runCliCapture(["stats", "usage", "--by", "month", "--store", storeDir], tempRoot);
+    assert.equal(monthStatsResult.exitCode, 0);
+    assert.match(monthStatsResult.stdout, /Monthly Token Charts/);
+    assert.match(monthStatsResult.stdout, /2026-03/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("stats usage --by model labels Claude synthetic error replies separately from provider models", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot, { includeSyntheticClaudeError: true });
+    process.env.HOME = tempRoot;
+
+    const storeDir = path.join(tempRoot, "store");
+    const syncResult = await runCliCapture(["sync", "--store", storeDir, "--source", "claude_code"], tempRoot);
+    assert.equal(syncResult.exitCode, 0);
+
+    const statsResult = await runCliCapture(["stats", "usage", "--by", "model", "--store", storeDir], tempRoot);
+    assert.equal(statsResult.exitCode, 0);
+    assert.match(statsResult.stdout, /claude-sonnet-4-6/);
+    assert.match(statsResult.stdout, /Synthetic Error Reply/);
+    assert.match(statsResult.stdout, /system-generated local\/API error messages/);
+    assert.equal(statsResult.stdout.includes("<synthetic>"), false);
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });
@@ -61,7 +99,7 @@ test("pnpm-style leading -- is ignored before the command name", async () => {
   }
 });
 
-test("sync and ls cover repo mock_data default roots for codex claude cursor and antigravity", async () => {
+test("sync and ls cover repo mock_data default roots for codex claude factory amp cursor and antigravity", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
 
@@ -72,7 +110,9 @@ test("sync and ls cover repo mock_data default roots for codex claude cursor and
     const storeDir = path.join(tempRoot, "store");
     const syncResult = await runCliCapture(["sync", "--store", storeDir], tempRoot);
     assert.equal(syncResult.exitCode, 0);
-    assert.match(syncResult.stdout, /Synced 4 source\(s\)/);
+    assert.match(syncResult.stdout, /Synced 6 source\(s\)/);
+    assert.match(syncResult.stdout, /Factory Droid/);
+    assert.match(syncResult.stdout, /AMP/);
     assert.match(syncResult.stdout, /Cursor/);
     assert.match(syncResult.stdout, /Antigravity/);
 
@@ -80,6 +120,8 @@ test("sync and ls cover repo mock_data default roots for codex claude cursor and
     assert.equal(listResult.exitCode, 0);
     assert.match(listResult.stdout, /Codex/);
     assert.match(listResult.stdout, /Claude Code/);
+    assert.match(listResult.stdout, /Factory Droid/);
+    assert.match(listResult.stdout, /AMP/);
     assert.match(listResult.stdout, /Cursor/);
     assert.match(listResult.stdout, /Antigravity/);
 
@@ -89,9 +131,9 @@ test("sync and ls cover repo mock_data default roots for codex claude cursor and
         .listSources()
         .map((source) => source.platform)
         .sort();
-      assert.deepEqual(platforms, ["antigravity", "claude_code", "codex", "cursor"]);
-      assert.ok(storage.listResolvedSessions().length >= 11);
-      assert.ok(storage.listResolvedTurns().length >= 9);
+      assert.deepEqual(platforms, ["amp", "antigravity", "claude_code", "codex", "cursor", "factory_droid"]);
+      assert.ok(storage.listResolvedSessions().length >= 13);
+      assert.ok(storage.listResolvedTurns().length >= 11);
     } finally {
       storage.close();
     }
@@ -445,17 +487,32 @@ async function seedCliMockDataHome(tempRoot: string): Promise<void> {
 
   await copyTree(path.join(mockDataRoot, ".codex"), path.join(tempRoot, ".codex"));
   await copyTree(path.join(mockDataRoot, ".claude"), path.join(tempRoot, ".claude"));
+  await copyTree(path.join(mockDataRoot, ".factory"), path.join(tempRoot, ".factory"));
+  await copyTree(path.join(mockDataRoot, ".local", "share", "amp"), path.join(tempRoot, ".local", "share", "amp"));
   await copyTree(
     path.join(mockDataRoot, "Library", "Application Support", "Cursor"),
     path.join(tempRoot, "Library", "Application Support", "Cursor"),
   );
   await copyTree(
+    path.join(mockDataRoot, "Library", "Application Support", "Cursor"),
+    path.join(tempRoot, ".config", "Cursor"),
+  );
+  await copyTree(
     path.join(mockDataRoot, "Library", "Application Support", "antigravity"),
     path.join(tempRoot, "Library", "Application Support", "Antigravity"),
   );
+  await copyTree(
+    path.join(mockDataRoot, "Library", "Application Support", "antigravity"),
+    path.join(tempRoot, ".config", "Antigravity"),
+  );
 }
 
-async function seedCliFixtures(tempRoot: string): Promise<void> {
+async function seedCliFixtures(
+  tempRoot: string,
+  options: {
+    includeSyntheticClaudeError?: boolean;
+  } = {},
+): Promise<void> {
   await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
   await mkdir(path.join(tempRoot, ".claude", "projects"), { recursive: true });
 
@@ -468,30 +525,62 @@ async function seedCliFixtures(tempRoot: string): Promise<void> {
     startAt: "2026-03-09T00:00:00.000Z",
   });
 
-  await writeFile(
-    path.join(tempRoot, ".claude", "projects", "conversation.jsonl"),
-    [
+  const claudeConversation: Array<Record<string, unknown>> = [
+    {
+      timestamp: "2026-03-09T01:00:00.000Z",
+      type: "user",
+      cwd: "/workspace/claude-project",
+      message: {
+        role: "user",
+        content: [{ type: "text", text: "Compare sync and import behavior." }],
+      },
+    },
+    {
+      timestamp: "2026-03-09T01:00:01.000Z",
+      type: "assistant",
+      cwd: "/workspace/claude-project",
+      message: {
+        role: "assistant",
+        model: "claude-sonnet-4-6",
+        usage: {
+          input_tokens: 11,
+          cache_creation_input_tokens: 4,
+          cache_read_input_tokens: 2,
+          output_tokens: 5,
+        },
+        content: [{ type: "text", text: "Import should rebuild project linking." }],
+      },
+    },
+  ];
+
+  if (options.includeSyntheticClaudeError) {
+    claudeConversation.push(
       {
-        timestamp: "2026-03-09T01:00:00.000Z",
+        timestamp: "2026-03-09T01:05:00.000Z",
         type: "user",
         cwd: "/workspace/claude-project",
         message: {
           role: "user",
-          content: [{ type: "text", text: "Compare sync and import behavior." }],
+          content: [{ type: "text", text: "Handle the failing API call." }],
         },
       },
       {
-        timestamp: "2026-03-09T01:00:01.000Z",
+        timestamp: "2026-03-09T01:05:01.000Z",
         type: "assistant",
         cwd: "/workspace/claude-project",
+        isApiErrorMessage: true,
         message: {
           role: "assistant",
-          content: [{ type: "text", text: "Import should rebuild project linking." }],
+          model: "<synthetic>",
+          content: [{ type: "text", text: "API Error: Cannot read properties of undefined (reading 'content')" }],
         },
       },
-    ]
-      .map((line) => JSON.stringify(line))
-      .join("\n"),
+    );
+  }
+
+  await writeFile(
+    path.join(tempRoot, ".claude", "projects", "conversation.jsonl"),
+    claudeConversation.map((line) => JSON.stringify(line)).join("\n"),
     "utf8",
   );
 }

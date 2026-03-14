@@ -12,6 +12,33 @@ export function renderTable(headers: string[], rows: string[][]): string {
   return [headerLine, separatorLine, ...rowLines].join("\n");
 }
 
+export function renderBarChart(
+  rows: Array<{ label: string; value: number }>,
+  options: {
+    width?: number;
+    barChar?: string;
+  } = {},
+): string {
+  if (rows.length === 0) {
+    return "(no rows)";
+  }
+
+  const width = options.width ?? 28;
+  const barChar = options.barChar ?? "#";
+  const maxValue = Math.max(...rows.map((row) => row.value), 0);
+  const labelWidth = Math.max(...rows.map((row) => row.label.length), 0);
+  const formattedValues = rows.map((row) => formatNumber(row.value));
+  const valueWidth = Math.max(...formattedValues.map((value) => value.length), 1);
+
+  return rows
+    .map((row, index) => {
+      const barLength =
+        maxValue <= 0 ? 0 : Math.max(row.value > 0 ? 1 : 0, Math.round((row.value / maxValue) * width));
+      return `${row.label.padEnd(labelWidth)}  ${formattedValues[index]?.padStart(valueWidth) ?? "0"}  ${barChar.repeat(barLength)}`;
+    })
+    .join("\n");
+}
+
 export function renderKeyValue(entries: Array<[string, string]>): string {
   const width = Math.max(...entries.map(([key]) => key.length), 0);
   return entries.map(([key, value]) => `${key.padEnd(width)} : ${value}`).join("\n");

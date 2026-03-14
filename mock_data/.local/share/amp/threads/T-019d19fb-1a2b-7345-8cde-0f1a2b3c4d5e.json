@@ -1,0 +1,109 @@
+{
+  "v": 1,
+  "id": "T-019d19fb-1a2b-7345-8cde-0f1a2b3c4d5e",
+  "created": 1741770900000,
+  "messages": [
+    {
+      "timestamp": "2026-03-12T09:15:01.000Z",
+      "role": "user",
+      "messageId": "amp-msg-1",
+      "content": [
+        {
+          "type": "text",
+          "text": "Summarize the AMP ingestion gaps for history-lab."
+        }
+      ],
+      "userState": {
+        "cwd": "/Users/mock_user/workspace/history-lab"
+      },
+      "agentMode": "default",
+      "meta": {
+        "sentAt": 1741770901000
+      }
+    },
+    {
+      "timestamp": "2026-03-12T09:15:02.000Z",
+      "role": "assistant",
+      "messageId": "amp-msg-2",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "amp-tool-1",
+          "name": "search_repo",
+          "input": {
+            "query": "history-lab AMP parser"
+          }
+        }
+      ],
+      "state": {
+        "stopReason": "tool_use"
+      }
+    },
+    {
+      "timestamp": "2026-03-12T09:15:03.000Z",
+      "role": "user",
+      "messageId": "amp-msg-3",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "amp-tool-1",
+          "content": [
+            {
+              "type": "text",
+              "text": "packages/source-adapters/src/platforms/amp/runtime.ts"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "timestamp": "2026-03-12T09:15:04.000Z",
+      "role": "assistant",
+      "messageId": "amp-msg-4",
+      "content": [
+        {
+          "type": "text",
+          "text": "AMP relies on the root env trees to recover the visible workspace before projecting turns."
+        },
+        {
+          "type": "chart",
+          "data": []
+        }
+      ],
+      "state": {
+        "stopReason": "end_turn"
+      },
+      "usage": {
+        "model": "claude-opus-4-6",
+        "inputTokens": 19,
+        "outputTokens": 11,
+        "cacheCreationInputTokens": 3,
+        "cacheReadInputTokens": 2
+      }
+    }
+  ],
+  "agentMode": "default",
+  "nextMessageId": "amp-msg-5",
+  "meta": {
+    "team": "mock-history"
+  },
+  "env": {
+    "initial": {
+      "trees": [
+        {
+          "uri": "file:///Users/mock_user/workspace/history-lab",
+          "displayName": "history-lab"
+        }
+      ],
+      "platform": "linux",
+      "tags": [
+        "mock",
+        "amp"
+      ]
+    }
+  },
+  "title": "History-lab AMP workspace review",
+  "~debug": {
+    "selectedMode": "default"
+  }
+}

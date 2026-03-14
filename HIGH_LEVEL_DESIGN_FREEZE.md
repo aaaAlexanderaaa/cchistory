@@ -104,9 +104,17 @@ pattern rather than forcing new product semantics.
 
 ## 5. Source Families
 
+The source-family definitions below freeze semantic treatment, not an
+exhaustive adapter roster.
+
+The repository may implement additional adapters inside a family without
+reopening the design, as long as those adapters converge on the same canonical
+objects and lifecycle rules.
+
 ### 5.1 Family A: Local Coding-Agent Logs
 
-This family includes Claude Code, Codex, Factory Droid, and AMP.
+This family includes examples such as Claude Code, Codex, Factory Droid, AMP,
+Cursor, Antigravity, OpenClaw, and OpenCode.
 
 Common traits:
 
@@ -118,8 +126,8 @@ Common traits:
 
 ### 5.2 Family B: Conversational Export / App-Database Sources
 
-This family includes targets such as LobeChat, ChatGPT exports, and Gemini
-exports or activity-derived imports.
+This family includes targets such as LobeChat exports, ChatGPT exports, Gemini
+exports, and activity-derived or app-database imports.
 
 Common traits:
 
@@ -745,9 +753,13 @@ objects, but not through ambiguous semantics.
 
 ## 19. MVP Boundaries
 
+The MVP boundary is defined by canonical semantics and operator experience, not
+by a frozen count of adapters or one exact UI interaction set.
+
 The MVP includes:
 
 - local coding-agent history ingestion
+- supported conversational export ingestion
 - offline import bundle ingestion
 - project-first history browsing
 - turn-first search and detail

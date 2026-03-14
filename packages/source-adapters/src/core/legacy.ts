@@ -1387,18 +1387,13 @@ function extractTokenUsage(value: unknown, depth = 0): TokenUsageMetrics | undef
   }
 
   const direct = normalizeTokenUsageObject(value);
-  if (direct) {
-    return direct;
-  }
+  let nestedUsage: TokenUsageMetrics | undefined;
 
   for (const nested of [value.usage, value.tokenUsage, value.last_token_usage, value.lastTokenUsage, value.info]) {
-    const usage = extractTokenUsage(nested, depth + 1);
-    if (usage) {
-      return usage;
-    }
+    nestedUsage = mergeTokenUsageMetrics(nestedUsage, extractTokenUsage(nested, depth + 1));
   }
 
-  return undefined;
+  return mergeTokenUsageMetrics(nestedUsage, direct);
 }
 
 function extractCumulativeTokenUsage(value: unknown, depth = 0): TokenUsageMetrics | undefined {
@@ -1407,18 +1402,13 @@ function extractCumulativeTokenUsage(value: unknown, depth = 0): TokenUsageMetri
   }
 
   const direct = normalizeTokenUsageObject(value);
-  if (direct) {
-    return direct;
-  }
+  let nestedUsage: TokenUsageMetrics | undefined;
 
   for (const nested of [value.total_token_usage, value.totalTokenUsage, value.total_usage, value.totalUsage, value.info]) {
-    const usage = extractCumulativeTokenUsage(nested, depth + 1);
-    if (usage) {
-      return usage;
-    }
+    nestedUsage = mergeTokenUsageMetrics(nestedUsage, extractCumulativeTokenUsage(nested, depth + 1));
   }
 
-  return undefined;
+  return mergeTokenUsageMetrics(nestedUsage, direct);
 }
 
 function normalizeStopReason(value: unknown): AssistantStopReason | undefined {
@@ -2640,7 +2630,7 @@ function buildTurnsAndContext(
         total_tokens:
           contextTokenUsage?.total_tokens ??
           (contextProjection.assistant_replies.reduce((sum, reply) => sum + (reply.token_count ?? 0), 0) || undefined),
-        primary_model: draft.model,
+        primary_model: summarizeAssistantReplyPrimaryModel(contextProjection.assistant_replies) ?? draft.model,
         has_errors: contextProjection.assistant_replies.some((reply) => reply.stop_reason === "error"),
       },
       lineage: {
@@ -2687,6 +2677,8 @@ function buildTurnContext(
   const replyByAtomId = new Map<string, TurnContextProjection["assistant_replies"][number]>();
   const repliesWithSignalTotals = new Set<string>();
   let toolSequence = 0;
+  let activeAssistantReply: TurnContextProjection["assistant_replies"][number] | undefined;
+  let activeModel = draft.model;
 
   for (const atom of [...groupAtoms, ...contextAtoms]) {
     for (const fragmentId of atom.fragment_refs) {
@@ -2698,6 +2690,13 @@ function buildTurnContext(
   }
 
   for (const atom of contextAtoms) {
+    if (atom.content_kind === "meta_signal" && atom.payload.signal_kind === "model_signal") {
+      const signalModel = asString(atom.payload.model);
+      if (signalModel) {
+        activeModel = signalModel;
+      }
+      continue;
+    }
     if (atom.actor_kind === "system" && atom.content_kind === "text") {
       const content = asString(atom.payload.text) ?? "";
       const masked = applyMaskTemplates(content, "system_message");
@@ -2717,6 +2716,12 @@ function buildTurnContext(
       const content = asString(atom.payload.text) ?? "";
       const masked = applyMaskTemplates(content, "assistant_reply");
       const tokenUsage = extractTokenUsageFromPayload(atom.payload);
+      const replyModel =
+        asString(atom.payload.model) ??
+        tokenUsage?.model ??
+        activeModel ??
+        draft.model ??
+        "unknown";
       const reply = {
         id: replyId,
         content,
@@ -2724,18 +2729,22 @@ function buildTurnContext(
         content_preview: truncate(masked.canonical_text || content, 140),
         token_usage: tokenUsage,
         token_count: extractTokenCountFromPayload(atom.payload) ?? tokenUsage?.total_tokens,
-        model: draft.model ?? "unknown",
+        model: replyModel,
         created_at: atom.time_key,
         tool_call_ids: [],
         stop_reason: extractStopReasonFromPayload(atom.payload),
       };
       assistantReplies.push(reply);
       replyByAtomId.set(atom.id, reply);
+      activeAssistantReply = reply;
+      if (replyModel !== "unknown") {
+        activeModel = replyModel;
+      }
       continue;
     }
   }
 
-  let activeAssistantReply: TurnContextProjection["assistant_replies"][number] | undefined;
+  activeAssistantReply = undefined;
   for (const atom of contextAtoms) {
     if (atom.actor_kind === "assistant" && atom.content_kind === "text") {
       activeAssistantReply = replyByAtomId.get(atom.id);
@@ -2756,6 +2765,7 @@ function buildTurnContext(
       const tokenUsage = extractTokenUsageFromPayload(atom.payload);
       const tokenCount = extractTokenCountFromPayload(atom.payload);
       const stopReason = extractStopReasonFromPayload(atom.payload);
+      const signalModel = asString(atom.payload.model) ?? tokenUsage?.model;
       if (deltaUsage) {
         const signalBase = repliesWithSignalTotals.has(reply.id) ? reply.token_usage : undefined;
         reply.token_usage = accumulateTokenUsageMetrics(signalBase, deltaUsage);
@@ -2766,6 +2776,9 @@ function buildTurnContext(
       } else {
         reply.token_usage = mergeTokenUsageMetrics(reply.token_usage, tokenUsage);
         reply.token_count = tokenCount ?? reply.token_usage?.total_tokens ?? reply.token_count;
+      }
+      if (signalModel) {
+        reply.model = signalModel;
       }
       reply.stop_reason = stopReason ?? reply.stop_reason;
     }
@@ -2893,6 +2906,40 @@ function summarizeAssistantReplyUsage(
     reasoning_output_tokens: hasReasoningOutputTokens ? reasoningOutputTokens : undefined,
     total_tokens: hasTotalTokens ? totalTokens : undefined,
   };
+}
+
+function summarizeAssistantReplyPrimaryModel(
+  replies: TurnContextProjection["assistant_replies"],
+): string | undefined {
+  const knownReplies = replies.filter((reply) => reply.model !== "unknown");
+  if (knownReplies.length === 0) {
+    return undefined;
+  }
+
+  const tokenTotalsByModel = new Map<string, number>();
+  const lastSeenOrder = new Map<string, number>();
+  let hasTokenTotals = false;
+
+  knownReplies.forEach((reply, index) => {
+    lastSeenOrder.set(reply.model, index);
+    const replyTotalTokens = firstDefinedNumber(reply.token_usage?.total_tokens, reply.token_count);
+    if (typeof replyTotalTokens === "number") {
+      hasTokenTotals = true;
+      tokenTotalsByModel.set(reply.model, (tokenTotalsByModel.get(reply.model) ?? 0) + replyTotalTokens);
+    }
+  });
+
+  if (hasTokenTotals) {
+    return [...tokenTotalsByModel.entries()]
+      .sort((left, right) => {
+        if (right[1] !== left[1]) {
+          return right[1] - left[1];
+        }
+        return (lastSeenOrder.get(right[0]) ?? -1) - (lastSeenOrder.get(left[0]) ?? -1);
+      })[0]?.[0];
+  }
+
+  return knownReplies.at(-1)?.model;
 }
 
 function buildStageRuns(

@@ -1,0 +1,17 @@
+{
+  "assistantActiveTimeMs": 42000,
+  "autonomyLevel": "medium",
+  "autonomyMode": "execute",
+  "interactionMode": "chat",
+  "model": "claude-opus-4-6",
+  "providerLock": "anthropic",
+  "providerLockTimestamp": "2026-03-12T10:00:00.000Z",
+  "reasoningEffort": "high",
+  "tokenUsage": {
+    "inputTokens": 21,
+    "outputTokens": 34,
+    "cacheCreationTokens": 5,
+    "cacheReadTokens": 89,
+    "thinkingTokens": 8
+  }
+}

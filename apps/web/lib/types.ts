@@ -33,7 +33,7 @@ export type {
 
 export type AppArea = "history" | "admin";
 export type HistoryView = "all_turns" | "projects" | "inbox" | "search" | "session_detail";
-export type AdminView = "sources" | "imports" | "linking" | "masks" | "drift";
+export type AdminView = "sources" | "linking" | "masks" | "drift";
 
 export interface AppState {
   area: AppArea;

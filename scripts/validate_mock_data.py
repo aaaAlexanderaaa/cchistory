@@ -18,6 +18,8 @@ ALLOWED_FILE_PATTERNS = [
     re.compile(r"host_remote/\.codex/sessions/\d{4}/\d{2}/\d{2}/rollout-[^/]+\.jsonl"),
     re.compile(r"\.claude/projects/[^/]+/[0-9a-f-]+\.jsonl"),
     re.compile(r"\.claude/projects/[^/]+/[0-9a-f-]+/subagents/agent-[^.]+\.jsonl"),
+    re.compile(r"\.factory/sessions/[^/]+/[0-9a-f-]+(?:\.jsonl|\.settings\.json)"),
+    re.compile(r"\.local/share/amp/threads/T-[0-9A-Za-z-]+\.json"),
     re.compile(
         r"Library/Application Support/(Cursor|antigravity)/User/workspaceStorage/[0-9a-z]+/"
         r"(state\.vscdb|state\.vscdb\.backup|workspace\.json|"

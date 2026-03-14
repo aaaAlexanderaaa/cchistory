@@ -1,11 +1,15 @@
-# Implementation Plan
-**Verdict: the implementation baseline is an inspectable, replayable data kernel that turns local conversational evidence into canonical `UserTurn` projections without inheriting `archive/` semantics.**
+# Implementation Plan And Slice Record
+**Verdict: this document is now best read as the delivered baseline and status record for the 2026-03 local-source slice, not as the complete live roadmap for the current repository state.**
 
 > The source of truth remains [`HIGH_LEVEL_DESIGN_FREEZE.md`](/root/cchistory/HIGH_LEVEL_DESIGN_FREEZE.md).
 >
 > `frontend_demo/` remains a reference UI only.
 >
 > `archive/` remains parser and historical-reference material only.
+>
+> [`docs/CURRENT_RUNTIME_SURFACE.md`](/root/cchistory/docs/CURRENT_RUNTIME_SURFACE.md) tracks the current repository-visible runtime inventory.
+>
+> Current adapters, CLI workflows, and some UI interactions may be ahead of this document because additional work landed outside the ledger captured here. Verify current runtime surface against `apps/*`, `packages/*`, and focused tests before treating this file as exhaustive.
 
 # Product Frame
 **Verdict: the product is project-first recall over canonical `UserTurn` objects, not a session browser and not a source-native log viewer.**
@@ -17,16 +21,18 @@
 - Every final object must remain traceable back to raw local evidence.
 
 # Runtime Shape
-**Verdict: the current runtime target is a two-app TypeScript workspace with domain packages that isolate canonical semantics from source-specific parsing.**
+**Verdict: the current runtime is a three-entrypoint TypeScript workspace with shared packages that isolate canonical semantics from source-specific parsing, storage, DTOs, and presentation mapping.**
 
 | Layer | Role | Status |
 | --- | --- | --- |
-| `apps/api` | local API, probe runtime, replay runtime, admin endpoints | scaffolded |
+| `apps/api` | local API, probe runtime, replay runtime, admin endpoints | implemented |
 | `apps/web` | formal frontend that will replace `frontend_demo` mock data | integrated for turns, projects, linking, search, masks, sources, and drift |
-| `packages/domain` | canonical types, stage contracts, ordering and lifecycle contracts | scaffolded |
-| `packages/source-adapters` | source-family capture, parse, atomize, candidate derivation | scaffolded |
-| `packages/storage` | SQLite metadata/index store and lineage queries | scaffolded |
-| `packages/api-client` | shared client for canonical API route contracts consumed by the web app | scaffolded |
+| `apps/cli` | canonical local operator CLI for sync, inspection, query, and bundle workflows | implemented |
+| `packages/domain` | canonical types, stage contracts, ordering and lifecycle contracts | implemented |
+| `packages/source-adapters` | source-family capture, parse, atomize, candidate derivation | implemented |
+| `packages/storage` | SQLite metadata/index store and lineage queries | implemented |
+| `packages/api-client` | shared client for canonical API route contracts consumed by the web app | implemented |
+| `packages/presentation` | presentation-layer mapping consumed by the canonical frontend | implemented |
 
 # Data Pipeline
 **Verdict: the pipeline is fixed as staged transformations, and no source is allowed to map raw input directly to final product objects.**
@@ -101,18 +107,23 @@ The fixed object chain is:
 - Parsers must tolerate source evolution by preserving unknown structures as fragments or loss audits.
 - Compatibility decisions must be driven by `source_format_profile` and parser versioning, not only by the newest observed shape.
 
-Current live source targets:
+Current implemented source adapters in this repository:
 
-1. `Codex`: `/root/.codex/sessions`
-2. `Claude Code`: `/root/.claude/projects`
-3. `Factory Droid`: `/root/.factory/sessions`
-4. `AMP`: `/root/.local/share/amp/threads`
+1. `Codex`
+2. `Claude Code`
+3. `Factory Droid`
+4. `AMP`
+5. `Cursor`
+6. `Antigravity`
+7. `OpenClaw`
+8. `OpenCode`
+9. `LobeChat` export bundles
 
 # Delivery Order
-**Verdict: the delivery sequence optimizes for inspectability and real-source confidence before web polish or deep admin breadth.**
+**Verdict: the sequence below describes the delivered 2026-03 slice logic and should not be treated as the complete remaining backlog for the current repository state.**
 
 1. Establish stage contracts, live probe, and replay scaffolding.
-2. Bring all four local source families to `ConversationAtom`.
+2. Bring the supported local and export source adapters to `ConversationAtom`.
 3. Stabilize submission grouping, `UserTurn`, `TurnContext`, and `Session`.
 4. Expose global recall and lineage drill-down through the API.
 5. Add `ProjectObservation`, linking, and candidate review surfaces.
