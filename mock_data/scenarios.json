@@ -114,6 +114,35 @@
     ]
   },
   {
+    "id": "factory-droid-sidecar-settings",
+    "apps": [
+      "Factory Droid"
+    ],
+    "visible_cue": "A Factory Droid session stores its transcript as JSONL next to a `.settings.json` sidecar that carries model and cumulative token metadata for the same visible workspace.",
+    "tricky": "If a parser reads only the conversation file it misses sidecar evidence; if it trusts only settings it loses turn boundaries, tool calls, and hidden thinking fragments.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/history-lab"
+    ],
+    "paths": [
+      ".factory/sessions/-Users-mock-user-workspace-history-lab/11111111-2222-4333-8444-555555555555.jsonl",
+      ".factory/sessions/-Users-mock-user-workspace-history-lab/11111111-2222-4333-8444-555555555555.settings.json"
+    ]
+  },
+  {
+    "id": "amp-root-env-thread",
+    "apps": [
+      "AMP"
+    ],
+    "visible_cue": "An AMP thread keeps the visible workspace only in the root env tree metadata while the actual tool exchange is spread across later message objects in one whole-thread JSON file.",
+    "tricky": "If a parser only samples message text it loses the workspace root; if it only reads the root metadata it misses the user ask, tool roundtrip, and unsupported content that should stay auditable.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/history-lab"
+    ],
+    "paths": [
+      ".local/share/amp/threads/T-019d19fb-1a2b-7345-8cde-0f1a2b3c4d5e.json"
+    ]
+  },
+  {
     "id": "cursor-shared-path",
     "apps": [
       "Cursor",

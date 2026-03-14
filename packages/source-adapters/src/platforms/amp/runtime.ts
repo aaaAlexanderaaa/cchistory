@@ -48,7 +48,20 @@ export function parseAmpRecord(
   const role = helpers.asString(parsed.role) ?? "assistant";
   const actorKind = helpers.mapRoleToActor(role);
   const content = helpers.asArray(parsed.content);
-  const usage = helpers.extractTokenUsage(parsed.usage);
+  const extractedUsage = helpers.extractTokenUsage(parsed.usage);
+  const messageModel = helpers.asString(parsed.model) ?? extractedUsage?.model;
+  if (actorKind === "assistant" && messageModel) {
+    draft.model = messageModel;
+    fragments.push(
+      helpers.createFragment(context, record, fragments.length, "model_signal", timeKey, {
+        model: messageModel,
+      }),
+    );
+  }
+  const usage =
+    messageModel && extractedUsage && !extractedUsage.model
+      ? { ...extractedUsage, model: messageModel }
+      : extractedUsage;
   const state = helpers.isObject(parsed.state) ? parsed.state : undefined;
   const stopReason = helpers.normalizeStopReason(state?.stopReason ?? parsed.stopReason);
   let usageApplied = false;

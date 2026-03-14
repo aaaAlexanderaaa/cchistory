@@ -4,14 +4,47 @@
 `HIGH_LEVEL_DESIGN_FREEZE.md` is the authoritative definition of product scope and architecture. Read it before changing docs, code, or data models. Contributions must preserve the frozen invariants there: project-first history, `UserTurn` as the primary object, evidence-preserving ingestion, and UI/API as projections of one canonical model.
 
 ## Repository Scope
-This repository currently contains three different classes of material.
+This repository currently contains seven different classes of material.
 
-- Root docs: the current project definition and decision surface.
+- Root docs plus `docs/`: the current project definition, implementation status, and decision surface. `HIGH_LEVEL_DESIGN_FREEZE.md` remains authoritative; `docs/CURRENT_RUNTIME_SURFACE.md` is the current repository-visible runtime inventory; `docs/IMPLEMENTATION_PLAN.md` is the delivered baseline for the 2026-03 local-source slice and may lag newer runtime work; `tasks.csv` is a historical KR ledger, not a complete current backlog.
+- `apps/`: canonical product entrypoints. `apps/api` is the managed API, `apps/web` is the canonical frontend, and `apps/cli` is the canonical local operator CLI.
+- `packages/`: canonical shared implementation for domain contracts, source adapters, storage, API DTOs, and presentation mapping.
+- `.cchistory/`: local runtime state and persisted evidence-derived data for this workspace. Inspect it when needed, but do not delete, reset, or regenerate it casually.
+- `mock_data/`: sanitized, source-shaped fixture corpus used for adapter and CLI validation. Preserve scenario coverage and validate it after edits.
 - `frontend_demo/`: an imported UI/UX reference. It is useful for interaction ideas, but it is not the product, not the canonical frontend, and must not define architecture or domain semantics.
 - `archive/`: the previous MVP and historical documents. Use it as reference material only, especially for known source parsing and ingestion patterns. Do not treat archived routes, schemas, or UX as the baseline for new work.
 
+## Documentation Status And Drift
+- `HIGH_LEVEL_DESIGN_FREEZE.md` freezes product semantics and invariants. It is not a complete inventory of every currently implemented adapter, CLI verb, or UI interaction.
+- `docs/CURRENT_RUNTIME_SURFACE.md` is the canonical inventory of the current repository-visible entrypoints, adapter roster, and user-facing runtime surfaces.
+- `docs/IMPLEMENTATION_PLAN.md` should be read as a delivered slice baseline plus status snapshot for the 2026-03 local-source push, not as the live roadmap or exhaustive feature inventory.
+- `tasks.csv` records work that was explicitly tracked in this repository on this host. Missing rows are not evidence that a capability is absent or unimplemented elsewhere.
+- When docs and runtime surface disagree, preserve the freeze invariants first, then verify current behavior against `apps/*`, `packages/*`, and targeted tests before editing.
+- The currently registered source adapters live in `packages/source-adapters/src/platforms/registry.ts`. The implemented adapter set presently includes `codex`, `claude_code`, `factory_droid`, `amp`, `cursor`, `antigravity`, `openclaw`, `opencode`, and `lobechat`.
+- Broader platform enums in `packages/domain` or `packages/api-client` are not proof that a live adapter already exists for every value.
+- `apps/cli` is a canonical product entrypoint, not just a debug helper. Review `apps/cli/src/index.ts` before changing operator workflows, because the CLI surface now includes sync, list/tree/show inspection, search, stats, export/import, query, and template flows.
+
 ## Build, Test, And Development Commands
-There is no single repository-wide build target yet. Use commands only for the layer you are inspecting.
+Repository-root aggregate scripts exist, but they are not the default validation path on this host. Prefer the smallest package-scoped command that answers the question.
+
+- `pnpm --filter @cchistory/domain build`: validate canonical domain contracts.
+- `pnpm --filter @cchistory/source-adapters build`: validate source parsing and projection compilation.
+- `pnpm --filter @cchistory/source-adapters test`: run adapter fixture and parser tests.
+- `pnpm --filter @cchistory/storage build`: validate storage compilation.
+- `pnpm --filter @cchistory/storage test`: run storage persistence and lineage tests.
+- `pnpm --filter @cchistory/api-client build`: validate shared API DTO contracts.
+- `pnpm --filter @cchistory/presentation build`: validate presentation mapping compilation.
+- `pnpm --filter @cchistory/presentation test`: run presentation mapping tests.
+- `pnpm --filter @cchistory/cli build`: validate CLI compilation.
+- `pnpm --filter @cchistory/cli test`: run CLI tests.
+- `pnpm --filter @cchistory/api build`: validate API compilation.
+- `pnpm --filter @cchistory/api test`: run API tests.
+- `NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build`: validate the canonical web app alone.
+- `pnpm run validate:core`: low-memory validation for the core local-source slice.
+- `pnpm run probe:smoke -- --source-id=src-codex --limit=1`: inspect one local source without starting managed dev services.
+- `pnpm run mock-data:validate`: validate the sanitized fixture corpus after editing `mock_data/`.
+- `pnpm run build`: aggregate non-web workspace build. It exists, but it is not a default verification step on this host.
+- `pnpm run build:all:safe`: aggregate workspace build including `apps/web` with capped Node memory. Use only for explicit full-workspace validation.
 
 - `cd frontend_demo && pnpm dev`: view the reference UI locally.
 - `cd frontend_demo && pnpm build`: verify the imported demo still builds.
@@ -39,6 +72,7 @@ When a user is actively reviewing `apps/web` UI changes, the web dev server shou
 - Do not introduce, document, or normalize alternate default startup flows such as direct `pnpm dev`, `next dev`, `tsx watch`, `nohup`, background shell jobs, `tmux`, or per-app ad hoc launch recipes for the product runtime.
 - Do not modify the startup mechanism, wrapper layering, port assignments, supervisor model, PID/log file locations, or alias behavior unless the user explicitly requests a startup-system change.
 - Do not treat `pnpm restart:web` or `pnpm restart:api` as independent runtime architectures. They must remain thin compatibility wrappers around `scripts/dev-services.sh`.
+- Treat `pnpm restart:web:preview` as a preview-only helper around a production build/start flow, not as part of the canonical dev runtime. The agent must not run it.
 - The agent must never run `pnpm services:start`, `pnpm services:stop`, `pnpm services:restart`, `pnpm restart:web`, `pnpm restart:api`, `scripts/dev-services.sh`, direct dev-server commands, or any other persistent process command for this repository.
 - If a task needs a running API or web server, stop after code or config changes and ask the user to run the appropriate command manually.
 - Non-persistent inspection such as `pnpm services:status`, `lsof`, `curl`, and browser checks is allowed only against services the user has already started.
@@ -64,6 +98,12 @@ Browser automation for this repository must use the wrapped skill entrypoint or 
 - When a web build is necessary, run it alone and cap Node memory, for example `NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build`.
 - Do not launch multiple TypeScript, Vite, or Next.js build processes in parallel on this host.
 - If a dependency install is necessary, keep it scoped to the smallest package set that can answer the question or validate the change.
+
+## Data And Fixture Safety
+- `.cchistory/` contains local runtime state, persisted evidence snapshots, and SQLite data for this workspace. Do not delete or reset it unless the user explicitly asks.
+- `mock_data/` is a sanitized but source-shaped fixture corpus derived from real local patterns. Keep scenario coverage intact rather than trimming fixtures to make a test pass.
+- After changing `mock_data/` or any fixture generator/validator under `scripts/`, run `pnpm run mock-data:validate`.
+- Never delete local source capture roots such as `/root/.codex`, `/root/.claude`, `/root/.factory`, `/root/.local/share/amp`, or platform-native Cursor/antigravity user-data directories as part of cleanup or debugging.
 
 ## Coding Style & Naming Conventions
 When adding new material, keep changes small and map them back to the design freeze. Reuse domain terms exactly as defined there, including `UserTurn`, `ProjectIdentity`, `MaskTemplate`, `KnowledgeArtifact`, `candidate`, `committed`, and `unlinked`. New source work may borrow parser ideas from `archive/`, but source-specific quirks must stop at the capture/parse boundary and must not leak into product semantics.
