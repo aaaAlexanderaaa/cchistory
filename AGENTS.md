@@ -15,14 +15,33 @@ There is no single repository-wide build target yet. Use commands only for the l
 
 - `cd frontend_demo && pnpm dev`: view the reference UI locally.
 - `cd frontend_demo && pnpm build`: verify the imported demo still builds.
-- `cd apps/web && pnpm dev`: run the product web UI on `0.0.0.0:8085` for remote review.
-- `pnpm restart:web`: restart the product web dev server on `0.0.0.0:8085` and refresh the pid/log files.
+- `pnpm services:start`: canonical user-operated startup entrypoint for the managed API (`0.0.0.0:8040`) and web (`0.0.0.0:8085`) dev services via `scripts/dev-services.sh`.
+- `pnpm services:stop`: canonical user-operated stop entrypoint for the managed dev services.
+- `pnpm services:restart`: canonical user-operated restart entrypoint for the managed dev services.
+- `pnpm services:status`: canonical status entrypoint for the managed dev services.
+- `pnpm restart:api`: compatibility alias for `scripts/dev-services.sh restart api`. It is not a separate startup system.
+- `pnpm restart:web`: compatibility alias for `scripts/dev-services.sh restart web`. It is not a separate startup system.
 - `cd archive/legacy/server && pytest`: validate legacy parser or ingestion behavior when mining reference code.
 - `cd archive/legacy/server && python -m ruff check cchistory tests`: lint archived Python reference code.
 - `cd archive/legacy/web && pnpm test`: compare old MVP frontend behavior if needed.
 
 ## Web Runtime Workflow
-When a user is actively reviewing `apps/web` UI changes, keep the dev server reachable on `0.0.0.0:8085`. After meaningful web code changes that need live verification, restart the web dev server with `pnpm restart:web` unless the user explicitly says not to.
+When a user is actively reviewing `apps/web` UI changes, the web dev server should be user-started and reachable on `0.0.0.0:8085`. After meaningful web code changes that need live verification, tell the user which canonical runtime command to run manually; do not run restart or startup commands from the agent environment.
+
+## Dev Service Hard Constraints
+> These rules are hard constraints for this repository. Do not change them unless the user explicitly asks to redesign the startup system.
+>
+> The managed product runtime is `scripts/dev-services.sh` with the `pnpm services:*` wrappers. `pnpm restart:web` and `pnpm restart:api` are aliases only.
+>
+> The Codex agent environment for this repository cannot perform reliable persistent service lifecycle actions. Even with sandbox escalation, the agent must not attempt to start, stop, restart, daemonize, or otherwise launch long-lived service processes.
+
+- Treat `scripts/dev-services.sh` and `pnpm services:*` as the only canonical startup and lifecycle path for `apps/api` and `apps/web`.
+- Do not introduce, document, or normalize alternate default startup flows such as direct `pnpm dev`, `next dev`, `tsx watch`, `nohup`, background shell jobs, `tmux`, or per-app ad hoc launch recipes for the product runtime.
+- Do not modify the startup mechanism, wrapper layering, port assignments, supervisor model, PID/log file locations, or alias behavior unless the user explicitly requests a startup-system change.
+- Do not treat `pnpm restart:web` or `pnpm restart:api` as independent runtime architectures. They must remain thin compatibility wrappers around `scripts/dev-services.sh`.
+- The agent must never run `pnpm services:start`, `pnpm services:stop`, `pnpm services:restart`, `pnpm restart:web`, `pnpm restart:api`, `scripts/dev-services.sh`, direct dev-server commands, or any other persistent process command for this repository.
+- If a task needs a running API or web server, stop after code or config changes and ask the user to run the appropriate command manually.
+- Non-persistent inspection such as `pnpm services:status`, `lsof`, `curl`, and browser checks is allowed only against services the user has already started.
 
 ## Browser Automation Policy
 Browser automation for this repository must use the wrapped skill entrypoint or MCP only.
@@ -48,6 +67,12 @@ Browser automation for this repository must use the wrapped skill entrypoint or 
 
 ## Coding Style & Naming Conventions
 When adding new material, keep changes small and map them back to the design freeze. Reuse domain terms exactly as defined there, including `UserTurn`, `ProjectIdentity`, `MaskTemplate`, `KnowledgeArtifact`, `candidate`, `committed`, and `unlinked`. New source work may borrow parser ideas from `archive/`, but source-specific quirks must stop at the capture/parse boundary and must not leak into product semantics.
+
+## Bug Handling And Evidence Preservation
+- Treat any parsing, ingestion, masking, or UI rendering bug as a potentially class-wide issue. Do not dismiss a reported item as an isolated bad case without first checking prevalence and root cause in the broader dataset.
+- Do not describe captured user interaction data as "dirty" to justify removing it from derived projections. If a projection is hard to render, fix the projection, masking, or presentation layer instead of deleting captured content.
+- Preserve raw evidence and evidence-derived message content whenever it exists. When content should be collapsed, redacted, or deemphasized, use `MaskTemplate`/masked display behavior rather than dropping it from evidence-preserving layers.
+- Never fix visualization problems by silently stripping real captured content from the underlying evidence model. If a `UserTurn` or context projection is wrong, identify the derivation bug and correct the generic rule.
 
 ## Testing Guidelines
 Test the layer you actually changed. Design-only edits should cite the affected sections in `HIGH_LEVEL_DESIGN_FREEZE.md`. Reference-code work should run only the relevant legacy tests and clearly state that the result validates historical code, not the future implementation.

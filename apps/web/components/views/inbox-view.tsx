@@ -11,6 +11,7 @@ import type { ProjectIdentity } from '@/lib/types'
 import {
   createProjectStub,
   upsertLinkingOverride,
+  useLinkingReviewQuery,
   useProjectsQuery,
   useSessionsQuery,
   useSessionQuery,
@@ -34,12 +35,13 @@ type SortMode = 'newest' | 'oldest'
 
 export function InboxView() {
   const { data: turns = [] } = useTurnsQuery()
+  const { data: review } = useLinkingReviewQuery()
   const { data: projects = [] } = useProjectsQuery('all')
   const { data: sessions = [] } = useSessionsQuery()
   const { mutate } = useSWRConfig()
   const [activeTab, setActiveTab] = useState<InboxTab>('unlinked')
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null)
-  const [viewMode, setViewMode] = useState<ViewMode>('grid')
+  const [viewMode, setViewMode] = useState<ViewMode>('list')
   const [sortMode, setSortMode] = useState<SortMode>('newest')
 
   const projectRegistry = useMemo(() => {
@@ -59,13 +61,17 @@ export function InboxView() {
     [sessions],
   )
 
-  const unlinkedTurns = useMemo(() => turns.filter((turn) => turn.link_state === 'unlinked'), [turns])
-  const candidateTurns = useMemo(() => turns.filter((turn) => turn.link_state === 'candidate'), [turns])
+  const unlinkedTurns = review?.unlinked_turns ?? []
+  const candidateTurns = review?.candidate_turns ?? []
   const archivedTurns = useMemo(() => turns.filter((turn) => turn.value_axis === 'archived'), [turns])
+  const effectiveTab: InboxTab =
+    activeTab === 'unlinked' && unlinkedTurns.length === 0 && candidateTurns.length > 0
+      ? 'candidates'
+      : activeTab
   const currentTurns =
-    activeTab === 'unlinked'
+    effectiveTab === 'unlinked'
       ? unlinkedTurns
-      : activeTab === 'candidates'
+      : effectiveTab === 'candidates'
         ? candidateTurns
         : archivedTurns
   const sortedTurns = useMemo(() => {
@@ -82,6 +88,7 @@ export function InboxView() {
     () => sortedTurns.find((turn) => turn.id === selectedTurnId) ?? turns.find((turn) => turn.id === selectedTurnId) ?? null,
     [sortedTurns, selectedTurnId, turns],
   )
+
   const { data: selectedTurnDetail } = useTurnQuery(selectedTurnSummary?.id ?? undefined)
   const selectedTurn = selectedTurnDetail ?? selectedTurnSummary
   const { data: selectedContext } = useTurnContextQuery(selectedTurn?.id)
@@ -103,6 +110,7 @@ export function InboxView() {
   const refreshInbox = async () => {
     await Promise.all([
       mutate('/api/turns'),
+      mutate('/api/sessions'),
       mutate('/api/projects?state=all'),
       mutate('/api/admin/linking'),
     ])
@@ -124,6 +132,11 @@ export function InboxView() {
               <div className="text-xs text-muted">
                 UserTurn is the review unit. Project remains the linking target.
               </div>
+              <div className="flex flex-wrap items-center gap-2 text-[10px] stamp-text text-muted">
+                <span className="border border-border bg-paper px-2 py-1">PENDING {unlinkedTurns.length + candidateTurns.length}</span>
+                <span className="border border-border bg-paper px-2 py-1">UNLINKED {unlinkedTurns.length}</span>
+                <span className="border border-border bg-paper px-2 py-1">CANDIDATES {candidateTurns.length}</span>
+              </div>
             </div>
 
             <button
@@ -141,18 +154,19 @@ export function InboxView() {
               <button
                 type="button"
                 onClick={() => setActiveTab('unlinked')}
+                disabled={unlinkedTurns.length === 0}
                 className={cn(
                   'flex items-center gap-2 border-b-2 py-2 text-sm transition-colors',
-                  activeTab === 'unlinked'
+                  effectiveTab === 'unlinked'
                     ? 'border-warning text-ink font-medium'
-                    : 'border-transparent text-muted hover:text-ink',
+                    : 'border-transparent text-muted hover:text-ink disabled:cursor-default disabled:text-muted/50',
                 )}
               >
                 Unlinked
                 <span
                   className={cn(
                     'px-1.5 py-0.5 text-[10px] mono-text',
-                    activeTab === 'unlinked' ? 'bg-warning text-white' : 'bg-surface-hover',
+                    effectiveTab === 'unlinked' ? 'bg-warning text-white' : 'bg-surface-hover',
                   )}
                 >
                   {unlinkedTurns.length}
@@ -164,7 +178,7 @@ export function InboxView() {
                 onClick={() => setActiveTab('candidates')}
                 className={cn(
                   'flex items-center gap-2 border-b-2 py-2 text-sm transition-colors',
-                  activeTab === 'candidates'
+                  effectiveTab === 'candidates'
                     ? 'border-warning text-ink font-medium'
                     : 'border-transparent text-muted hover:text-ink',
                 )}
@@ -173,7 +187,7 @@ export function InboxView() {
                 <span
                   className={cn(
                     'px-1.5 py-0.5 text-[10px] mono-text',
-                    activeTab === 'candidates' ? 'bg-candidate text-white' : 'bg-surface-hover',
+                    effectiveTab === 'candidates' ? 'bg-candidate text-white' : 'bg-surface-hover',
                   )}
                 >
                   {candidateTurns.length}
@@ -185,7 +199,7 @@ export function InboxView() {
                 onClick={() => setActiveTab('archive')}
                 className={cn(
                   'border-b-2 py-2 text-sm transition-colors',
-                  activeTab === 'archive'
+                  effectiveTab === 'archive'
                     ? 'border-warning text-ink font-medium'
                     : 'border-transparent text-muted hover:text-ink',
                 )}
@@ -281,7 +295,7 @@ export function InboxView() {
               className={cn(
                 viewMode === 'grid'
                   ? 'grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
-                  : 'max-w-4xl space-y-3',
+                  : 'max-w-4xl space-y-2',
               )}
             >
               {sortedTurns.map((turn) => {

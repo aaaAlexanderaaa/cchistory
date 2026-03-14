@@ -42,6 +42,9 @@ task.CSV
 
 # Local runtime data
 .cchistory/
+.cchistory-backups/
+.dev-services/tmp/
+.playwright-cli/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

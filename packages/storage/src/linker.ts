@@ -340,6 +340,9 @@ function buildProjectIdentity(group: ProjectGroup): ProjectIdentity {
   const repoRoot = pickMostCommon(group.observations.map((observation) => observation.repo_root));
   const repoRemote = pickMostCommon(group.observations.map((observation) => observation.repo_remote));
   const repoFingerprint = pickMostCommon(group.observations.map((observation) => observation.repo_fingerprint));
+  const sourceNativeProjectRef = pickMostCommon(
+    group.observations.map((observation) => observation.source_native_project_ref),
+  );
   const createdAt = minIso(group.observations.map((observation) => observation.observed_at)) ?? nowIso();
   const updatedAt = maxIsoFrom(group.observations.map((observation) => observation.observed_at)) ?? createdAt;
   const displayName = deriveDisplayName(primaryWorkspacePath, repoRoot, repoRemote, group.observations);
@@ -355,6 +358,7 @@ function buildProjectIdentity(group: ProjectGroup): ProjectIdentity {
     link_reason: group.reason,
     manual_override_status: "none",
     primary_workspace_path: primaryWorkspacePath,
+    source_native_project_ref: sourceNativeProjectRef,
     repo_root: repoRoot,
     repo_remote: repoRemote,
     repo_fingerprint: repoFingerprint,
@@ -570,10 +574,10 @@ function deriveDisplayName(
 function deriveRepoName(repoRemote: string | undefined, repoRoot: string | undefined): string | undefined {
   if (repoRemote) {
     const trimmed = repoRemote.replace(/\/+$/, "");
-    return trimmed.split("/").filter(Boolean).at(-1);
+    return decodeUriLabel(trimmed.split("/").filter(Boolean).at(-1));
   }
   if (repoRoot) {
-    return path.posix.basename(repoRoot) || repoRoot;
+    return decodeUriLabel(path.posix.basename(repoRoot) || repoRoot);
   }
   return undefined;
 }
@@ -668,11 +672,29 @@ function normalizePathKey(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
   }
-  const normalized = value.replace(/\\/g, "/").replace(/\/+/g, "/");
+  const normalized = decodeUriPath(value).replace(/\\/g, "/").replace(/\/+/g, "/");
   if (normalized.length > 1 && normalized.endsWith("/")) {
     return normalized.slice(0, -1);
   }
   return normalized;
+}
+
+function decodeUriPath(value: string): string {
+  if (!/%[0-9a-f]{2}/iu.test(value)) {
+    return value;
+  }
+  try {
+    return decodeURI(value);
+  } catch {
+    return value;
+  }
+}
+
+function decodeUriLabel(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return decodeUriPath(value);
 }
 
 function isWeakWorkspacePath(workspacePath: string): boolean {

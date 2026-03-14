@@ -32,16 +32,22 @@ service_targets() {
 
 start_service() {
   local service="$1"
-  local supervisor_pid_file supervisor_log_file supervisor_pid
+  local supervisor_pid_file supervisor_log_file supervisor_pid listener_pids
 
   require_service_name "${service}"
   supervisor_pid_file="$(service_supervisor_pid_file "${service}")"
   supervisor_log_file="$(service_supervisor_log_file "${service}")"
   cleanup_stale_pid_file "${supervisor_pid_file}"
   supervisor_pid="$(read_pid_file "${supervisor_pid_file}")"
+  listener_pids="$(port_listener_pids "${service}" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
 
   if is_pid_alive "${supervisor_pid}"; then
     echo "${service}: already running (supervisor ${supervisor_pid})"
+    return
+  fi
+
+  if [[ -n "${listener_pids}" ]]; then
+    echo "${service}: already running (unmanaged listener ${listener_pids})"
     return
   fi
 
@@ -75,7 +81,7 @@ restart_service() {
 
 status_service() {
   local service="$1"
-  local supervisor_pid_file child_pid_file supervisor_pid child_pid port log_file supervisor_log_file listener_pids state
+  local supervisor_pid_file child_pid_file supervisor_pid child_pid port log_file supervisor_log_file listener_pids state supervisor_holders
   require_service_name "${service}"
 
   supervisor_pid_file="$(service_supervisor_pid_file "${service}")"
@@ -89,8 +95,9 @@ status_service() {
   log_file="$(service_child_log_file "${service}")"
   supervisor_log_file="$(service_supervisor_log_file "${service}")"
   listener_pids="$(port_listener_pids "${service}" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
+  supervisor_holders="$(file_holder_pids "${supervisor_log_file}" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')"
 
-  if is_pid_alive "${supervisor_pid}"; then
+  if is_pid_alive "${supervisor_pid}" || [[ -n "${supervisor_holders}" ]]; then
     state="running (managed)"
   elif is_pid_alive "${child_pid}" || [[ -n "${listener_pids}" ]]; then
     state="running (unmanaged)"
@@ -99,6 +106,7 @@ status_service() {
   fi
   echo "${service}: ${state}"
   echo "  supervisor pid: ${supervisor_pid:-none}"
+  echo "  supervisor log holder pid(s): ${supervisor_holders:-none}"
   echo "  child pid: ${child_pid:-none}"
   echo "  port listener pid(s): ${listener_pids:-none}"
   echo "  port: ${port}"

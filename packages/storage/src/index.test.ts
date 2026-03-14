@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import type { SourceSyncPayload } from "@cchistory/domain";
+import { deriveSourceInstanceId, type SourceSyncPayload } from "@cchistory/domain";
 import { CCHistoryStorage } from "./index.js";
 
 test("replaceSourcePayload persists pipeline layers and lineage drill-down", async () => {
@@ -62,6 +62,63 @@ test("replaceSourcePayload replaces prior rows for the same source deterministic
   }
 });
 
+test("replaceSourcePayload can rekey a local source when host identity changes", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const baseDir = "/tmp/storage-fixture/legacy-codex";
+    const legacyPayload = createFixturePayload("src-codex", "Legacy text", "stage-run-legacy", {
+      baseDir,
+      hostId: "host-legacy",
+    });
+    const normalizedPayload = createFixturePayload(
+      deriveSourceInstanceId({
+        host_id: "host-current",
+        slot_id: "codex",
+        base_dir: baseDir,
+      }),
+      "Fresh text",
+      "stage-run-current",
+      {
+        baseDir,
+        hostId: "host-current",
+      },
+    );
+
+    storage.replaceSourcePayload(legacyPayload, { allow_host_rekey: true });
+    storage.replaceSourcePayload(normalizedPayload, { allow_host_rekey: true });
+
+    assert.equal(storage.listSources().length, 1);
+    assert.equal(storage.listResolvedSessions().length, 1);
+    assert.equal(storage.listTurns().length, 1);
+    assert.equal(storage.getTurn("turn-1")?.canonical_text, "Fresh text");
+    assert.equal(storage.listSources()[0]?.id, normalizedPayload.source.id);
+    assert.equal(storage.listSources()[0]?.host_id, "host-current");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("replaceSourcePayload tolerates duplicate blob rows within one payload", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const payload = createFixturePayload("src-storage-duplicate-blob", "Duplicate blob", "stage-run-duplicate-blob");
+    payload.blobs.push({ ...payload.blobs[0]! });
+
+    storage.replaceSourcePayload(payload);
+
+    const storedPayload = storage.listSourcePayloads()[0];
+    assert.equal(storage.listBlobs().length, 1);
+    assert.equal(storedPayload?.blobs.length, 1);
+    assert.equal(storage.getTurn("turn-1")?.canonical_text, "Duplicate blob");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("listSourcePayloads reconstructs persisted source payloads for export or merge", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
 
@@ -70,13 +127,149 @@ test("listSourcePayloads reconstructs persisted source payloads for export or me
     storage.replaceSourcePayload(createFixturePayload("src-storage-export-a", "Export A", "stage-run-export-a"));
     storage.replaceSourcePayload(createFixturePayload("src-storage-export-b", "Export B", "stage-run-export-b", { turnId: "turn-2", sessionId: "session-2" }));
 
-    const payloads = storage.listSourcePayloads();
+    const payloads = storage.listSourcePayloads().sort((left, right) =>
+      left.turns[0]!.canonical_text.localeCompare(right.turns[0]!.canonical_text),
+    );
     assert.equal(payloads.length, 2);
-    assert.equal(payloads[0]?.source.id, "src-storage-export-a");
-    assert.equal(payloads[1]?.source.id, "src-storage-export-b");
     assert.equal(payloads[0]?.turns[0]?.canonical_text, "Export A");
     assert.equal(payloads[1]?.turns[0]?.canonical_text, "Export B");
-    assert.equal(storage.getSourcePayload("src-storage-export-b")?.sessions[0]?.id, "session-2");
+    assert.equal(storage.getSourcePayload(payloads[1]!.source.id)?.sessions[0]?.id, "session-2");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("usage rollups sort day and month buckets chronologically", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const marchPayload = createFixturePayload("src-storage-rollup-march", "March turn", "stage-run-rollup-march", {
+      sessionId: "session-rollup-march",
+      turnId: "turn-rollup-march",
+    });
+    marchPayload.turns[0] = {
+      ...marchPayload.turns[0]!,
+      created_at: "2026-03-15T09:00:00.000Z",
+      submission_started_at: "2026-03-15T09:00:00.000Z",
+      context_summary: {
+        ...marchPayload.turns[0]!.context_summary,
+        total_tokens: 20,
+        token_usage: {
+          ...marchPayload.turns[0]!.context_summary.token_usage!,
+          total_tokens: 20,
+        },
+      },
+    };
+    marchPayload.sessions[0] = {
+      ...marchPayload.sessions[0]!,
+      created_at: "2026-03-15T09:00:00.000Z",
+      updated_at: "2026-03-15T09:00:01.000Z",
+    };
+
+    const februaryPayload = createFixturePayload(
+      "src-storage-rollup-february",
+      "February turn",
+      "stage-run-rollup-february",
+      {
+        sessionId: "session-rollup-february",
+        turnId: "turn-rollup-february",
+      },
+    );
+    februaryPayload.turns[0] = {
+      ...februaryPayload.turns[0]!,
+      created_at: "2026-02-20T09:00:00.000Z",
+      submission_started_at: "2026-02-20T09:00:00.000Z",
+      context_summary: {
+        ...februaryPayload.turns[0]!.context_summary,
+        total_tokens: 200,
+        token_usage: {
+          ...februaryPayload.turns[0]!.context_summary.token_usage!,
+          total_tokens: 200,
+        },
+      },
+    };
+    februaryPayload.sessions[0] = {
+      ...februaryPayload.sessions[0]!,
+      created_at: "2026-02-20T09:00:00.000Z",
+      updated_at: "2026-02-20T09:00:01.000Z",
+    };
+
+    storage.replaceSourcePayload(marchPayload);
+    storage.replaceSourcePayload(februaryPayload);
+
+    assert.deepEqual(
+      storage.listUsageRollup("day").rows.map((row) => row.key),
+      ["2026-02-20", "2026-03-15"],
+    );
+    assert.deepEqual(
+      storage.listUsageRollup("month").rows.map((row) => row.key),
+      ["2026-02", "2026-03"],
+    );
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("resolved snapshot reads reuse one memoized project-link snapshot", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(createFixturePayload("src-storage-cache", "Cache me", "stage-run-cache"));
+
+    const originalCompute = (storage as any).computeProjectLinkSnapshot.bind(storage) as () => unknown;
+    let computeCalls = 0;
+    (storage as any).computeProjectLinkSnapshot = () => {
+      computeCalls += 1;
+      return originalCompute();
+    };
+
+    (storage as any).invalidateProjectLinkSnapshot();
+    storage.listResolvedTurns();
+    storage.listResolvedSessions();
+    storage.getResolvedTurn("turn-1");
+    storage.getResolvedSession("session-1");
+    storage.listProjectObservations();
+    storage.getLinkingReview();
+
+    assert.equal(computeCalls, 1);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("writes invalidate and repopulate the memoized project-link snapshot once per write", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(createFixturePayload("src-storage-cache-write", "Cache write", "stage-run-cache-write"));
+
+    const originalCompute = (storage as any).computeProjectLinkSnapshot.bind(storage) as () => unknown;
+    let computeCalls = 0;
+    (storage as any).computeProjectLinkSnapshot = () => {
+      computeCalls += 1;
+      return originalCompute();
+    };
+
+    storage.upsertProjectOverride({
+      target_kind: "turn",
+      target_ref: "turn-1",
+      project_id: "project-cache-write",
+      display_name: "Cache Write",
+    });
+    assert.equal(computeCalls, 1);
+
+    storage.listResolvedTurns();
+    storage.getLinkingReview();
+    assert.equal(computeCalls, 1);
+
+    storage.purgeTurn("turn-1");
+    assert.equal(computeCalls, 2);
+
+    storage.listResolvedTurns();
+    assert.equal(computeCalls, 2);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -220,6 +413,108 @@ test("workspace continuity candidates gain confidence when repeated across sessi
   }
 });
 
+test("source-native project refs keep turns candidate-linked when workspace paths are unavailable", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(
+      createFixturePayload("src-storage-native-project", "Native project turn", "stage-run-native-project", {
+        sessionId: "session-native-project",
+        turnId: "turn-native-project",
+        platform: "codex",
+        workingDirectory: "",
+        projectObservation: {
+          sourceNativeProjectRef: "Users-alex-m4-workspace-111",
+        },
+      }),
+    );
+
+    const projects = storage.listProjects();
+    assert.equal(projects.length, 1);
+    assert.equal(projects[0]?.linkage_state, "candidate");
+    assert.equal(projects[0]?.link_reason, "source_native_project");
+    assert.equal(projects[0]?.source_native_project_ref, "Users-alex-m4-workspace-111");
+
+    const resolvedTurn = storage.getResolvedTurn("turn-native-project");
+    assert.equal(resolvedTurn?.link_state, "candidate");
+    assert.equal(resolvedTurn?.project_id, projects[0]?.project_id);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("storage synthesizes Cursor project observations from persisted blob origins when source candidates are missing", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const payload = createFixturePayload(
+      "src-storage-cursor-fallback",
+      "Cursor fallback turn",
+      "stage-run-cursor-fallback",
+      {
+        sessionId: "session-cursor-fallback",
+        turnId: "turn-cursor-fallback",
+        platform: "cursor",
+        workingDirectory: "",
+        includeProjectObservation: false,
+      },
+    );
+
+    payload.source.base_dir = "/tmp/.cursor/projects";
+    payload.blobs[0] = {
+      ...payload.blobs[0]!,
+      origin_path:
+        "/tmp/.cursor/projects/workspace-a/agent-transcripts/session-cursor-fallback/session-cursor-fallback.jsonl",
+    };
+    payload.sessions[0] = {
+      ...payload.sessions[0]!,
+      working_directory: undefined,
+      source_native_project_ref: undefined,
+    };
+
+    storage.replaceSourcePayload(payload);
+
+    const projects = storage.listProjects();
+    assert.equal(projects.length, 1);
+    assert.equal(projects[0]?.linkage_state, "candidate");
+    assert.equal(projects[0]?.link_reason, "source_native_project");
+    assert.equal(projects[0]?.source_native_project_ref, "workspace-a");
+    assert.equal(projects[0]?.confidence, 0.72);
+
+    const resolvedTurn = storage.getResolvedTurn("turn-cursor-fallback");
+    assert.equal(resolvedTurn?.link_state, "candidate");
+    assert.equal(resolvedTurn?.project_id, projects[0]?.project_id);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("project display names decode percent-encoded workspace paths", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(
+      createFixturePayload("src-storage-encoded-path", "Encoded path turn", "stage-run-encoded-path", {
+        sessionId: "session-encoded-path",
+        turnId: "turn-encoded-path",
+        workingDirectory: "/Users/tester/Documents/deep%20research",
+        projectObservation: {
+          workspacePath: "/Users/tester/Documents/deep%20research",
+        },
+      }),
+    );
+
+    const projects = storage.listProjects();
+    assert.equal(projects[0]?.display_name, "deep research");
+    assert.equal(projects[0]?.primary_workspace_path, "/Users/tester/Documents/deep research");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("temporary workspace paths stay low-confidence even when repeated across sessions", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
 
@@ -304,7 +599,7 @@ test("derived linking review separates committed, candidate, and unlinked materi
         turnId: "turn-unlinked",
         hostId: "host-1",
         platform: "amp",
-        workingDirectory: "/workspace/no-project",
+        workingDirectory: "",
         includeProjectObservation: false,
       }),
     );
@@ -323,6 +618,59 @@ test("derived linking review separates committed, candidate, and unlinked materi
     const remoteObservation = review.project_observations.find((observation) => observation.session_ref === "session-remote");
     assert.equal(remoteObservation?.project_id, remoteProject.project_id);
     assert.equal(remoteObservation?.linkage_state, "committed");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("linking review uses all project observation candidates instead of truncating to the first 500", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const payload = createFixturePayload("src-storage-candidate-limit", "Candidate beyond candidate limit", "stage-run-candidate-limit", {
+      sessionId: "session-candidate-limit",
+      turnId: "turn-candidate-limit",
+      hostId: "host-1",
+      platform: "codex",
+      workingDirectory: "/workspace/candidate-limit",
+      projectObservation: {
+        workspacePath: "/workspace/candidate-limit",
+      },
+    });
+
+    const projectObservationCandidate = payload.candidates.find(
+      (candidate) => candidate.candidate_kind === "project_observation",
+    );
+    assert.ok(projectObservationCandidate);
+    projectObservationCandidate!.id = "0000-project-observation";
+
+    for (let index = 0; index < 500; index += 1) {
+      payload.candidates.push({
+        id: `zzzz-noise-${String(index).padStart(4, "0")}`,
+        source_id: payload.source.id,
+        session_ref: payload.sessions[0]!.id,
+        candidate_kind: "turn",
+        input_atom_refs: [],
+        started_at: payload.sessions[0]!.created_at,
+        ended_at: payload.sessions[0]!.updated_at,
+        rule_version: "2026-03-09.1",
+        evidence: {
+          noise: true,
+          ordinal: index,
+        },
+      });
+    }
+
+    storage.replaceSourcePayload(payload);
+
+    const review = storage.getLinkingReview();
+    assert.equal(review.unlinked_turns.length, 0);
+    assert.equal(review.candidate_turns.length, 1);
+    assert.equal(review.candidate_turns[0]?.id, "turn-candidate-limit");
+    assert.equal(review.candidate_turns[0]?.link_state, "candidate");
+    assert.equal(review.project_observations.length, 1);
+    assert.equal(review.project_observations[0]?.session_ref, "session-candidate-limit");
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -430,7 +778,8 @@ interface FixturePayloadOptions {
   sessionId?: string;
   turnId?: string;
   hostId?: string;
-  platform?: "codex" | "claude_code" | "factory_droid" | "amp";
+  platform?: "codex" | "claude_code" | "factory_droid" | "amp" | "cursor";
+  baseDir?: string;
   workingDirectory?: string;
   includeProjectObservation?: boolean;
   projectObservation?: {
@@ -457,6 +806,7 @@ function createFixturePayload(
   const turnId = options.turnId ?? "turn-1";
   const hostId = options.hostId ?? "host-1";
   const platform = options.platform ?? "codex";
+  const baseDir = options.baseDir ?? `/tmp/storage-fixture/${sourceId}`;
   const workingDirectory = options.workingDirectory ?? "/workspace/storage-fixture";
   const projectObservation = options.projectObservation;
   const includeProjectObservation = options.includeProjectObservation ?? Boolean(projectObservation);
@@ -539,10 +889,11 @@ function createFixturePayload(
   return {
     source: {
       id: sourceId,
+      slot_id: platform,
       family: "local_coding_agent",
       platform,
       display_name: "Storage fixture",
-      base_dir: "/tmp/storage-fixture",
+      base_dir: baseDir,
       host_id: hostId,
       last_sync: toolResultAt,
       sync_status: "healthy",
@@ -572,7 +923,15 @@ function createFixturePayload(
         id: `${turnId}-loss-audit`,
         source_id: sourceId,
         stage_run_id: stageRunId,
+        stage_kind: "finalize_projections",
+        diagnostic_code: "fixture_projection_gap",
+        severity: "warning",
         scope_ref: toolResultFragmentId,
+        session_ref: sessionId,
+        blob_ref: blobId,
+        record_ref: recordId,
+        fragment_ref: toolResultFragmentId,
+        source_format_profile_id: "codex:jsonl:v1",
         loss_kind: "unknown_fragment",
         detail: canonicalText === "New text" ? "updated fixture loss audit" : "fixture loss audit",
         created_at: toolResultAt,
@@ -583,7 +942,7 @@ function createFixturePayload(
         id: blobId,
         source_id: sourceId,
         host_id: hostId,
-        origin_path: "/tmp/storage-fixture/session.jsonl",
+        origin_path: path.join(baseDir, "session.jsonl"),
         checksum: "checksum-1",
         size_bytes: 128,
         captured_at: createdAt,

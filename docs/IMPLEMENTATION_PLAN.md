@@ -165,7 +165,7 @@ Preferred commands:
 # Validation Matrix
 **Verdict: validation should stay narrow, package-scoped, and probe-driven, with API routes used for source inspection instead of full workspace builds.**
 
-> Probe and replay commands assume `pnpm --filter @cchistory/api dev` is running in a separate terminal.
+> Probe and replay commands assume the managed dev services are already running via `pnpm services:start` in a separate terminal.
 >
 > Keep probe runs small by specifying `source_ids` and `limit_files_per_source`.
 
@@ -179,7 +179,7 @@ Preferred commands:
 | `@cchistory/storage` | validate replacement semantics and lineage queries | `pnpm --filter @cchistory/storage test` | low |
 | `@cchistory/api` | validate API compilation | `pnpm --filter @cchistory/api build` | medium |
 | `@cchistory/api` | validate probe persistence semantics | `pnpm --filter @cchistory/api test` | low to medium |
-| `@cchistory/api` | run local API runtime | `pnpm --filter @cchistory/api dev` | medium |
+| managed dev services | run local API runtime for probes and web integration | `pnpm services:start` | medium |
 | direct smoke probe | inspect one available local source without starting the API | `pnpm run probe:smoke -- --source-id=src-codex --limit=1` | low |
 | live probe | inspect one source without persistence | `curl -s -X POST http://127.0.0.1:8040/api/admin/probe/runs -H 'content-type: application/json' -d '{"source_ids":["codex"],"limit_files_per_source":1,"persist":false}'` | low once API is running |
 | replay | compare one source through replay path | `curl -s -X POST http://127.0.0.1:8040/api/admin/pipeline/replay -H 'content-type: application/json' -d '{"source_ids":["codex"],"limit_files_per_source":1}'` | low once API is running |

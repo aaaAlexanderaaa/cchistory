@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=${NODE_MEMORY_MB:-1536}\" next dev --webpack --disable-source-maps --hostname 0.0.0.0 --port 8085",
+    "dev": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=${NODE_MEMORY_MB:-1536}\" next dev --hostname 0.0.0.0 --port 8085",
     "build": "next build",
     "start": "next start --hostname 0.0.0.0 --port 8085",
     "lint": "eslint . --max-warnings=0"
   },
   "dependencies": {
     "@cchistory/api-client": "workspace:*",
+    "@cchistory/presentation": "workspace:*",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",

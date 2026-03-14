@@ -11,6 +11,7 @@ SUPERVISOR_PID_FILE="$(service_supervisor_pid_file "${SERVICE}")"
 CHILD_PID_FILE="$(service_child_pid_file "${SERVICE}")"
 STOP_REQUESTED=0
 CHILD_PID=""
+CHILD_WAIT_MODE="process"
 
 log_line() {
   printf '[%s] [%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${SERVICE}" "$*"
@@ -53,10 +54,11 @@ while true; do
 
   launch_service_child "${SERVICE}"
   CHILD_PID="${LAUNCHED_CHILD_PID}"
+  CHILD_WAIT_MODE="${LAUNCHED_CHILD_WAIT_MODE}"
   STARTED_AT="$(date +%s)"
-  log_line "started child pid ${CHILD_PID}"
+  log_line "started child pid ${CHILD_PID} (${CHILD_WAIT_MODE})"
 
-  if wait "${CHILD_PID}"; then
+  if wait_for_managed_child "${CHILD_WAIT_MODE}" "${CHILD_PID}"; then
     EXIT_CODE=0
   else
     EXIT_CODE=$?

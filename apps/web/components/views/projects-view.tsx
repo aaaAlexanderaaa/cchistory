@@ -4,13 +4,12 @@ import { createElement, type ComponentProps } from 'react'
 import { useMemo, useState } from 'react'
 import {
   formatTokenUsageOverview,
-  formatTokenUsageSummary,
   formatTokenValue,
   summarizeTurnsTokenUsage,
 } from '@/lib/token-usage'
-import { cn, formatRelativeTime } from '@/lib/utils'
+import { cn, formatAbsoluteDateTime, formatRelativeTime } from '@/lib/utils'
+import { formatSourcePlatform, SessionBadge } from '@/components/session-badge'
 import { SessionMap } from '@/components/session-map'
-import { TurnCard } from '@/components/turn-card'
 import { TurnDetailPanel } from '@/components/turn-detail-panel'
 import { ResponsiveSidePanel } from '@/components/responsive-side-panel'
 import type { ProjectIdentity, Session, UserTurn } from '@/lib/types'
@@ -38,6 +37,7 @@ import {
 type ProjectViewMode = 'list' | 'detail'
 type TurnTab = 'committed' | 'candidates'
 type DetailContentMode = 'turns' | 'sessions'
+type ProjectTurnLayout = 'rows' | 'cards' | 'waterfall'
 type OverviewMode = 'grid' | 'sessions'
 type ProjectSort = 'activity' | 'name' | 'turns'
 type ProjectTurnSort = 'newest' | 'oldest'
@@ -361,6 +361,7 @@ function ProjectDetailView({
 }: ProjectDetailViewProps) {
   const currentTurns = activeTab === 'committed' ? turns : candidates
   const [contentMode, setContentMode] = useState<DetailContentMode>('turns')
+  const [turnLayout, setTurnLayout] = useState<ProjectTurnLayout>('rows')
   const [turnSort, setTurnSort] = useState<ProjectTurnSort>('newest')
   const hasStale = allProjectTurns.some((turn) => turn.sync_axis === 'superseded' || turn.sync_axis === 'source_absent')
   const currentMetrics = summarizeTurnMetrics(currentTurns)
@@ -482,14 +483,49 @@ function ProjectDetailView({
             <div className="flex flex-col gap-2 lg:items-end">
               <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
                 {contentMode === 'turns' && (
-                  <select
-                    value={turnSort}
-                    onChange={(event) => setTurnSort(event.target.value as ProjectTurnSort)}
-                    className="border border-border bg-card px-2 py-1.5 text-sm text-text focus:border-ink focus:outline-none"
-                  >
-                    <option value="newest">Newest</option>
-                    <option value="oldest">Oldest</option>
-                  </select>
+                  <>
+                    <select
+                      value={turnSort}
+                      onChange={(event) => setTurnSort(event.target.value as ProjectTurnSort)}
+                      className="border border-border bg-card px-2 py-1.5 text-sm text-text focus:border-ink focus:outline-none"
+                    >
+                      <option value="newest">Newest</option>
+                      <option value="oldest">Oldest</option>
+                    </select>
+
+                    <div className="flex w-full items-center border border-border bg-card p-1 sm:w-auto">
+                      <button
+                        type="button"
+                        onClick={() => setTurnLayout('rows')}
+                        className={cn(
+                          'flex-1 px-3 py-1.5 text-sm transition-colors sm:flex-none',
+                          turnLayout === 'rows' ? 'bg-ink text-card' : 'text-muted hover:text-ink',
+                        )}
+                      >
+                        Rows
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTurnLayout('cards')}
+                        className={cn(
+                          'flex-1 px-3 py-1.5 text-sm transition-colors sm:flex-none',
+                          turnLayout === 'cards' ? 'bg-ink text-card' : 'text-muted hover:text-ink',
+                        )}
+                      >
+                        Cards
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setTurnLayout('waterfall')}
+                        className={cn(
+                          'flex-1 px-3 py-1.5 text-sm transition-colors sm:flex-none',
+                          turnLayout === 'waterfall' ? 'bg-ink text-card' : 'text-muted hover:text-ink',
+                        )}
+                      >
+                        Waterfall
+                      </button>
+                    </div>
+                  </>
                 )}
                 <div className="flex w-full items-center border border-border bg-card p-1 sm:w-auto">
                   <button
@@ -526,17 +562,36 @@ function ProjectDetailView({
 
         <div className="flex-1 overflow-y-auto p-4">
           {contentMode === 'turns' ? (
-            <div className="space-y-3">
-              {sortedCurrentTurns.map((turn) => (
-                <TurnCard
-                  key={turn.id}
-                  turn={turn}
-                  session={sessionRegistry.get(turn.session_id)}
-                  projectColor={project.color}
-                  selected={selectedTurn?.id === turn.id}
-                  onClick={() => onSelectTurn(turn.id)}
-                />
-              ))}
+            <div className={projectTurnLayoutClassName(turnLayout)}>
+              {sortedCurrentTurns.map((turn) =>
+                turnLayout === 'rows' ? (
+                  <ProjectTurnRow
+                    key={turn.id}
+                    turn={turn}
+                    session={sessionRegistry.get(turn.session_id)}
+                    projectColor={project.color}
+                    selected={selectedTurn?.id === turn.id}
+                    onClick={() => onSelectTurn(turn.id)}
+                  />
+                ) : (
+                  <div
+                    key={turn.id}
+                    className={cn(
+                      turnLayout === 'cards' && 'h-full',
+                      turnLayout === 'waterfall' && 'mb-4 break-inside-avoid',
+                    )}
+                  >
+                    <ProjectTurnTile
+                      turn={turn}
+                      session={sessionRegistry.get(turn.session_id)}
+                      projectColor={project.color}
+                      layout={turnLayout}
+                      selected={selectedTurn?.id === turn.id}
+                      onClick={() => onSelectTurn(turn.id)}
+                    />
+                  </div>
+                ),
+              )}
 
               {currentTurns.length === 0 && (
                 <div className="flex flex-col items-center justify-center border border-dashed border-border py-16">
@@ -558,7 +613,9 @@ function ProjectDetailView({
               sessionRegistry={sessionRegistry}
               projectRegistry={projectRegistry}
               selectedTurnId={selectedTurn?.id}
-              defaultAxisMode="session"
+              fixedAxisMode="shared"
+              defaultSortBy="created"
+              defaultSortDirection="asc"
               showOverview={false}
               hideProjectPathWhenRedundant
               onTurnSelect={(turn) => onSelectTurn(turn.id)}
@@ -580,6 +637,230 @@ function ProjectDetailView({
         </ResponsiveSidePanel>
       )}
     </div>
+  )
+}
+
+function ProjectTurnRow({
+  turn,
+  session,
+  projectColor,
+  selected,
+  onClick,
+}: {
+  turn: UserTurn
+  session?: Session
+  projectColor?: string
+  selected: boolean
+  onClick: () => void
+}) {
+  const tokenTotal = formatTokenValue(
+    turn.context_summary.token_usage?.total_tokens ?? turn.context_summary.total_tokens,
+  )
+  const borderColor = projectColor || '#E0E0E0'
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'grid w-full gap-4 border border-border bg-card px-4 py-3 text-left shadow-hard transition-colors hover:bg-surface-hover xl:grid-cols-[15rem_minmax(0,1fr)_11rem]',
+        selected && 'border-accent bg-paper shadow-hover',
+      )}
+      style={{
+        borderLeftColor: borderColor,
+        borderLeftWidth: '4px',
+      }}
+    >
+      <div className="space-y-3 border-b border-dashed border-border/80 pb-3 xl:border-b-0 xl:border-r xl:pb-0 xl:pr-4">
+        <div className="mono-text text-[10px] text-muted">
+          {turn.id.toUpperCase().replace('TURN-', '#')}
+        </div>
+        <div className="text-xs text-muted">
+          {formatAbsoluteDateTime(turn.created_at)} · {formatRelativeTime(turn.created_at)}
+        </div>
+        {session ? (
+          <SessionBadge
+            session={session}
+            compact
+            className="max-w-full bg-paper"
+            showTurnCount={false}
+          />
+        ) : (
+          <span className="inline-flex w-fit items-center border border-border bg-paper px-2 py-1 text-[10px] text-muted">
+            Session unavailable
+          </span>
+        )}
+        <div className="flex flex-wrap items-center gap-2 text-[10px] stamp-text text-muted">
+          <span className="border border-border bg-paper px-2 py-1 mono-text">
+            {formatSourcePlatform(session?.source_platform ?? 'other')}
+          </span>
+          <span className="border border-border bg-paper px-2 py-1">
+            {turn.context_summary.assistant_reply_count} replies
+          </span>
+          {turn.context_summary.tool_call_count > 0 && (
+            <span className="border border-border bg-paper px-2 py-1">
+              {turn.context_summary.tool_call_count} tools
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="min-w-0 space-y-3">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {turnRowStatusChips(turn).map((chip) => (
+            <span
+              key={chip.label}
+              className={cn(
+                'inline-flex items-center gap-1 border px-1.5 py-0.5 text-[10px] stamp-text',
+                chip.className,
+              )}
+            >
+              {chip.label}
+            </span>
+          ))}
+        </div>
+
+        <p className="text-sm leading-6 text-ink">{turn.canonical_text}</p>
+
+        {turn.tags && turn.tags.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-muted">
+            {turn.tags.slice(0, 4).map((tag) => (
+              <span key={tag} className="border border-border bg-paper px-1.5 py-0.5">
+                #{tag}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-2 border-t border-dashed border-border/80 pt-3 text-left xl:border-l xl:border-t-0 xl:pl-4 xl:pt-0 xl:text-right">
+        <div className="text-[10px] stamp-text text-muted">Turn Stats</div>
+        <div className="space-y-1 text-xs text-muted">
+          <div>Active {formatRelativeTime(turn.last_context_activity_at)}</div>
+          <div>Tokens {tokenTotal}</div>
+          {turn.context_summary.primary_model && (
+            <div className="truncate" title={turn.context_summary.primary_model}>
+              {turn.context_summary.primary_model}
+            </div>
+          )}
+        </div>
+      </div>
+    </button>
+  )
+}
+
+function ProjectTurnTile({
+  turn,
+  session,
+  projectColor,
+  layout,
+  selected,
+  onClick,
+}: {
+  turn: UserTurn
+  session?: Session
+  projectColor?: string
+  layout: Exclude<ProjectTurnLayout, 'rows'>
+  selected: boolean
+  onClick: () => void
+}) {
+  const tokenTotal = formatTokenValue(
+    turn.context_summary.token_usage?.total_tokens ?? turn.context_summary.total_tokens,
+  )
+  const borderColor = projectColor || '#E0E0E0'
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'flex h-full w-full flex-col border border-border bg-card p-4 text-left shadow-hard transition-colors hover:bg-surface-hover',
+        selected && 'border-accent bg-paper shadow-hover',
+      )}
+      style={{
+        borderLeftColor: borderColor,
+        borderLeftWidth: '4px',
+      }}
+    >
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <div className="mono-text text-[10px] text-muted">
+            {turn.id.toUpperCase().replace('TURN-', '#')}
+          </div>
+          <div className="text-xs text-muted">
+            {formatAbsoluteDateTime(turn.created_at)} · {formatRelativeTime(turn.created_at)}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-1.5">
+          {turnRowStatusChips(turn).map((chip) => (
+            <span
+              key={chip.label}
+              className={cn(
+                'inline-flex items-center gap-1 border px-1.5 py-0.5 text-[10px] stamp-text',
+                chip.className,
+              )}
+            >
+              {chip.label}
+            </span>
+          ))}
+        </div>
+      </div>
+
+      <div className="mt-4 flex-1 space-y-3">
+        <div className="border border-border/70 bg-paper px-3 py-3">
+          <p
+            className={cn(
+              'text-sm leading-6 text-ink',
+              layout === 'cards' ? 'line-clamp-4' : 'line-clamp-6',
+            )}
+          >
+            {turn.canonical_text}
+          </p>
+        </div>
+
+        {turn.tags && turn.tags.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-muted">
+            {turn.tags.slice(0, layout === 'cards' ? 3 : 5).map((tag) => (
+              <span key={tag} className="border border-border bg-paper px-1.5 py-0.5">
+                #{tag}
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 space-y-3 border-t border-border pt-3">
+        {session ? (
+          <SessionBadge
+            session={session}
+            compact
+            className="max-w-full bg-paper"
+            showTurnCount={false}
+          />
+        ) : (
+          <span className="inline-flex w-fit items-center border border-border bg-paper px-2 py-1 text-[10px] text-muted">
+            Session unavailable
+          </span>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2 text-[10px] stamp-text text-muted">
+          <span className="border border-border bg-paper px-2 py-1 mono-text">
+            {formatSourcePlatform(session?.source_platform ?? 'other')}
+          </span>
+          <span className="border border-border bg-paper px-2 py-1">
+            {turn.context_summary.assistant_reply_count} replies
+          </span>
+          {turn.context_summary.tool_call_count > 0 && (
+            <span className="border border-border bg-paper px-2 py-1">
+              {turn.context_summary.tool_call_count} tools
+            </span>
+          )}
+          <span className="border border-border bg-paper px-2 py-1">
+            Tokens {tokenTotal}
+          </span>
+        </div>
+      </div>
+    </button>
   )
 }
 
@@ -645,6 +926,41 @@ function formatDurationCompact(durationMs: number) {
   const days = Math.floor(hours / 24)
   const remainingHours = hours % 24
   return remainingHours === 0 ? `${days}d` : `${days}d ${remainingHours}h`
+}
+
+function projectTurnLayoutClassName(layout: ProjectTurnLayout) {
+  if (layout === 'cards') {
+    return 'grid grid-cols-1 gap-4 lg:grid-cols-2 2xl:grid-cols-3'
+  }
+  if (layout === 'waterfall') {
+    return 'columns-1 gap-4 lg:columns-2 2xl:columns-3'
+  }
+  return 'space-y-2'
+}
+
+function turnRowStatusChips(turn: UserTurn) {
+  const chips: Array<{ label: string; className: string }> = []
+
+  if (turn.link_state === 'committed') {
+    chips.push({ label: 'VERIFIED', className: 'border-success/30 bg-success/10 text-success' })
+  } else if (turn.link_state === 'candidate') {
+    chips.push({
+      label: turn.project_confidence ? `${Math.round(turn.project_confidence * 100)}%` : 'CANDIDATE',
+      className: 'border-candidate/30 bg-candidate/10 text-candidate',
+    })
+  } else {
+    chips.push({ label: 'UNLINKED', className: 'border-border bg-paper text-muted' })
+  }
+
+  if (turn.is_flagged) {
+    chips.push({ label: 'FLAGGED', className: 'border-warning/30 bg-warning/10 text-warning' })
+  }
+
+  if (turn.sync_axis === 'superseded') {
+    chips.push({ label: 'STALE', className: 'border-border bg-surface-hover text-muted' })
+  }
+
+  return chips
 }
 
 function ProjectStateBadge({ project }: { project: ProjectIdentity }) {

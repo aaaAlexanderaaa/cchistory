@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEV_SERVICE_DIR="${ROOT_DIR}/.dev-services"
 PNPM_BIN="${PNPM_BIN:-$(command -v pnpm || true)}"
 LAUNCHED_CHILD_PID=""
+LAUNCHED_CHILD_WAIT_MODE="process"
 
 mkdir -p "${DEV_SERVICE_DIR}"
 
@@ -32,28 +33,31 @@ service_port() {
   esac
 }
 
-service_child_pid_file() {
+service_wait_mode() {
   local service="$1"
   case "${service}" in
     web)
-      echo "${ROOT_DIR}/apps/web/.next/dev-server.pid"
+      echo "listener"
       ;;
     api)
-      echo "${ROOT_DIR}/apps/api/.dev-server.pid"
+      echo "process"
       ;;
   esac
 }
 
+service_child_pid_file() {
+  local service="$1"
+  echo "${DEV_SERVICE_DIR}/${service}.pid"
+}
+
 service_child_log_file() {
   local service="$1"
-  case "${service}" in
-    web)
-      echo "${ROOT_DIR}/apps/web/.next/dev-server.log"
-      ;;
-    api)
-      echo "${ROOT_DIR}/apps/api/.dev-server.log"
-      ;;
-  esac
+  echo "${DEV_SERVICE_DIR}/${service}.log"
+}
+
+service_temp_dir() {
+  local service="$1"
+  echo "${DEV_SERVICE_DIR}/tmp/${service}"
 }
 
 service_supervisor_pid_file() {
@@ -97,6 +101,16 @@ port_listener_pids() {
   fi
   if command -v fuser >/dev/null 2>&1; then
     fuser "${port}/tcp" 2>/dev/null || true
+  fi
+}
+
+file_holder_pids() {
+  local target_file="$1"
+  if [[ ! -f "${target_file}" ]]; then
+    return
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -t "${target_file}" 2>/dev/null || true
   fi
 }
 
@@ -146,11 +160,12 @@ stop_pid_tree() {
 
 stop_service_runtime() {
   local service="$1"
-  local child_pid_file child_pid port_pid
+  local child_pid_file child_pid port_pid runtime_log_file runtime_pid
 
   child_pid_file="$(service_child_pid_file "${service}")"
   cleanup_stale_pid_file "${child_pid_file}"
   child_pid="$(read_pid_file "${child_pid_file}")"
+  runtime_log_file="$(service_child_log_file "${service}")"
 
   if [[ -n "${child_pid}" ]]; then
     stop_pid_tree "${child_pid}"
@@ -161,13 +176,19 @@ stop_service_runtime() {
     [[ -n "${port_pid}" ]] || continue
     stop_pid_tree "${port_pid}"
   done < <(port_listener_pids "${service}")
+
+  while read -r runtime_pid; do
+    [[ -n "${runtime_pid}" ]] || continue
+    stop_pid_tree "${runtime_pid}"
+  done < <(file_holder_pids "${runtime_log_file}")
 }
 
 stop_service_processes() {
   local service="$1"
-  local supervisor_pid_file supervisor_pid
+  local supervisor_pid_file supervisor_log_file supervisor_pid logged_pid
 
   supervisor_pid_file="$(service_supervisor_pid_file "${service}")"
+  supervisor_log_file="$(service_supervisor_log_file "${service}")"
   cleanup_stale_pid_file "${supervisor_pid_file}"
   supervisor_pid="$(read_pid_file "${supervisor_pid_file}")"
 
@@ -176,12 +197,18 @@ stop_service_processes() {
     rm -f "${supervisor_pid_file}"
   fi
 
+  while read -r logged_pid; do
+    [[ -n "${logged_pid}" ]] || continue
+    stop_pid_tree "${logged_pid}"
+  done < <(file_holder_pids "${supervisor_log_file}")
+
   stop_service_runtime "${service}"
 }
 
 service_prepare() {
   local service="$1"
-  local tsc_bin tsx_dir web_dir node_memory_mb
+  local tsc_bin
+  mkdir -p "$(service_temp_dir "${service}")"
   case "${service}" in
     web)
       if [[ -z "${PNPM_BIN}" ]]; then
@@ -201,7 +228,8 @@ service_prepare() {
 
 service_launch_command() {
   local service="$1"
-  local web_dir api_dir next_bin tsx_bin node_options_value
+  local web_dir api_dir next_bin tsx_bin node_options_value service_tmp_dir
+  service_tmp_dir="$(service_temp_dir "${service}")"
   case "${service}" in
     web)
       web_dir="${ROOT_DIR}/apps/web"
@@ -210,32 +238,82 @@ service_launch_command() {
       if [[ -n "${NODE_OPTIONS:-}" ]]; then
         node_options_value="${NODE_OPTIONS} ${node_options_value}"
       fi
-      printf 'cd %q && exec env NODE_OPTIONS=%q %q dev --webpack --disable-source-maps --hostname 0.0.0.0 --port 8085' \
-        "${web_dir}" "${node_options_value}" "${next_bin}"
+      printf 'cd %q && exec env TMPDIR=%q TMP=%q TEMP=%q NODE_OPTIONS=%q %q dev --hostname 0.0.0.0 --port 8085' \
+        "${web_dir}" "${service_tmp_dir}" "${service_tmp_dir}" "${service_tmp_dir}" "${node_options_value}" "${next_bin}"
       ;;
     api)
       api_dir="${ROOT_DIR}/apps/api"
       tsx_bin="${api_dir}/node_modules/.bin/tsx"
-      printf 'cd %q && exec env PORT=%q %q watch src/index.ts' \
-        "${api_dir}" "${PORT:-8040}" "${tsx_bin}"
+      printf 'cd %q && exec env TMPDIR=%q TMP=%q TEMP=%q PORT=%q %q watch src/index.ts' \
+        "${api_dir}" "${service_tmp_dir}" "${service_tmp_dir}" "${service_tmp_dir}" "${PORT:-8040}" "${tsx_bin}"
       ;;
   esac
 }
 
+wait_for_service_listener() {
+  local service="$1"
+  local launcher_pid="$2"
+  local listener_pid=""
+  local attempt
+
+  for attempt in $(seq 1 40); do
+    listener_pid="$(port_listener_pids "${service}" | head -n 1)"
+    if [[ -n "${listener_pid}" ]]; then
+      printf '%s\n' "${listener_pid}"
+      return 0
+    fi
+    if ! is_pid_alive "${launcher_pid}"; then
+      break
+    fi
+    sleep 0.5
+  done
+
+  return 1
+}
+
 launch_service_child() {
   local service="$1"
-  local child_pid_file child_log_file command
+  local child_pid_file child_log_file command launcher_pid listener_pid wait_mode
 
   child_pid_file="$(service_child_pid_file "${service}")"
   child_log_file="$(service_child_log_file "${service}")"
   command="$(service_launch_command "${service}")"
+  wait_mode="$(service_wait_mode "${service}")"
 
   mkdir -p "$(dirname "${child_log_file}")"
   printf '\n[%s] launching %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${service}" >> "${child_log_file}"
 
   nohup bash -lc "${command}" >> "${child_log_file}" 2>&1 < /dev/null &
-  LAUNCHED_CHILD_PID="$!"
+  launcher_pid="$!"
+  listener_pid="$(wait_for_service_listener "${service}" "${launcher_pid}" || true)"
+
+  if [[ "${wait_mode}" == "listener" && -n "${listener_pid}" ]]; then
+    LAUNCHED_CHILD_PID="${listener_pid}"
+    LAUNCHED_CHILD_WAIT_MODE="poll"
+  else
+    LAUNCHED_CHILD_PID="${launcher_pid}"
+    LAUNCHED_CHILD_WAIT_MODE="process"
+  fi
+
   echo "${LAUNCHED_CHILD_PID}" > "${child_pid_file}"
+}
+
+wait_for_managed_child() {
+  local wait_mode="${1:-process}"
+  local child_pid="${2:-}"
+
+  if [[ -z "${child_pid}" ]]; then
+    return 1
+  fi
+
+  if [[ "${wait_mode}" == "poll" ]]; then
+    while is_pid_alive "${child_pid}"; do
+      sleep 1
+    done
+    return 0
+  fi
+
+  wait "${child_pid}"
 }
 
 restart_delay_seconds() {

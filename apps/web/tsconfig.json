@@ -25,6 +25,9 @@
     "paths": {
       "@/*": [
         "./*"
+      ],
+      "@cchistory/presentation": [
+        "../../packages/presentation/src/index.ts"
       ]
     }
   },

@@ -162,6 +162,7 @@ export type CandidateKind =
 
 export interface SourceDefinition {
   id: string;
+  slot_id: string;
   family: SourceFamily;
   platform: SourcePlatform;
   display_name: string;
@@ -202,7 +203,17 @@ export interface LossAuditRecord {
   id: string;
   source_id: string;
   stage_run_id: string;
+  stage_kind: StageKind;
+  diagnostic_code: string;
+  severity: "info" | "warning" | "error";
   scope_ref: string;
+  session_ref?: string;
+  blob_ref?: string;
+  record_ref?: string;
+  fragment_ref?: string;
+  atom_ref?: string;
+  candidate_ref?: string;
+  source_format_profile_id?: string;
   loss_kind: "unknown_fragment" | "opaque_atom" | "dropped_for_projection";
   detail: string;
   created_at: string;
@@ -325,6 +336,7 @@ export interface ProjectIdentity extends ProjectRevisionIdentity {
   link_reason: ProjectLinkReason;
   manual_override_status: ManualOverrideStatus;
   primary_workspace_path?: string;
+  source_native_project_ref?: string;
   repo_root?: string;
   repo_remote?: string;
   repo_fingerprint?: string;
@@ -382,6 +394,40 @@ export interface ImportBundle {
   manifest: Record<string, unknown>;
 }
 
+export interface BundleObjectCounts {
+  sources: number;
+  sessions: number;
+  turns: number;
+  blobs: number;
+}
+
+export interface ImportBundleManifest {
+  bundle_id: string;
+  bundle_version: string;
+  exported_at: string;
+  exported_from_host_ids: string[];
+  schema_version: string;
+  source_instance_ids: string[];
+  counts: BundleObjectCounts;
+  includes_raw_blobs: boolean;
+  created_by: string;
+}
+
+export interface BundleChecksums {
+  manifest_sha256: string;
+  payload_sha256_by_source_id: Record<string, string>;
+  raw_sha256_by_path: Record<string, string>;
+}
+
+export interface ImportedBundleRecord {
+  bundle_id: string;
+  bundle_version: string;
+  imported_at: string;
+  source_instance_ids: string[];
+  manifest: ImportBundleManifest;
+  checksums: BundleChecksums;
+}
+
 export interface Host {
   id: string;
   hostname: string;
@@ -401,6 +447,7 @@ export interface SessionProjection {
   turn_count: number;
   model?: string;
   working_directory?: string;
+  source_native_project_ref?: string;
   primary_project_id?: string;
   sync_axis: SyncAxis;
 }
@@ -412,6 +459,8 @@ export interface UserMessageProjection {
   is_injected: boolean;
   created_at: string;
   atom_refs: string[];
+  canonical_text?: string;
+  display_segments?: DisplaySegment[];
 }
 
 export type SegmentType = "text" | "masked" | "highlight" | "code" | "reference" | "injected";
@@ -648,3 +697,76 @@ export interface SourceSyncPayload {
 export type Session = SessionProjection;
 export type UserTurn = UserTurnProjection;
 export type TurnContext = TurnContextProjection;
+
+export type UsageStatsDimension = "model" | "project" | "source" | "host" | "day" | "month";
+
+export interface UsageStatsOverview {
+  generated_at: string;
+  total_turns: number;
+  turns_with_token_usage: number;
+  turn_coverage_ratio: number;
+  turns_with_primary_model: number;
+  total_input_tokens: number;
+  total_cached_input_tokens: number;
+  total_output_tokens: number;
+  total_reasoning_output_tokens: number;
+  total_tokens: number;
+}
+
+export interface UsageStatsRollupRow {
+  key: string;
+  label: string;
+  dimension: UsageStatsDimension;
+  turn_count: number;
+  turns_with_token_usage: number;
+  turn_coverage_ratio: number;
+  turns_with_primary_model: number;
+  total_input_tokens: number;
+  total_cached_input_tokens: number;
+  total_output_tokens: number;
+  total_reasoning_output_tokens: number;
+  total_tokens: number;
+}
+
+export interface UsageStatsRollup {
+  generated_at: string;
+  dimension: UsageStatsDimension;
+  rows: UsageStatsRollupRow[];
+}
+
+export function deriveSourceSlotId(platform: SourcePlatform): string {
+  return platform;
+}
+
+export function normalizeSourceBaseDir(baseDir: string): string {
+  const normalized = baseDir.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
+  if (/^[A-Za-z]:/.test(normalized)) {
+    return `${normalized.slice(0, 1).toLowerCase()}${normalized.slice(1)}`;
+  }
+  return normalized;
+}
+
+export function deriveHostId(hostname: string): string {
+  return `host-${stableHash(hostname.trim().toLowerCase())}`;
+}
+
+export function deriveSourceInstanceId(input: {
+  host_id: string;
+  slot_id: string;
+  base_dir: string;
+}): string {
+  return `srcinst-${input.slot_id}-${stableHash(`${input.host_id}|${normalizeSourceBaseDir(input.base_dir)}`)}`;
+}
+
+export function isLegacySourceInstanceId(sourceId: string): boolean {
+  return sourceId.startsWith("src-");
+}
+
+function stableHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}

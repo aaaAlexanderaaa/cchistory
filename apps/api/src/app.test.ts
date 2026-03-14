@@ -1,11 +1,54 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import type { SourceDefinition, SourceSyncPayload } from "@cchistory/domain";
+import {
+  deriveHostId,
+  deriveSourceInstanceId,
+  type SourceDefinition,
+  type SourceSyncPayload,
+} from "@cchistory/domain";
+import { getDefaultSourcesForHost, runSourceProbe } from "@cchistory/source-adapters";
 import { CCHistoryStorage } from "@cchistory/storage";
 import { createApiRuntime } from "./app.js";
+
+test("runtime bootstraps exactly once when storage is empty and GET routes stay read-only afterwards", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+
+  try {
+    const source = await seedCodexSourceFixture(tempRoot, "bootstrap-once");
+    const dataDir = path.join(tempRoot, "data-bootstrap-once");
+    let probeCalls = 0;
+    const runtime = await createApiRuntime({
+      dataDir,
+      sources: [source],
+      probeRunner: async (...args) => {
+        probeCalls += 1;
+        return runSourceProbe(...args);
+      },
+    });
+
+    try {
+      assert.equal(probeCalls, 1);
+
+      const turnsResponse = await runtime.app.inject({ method: "GET", url: "/api/turns" });
+      assert.equal(turnsResponse.statusCode, 200);
+      assert.equal(JSON.parse(turnsResponse.body).turns.length, 1);
+
+      const sourcesResponse = await runtime.app.inject({ method: "GET", url: "/api/sources" });
+      assert.equal(sourcesResponse.statusCode, 200);
+      assert.equal(JSON.parse(sourcesResponse.body).sources.length, 1);
+
+      assert.equal(probeCalls, 1);
+    } finally {
+      await runtime.app.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
 
 test("probe and replay stay read-only when persist is false", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
@@ -16,6 +59,10 @@ test("probe and replay stay read-only when persist is false", async () => {
     const runtime = await createApiRuntime({ dataDir, sources: [source] });
 
     try {
+      const initialTurnCount = runtime.storage.listTurns().length;
+      const initialStageRunCount = runtime.storage.listStageRuns().length;
+      const initialRawFileCount = await countFiles(runtime.rawStoreDir);
+
       const probeResponse = await runtime.app.inject({
         method: "POST",
         url: "/api/admin/probe/runs",
@@ -27,8 +74,9 @@ test("probe and replay stay read-only when persist is false", async () => {
       });
 
       assert.equal(probeResponse.statusCode, 200);
-      assert.equal(runtime.storage.isEmpty(), true);
-      assert.equal(await countFiles(runtime.rawStoreDir), 0);
+      assert.equal(runtime.storage.listTurns().length, initialTurnCount);
+      assert.equal(runtime.storage.listStageRuns().length, initialStageRunCount);
+      assert.equal(await countFiles(runtime.rawStoreDir), initialRawFileCount);
 
       const replayResponse = await runtime.app.inject({
         method: "POST",
@@ -40,8 +88,9 @@ test("probe and replay stay read-only when persist is false", async () => {
       });
 
       assert.equal(replayResponse.statusCode, 200);
-      assert.equal(runtime.storage.isEmpty(), true);
-      assert.equal(await countFiles(runtime.rawStoreDir), 0);
+      assert.equal(runtime.storage.listTurns().length, initialTurnCount);
+      assert.equal(runtime.storage.listStageRuns().length, initialStageRunCount);
+      assert.equal(await countFiles(runtime.rawStoreDir), initialRawFileCount);
     } finally {
       await runtime.app.close();
     }
@@ -158,6 +207,349 @@ test("persisted probe snapshots raw blobs and seeds storage", async () => {
       });
       assert.equal(lineageResponse.statusCode, 200);
       assert.equal(JSON.parse(lineageResponse.body).lineage.turn.id, turns[0]!.id);
+    } finally {
+      await runtime.app.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("source directory overrides persist and drive subsequent syncs", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+
+  try {
+    const source = await seedCodexSourceFixture(tempRoot, "source-config-default", {
+      userText: "Default directory turn.",
+    });
+    const overrideDir = path.join(tempRoot, "source-config-override");
+    await writeCodexFixtureDirectory(overrideDir, {
+      sessionId: "source-config-override-session",
+      userText: "Override directory turn.",
+      workingDirectory: "/workspace/source-config-override",
+    });
+
+    const dataDir = path.join(tempRoot, "data-source-config");
+    const runtime = await createApiRuntime({ dataDir, sources: [source] });
+
+    try {
+      const initialConfigResponse = await runtime.app.inject({
+        method: "GET",
+        url: "/api/admin/source-config",
+      });
+      assert.equal(initialConfigResponse.statusCode, 200);
+      const initialConfig = JSON.parse(initialConfigResponse.body).sources as Array<{
+        id: string;
+        base_dir: string;
+        default_base_dir: string;
+        is_overridden: boolean;
+        path_exists: boolean;
+      }>;
+      assert.equal(initialConfig[0]?.id, source.id);
+      assert.equal(initialConfig[0]?.base_dir, source.base_dir);
+      assert.equal(initialConfig[0]?.default_base_dir, source.base_dir);
+      assert.equal(initialConfig[0]?.is_overridden, false);
+      assert.equal(initialConfig[0]?.path_exists, true);
+
+      const updateResponse = await runtime.app.inject({
+        method: "POST",
+        url: `/api/admin/source-config/${encodeURIComponent(source.id)}`,
+        payload: {
+          base_dir: overrideDir,
+          sync: false,
+        },
+      });
+      assert.equal(updateResponse.statusCode, 200);
+      const updatedSource = JSON.parse(updateResponse.body).source as {
+        base_dir: string;
+        default_base_dir: string;
+        override_base_dir?: string;
+        is_overridden: boolean;
+      };
+      assert.equal(updatedSource.base_dir, overrideDir);
+      assert.equal(updatedSource.default_base_dir, source.base_dir);
+      assert.equal(updatedSource.override_base_dir, overrideDir);
+      assert.equal(updatedSource.is_overridden, true);
+
+      const overridesFile = JSON.parse(await readFile(path.join(dataDir, "source-overrides.json"), "utf8")) as {
+        overrides: Record<string, { base_dir: string }>;
+      };
+      assert.equal(overridesFile.overrides[source.id]?.base_dir, overrideDir);
+    } finally {
+      await runtime.app.close();
+    }
+
+    const restartedRuntime = await createApiRuntime({ dataDir, sources: [source] });
+
+    try {
+      const configResponse = await restartedRuntime.app.inject({
+        method: "GET",
+        url: "/api/admin/source-config",
+      });
+      assert.equal(configResponse.statusCode, 200);
+      const configuredSource = JSON.parse(configResponse.body).sources[0] as {
+        base_dir: string;
+        default_base_dir: string;
+        override_base_dir?: string;
+        is_overridden: boolean;
+      };
+      assert.equal(configuredSource.base_dir, overrideDir);
+      assert.equal(configuredSource.default_base_dir, source.base_dir);
+      assert.equal(configuredSource.override_base_dir, overrideDir);
+      assert.equal(configuredSource.is_overridden, true);
+
+      const turnsResponse = await restartedRuntime.app.inject({ method: "GET", url: "/api/turns" });
+      assert.equal(turnsResponse.statusCode, 200);
+      const turns = JSON.parse(turnsResponse.body).turns as Array<{ canonical_text: string }>;
+      assert.equal(turns.length, 1);
+      assert.equal(turns[0]?.canonical_text, "Default directory turn.");
+
+      const sourcesResponse = await restartedRuntime.app.inject({ method: "GET", url: "/api/sources" });
+      assert.equal(sourcesResponse.statusCode, 200);
+      const sources = JSON.parse(sourcesResponse.body).sources as Array<{
+        base_dir: string;
+        default_base_dir: string;
+        is_overridden: boolean;
+        sync_status: string;
+      }>;
+      assert.equal(sources[0]?.base_dir, overrideDir);
+      assert.equal(sources[0]?.default_base_dir, source.base_dir);
+      assert.equal(sources[0]?.is_overridden, true);
+      assert.equal(sources[0]?.sync_status, "stale");
+
+      const resetResponse = await restartedRuntime.app.inject({
+        method: "POST",
+        url: `/api/admin/source-config/${encodeURIComponent(source.id)}/reset`,
+        payload: {
+          sync: true,
+        },
+      });
+      assert.equal(resetResponse.statusCode, 200);
+      const resetSource = JSON.parse(resetResponse.body).source as {
+        base_dir: string;
+        default_base_dir: string;
+        override_base_dir?: string;
+        is_overridden: boolean;
+      };
+      assert.equal(resetSource.base_dir, source.base_dir);
+      assert.equal(resetSource.default_base_dir, source.base_dir);
+      assert.equal(resetSource.override_base_dir, undefined);
+      assert.equal(resetSource.is_overridden, false);
+
+      const resetTurnsResponse = await restartedRuntime.app.inject({ method: "GET", url: "/api/turns" });
+      assert.equal(resetTurnsResponse.statusCode, 200);
+      const resetTurns = JSON.parse(resetTurnsResponse.body).turns as Array<{ canonical_text: string }>;
+      assert.equal(resetTurns.length, 1);
+      assert.equal(resetTurns[0]?.canonical_text, "Default directory turn.");
+    } finally {
+      await restartedRuntime.app.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("manual source instances can be added alongside the default source for the same platform", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+
+  try {
+    const source = await seedCodexSourceFixture(tempRoot, "manual-source-default", {
+      userText: "Default Codex source turn.",
+    });
+    const extraDir = path.join(tempRoot, "manual-source-extra");
+    await writeCodexFixtureDirectory(extraDir, {
+      sessionId: "manual-source-extra-session",
+      userText: "Manual Codex source turn.",
+      workingDirectory: "/workspace/manual-source-extra",
+    });
+
+    const dataDir = path.join(tempRoot, "data-manual-source");
+    const runtime = await createApiRuntime({ dataDir, sources: [source] });
+
+    try {
+      const createResponse = await runtime.app.inject({
+        method: "POST",
+        url: "/api/admin/source-config",
+        payload: {
+          platform: "codex",
+          base_dir: extraDir,
+          sync: true,
+        },
+      });
+      assert.equal(createResponse.statusCode, 200);
+      const createdSource = JSON.parse(createResponse.body).source as {
+        id: string;
+        base_dir: string;
+        is_default_source: boolean;
+      };
+      assert.equal(createdSource.base_dir, extraDir);
+      assert.equal(createdSource.is_default_source, false);
+
+      const sourcesResponse = await runtime.app.inject({ method: "GET", url: "/api/sources" });
+      assert.equal(sourcesResponse.statusCode, 200);
+      const sources = JSON.parse(sourcesResponse.body).sources as Array<{
+        id: string;
+        base_dir: string;
+        is_default_source: boolean;
+      }>;
+      assert.equal(sources.length, 2);
+      assert.ok(sources.some((configuredSource) => configuredSource.id === source.id && configuredSource.is_default_source));
+      assert.ok(
+        sources.some(
+          (configuredSource) => configuredSource.id === createdSource.id && configuredSource.base_dir === extraDir,
+        ),
+      );
+
+      const turnsResponse = await runtime.app.inject({ method: "GET", url: "/api/turns" });
+      assert.equal(turnsResponse.statusCode, 200);
+      const turns = JSON.parse(turnsResponse.body).turns as Array<{ canonical_text: string }>;
+      assert.ok(turns.some((turn) => turn.canonical_text === "Default Codex source turn."));
+      assert.ok(turns.some((turn) => turn.canonical_text === "Manual Codex source turn."));
+    } finally {
+      await runtime.app.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("configured directory changes stay stale until an explicit sync runs", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+
+  try {
+    const validSource = await seedCodexSourceFixture(tempRoot, "startup-refresh", {
+      userText: "Startup refresh turn.",
+    });
+    const staleSource = {
+      ...validSource,
+      base_dir: path.join(tempRoot, "missing-source-dir"),
+    };
+    const dataDir = path.join(tempRoot, "data-startup-refresh");
+
+    const staleRuntime = await createApiRuntime({ dataDir, sources: [staleSource] });
+
+    try {
+      const staleProbeResponse = await staleRuntime.app.inject({
+        method: "POST",
+        url: "/api/admin/probe/runs",
+        payload: {
+          source_ids: [staleSource.id],
+          persist: true,
+        },
+      });
+      assert.equal(staleProbeResponse.statusCode, 200);
+
+      const staleSources = staleRuntime.storage.listSources();
+      assert.equal(staleSources[0]?.base_dir, staleSource.base_dir);
+      assert.equal(staleSources[0]?.sync_status, "error");
+      assert.equal(staleSources[0]?.total_turns, 0);
+    } finally {
+      await staleRuntime.app.close();
+    }
+
+    let probeCalls = 0;
+    const refreshedRuntime = await createApiRuntime({
+      dataDir,
+      sources: [validSource],
+      probeRunner: async (...args) => {
+        probeCalls += 1;
+        return runSourceProbe(...args);
+      },
+    });
+
+    try {
+      const refreshedSources = refreshedRuntime.storage.listSources();
+      assert.equal(probeCalls, 0);
+      assert.equal(refreshedSources[0]?.base_dir, staleSource.base_dir);
+      assert.equal(refreshedSources[0]?.sync_status, "error");
+      assert.equal(refreshedSources[0]?.total_turns, 0);
+
+      const sourcesResponse = await refreshedRuntime.app.inject({ method: "GET", url: "/api/sources" });
+      assert.equal(sourcesResponse.statusCode, 200);
+      const sources = JSON.parse(sourcesResponse.body).sources as Array<{
+        base_dir: string;
+        sync_status: string;
+        total_turns: number;
+      }>;
+      assert.equal(sources[0]?.base_dir, validSource.base_dir);
+      assert.equal(sources[0]?.sync_status, "stale");
+      assert.equal(sources[0]?.total_turns, 0);
+
+      const turnsResponse = await refreshedRuntime.app.inject({ method: "GET", url: "/api/turns" });
+      assert.equal(turnsResponse.statusCode, 200);
+      const turns = JSON.parse(turnsResponse.body).turns as Array<{ canonical_text: string }>;
+      assert.equal(turns.length, 0);
+      assert.equal(probeCalls, 0);
+    } finally {
+      await refreshedRuntime.app.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("stored default sources remain editable when discovery no longer finds their default path", async () => {
+  const missingDefaultSource = getDefaultSourcesForHost({ includeMissing: true }).find(
+    (source) => !existsSync(source.base_dir),
+  );
+  if (!missingDefaultSource) {
+    return;
+  }
+
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+
+  try {
+    const dataDir = path.join(tempRoot, "data-missing-default-source");
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(
+      createStoredSourcePayload(missingDefaultSource, path.join(tempRoot, "previous-source-dir")),
+    );
+
+    const runtime = await createApiRuntime({ dataDir, storage });
+
+    try {
+      const sourcesResponse = await runtime.app.inject({ method: "GET", url: "/api/sources" });
+      assert.equal(sourcesResponse.statusCode, 200);
+      const listedSource = (JSON.parse(sourcesResponse.body).sources as Array<{
+        id: string;
+        base_dir: string;
+        default_base_dir?: string;
+        is_default_source: boolean;
+        path_exists: boolean;
+        total_turns: number;
+      }>).find((source) => source.id === missingDefaultSource.id);
+      assert.equal(listedSource?.is_default_source, true);
+      assert.equal(listedSource?.default_base_dir, missingDefaultSource.base_dir);
+      assert.equal(listedSource?.base_dir, missingDefaultSource.base_dir);
+      assert.equal(listedSource?.path_exists, false);
+      assert.equal(listedSource?.total_turns, 1);
+
+      const repairedDir = path.join(tempRoot, "repaired-source-dir");
+      await mkdir(repairedDir, { recursive: true });
+
+      const updateResponse = await runtime.app.inject({
+        method: "POST",
+        url: `/api/admin/source-config/${encodeURIComponent(missingDefaultSource.id)}`,
+        payload: {
+          base_dir: repairedDir,
+          sync: false,
+        },
+      });
+      assert.equal(updateResponse.statusCode, 200);
+      const updatedSource = JSON.parse(updateResponse.body).source as {
+        base_dir: string;
+        default_base_dir?: string;
+        override_base_dir?: string;
+        is_default_source: boolean;
+        is_overridden: boolean;
+        path_exists: boolean;
+      };
+      assert.equal(updatedSource.base_dir, repairedDir);
+      assert.equal(updatedSource.default_base_dir, missingDefaultSource.base_dir);
+      assert.equal(updatedSource.override_base_dir, repairedDir);
+      assert.equal(updatedSource.is_default_source, true);
+      assert.equal(updatedSource.is_overridden, true);
+      assert.equal(updatedSource.path_exists, true);
     } finally {
       await runtime.app.close();
     }
@@ -436,8 +828,37 @@ test("artifact coverage and candidate lifecycle endpoints expose tombstones afte
   }
 });
 
-async function seedCodexSourceFixture(tempRoot: string, name: string): Promise<SourceDefinition> {
+async function seedCodexSourceFixture(
+  tempRoot: string,
+  name: string,
+  options: { userText?: string } = {},
+): Promise<SourceDefinition> {
   const sourceDir = path.join(tempRoot, name);
+  const slotId = "codex";
+  await writeCodexFixtureDirectory(sourceDir, {
+    sessionId: `${name}-session`,
+    userText: options.userText ?? "Probe this session.",
+    workingDirectory: `/workspace/${name}`,
+  });
+
+  return {
+    id: deriveSourceInstanceId({
+      host_id: deriveHostId(os.hostname()),
+      slot_id: slotId,
+      base_dir: sourceDir,
+    }),
+    slot_id: slotId,
+    family: "local_coding_agent",
+    platform: "codex",
+    display_name: `Codex ${name}`,
+    base_dir: sourceDir,
+  };
+}
+
+async function writeCodexFixtureDirectory(
+  sourceDir: string,
+  options: { sessionId: string; userText: string; workingDirectory: string },
+): Promise<void> {
   await mkdir(sourceDir, { recursive: true });
 
   await writeFile(
@@ -447,8 +868,8 @@ async function seedCodexSourceFixture(tempRoot: string, name: string): Promise<S
         timestamp: "2026-03-09T08:00:00.000Z",
         type: "session_meta",
         payload: {
-          id: `${name}-session`,
-          cwd: `/workspace/${name}`,
+          id: options.sessionId,
+          cwd: options.workingDirectory,
           model: "gpt-5",
         },
       },
@@ -458,7 +879,7 @@ async function seedCodexSourceFixture(tempRoot: string, name: string): Promise<S
         payload: {
           type: "message",
           role: "user",
-          content: [{ type: "input_text", text: "Probe this session." }],
+          content: [{ type: "input_text", text: options.userText }],
         },
       },
       {
@@ -475,13 +896,38 @@ async function seedCodexSourceFixture(tempRoot: string, name: string): Promise<S
       .join("\n"),
     "utf8",
   );
+}
 
+function createStoredSourcePayload(source: SourceDefinition, baseDir: string): SourceSyncPayload {
   return {
-    id: `src-codex-${name}`,
-    family: "local_coding_agent",
-    platform: "codex",
-    display_name: `Codex ${name}`,
-    base_dir: sourceDir,
+    source: {
+      id: source.id,
+      slot_id: source.slot_id,
+      family: source.family,
+      platform: source.platform,
+      display_name: source.display_name,
+      base_dir: baseDir,
+      host_id: "host-stored-source",
+      last_sync: "2026-03-09T08:00:00.000Z",
+      sync_status: "healthy",
+      total_blobs: 1,
+      total_records: 1,
+      total_fragments: 1,
+      total_atoms: 1,
+      total_sessions: 1,
+      total_turns: 1,
+    },
+    stage_runs: [],
+    loss_audits: [],
+    blobs: [],
+    records: [],
+    fragments: [],
+    atoms: [],
+    edges: [],
+    candidates: [],
+    sessions: [],
+    turns: [],
+    contexts: [],
   };
 }
 
@@ -541,6 +987,7 @@ function createApiFixturePayload(
   return {
     source: {
       id: sourceId,
+      slot_id: options.platform,
       family: "local_coding_agent",
       platform: options.platform,
       display_name: canonicalText,
