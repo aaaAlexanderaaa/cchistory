@@ -12,7 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "pnpm --filter @cchistory/domain build && tsc -p tsconfig.json",
     "test": "pnpm run build && node --test dist/index.test.js"
   },
   "dependencies": {

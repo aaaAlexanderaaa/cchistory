@@ -26,15 +26,19 @@ export function TurnCard({
 }: TurnCardProps) {
   const borderColor = projectColor || '#E0E0E0'
   const interactive = Boolean(onClick) && !draggable
+  const turnIdLabel = variant === 'inbox'
+    ? turn.id.slice(0, 8).toUpperCase()
+    : turn.id.toUpperCase().replace('TURN-', '#')
   const className = cn(
-    "bg-card border border-border transition-all h-full flex flex-col",
+    "h-full w-full border border-border bg-card text-left transition-all",
+    "flex flex-col",
     interactive ? "cursor-pointer" : "cursor-default",
     "hover:shadow-hover",
     selected ? "shadow-hover border-accent" : "shadow-hard",
     draggable && "cursor-grab active:cursor-grabbing",
     variant === 'compact' && "p-3",
     variant === 'default' && "p-4",
-    variant === 'inbox' && "p-4",
+    variant === 'inbox' && "p-3.5",
   )
   const style = { 
     borderLeftWidth: '4px', 
@@ -49,7 +53,7 @@ export function TurnCard({
             <GripVertical className="w-4 h-4 text-muted" />
           )}
           <span className="mono-text text-muted">
-            {turn.id.toUpperCase().replace('TURN-', '#')}
+            {turnIdLabel}
           </span>
           <span className="mono-text text-muted">
             {formatAbsoluteDateTime(turn.created_at)}
@@ -89,7 +93,12 @@ export function TurnCard({
 
       {session && (
         <div className="mt-3">
-          <SessionBadge session={session} compact />
+          <SessionBadge
+            session={session}
+            compact
+            showTitle={variant !== 'inbox'}
+            showPlatform={variant === 'inbox' ? true : undefined}
+          />
         </div>
       )}
       

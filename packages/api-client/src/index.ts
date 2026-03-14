@@ -16,6 +16,8 @@ export interface UserMessageProjectionDto {
   is_injected: boolean;
   created_at: string;
   atom_refs?: string[];
+  canonical_text?: string;
+  display_segments?: DisplaySegmentDto[];
 }
 
 export interface TurnContextSummaryDto {
@@ -142,6 +144,7 @@ export interface SessionProjectionDto {
   turn_count: number;
   model?: string;
   working_directory?: string;
+  source_native_project_ref?: string;
   primary_project_id?: string;
   sync_axis: "current" | "superseded" | "source_absent" | "import_snapshot";
 }
@@ -165,6 +168,11 @@ export interface SourceStatusDto {
     | "other";
   display_name: string;
   base_dir: string;
+  default_base_dir?: string;
+  override_base_dir?: string;
+  is_overridden: boolean;
+  is_default_source: boolean;
+  path_exists: boolean;
   host_id: string;
   last_sync: string | null;
   sync_status: "healthy" | "stale" | "error";
@@ -495,6 +503,11 @@ interface SourcesResponse {
   sources: SourceStatusDto[];
 }
 
+interface SourceConfigMutationResponse {
+  source: SourceStatusDto;
+  synced: boolean;
+}
+
 interface SearchResultsResponse {
   results: TurnSearchResultDto[];
 }
@@ -572,6 +585,25 @@ export interface UpsertArtifactRequest {
 export interface CCHistoryApiClientOptions {
   baseUrl?: string;
   fetch?: typeof fetch;
+}
+
+export interface UpdateSourceConfigRequest {
+  base_dir: string;
+  sync?: boolean;
+  limit_files_per_source?: number;
+}
+
+export interface CreateSourceConfigRequest {
+  platform: SourceStatusDto["platform"];
+  base_dir: string;
+  display_name?: string;
+  sync?: boolean;
+  limit_files_per_source?: number;
+}
+
+export interface ResetSourceConfigRequest {
+  sync?: boolean;
+  limit_files_per_source?: number;
 }
 
 export class CCHistoryApiError extends Error {
@@ -655,6 +687,25 @@ export function createCCHistoryApiClient(options: CCHistoryApiClientOptions = {}
     },
     async getSources(): Promise<SourceStatusDto[]> {
       return (await fetchJson<SourcesResponse>(fetchImpl, baseUrl, "/api/sources")).sources;
+    },
+    async createSourceConfig(payload: CreateSourceConfigRequest): Promise<SourceConfigMutationResponse> {
+      return fetchJsonWithBody(fetchImpl, baseUrl, "/api/admin/source-config", payload);
+    },
+    async updateSourceConfig(sourceId: string, payload: UpdateSourceConfigRequest): Promise<SourceConfigMutationResponse> {
+      return fetchJsonWithBody(
+        fetchImpl,
+        baseUrl,
+        `/api/admin/source-config/${encodeURIComponent(sourceId)}`,
+        payload,
+      );
+    },
+    async resetSourceConfig(sourceId: string, payload: ResetSourceConfigRequest = {}): Promise<SourceConfigMutationResponse> {
+      return fetchJsonWithBody(
+        fetchImpl,
+        baseUrl,
+        `/api/admin/source-config/${encodeURIComponent(sourceId)}/reset`,
+        payload,
+      );
     },
     async getProjects(state: "committed" | "candidate" | "all" = "all"): Promise<ProjectSummaryDto[]> {
       const suffix = state === "all" ? "?state=all" : `?state=${encodeURIComponent(state)}`;

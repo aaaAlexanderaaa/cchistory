@@ -16,7 +16,7 @@ import {
   useTurnContextQuery,
   useTurnsQuery,
 } from '@/lib/api'
-import { AlertCircle, ArrowUpDown, Filter } from 'lucide-react'
+import { AlertCircle, ArrowUpDown, Filter, Loader2 } from 'lucide-react'
 
 const TurnDetailPanel = dynamic(
   () => import('@/components/turn-detail-panel').then((module) => module.TurnDetailPanel),
@@ -167,7 +167,8 @@ export function AllTurnsView() {
           <p className="mb-3">The web app could not reach the local API.</p>
           <div className="space-y-1 text-xs mono-text text-muted">
             <div>API base: {getApiBaseUrl()}</div>
-            <div>Start API: pnpm --filter @cchistory/api dev</div>
+            <div>Start services: pnpm services:start</div>
+            <div>Check status: pnpm services:status</div>
           </div>
         </div>
       </div>
@@ -182,7 +183,14 @@ export function AllTurnsView() {
             <div className="flex items-center gap-3">
               <h1 className="text-lg font-bold font-display text-ink">All Turns</h1>
               <span className="text-sm text-muted">
-                {isLoading ? 'Loading…' : `${filteredTurns.length} / ${stats.total}`}
+                {isLoading ? (
+                  <span className="flex items-center gap-1.5 opacity-70">
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    Loading…
+                  </span>
+                ) : (
+                  `${filteredTurns.length} / ${stats.total}`
+                )}
               </span>
             </div>
             <div className="text-xs text-muted">
@@ -254,21 +262,21 @@ export function AllTurnsView() {
         <div className="flex flex-wrap items-center gap-1">
           <FilterChip
             label="Committed"
-            count={stats.committed}
+            count={isLoading ? undefined : stats.committed}
             active={filters.linkStates.includes('committed')}
             color="success"
             onClick={() => toggleLinkState('committed')}
           />
           <FilterChip
             label="Candidate"
-            count={stats.candidate}
+            count={isLoading ? undefined : stats.candidate}
             active={filters.linkStates.includes('candidate')}
             color="candidate"
             onClick={() => toggleLinkState('candidate')}
           />
           <FilterChip
             label="Unlinked"
-            count={stats.unlinked}
+            count={isLoading ? undefined : stats.unlinked}
             active={filters.linkStates.includes('unlinked')}
             color="muted"
             onClick={() => toggleLinkState('unlinked')}
@@ -293,7 +301,12 @@ export function AllTurnsView() {
 
       <div className="flex-1 flex overflow-hidden">
         <div className={cn('flex-1 overflow-hidden transition-all', selectedTurn && 'lg:border-r lg:border-border')}>
-          {viewMode === 'turns' ? (
+          {isLoading && turns.length === 0 ? (
+            <div className="flex h-full flex-col items-center justify-center text-muted gap-2">
+              <Loader2 className="h-8 w-8 animate-spin opacity-50" />
+              <p className="text-sm">Loading turns...</p>
+            </div>
+          ) : viewMode === 'turns' ? (
             <TurnListVirtual
               turns={filteredTurns}
               selectedTurnId={selectedTurn?.id}

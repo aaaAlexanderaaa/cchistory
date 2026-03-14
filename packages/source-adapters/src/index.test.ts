@@ -5,9 +5,29 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { FragmentKind, SourceDefinition, SourceSyncPayload } from "@cchistory/domain";
-import { getSourceFormatProfiles, runSourceProbe } from "./index.js";
+import { getDefaultSourcesForHost, getSourceFormatProfiles, runSourceProbe } from "./index.js";
+import { listPlatformAdapters } from "./platforms/registry.js";
+
+test("platform adapter registry provides exactly one adapter per supported platform", () => {
+  const adapters = listPlatformAdapters();
+  const platforms = adapters.map((adapter) => adapter.platform).sort();
+
+  assert.deepEqual(platforms, [
+    "amp",
+    "antigravity",
+    "claude_code",
+    "codex",
+    "cursor",
+    "factory_droid",
+    "lobechat",
+    "openclaw",
+    "opencode",
+  ]);
+  assert.equal(new Set(platforms).size, adapters.length);
+});
 
 const execFileAsync = promisify(execFile);
 
@@ -102,6 +122,16 @@ test("runSourceProbe emits source-specific fragment kinds and unknown-content au
         payload.fragments.some((fragment) => fragment.fragment_kind === "unknown"),
         `expected unknown fragment for ${payload.source.platform}`,
       );
+      assert.ok(
+        payload.loss_audits.every(
+          (audit) =>
+            typeof audit.scope_ref === "string" &&
+            audit.scope_ref.length > 0 &&
+            typeof audit.stage_kind === "string" &&
+            typeof audit.diagnostic_code === "string",
+        ),
+        `expected stage and diagnostic metadata for ${payload.source.platform}`,
+      );
     }
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
@@ -137,6 +167,12 @@ test("runSourceProbe preserves malformed inputs across all four sources", async 
     assert.equal(ampPayload.records[0]?.parseable, false);
     assert.ok(ampPayload.fragments.some((fragment) => fragment.fragment_kind === "unknown"));
     assert.ok(ampPayload.loss_audits.some((audit) => audit.scope_ref === ampPayload.records[0]?.id));
+    assert.ok(ampPayload.loss_audits.some((audit) => audit.stage_kind === "extract_records"));
+    assert.ok(
+      ampPayload.loss_audits.every(
+        (audit) => audit.session_ref || audit.blob_ref || audit.record_ref || audit.scope_ref,
+      ),
+    );
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -164,6 +200,14 @@ test("runSourceProbe classifies atoms, keeps appended user messages in one turn,
     assert.equal(firstTurn.user_messages[0]?.is_injected, true);
     assert.equal(firstTurn.user_messages[1]?.raw_text, "Ship the fix.");
     assert.equal(firstTurn.user_messages[2]?.raw_text, "Also cover tests.");
+    assert.equal(firstTurn.raw_text, "[Assistant Rules - hidden]\n\nShip the fix.\n\nAlso cover tests.");
+    assert.equal(firstTurn.canonical_text, "Ship the fix.\n\nAlso cover tests.");
+    assert.equal(
+      firstTurn.display_segments.map((segment) => segment.content).join(""),
+      "[Assistant Rules - hidden]\n\nShip the fix.\n\nAlso cover tests.",
+    );
+    assert.equal(firstTurn.display_segments[0]?.type, "injected");
+    assert.equal(firstTurn.user_messages[0]?.display_segments?.[0]?.type, "injected");
     assert.equal(firstTurn.context_summary.assistant_reply_count, 1);
     assert.equal(firstTurn.context_summary.tool_call_count, 1);
     assert.equal(firstContext.turn_id, firstTurn.id);
@@ -216,6 +260,62 @@ test("runSourceProbe classifies atoms, keeps appended user messages in one turn,
     assert.ok(payload.edges.some((edge) => edge.edge_kind === "spawned_from"));
     assert.ok(payload.edges.some((edge) => edge.edge_kind === "same_submission"));
     assert.ok(payload.edges.some((edge) => edge.edge_kind === "continuation_of"));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe preserves injected scaffolding as masked user-message evidence instead of deleting it", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const source = await seedCodexInjectedScaffoldFixture(tempRoot);
+    const [payload] = (await runSourceProbe({ limit_files_per_source: 1 }, [source])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.turns.length, 1);
+
+    const turn = payload.turns[0]!;
+    assert.equal(turn.user_messages.length, 3);
+    assert.equal(turn.user_messages[0]?.is_injected, true);
+    assert.equal(turn.user_messages[1]?.is_injected, true);
+    assert.equal(turn.user_messages[2]?.is_injected, false);
+    assert.match(turn.raw_text, /# AGENTS\.md instructions/u);
+    assert.match(turn.raw_text, /<environment_context>/u);
+    assert.equal(turn.canonical_text, "Please review the patch plan only.");
+    assert.ok(turn.display_segments.some((segment) => segment.type === "masked" && segment.mask_label === "Agent Instructions"));
+    assert.ok(turn.display_segments.some((segment) => segment.type === "masked" && segment.mask_label === "Environment Context"));
+    assert.equal(
+      turn.user_messages[0]?.display_segments?.some(
+        (segment) => segment.type === "masked" && segment.mask_label === "Agent Instructions",
+      ),
+      true,
+    );
+    assert.equal(
+      turn.user_messages[1]?.display_segments?.some(
+        (segment) => segment.type === "masked" && segment.mask_label === "Environment Context",
+      ),
+      true,
+    );
+    assert.equal(turn.user_messages[2]?.display_segments?.[0]?.content, "Please review the patch plan only.");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe does not promote injected-only scaffolding into standalone user turns", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const source = await seedCodexInjectedOnlyFixture(tempRoot);
+    const [payload] = (await runSourceProbe({ limit_files_per_source: 1 }, [source])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.turns.length, 0);
+    assert.equal(payload.contexts.length, 0);
+    assert.equal(payload.sessions[0]?.turn_count, 0);
+    assert.ok(payload.atoms.some((atom) => atom.origin_kind === "injected_user_shaped"));
+    assert.equal(payload.candidates.some((candidate) => candidate.candidate_kind === "turn"), false);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -359,6 +459,105 @@ test("runSourceProbe projects token usage and stop reasons into turn context", a
   }
 });
 
+test("runSourceProbe keeps the final token checkpoint per turn and sums token usage across turns", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const source = await seedMultiTurnCodexTokenFixture(tempRoot);
+    const [payload] = (await runSourceProbe({ limit_files_per_source: 1 }, [source])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.turns.length, 2);
+    assert.equal(payload.sessions[0]?.turn_count, 2);
+
+    assert.equal(payload.turns[0]?.context_summary.total_tokens, 135);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.input_tokens, 30);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 90);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.output_tokens, 15);
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_count, 135);
+
+    assert.equal(payload.turns[1]?.context_summary.total_tokens, 235);
+    assert.equal(payload.turns[1]?.context_summary.token_usage?.input_tokens, 60);
+    assert.equal(payload.turns[1]?.context_summary.token_usage?.cache_read_input_tokens, 150);
+    assert.equal(payload.turns[1]?.context_summary.token_usage?.output_tokens, 25);
+    assert.equal(payload.contexts[1]?.assistant_replies[0]?.token_count, 235);
+
+    const sessionTotals = payload.turns.reduce(
+      (totals, turn) => {
+        totals.input += turn.context_summary.token_usage?.input_tokens ?? 0;
+        totals.cache += turn.context_summary.token_usage?.cache_read_input_tokens ?? 0;
+        totals.output += turn.context_summary.token_usage?.output_tokens ?? 0;
+        totals.total += turn.context_summary.total_tokens ?? 0;
+        return totals;
+      },
+      { input: 0, cache: 0, output: 0, total: 0 },
+    );
+
+    assert.deepEqual(sessionTotals, {
+      input: 90,
+      cache: 240,
+      output: 40,
+      total: 370,
+    });
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe sums the final token checkpoints across assistant replies inside one turn", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const source = await seedMultiReplyCodexTokenFixture(tempRoot);
+    const [payload] = (await runSourceProbe({ limit_files_per_source: 1 }, [source])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.contexts.length, 1);
+    assert.equal(payload.contexts[0]?.assistant_replies.length, 2);
+
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_count, 135);
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_usage?.input_tokens, 30);
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_usage?.cache_read_input_tokens, 90);
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_usage?.output_tokens, 15);
+
+    assert.equal(payload.contexts[0]?.assistant_replies[1]?.token_count, 235);
+    assert.equal(payload.contexts[0]?.assistant_replies[1]?.token_usage?.input_tokens, 60);
+    assert.equal(payload.contexts[0]?.assistant_replies[1]?.token_usage?.cache_read_input_tokens, 150);
+    assert.equal(payload.contexts[0]?.assistant_replies[1]?.token_usage?.output_tokens, 25);
+
+    assert.equal(payload.turns[0]?.context_summary.total_tokens, 370);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.input_tokens, 90);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 240);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.output_tokens, 40);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe uses cumulative token deltas when one visible reply spans multiple billed token updates", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const source = await seedCodexCumulativeTokenFixture(tempRoot);
+    const [payload] = (await runSourceProbe({ limit_files_per_source: 1 }, [source])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.contexts[0]?.assistant_replies.length, 1);
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_count, 135);
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_usage?.input_tokens, 60);
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_usage?.cache_read_input_tokens, 60);
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_usage?.output_tokens, 15);
+    assert.equal(payload.turns[0]?.context_summary.total_tokens, 135);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.input_tokens, 60);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 60);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.output_tokens, 15);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("runSourceProbe supports cursor antigravity openclaw opencode and lobechat fixtures", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
 
@@ -367,7 +566,7 @@ test("runSourceProbe supports cursor antigravity openclaw opencode and lobechat 
     const result = await runSourceProbe({ limit_files_per_source: 1 }, sources);
     const payloadsByPlatform = new Map(result.sources.map((payload) => [payload.source.platform, payload]));
 
-    for (const platform of ["cursor", "antigravity", "openclaw", "opencode", "lobechat"] as const) {
+    for (const platform of ["cursor", "openclaw", "opencode", "lobechat"] as const) {
       const payload = payloadsByPlatform.get(platform);
       assert.ok(payload, `expected payload for ${platform}`);
       assert.equal(payload.source.sync_status, "healthy");
@@ -379,10 +578,371 @@ test("runSourceProbe supports cursor antigravity openclaw opencode and lobechat 
       assertParserMetadata(payload);
     }
 
+    const antigravityPayload = payloadsByPlatform.get("antigravity");
+    assert.ok(antigravityPayload);
+    assert.equal(antigravityPayload.source.sync_status, "healthy");
+    assert.equal(antigravityPayload.sessions.length, 1);
+    assert.equal(antigravityPayload.turns.length, 0);
+    assert.equal(antigravityPayload.contexts.length, 0);
+    assertParserMetadata(antigravityPayload);
+
     assert.equal(payloadsByPlatform.get("cursor")?.sessions[0]?.working_directory, "/workspace/cursor");
     assert.equal(payloadsByPlatform.get("antigravity")?.sessions[0]?.working_directory, "/workspace/antigravity");
     assert.equal(payloadsByPlatform.get("opencode")?.sessions[0]?.title, "OpenCode fixture");
     assert.equal(payloadsByPlatform.get("lobechat")?.source.family, "conversational_export");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe preserves real mock_data coverage across codex claude cursor and antigravity roots", async () => {
+  const mockDataRoot = getRepoMockDataRoot();
+  const result = await runSourceProbe({}, [
+    createSourceDefinition("src-codex-mock-data", "codex", path.join(mockDataRoot, ".codex", "sessions")),
+    createSourceDefinition("src-claude-mock-data", "claude_code", path.join(mockDataRoot, ".claude", "projects")),
+    createSourceDefinition(
+      "src-cursor-mock-data",
+      "cursor",
+      path.join(mockDataRoot, "Library", "Application Support", "Cursor", "User"),
+    ),
+    createSourceDefinition(
+      "src-antigravity-mock-data",
+      "antigravity",
+      path.join(mockDataRoot, "Library", "Application Support", "antigravity", "User"),
+    ),
+  ]);
+  const payloadsByPlatform = new Map(result.sources.map((payload) => [payload.source.platform, payload]));
+
+  assert.equal(result.sources.length, 4);
+
+  const codexPayload = payloadsByPlatform.get("codex");
+  assert.ok(codexPayload);
+  assert.equal(codexPayload.source.sync_status, "healthy");
+  assert.ok(codexPayload.sessions.length >= 4);
+  assert.ok(codexPayload.turns.length >= 4);
+  assert.ok(codexPayload.contexts.length >= 4);
+  assert.ok(codexPayload.turns.some((turn) => turn.canonical_text.includes("review the validator")));
+  assertParserMetadata(codexPayload);
+
+  const claudePayload = payloadsByPlatform.get("claude_code");
+  assert.ok(claudePayload);
+  assert.equal(claudePayload.source.sync_status, "healthy");
+  assert.ok(claudePayload.sessions.length >= 4);
+  assert.ok(claudePayload.turns.length >= 4);
+  assert.ok(claudePayload.contexts.length >= 4);
+  assert.ok(claudePayload.turns.some((turn) => turn.canonical_text.length > 0));
+  assertParserMetadata(claudePayload);
+
+  const cursorPayload = payloadsByPlatform.get("cursor");
+  assert.ok(cursorPayload);
+  assert.equal(cursorPayload.source.sync_status, "healthy");
+  assert.ok(cursorPayload.sessions.length >= 2);
+  assert.ok(cursorPayload.turns.length >= 1);
+  assert.ok(cursorPayload.contexts.length >= 1);
+  assert.ok(cursorPayload.records.length >= 30);
+  assert.ok(cursorPayload.loss_audits.length >= 20);
+  assert.ok(cursorPayload.sessions.some((session) => typeof session.working_directory === "string" && session.working_directory.length > 0));
+  assertParserMetadata(cursorPayload);
+
+  const antigravityPayload = payloadsByPlatform.get("antigravity");
+  assert.ok(antigravityPayload);
+  assert.equal(antigravityPayload.source.sync_status, "healthy");
+  assert.ok(antigravityPayload.sessions.length >= 1);
+  assert.ok(antigravityPayload.records.length >= 100);
+  assert.ok(antigravityPayload.fragments.length >= 100);
+  assert.ok(antigravityPayload.loss_audits.length >= 50);
+  assert.ok(antigravityPayload.sessions.some((session) => typeof session.updated_at === "string" && session.updated_at.length > 0));
+  assertParserMetadata(antigravityPayload);
+});
+
+test("getDefaultSourcesForHost prefers official macOS Cursor and Antigravity user-data roots", () => {
+  const homeDir = "/Users/tester";
+  const sources = getDefaultSourcesForHost({
+    homeDir,
+    platform: "darwin",
+    pathExists(targetPath) {
+      return (
+        targetPath === path.join(homeDir, "Library", "Application Support", "Cursor", "User") ||
+        targetPath === path.join(homeDir, "Library", "Application Support", "Antigravity", "User")
+      );
+    },
+  });
+
+  const cursorSource = sources.find((source) => source.platform === "cursor");
+  const antigravitySource = sources.find((source) => source.platform === "antigravity");
+
+  assert.equal(cursorSource?.base_dir, path.join(homeDir, "Library", "Application Support", "Cursor", "User"));
+  assert.equal(
+    antigravitySource?.base_dir,
+    path.join(homeDir, "Library", "Application Support", "Antigravity", "User"),
+  );
+  assert.equal(sources.some((source) => source.platform === "opencode"), false);
+});
+
+test("getDefaultSourcesForHost keeps Cursor project transcripts but prefers official Antigravity user roots over brain artifacts", () => {
+  const homeDir = "/Users/tester";
+  const sources = getDefaultSourcesForHost({
+    homeDir,
+    platform: "darwin",
+    pathExists(targetPath) {
+      return (
+        targetPath === path.join(homeDir, ".cursor", "projects") ||
+        targetPath === path.join(homeDir, ".gemini", "antigravity", "brain") ||
+        targetPath === path.join(homeDir, "Library", "Application Support", "Antigravity", "User")
+      );
+    },
+  });
+
+  const cursorSource = sources.find((source) => source.platform === "cursor");
+  const antigravitySource = sources.find((source) => source.platform === "antigravity");
+
+  assert.equal(cursorSource?.base_dir, path.join(homeDir, ".cursor", "projects"));
+  assert.equal(
+    antigravitySource?.base_dir,
+    path.join(homeDir, "Library", "Application Support", "Antigravity", "User"),
+  );
+});
+
+test("runSourceProbe ingests Cursor agent transcripts from project history roots", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const sessionId = "cursor-transcript-session";
+    const transcriptDir = path.join(tempRoot, ".cursor", "projects", "workspace-a", "agent-transcripts", sessionId);
+    await mkdir(transcriptDir, { recursive: true });
+    await writeFile(
+      path.join(transcriptDir, `${sessionId}.jsonl`),
+      [
+        {
+          role: "user",
+          title: "Cursor transcript fixture",
+          content: "Investigate Cursor transcript ingestion.",
+        },
+        {
+          role: "assistant",
+          updatedAt: "2026-03-10T08:00:01.000Z",
+          usage: {
+            inputTokens: 6,
+            outputTokens: 4,
+            totalTokens: 10,
+          },
+          stopReason: "end_turn",
+          content: "Cursor transcript ingestion is working.",
+        },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8",
+    );
+
+    const [payload] = (
+      await runSourceProbe(
+        {},
+        [createSourceDefinition("src-cursor-transcript", "cursor", path.join(tempRoot, ".cursor", "projects"))],
+      )
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.source.sync_status, "healthy");
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.contexts.length, 1);
+    assert.match(payload.turns[0]?.canonical_text ?? "", /Cursor transcript ingestion/);
+    const projectObservation = payload.candidates.find((candidate) => candidate.candidate_kind === "project_observation");
+    assert.equal(projectObservation?.evidence.source_native_project_ref, "workspace-a");
+    assert.ok(
+      payload.atoms.some(
+        (atom) => atom.actor_kind === "assistant" && typeof atom.payload.text === "string" && atom.payload.text.includes("is working"),
+      ),
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe captures Antigravity brain task artifacts without misclassifying them as user turns", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const sessionId = "brain-session";
+    const sessionDir = path.join(tempRoot, ".gemini", "antigravity", "brain", sessionId);
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(
+      path.join(sessionDir, "task.md"),
+      "# Antigravity Task\n\nHelp the user understand the migration plan.\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(sessionDir, "task.md.metadata.json"),
+      JSON.stringify({
+        artifactType: "ARTIFACT_TYPE_TASK",
+        summary: "Task summary",
+        updatedAt: "2026-03-10T09:00:00.000Z",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(sessionDir, "walkthrough.md"),
+      "# Walkthrough\n\nProduced the migration plan and next steps.\n",
+      "utf8",
+    );
+    await writeFile(
+      path.join(sessionDir, "walkthrough.md.metadata.json"),
+      JSON.stringify({
+        updatedAt: "2026-03-10T09:05:00.000Z",
+      }),
+      "utf8",
+    );
+
+    const [payload] = (
+      await runSourceProbe(
+        {},
+        [createSourceDefinition("src-antigravity-brain", "antigravity", path.join(tempRoot, ".gemini", "antigravity", "brain"))],
+      )
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.source.sync_status, "healthy");
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.turns.length, 0);
+    assert.equal(payload.contexts.length, 0);
+    assert.ok(
+      payload.atoms.some(
+        (atom) => atom.actor_kind === "system" && typeof atom.payload.text === "string" && atom.payload.text.includes("migration plan"),
+      ),
+    );
+    assert.ok(
+      payload.atoms.some(
+        (atom) => atom.actor_kind === "assistant" && typeof atom.payload.text === "string" && atom.payload.text.includes("next steps"),
+      ),
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe falls back to Cursor prompt history with workspace-linked synthetic sessions", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const cursorUserDir = path.join(tempRoot, "Cursor", "User");
+    const workspaceDir = path.join(cursorUserDir, "workspaceStorage", "cursor-prompt-history");
+    await mkdir(workspaceDir, { recursive: true });
+
+    seedCursorPromptHistoryDb(path.join(workspaceDir, "state.vscdb"), {
+      title: "Cursor prompt history",
+      prompt: "Inspect the Cursor prompt fallback.",
+      observedAt: "2026-03-10T10:00:00.000Z",
+    });
+    await writeFile(
+      path.join(workspaceDir, "workspace.json"),
+      JSON.stringify({ folder: "/workspace/cursor-prompt-history" }),
+      "utf8",
+    );
+
+    const [payload] = (
+      await runSourceProbe(
+        { limit_files_per_source: 1 },
+        [createSourceDefinition("src-cursor-prompt-history", "cursor", cursorUserDir)],
+      )
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.source.sync_status, "healthy");
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.contexts.length, 1);
+    assert.equal(payload.sessions[0]?.working_directory, "/workspace/cursor-prompt-history");
+    assert.equal(payload.turns[0]?.session_id, payload.sessions[0]?.id);
+    assert.equal(payload.turns[0]?.canonical_text, "Inspect the Cursor prompt fallback.");
+    assert.equal(payload.contexts[0]?.assistant_replies.length, 0);
+    assert.ok(payload.candidates.some((candidate) => candidate.candidate_kind === "project_observation"));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe skips unreadable Cursor global state DBs and still ingests workspaceStorage", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const cursorUserDir = path.join(tempRoot, "Cursor", "User");
+    const workspaceDir = path.join(cursorUserDir, "workspaceStorage", "cursor-workspace");
+    const globalDir = path.join(cursorUserDir, "globalStorage");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(globalDir, { recursive: true });
+
+    seedCursorStyleStateDb(path.join(workspaceDir, "state.vscdb"), {
+      workspacePath: "/workspace/cursor-priority",
+      composerId: "cursor-priority",
+      title: "Cursor priority fixture",
+      storageMode: "composerData",
+    });
+    await writeFile(path.join(workspaceDir, "workspace.json"), JSON.stringify({ folder: "/workspace/cursor-priority" }), "utf8");
+    await writeFile(path.join(globalDir, "state.vscdb"), "not-a-sqlite-database", "utf8");
+
+    const [payload] = (
+      await runSourceProbe(
+        { limit_files_per_source: 2 },
+        [createSourceDefinition("src-cursor-priority", "cursor", cursorUserDir)],
+      )
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.source.sync_status, "healthy");
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.sessions[0]?.working_directory, "/workspace/cursor-priority");
+    assert.ok(
+      payload.blobs.some((blob) => blob.origin_path === path.join(globalDir, "state.vscdb")),
+      "expected unreadable globalStorage DB to remain visible as a captured blob",
+    );
+    assert.ok(
+      payload.loss_audits.some(
+        (audit) =>
+          audit.detail.includes("Failed to process captured source file") &&
+          audit.stage_kind === "extract_records",
+      ),
+      "expected unreadable DB to produce a loss audit instead of aborting the source probe",
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe prioritizes Cursor workspaceStorage before globalStorage when file limits apply", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const cursorUserDir = path.join(tempRoot, "Cursor", "User");
+    const workspaceDir = path.join(cursorUserDir, "workspaceStorage", "cursor-workspace");
+    const globalDir = path.join(cursorUserDir, "globalStorage");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(globalDir, { recursive: true });
+
+    seedCursorStyleStateDb(path.join(workspaceDir, "state.vscdb"), {
+      workspacePath: "/workspace/cursor-limited",
+      composerId: "cursor-limited",
+      title: "Cursor limited fixture",
+      storageMode: "composerData",
+    });
+    await writeFile(path.join(workspaceDir, "workspace.json"), JSON.stringify({ folder: "/workspace/cursor-limited" }), "utf8");
+    await writeFile(path.join(globalDir, "state.vscdb"), "not-a-sqlite-database", "utf8");
+
+    const [payload] = (
+      await runSourceProbe(
+        { limit_files_per_source: 1 },
+        [createSourceDefinition("src-cursor-limited", "cursor", cursorUserDir)],
+      )
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.source.sync_status, "healthy");
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.blobs.length, 1);
+    assert.equal(payload.blobs[0]?.origin_path, path.join(workspaceDir, "state.vscdb"));
+    assert.equal(payload.sessions[0]?.working_directory, "/workspace/cursor-limited");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -772,6 +1332,95 @@ async function seedMultiTurnCodexFixture(tempRoot: string): Promise<SourceDefini
   );
 
   return createSourceDefinition("src-codex-multi-turn", "codex", codexDir);
+}
+
+async function seedCodexInjectedScaffoldFixture(tempRoot: string): Promise<SourceDefinition> {
+  const codexDir = path.join(tempRoot, "codex-injected-scaffold");
+  await mkdir(codexDir, { recursive: true });
+
+  await writeFile(
+    path.join(codexDir, "session.jsonl"),
+    [
+      {
+        timestamp: "2026-03-09T08:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-injected-scaffold-session",
+          cwd: "/workspace/injected-scaffold",
+          model: "gpt-5",
+        },
+      },
+      {
+        timestamp: "2026-03-09T08:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text:
+                "# AGENTS.md instructions for /workspace/injected-scaffold\n\n<INSTRUCTIONS>\nBe precise.\n</INSTRUCTIONS>\n\n<environment_context>\n  <cwd>/workspace/injected-scaffold</cwd>\n  <shell>zsh</shell>\n</environment_context>\n\nPlease review the patch plan only.",
+            },
+          ],
+        },
+      },
+      {
+        timestamp: "2026-03-09T08:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "I will review the plan." }],
+        },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n"),
+    "utf8",
+  );
+
+  return createSourceDefinition("src-codex-injected-scaffold", "codex", codexDir);
+}
+
+async function seedCodexInjectedOnlyFixture(tempRoot: string): Promise<SourceDefinition> {
+  const codexDir = path.join(tempRoot, "codex-injected-only");
+  await mkdir(codexDir, { recursive: true });
+
+  await writeFile(
+    path.join(codexDir, "session.jsonl"),
+    [
+      {
+        timestamp: "2026-03-09T08:10:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-injected-only-session",
+          cwd: "/workspace/injected-only",
+          model: "gpt-5",
+        },
+      },
+      {
+        timestamp: "2026-03-09T08:10:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text:
+                "# AGENTS.md instructions for /workspace/injected-only\n\n<INSTRUCTIONS>\nBe precise.\n</INSTRUCTIONS>\n\n<environment_context>\n  <cwd>/workspace/injected-only</cwd>\n  <shell>zsh</shell>\n</environment_context>",
+            },
+          ],
+        },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n"),
+    "utf8",
+  );
+
+  return createSourceDefinition("src-codex-injected-only", "codex", codexDir);
 }
 
 async function seedClaudeInterruptedFixture(tempRoot: string): Promise<SourceDefinition> {
@@ -1222,9 +1871,384 @@ async function seedTokenProjectionFixtures(tempRoot: string): Promise<SourceDefi
   ];
 }
 
+async function seedMultiTurnCodexTokenFixture(tempRoot: string): Promise<SourceDefinition> {
+  const codexDir = path.join(tempRoot, "codex-token-checkpoints");
+  await mkdir(codexDir, { recursive: true });
+
+  await writeFile(
+    path.join(codexDir, "session.jsonl"),
+    [
+      {
+        timestamp: "2026-03-10T04:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-token-checkpoints-session",
+          cwd: "/workspace/codex-token-checkpoints",
+          model: "gpt-5",
+        },
+      },
+      {
+        timestamp: "2026-03-10T04:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "First tokenized turn." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T04:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "output_text", text: "First answer." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T04:00:02.500Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: {
+              input_tokens: 40,
+              cached_input_tokens: 20,
+              output_tokens: 5,
+              total_tokens: 45,
+            },
+          },
+        },
+      },
+      {
+        timestamp: "2026-03-10T04:00:03.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: {
+              input_tokens: 120,
+              cached_input_tokens: 90,
+              output_tokens: 15,
+              total_tokens: 135,
+            },
+          },
+        },
+      },
+      {
+        timestamp: "2026-03-10T04:00:04.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Second tokenized turn." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T04:00:05.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "output_text", text: "Second answer." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T04:00:05.500Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: {
+              input_tokens: 70,
+              cached_input_tokens: 30,
+              output_tokens: 8,
+              total_tokens: 78,
+            },
+          },
+        },
+      },
+      {
+        timestamp: "2026-03-10T04:00:06.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            last_token_usage: {
+              input_tokens: 210,
+              cached_input_tokens: 150,
+              output_tokens: 25,
+              total_tokens: 235,
+            },
+          },
+        },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n"),
+    "utf8",
+  );
+
+  return createSourceDefinition("src-codex-token-checkpoints", "codex", codexDir);
+}
+
+async function seedMultiReplyCodexTokenFixture(tempRoot: string): Promise<SourceDefinition> {
+  const codexDir = path.join(tempRoot, "codex-token-multi-reply");
+  await mkdir(codexDir, { recursive: true });
+
+  await writeFile(
+    path.join(codexDir, "session.jsonl"),
+    [
+      {
+        timestamp: "2026-03-10T05:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-token-multi-reply-session",
+          cwd: "/workspace/codex-token-multi-reply",
+          model: "gpt-5",
+        },
+      },
+      {
+        timestamp: "2026-03-10T05:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Keep working on the same turn." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T05:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          stop_reason: "end_turn",
+          usage: {
+            input_tokens: 12,
+            cached_input_tokens: 5,
+            output_tokens: 2,
+            total_tokens: 14,
+          },
+          content: [{ type: "output_text", text: "First reply." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T05:00:02.500Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 40,
+              cached_input_tokens: 20,
+              output_tokens: 5,
+              total_tokens: 45,
+            },
+            last_token_usage: {
+              input_tokens: 40,
+              cached_input_tokens: 20,
+              output_tokens: 5,
+              total_tokens: 45,
+            },
+          },
+        },
+      },
+      {
+        timestamp: "2026-03-10T05:00:03.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 120,
+              cached_input_tokens: 90,
+              output_tokens: 15,
+              total_tokens: 135,
+            },
+            last_token_usage: {
+              input_tokens: 120,
+              cached_input_tokens: 90,
+              output_tokens: 15,
+              total_tokens: 135,
+            },
+          },
+        },
+      },
+      {
+        timestamp: "2026-03-10T05:00:04.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "output_text", text: "Second reply." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T05:00:04.500Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 190,
+              cached_input_tokens: 120,
+              output_tokens: 23,
+              total_tokens: 213,
+            },
+            last_token_usage: {
+              input_tokens: 70,
+              cached_input_tokens: 30,
+              output_tokens: 8,
+              total_tokens: 78,
+            },
+          },
+        },
+      },
+      {
+        timestamp: "2026-03-10T05:00:05.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 330,
+              cached_input_tokens: 240,
+              output_tokens: 40,
+              total_tokens: 370,
+            },
+            last_token_usage: {
+              input_tokens: 210,
+              cached_input_tokens: 150,
+              output_tokens: 25,
+              total_tokens: 235,
+            },
+          },
+        },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n"),
+    "utf8",
+  );
+
+  return createSourceDefinition("src-codex-token-multi-reply", "codex", codexDir);
+}
+
+async function seedCodexCumulativeTokenFixture(tempRoot: string): Promise<SourceDefinition> {
+  const codexDir = path.join(tempRoot, "codex-token-cumulative");
+  await mkdir(codexDir, { recursive: true });
+
+  await writeFile(
+    path.join(codexDir, "session.jsonl"),
+    [
+      {
+        timestamp: "2026-03-10T06:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-token-cumulative-session",
+          cwd: "/workspace/codex-token-cumulative",
+          model: "gpt-5",
+        },
+      },
+      {
+        timestamp: "2026-03-10T06:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Track the hidden billed work." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T06:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "output_text", text: "One visible reply." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T06:00:02.500Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 40,
+              cached_input_tokens: 20,
+              output_tokens: 5,
+              total_tokens: 45,
+            },
+            last_token_usage: {
+              input_tokens: 40,
+              cached_input_tokens: 20,
+              output_tokens: 5,
+              total_tokens: 45,
+            },
+          },
+        },
+      },
+      {
+        timestamp: "2026-03-10T06:00:03.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 80,
+              cached_input_tokens: 40,
+              output_tokens: 10,
+              total_tokens: 90,
+            },
+            last_token_usage: {
+              input_tokens: 40,
+              cached_input_tokens: 20,
+              output_tokens: 5,
+              total_tokens: 45,
+            },
+          },
+        },
+      },
+      {
+        timestamp: "2026-03-10T06:00:03.500Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 120,
+              cached_input_tokens: 60,
+              output_tokens: 15,
+              total_tokens: 135,
+            },
+            last_token_usage: {
+              input_tokens: 40,
+              cached_input_tokens: 20,
+              output_tokens: 5,
+              total_tokens: 45,
+            },
+          },
+        },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n"),
+    "utf8",
+  );
+
+  return createSourceDefinition("src-codex-token-cumulative", "codex", codexDir);
+}
+
 async function seedExpandedSourceFixtures(tempRoot: string): Promise<SourceDefinition[]> {
   const cursorDir = path.join(tempRoot, "cursor", "workspaceStorage", "cursor-workspace");
-  const antigravityDir = path.join(tempRoot, "antigravity", "workspaceStorage", "ag-workspace");
+  const antigravityDir = path.join(tempRoot, "antigravity", "User");
+  const antigravityGlobalDir = path.join(antigravityDir, "globalStorage");
   const openclawDir = path.join(tempRoot, "openclaw", "agent-a", "sessions");
   const opencodeRoot = path.join(tempRoot, "opencode");
   const opencodeSessionDir = path.join(opencodeRoot, "session");
@@ -1232,7 +2256,7 @@ async function seedExpandedSourceFixtures(tempRoot: string): Promise<SourceDefin
   const lobechatDir = path.join(tempRoot, "lobechat");
 
   await mkdir(cursorDir, { recursive: true });
-  await mkdir(antigravityDir, { recursive: true });
+  await mkdir(antigravityGlobalDir, { recursive: true });
   await mkdir(openclawDir, { recursive: true });
   await mkdir(opencodeSessionDir, { recursive: true });
   await mkdir(opencodeMessageDir, { recursive: true });
@@ -1246,13 +2270,13 @@ async function seedExpandedSourceFixtures(tempRoot: string): Promise<SourceDefin
   });
   await writeFile(path.join(cursorDir, "workspace.json"), JSON.stringify({ folder: "/workspace/cursor" }), "utf8");
 
-  seedCursorStyleStateDb(path.join(antigravityDir, "state.vscdb"), {
-    workspacePath: "/workspace/antigravity",
-    composerId: "antigravity-fixture",
+  seedAntigravityTrajectoryStateDb(path.join(antigravityGlobalDir, "state.vscdb"), {
+    trajectoryId: "antigravity-fixture",
     title: "Antigravity fixture",
-    storageMode: "composerRoot",
+    workspacePath: "/workspace/antigravity",
+    createdAt: "2026-03-10T03:29:59.000Z",
+    updatedAt: "2026-03-10T03:30:01.000Z",
   });
-  await writeFile(path.join(antigravityDir, "workspace.json"), JSON.stringify({ folder: "/workspace/antigravity" }), "utf8");
 
   await writeFile(
     path.join(openclawDir, "openclaw-fixture.jsonl"),
@@ -1354,7 +2378,7 @@ async function seedExpandedSourceFixtures(tempRoot: string): Promise<SourceDefin
 
   return [
     createSourceDefinition("src-cursor-fixture", "cursor", path.join(tempRoot, "cursor")),
-    createSourceDefinition("src-antigravity-fixture", "antigravity", path.join(tempRoot, "antigravity")),
+    createSourceDefinition("src-antigravity-fixture", "antigravity", antigravityDir),
     createSourceDefinition("src-openclaw-fixture", "openclaw", path.join(tempRoot, "openclaw")),
     createSourceDefinition("src-opencode-fixture", "opencode", opencodeSessionDir),
     createSourceDefinition("src-lobechat-fixture", "lobechat", lobechatDir, "conversational_export"),
@@ -1415,6 +2439,143 @@ function seedCursorStyleStateDb(
   }
 }
 
+function seedCursorPromptHistoryDb(
+  dbPath: string,
+  options: {
+    title: string;
+    prompt: string;
+    observedAt: string;
+  },
+): void {
+  const observedAtMs = Date.parse(options.observedAt);
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB NOT NULL)");
+    const insert = db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)");
+    insert.run(
+      "composer.composerData",
+      JSON.stringify({
+        allComposers: [
+          {
+            composerId: "cursor-prompt-history",
+            name: options.title,
+            lastUpdatedAt: observedAtMs,
+            createdAt: observedAtMs,
+          },
+        ],
+      }),
+    );
+    insert.run(
+      "aiService.generations",
+      JSON.stringify([
+        {
+          unixMs: observedAtMs,
+          generationUUID: "cursor-prompt-history-gen-1",
+          type: "composer",
+          textDescription: options.prompt,
+        },
+      ]),
+    );
+    insert.run(
+      "aiService.prompts",
+      JSON.stringify([
+        {
+          text: options.prompt,
+          commandType: 4,
+        },
+      ]),
+    );
+  } finally {
+    db.close();
+  }
+}
+
+function seedAntigravityTrajectoryStateDb(
+  dbPath: string,
+  options: {
+    trajectoryId: string;
+    title: string;
+    workspacePath: string;
+    createdAt: string;
+    updatedAt: string;
+  },
+): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.exec("CREATE TABLE ItemTable (key TEXT PRIMARY KEY, value BLOB NOT NULL)");
+    const insert = db.prepare("INSERT INTO ItemTable (key, value) VALUES (?, ?)");
+    insert.run(
+      "antigravityUnifiedStateSync.trajectorySummaries",
+      encodeAntigravityTrajectorySummary({
+        trajectoryId: options.trajectoryId,
+        title: options.title,
+        workspacePath: options.workspacePath,
+        createdAt: options.createdAt,
+        updatedAt: options.updatedAt,
+      }),
+    );
+  } finally {
+    db.close();
+  }
+}
+
+function encodeAntigravityTrajectorySummary(options: {
+  trajectoryId: string;
+  title: string;
+  workspacePath: string;
+  createdAt: string;
+  updatedAt: string;
+}): string {
+  const innerPayload = encodeLengthDelimitedFields([
+    [1, Buffer.from(options.title, "utf8")],
+    [7, encodeTimestamp(options.createdAt)],
+    [9, encodeLengthDelimitedFields([[1, Buffer.from(`file://${options.workspacePath}`, "utf8")]])],
+    [10, encodeTimestamp(options.updatedAt)],
+  ]);
+  const wrapper = encodeLengthDelimitedFields([
+    [1, Buffer.from(innerPayload.toString("base64"), "utf8")],
+    [2, innerPayload.length],
+  ]);
+  const outer = encodeLengthDelimitedFields([
+    [1, Buffer.from(options.trajectoryId, "utf8")],
+    [2, wrapper],
+  ]);
+  return encodeLengthDelimitedFields([[1, outer]]).toString("base64");
+}
+
+function encodeTimestamp(value: string): Buffer {
+  const millis = Date.parse(value);
+  const seconds = Math.floor(millis / 1000);
+  const nanos = (millis % 1000) * 1_000_000;
+  return encodeLengthDelimitedFields([
+    [1, seconds],
+    [2, nanos],
+  ]);
+}
+
+function encodeLengthDelimitedFields(fields: Array<[number, Buffer | number]>): Buffer {
+  const chunks: Buffer[] = [];
+  for (const [fieldNumber, value] of fields) {
+    if (typeof value === "number") {
+      chunks.push(encodeVarint((fieldNumber << 3) | 0), encodeVarint(value));
+      continue;
+    }
+    chunks.push(encodeVarint((fieldNumber << 3) | 2), encodeVarint(value.length), value);
+  }
+  return Buffer.concat(chunks);
+}
+
+function encodeVarint(value: number): Buffer {
+  const bytes: number[] = [];
+  let remaining = value >>> 0;
+  while (remaining >= 0x80) {
+    bytes.push((remaining & 0x7f) | 0x80);
+    remaining >>>= 7;
+  }
+  bytes.push(remaining);
+  return Buffer.from(bytes);
+}
+
 function createSourceDefinition(
   id: string,
   platform: SourceDefinition["platform"],
@@ -1423,11 +2584,16 @@ function createSourceDefinition(
 ): SourceDefinition {
   return {
     id,
+    slot_id: platform,
     family,
     platform,
     display_name: `${platform} fixture`,
     base_dir: baseDir,
   };
+}
+
+function getRepoMockDataRoot(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../mock_data");
 }
 
 function assertFragmentKinds(

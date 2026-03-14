@@ -14,14 +14,14 @@ import {
   Sparkles,
 } from 'lucide-react'
 import {
-  buildTokenUsageItems,
+  formatTokenUsageInline,
   formatTokenTrackingLabel,
   formatTokenUsageOverview,
   summarizeTurnsTokenUsage,
 } from '@/lib/token-usage'
 import { cn } from '@/lib/utils'
 import type { ProjectIdentity, Session, TokenUsageSummary, UserTurn } from '@/lib/types'
-import { SessionBadge } from './session-badge'
+import { formatSourcePlatform, SessionBadge } from './session-badge'
 
 interface SessionMapProps {
   turns: UserTurn[]
@@ -31,6 +31,9 @@ interface SessionMapProps {
   onTurnSelect: (turn: UserTurn) => void
   className?: string
   defaultAxisMode?: AxisMode
+  fixedAxisMode?: AxisMode
+  defaultSortBy?: SessionMapSort
+  defaultSortDirection?: SessionMapSortDirection
   showOverview?: boolean
   hideProjectPathWhenRedundant?: boolean
 }
@@ -80,7 +83,7 @@ interface RenderSegment {
 
 type AxisMode = 'shared' | 'session'
 type LaneDensity = 'single' | 'standard' | 'dense'
-type SessionMapSort = 'recent' | 'turns' | 'active' | 'name'
+type SessionMapSort = 'recent' | 'created' | 'turns' | 'active' | 'span' | 'tokens' | 'name'
 type SessionMapSortDirection = 'asc' | 'desc'
 
 export function SessionMap({
@@ -91,12 +94,16 @@ export function SessionMap({
   onTurnSelect,
   className,
   defaultAxisMode = 'shared',
+  fixedAxisMode,
+  defaultSortBy = 'recent',
+  defaultSortDirection = 'desc',
   showOverview = true,
   hideProjectPathWhenRedundant = false,
 }: SessionMapProps) {
-  const [axisMode, setAxisMode] = useState<AxisMode>(defaultAxisMode)
-  const [sortBy, setSortBy] = useState<SessionMapSort>('recent')
-  const [sortDirection, setSortDirection] = useState<SessionMapSortDirection>('desc')
+  const [axisModeState, setAxisMode] = useState<AxisMode>(fixedAxisMode ?? defaultAxisMode)
+  const [sortBy, setSortBy] = useState<SessionMapSort>(defaultSortBy)
+  const [sortDirection, setSortDirection] = useState<SessionMapSortDirection>(defaultSortDirection)
+  const axisMode = fixedAxisMode ?? axisModeState
 
   const groups = useMemo(() => {
     const turnsBySession = new Map<string, UserTurn[]>()
@@ -241,22 +248,24 @@ export function SessionMap({
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center border border-border bg-paper p-1 text-xs">
-                <AxisButton
-                  active={axisMode === 'shared'}
-                  title="Align sessions on a project-wide clock"
-                  onClick={() => setAxisMode('shared')}
-                >
-                  Project Time
-                </AxisButton>
-                <AxisButton
-                  active={axisMode === 'session'}
-                  title="Show session-local timing inside each session"
-                  onClick={() => setAxisMode('session')}
-                >
-                  Session Time
-                </AxisButton>
-              </div>
+              {!fixedAxisMode && (
+                <div className="flex items-center border border-border bg-paper p-1 text-xs">
+                  <AxisButton
+                    active={axisMode === 'shared'}
+                    title="Align sessions on a project-wide clock"
+                    onClick={() => setAxisMode('shared')}
+                  >
+                    Project Time
+                  </AxisButton>
+                  <AxisButton
+                    active={axisMode === 'session'}
+                    title="Show session-local timing inside each session"
+                    onClick={() => setAxisMode('session')}
+                  >
+                    Session Time
+                  </AxisButton>
+                </div>
+              )}
 
               <div className="flex items-center gap-2 border border-border bg-paper px-2 py-1 text-xs text-muted">
                 <ArrowUpDown className="h-3.5 w-3.5" />
@@ -267,8 +276,11 @@ export function SessionMap({
                   className="bg-transparent text-xs text-ink focus:outline-none"
                 >
                   <option value="recent">Activity</option>
+                  <option value="created">Created Time</option>
                   <option value="turns">Turn Count</option>
                   <option value="active">Active Window</option>
+                  <option value="span">Session Span</option>
+                  <option value="tokens">Token Total</option>
                   <option value="name">Name</option>
                 </select>
                 <button
@@ -287,7 +299,7 @@ export function SessionMap({
       </div>
       {axisMode === 'shared' && (
         <div className="border-b border-border bg-paper px-4 py-2 text-[10px] text-muted sm:px-6">
-          Project Time uses two rails per session: `ABS` = session placement on the project clock, `REL` = clickable turn windows on the session clock.
+          Dual-rail timeline: `ABS` = session placement on the project clock, `REL` = clickable turn windows inside that session.
         </div>
       )}
 
@@ -469,9 +481,12 @@ function SessionLaneRow({
     axisMode === 'shared'
       ? buildWindowSegments(lane.turnWindows, lane.activeStartedAt.getTime(), sessionActiveDurationMs)
       : []
-  const tokenItems = buildTokenUsageItems(lane.tokenUsage)
-  const tokenTrackingLabel = formatTokenTrackingLabel(lane.trackedTokenTurnCount, lane.turns.length)
-  const tokenFootnote = buildTokenFootnote(tokenItems)
+  const tokenSummary = formatTokenUsageInline(
+    lane.tokenUsage,
+    lane.trackedTokenTurnCount,
+    lane.turns.length,
+  )
+  const tokenSummaryText = tokenSummary === 'Tokens unavailable' ? 'Unavailable' : tokenSummary
   const workspacePath = lane.session.working_directory
   const shouldShowWorkspacePath = workspacePath
     ? !hideProjectPathWhenRedundant || !pathsMatch(workspacePath, lane.project?.primary_workspace_path)
@@ -479,15 +494,32 @@ function SessionLaneRow({
 
   return (
     <div className="border border-border bg-paper p-4">
-      <div className="grid gap-4 xl:grid-cols-[17rem_minmax(0,1fr)]">
+      <div className="grid gap-4 xl:grid-cols-[15rem_minmax(0,1fr)]">
         <div className="space-y-3 border-b border-dashed border-border/80 pb-4 xl:border-b-0 xl:border-r xl:pb-0 xl:pr-4">
-          <div className="space-y-2">
-            <SessionBadge session={lane.session} className="max-w-full bg-card px-3 py-1.5" />
-            <div className="flex flex-wrap items-center gap-2 text-[10px] stamp-text text-muted">
-              <span>{formatPlatformLabel(lane.session.source_platform)}</span>
-              <span>{lane.turns.length} turns</span>
-              <span>{formatDensityLabel(density)}</span>
-            </div>
+          <div>
+            <SessionBadge
+              session={lane.session}
+              className="max-w-full bg-card px-3 py-1.5"
+              showPlatform={false}
+              showTurnCount={false}
+            />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 text-[10px] stamp-text text-muted">
+            <span className="border border-border bg-card px-2 py-1 mono-text">
+              {formatSourcePlatform(lane.session.source_platform)}
+            </span>
+            <span className="border border-border bg-card px-2 py-1">
+              {lane.turns.length} turns
+            </span>
+            {lane.session.model && (
+              <span
+                className="max-w-full truncate border border-border bg-card px-2 py-1"
+                title={lane.session.model}
+              >
+                {lane.session.model}
+              </span>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -497,27 +529,6 @@ function SessionLaneRow({
               value={formatDurationCompact(lane.sessionClosedAt.getTime() - lane.sessionStartedAt.getTime())}
             />
           </div>
-
-          {tokenItems.length > 0 ? (
-            <div className="space-y-2 border border-border/80 bg-card/70 p-3">
-              <div className="flex items-center justify-between gap-3 text-[10px] stamp-text text-muted">
-                <span>Token profile</span>
-                <span>{tokenTrackingLabel}</span>
-              </div>
-              <div className="grid grid-cols-2 gap-2 text-[10px]">
-                {tokenItems.map((item) => (
-                  <div key={`${lane.session.id}-${item.key}`} className="border border-border bg-paper px-2.5 py-2">
-                    <div className="stamp-text text-muted">{item.label}</div>
-                    <div className="mono-text mt-1 text-[11px] text-text">{item.value}</div>
-                    {item.note && <div className="mt-1 text-[9px] text-muted">{item.note}</div>}
-                  </div>
-                ))}
-              </div>
-              {tokenFootnote && <div className="text-[10px] text-muted">{tokenFootnote}</div>}
-            </div>
-          ) : (
-            <MetricRow label="Tokens" value="Token tracking unavailable" />
-          )}
 
           {shouldShowWorkspacePath && (
             <div className="space-y-1">
@@ -653,15 +664,21 @@ function SessionLaneRow({
             </div>
           )}
 
-          <div className="flex flex-wrap items-center gap-2 text-[10px] text-muted">
-            <span className="border border-border bg-paper px-2.5 py-1">
-              {format(lane.activeStartedAt, 'MM-dd HH:mm', { locale: zhCN })} → {format(lane.activeEndedAt, 'MM-dd HH:mm', { locale: zhCN })}
-            </span>
-            {axisMode === 'shared' && (
+          <div className="flex flex-wrap items-end justify-between gap-2 text-[10px] text-muted">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="border border-border bg-paper px-2.5 py-1">
-                Session closes {format(lane.sessionClosedAt, 'MM-dd HH:mm', { locale: zhCN })}
+                {format(lane.activeStartedAt, 'MM-dd HH:mm', { locale: zhCN })} → {format(lane.activeEndedAt, 'MM-dd HH:mm', { locale: zhCN })}
               </span>
-            )}
+              {axisMode === 'shared' && (
+                <span className="border border-border bg-paper px-2.5 py-1">
+                  Session closes {format(lane.sessionClosedAt, 'MM-dd HH:mm', { locale: zhCN })}
+                </span>
+              )}
+            </div>
+            <div className="text-right text-[11px] text-muted">
+              <span className="stamp-text">Tokens</span>{' '}
+              <span className="mono-text">{tokenSummaryText}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -812,10 +829,12 @@ function buildSpanPosition(
 ) {
   const left = clampPercent(((startedAtMs - timelineStartMs) / totalDurationMs) * 100)
   const right = clampPercent(((endedAtMs - timelineStartMs) / totalDurationMs) * 100)
-  const width = Math.max(right - left, 2.4)
+  const minVisibleWidth = 2.4
+  const width = Math.max(right - left, minVisibleWidth)
+  const adjustedLeft = Math.min(left, Math.max(0, 100 - width))
   return {
-    left,
-    width: Math.min(width, 100 - left),
+    left: adjustedLeft,
+    width: Math.min(width, 100 - adjustedLeft),
   }
 }
 
@@ -1052,17 +1071,6 @@ function formatDensityLabel(density: LaneDensity) {
   return 'standard markers'
 }
 
-function buildTokenFootnote(tokenItems: Array<{ key: string }>) {
-  const notes: string[] = []
-  if (tokenItems.some((item) => item.key === 'cache-read' || item.key === 'cache-write' || item.key === 'cache')) {
-    notes.push('Cache is shown separately from fresh input and is not added twice into total.')
-  }
-  if (tokenItems.some((item) => item.key === 'reasoning')) {
-    notes.push('Reasoning is included in output.')
-  }
-  return notes.join(' ')
-}
-
 function compareSessionLanes(
   left: SessionLane,
   right: SessionLane,
@@ -1112,11 +1120,24 @@ function compareLaneValue(left: SessionLane, right: SessionLane, sortBy: Session
   if (sortBy === 'name') {
     return (left.session.title ?? '').localeCompare(right.session.title ?? '', 'zh-Hans-CN')
   }
+  if (sortBy === 'created') {
+    return left.sessionStartedAt.getTime() - right.sessionStartedAt.getTime()
+  }
   if (sortBy === 'turns') {
     return left.turns.length - right.turns.length
   }
   if (sortBy === 'active') {
     return left.activeDurationMs - right.activeDurationMs
+  }
+  if (sortBy === 'span') {
+    return (
+      left.sessionClosedAt.getTime() -
+      left.sessionStartedAt.getTime() -
+      (right.sessionClosedAt.getTime() - right.sessionStartedAt.getTime())
+    )
+  }
+  if (sortBy === 'tokens') {
+    return getTokenTotal(left.tokenUsage) - getTokenTotal(right.tokenUsage)
   }
   return left.activeEndedAt.getTime() - right.activeEndedAt.getTime()
 }
@@ -1127,17 +1148,34 @@ function compareGroupValue(left: SessionGroup, right: SessionGroup, sortBy: Sess
     const rightName = right.project?.name ?? 'Unlinked Sessions'
     return leftName.localeCompare(rightName, 'zh-Hans-CN')
   }
+  if (sortBy === 'created') {
+    return left.projectStartedAt.getTime() - right.projectStartedAt.getTime()
+  }
   if (sortBy === 'turns') {
     return left.turns.length - right.turns.length
   }
   if (sortBy === 'active') {
     return left.activeDurationMs - right.activeDurationMs
   }
+  if (sortBy === 'span') {
+    return (
+      left.projectClosedAt.getTime() -
+      left.projectStartedAt.getTime() -
+      (right.projectClosedAt.getTime() - right.projectStartedAt.getTime())
+    )
+  }
+  if (sortBy === 'tokens') {
+    return getTokenTotal(left.tokenUsage) - getTokenTotal(right.tokenUsage)
+  }
   return left.projectClosedAt.getTime() - right.projectClosedAt.getTime()
 }
 
 function applySortDirection(delta: number, sortDirection: SessionMapSortDirection) {
   return sortDirection === 'asc' ? delta : -delta
+}
+
+function getTokenTotal(usage?: TokenUsageSummary) {
+  return usage?.total_tokens ?? usage?.output_tokens ?? usage?.input_tokens ?? -1
 }
 
 function truncate(value: string, maxLength: number) {
@@ -1160,29 +1198,4 @@ function pathsMatch(left: string | undefined, right: string | undefined) {
 
 function normalizePath(value: string) {
   return value.trim().replace(/\/+$/g, '')
-}
-
-function formatPlatformLabel(platform: Session['source_platform']) {
-  switch (platform) {
-    case 'claude_code':
-      return 'Claude'
-    case 'cursor':
-      return 'Cursor'
-    case 'factory_droid':
-      return 'Droid'
-    case 'antigravity':
-      return 'Antigravity'
-    case 'amp':
-      return 'AMP'
-    case 'openclaw':
-      return 'OpenClaw'
-    case 'opencode':
-      return 'OpenCode'
-    case 'lobechat':
-      return 'LobeChat'
-    case 'chatgpt':
-      return 'ChatGPT'
-    default:
-      return platform.replace(/_/g, ' ')
-  }
 }

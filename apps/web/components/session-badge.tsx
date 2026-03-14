@@ -8,9 +8,21 @@ interface SessionBadgeProps {
   session: Session
   compact?: boolean
   className?: string
+  showPlatform?: boolean
+  showTurnCount?: boolean
+  showTitle?: boolean
 }
 
-export function SessionBadge({ session, compact = false, className }: SessionBadgeProps) {
+export function SessionBadge({
+  session,
+  compact = false,
+  className,
+  showPlatform,
+  showTurnCount = true,
+  showTitle = true,
+}: SessionBadgeProps) {
+  const shouldShowPlatform = showPlatform ?? !compact
+
   return (
     <span
       className={cn(
@@ -19,14 +31,14 @@ export function SessionBadge({ session, compact = false, className }: SessionBad
       )}
     >
       <PanelsTopLeft className="h-3 w-3 flex-shrink-0" />
-      <span className="truncate">{session.title || `Session ${session.id.slice(0, 8)}`}</span>
-      {!compact && <span className="mono-text text-[9px] uppercase">{formatSourcePlatform(session.source_platform)}</span>}
-      <span className="mono-text text-[9px]">{session.turn_count} turns</span>
+      {showTitle && <span className="truncate">{session.title || `Session ${session.id.slice(0, 8)}`}</span>}
+      {shouldShowPlatform && <span className="mono-text text-[9px] uppercase">{formatSourcePlatform(session.source_platform)}</span>}
+      {showTurnCount && <span className="mono-text text-[9px]">{session.turn_count} turns</span>}
     </span>
   )
 }
 
-function formatSourcePlatform(platform: Session['source_platform']) {
+export function formatSourcePlatform(platform: Session['source_platform']) {
   switch (platform) {
     case 'claude_code':
       return 'claude'

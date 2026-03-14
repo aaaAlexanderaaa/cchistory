@@ -13,7 +13,7 @@ import type {
   TurnContext,
   UserTurn,
 } from '@/lib/types'
-import { MaskedContent } from './masked-content'
+import { MaskedContent, MaskedContentPreview } from './masked-content'
 import { SessionBadge } from './session-badge'
 import {
   AlertCircle,
@@ -147,7 +147,11 @@ export function TurnDetailPanel({
                 </span>
               )}
             </div>
-            <div className="text-sm leading-6 text-ink">{turn.canonical_text}</div>
+            <MaskedContentPreview
+              segments={turn.display_segments}
+              maxLength={280}
+              className="line-clamp-4 text-sm leading-6 text-ink"
+            />
           </div>
 
           <button
@@ -203,7 +207,7 @@ export function TurnDetailPanel({
                   <span>MESSAGE {index + 1}</span>
                   {message.is_injected && <span className="text-warning">INJECTED</span>}
                 </div>
-                <div className="whitespace-pre-wrap break-words text-sm text-text">{message.raw_text}</div>
+                <MaskedContent segments={message.display_segments} className="break-words text-sm text-text" />
               </div>
             ))}
           </div>

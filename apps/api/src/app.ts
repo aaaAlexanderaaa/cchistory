@@ -1,12 +1,21 @@
 import { mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { copyFile, stat } from "node:fs/promises";
+import { copyFile, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
-import type { SourceDefinition, SourceSyncPayload, TurnSearchResult, UserTurnProjection } from "@cchistory/domain";
-import { getBuiltinMaskTemplates, getDefaultSources, runSourceProbe } from "@cchistory/source-adapters";
+import {
+  deriveHostId,
+  deriveSourceInstanceId,
+  deriveSourceSlotId,
+  isLegacySourceInstanceId,
+  type SourceDefinition,
+  type SourceSyncPayload,
+  type TurnSearchResult,
+  type UserTurnProjection,
+} from "@cchistory/domain";
+import { getBuiltinMaskTemplates, getDefaultSources, getDefaultSourcesForHost, runSourceProbe } from "@cchistory/source-adapters";
 import { CCHistoryStorage } from "@cchistory/storage";
 
 export interface ApiRuntimeOptions {
@@ -23,12 +32,60 @@ export interface ApiRuntime {
   storage: CCHistoryStorage;
 }
 
+interface SourceOverrideRecord {
+  base_dir: string;
+  updated_at: string;
+}
+
+type SourceOverrideMap = Record<string, SourceOverrideRecord>;
+
+interface ManualSourceRecord extends SourceDefinition {
+  created_at: string;
+  updated_at: string;
+}
+
+interface PersistedSourceConfig {
+  version: 2;
+  overrides: SourceOverrideMap;
+  extras: ManualSourceRecord[];
+}
+
+interface ConfiguredSourceStatus {
+  id: string;
+  family: SourceDefinition["family"];
+  platform: SourceDefinition["platform"];
+  display_name: string;
+  base_dir: string;
+  default_base_dir?: string;
+  override_base_dir?: string;
+  is_overridden: boolean;
+  is_default_source: boolean;
+  path_exists: boolean;
+  host_id: string;
+  last_sync: string | null;
+  sync_status: "healthy" | "stale" | "error";
+  error_message?: string;
+  total_blobs: number;
+  total_records: number;
+  total_fragments: number;
+  total_atoms: number;
+  total_sessions: number;
+  total_turns: number;
+}
+
 export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise<ApiRuntime> {
+  const hostName = os.hostname();
+  const hostId = deriveHostId(hostName);
   const dataDir =
     options.dataDir ?? path.resolve(process.cwd(), "..", "..", ".cchistory");
   const rawStoreDir = path.join(dataDir, "raw");
+  const sourceConfigPath = path.join(dataDir, "source-overrides.json");
   const probeRunner = options.probeRunner ?? runSourceProbe;
-  const sources = options.sources?.map((source) => ({ ...source })) ?? getDefaultSources();
+  const defaultSourceDefinitions = normalizeConfiguredSourceDefinitions(
+    options.sources ?? getDefaultSourcesForHost({ includeMissing: true }),
+    hostId,
+  );
+  let sourceConfig = normalizePersistedSourceConfig(await readSourceConfig(sourceConfigPath), hostId);
 
   mkdirSync(rawStoreDir, { recursive: true });
 
@@ -40,20 +97,172 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
 
   app.get("/health", async () => ({
     status: "ok",
-    hostname: os.hostname(),
+    hostname: hostName,
     data_dir: dataDir,
   }));
 
   app.get("/openapi.json", async () => buildOpenApiDocument());
 
-  app.get("/api/admin/probe/sources", async () => {
-    const rows = await Promise.all(
-      sources.map(async (source) => ({
-        ...source,
-        exists: await pathExists(source.base_dir),
-      })),
+  app.get("/api/admin/source-config", async () => ({
+    sources: await listConfiguredSourceStatuses(),
+  }));
+
+  app.post("/api/admin/source-config", async (request, reply) => {
+    const body = (request.body ?? {}) as {
+      platform?: SourceDefinition["platform"];
+      base_dir?: string;
+      display_name?: string;
+      sync?: boolean;
+      limit_files_per_source?: number;
+    };
+    const platform = body.platform;
+    const nextBaseDir = body.base_dir?.trim();
+    if (!platform || !nextBaseDir) {
+      reply.code(400);
+      return { error: "platform and base_dir are required" };
+    }
+
+    const sourceTemplate = getDefaultSourceTemplateByPlatform(platform);
+    if (!sourceTemplate) {
+      reply.code(404);
+      return { error: `Unsupported source platform: ${platform}` };
+    }
+
+    const existingSource = getConfiguredSources().find(
+      (source) => source.platform === platform && normalizePathKey(source.base_dir) === normalizePathKey(nextBaseDir),
     );
-    return { sources: rows };
+    if (existingSource) {
+      return {
+        source: await getConfiguredSourceStatus(existingSource.id),
+        synced: false,
+      };
+    }
+
+    const manualSource = createManualSourceRecord(sourceTemplate, nextBaseDir, body.display_name);
+    sourceConfig = {
+      ...sourceConfig,
+      extras: [...sourceConfig.extras.filter((source) => source.id !== manualSource.id), manualSource],
+    };
+    await writeSourceConfig(sourceConfigPath, sourceConfig);
+
+    const synced = body.sync ?? true;
+    if (synced) {
+      await syncSources({
+        source_ids: [manualSource.id],
+        limit_files_per_source: body.limit_files_per_source,
+        persist: true,
+      });
+    }
+
+    return {
+      source: await getConfiguredSourceStatus(manualSource.id),
+      synced,
+    };
+  });
+
+  app.post("/api/admin/source-config/:sourceId", async (request, reply) => {
+    const sourceId = (request.params as { sourceId: string }).sourceId;
+    const configuredSource = getConfiguredSourceDefinition(sourceId);
+    if (!configuredSource) {
+      reply.code(404);
+      return { error: `Source not found: ${sourceId}` };
+    }
+
+    const body = (request.body ?? {}) as {
+      base_dir?: string;
+      sync?: boolean;
+      limit_files_per_source?: number;
+    };
+    const nextBaseDir = body.base_dir?.trim();
+    if (!nextBaseDir) {
+      reply.code(400);
+      return { error: "base_dir is required" };
+    }
+
+    const defaultSource = getDefaultSourceDefinition(sourceId);
+    if (defaultSource) {
+      sourceConfig = {
+        ...sourceConfig,
+        overrides: {
+          ...sourceConfig.overrides,
+          [sourceId]: {
+            base_dir: nextBaseDir,
+            updated_at: new Date().toISOString(),
+          },
+        },
+      };
+    } else {
+      sourceConfig = {
+        ...sourceConfig,
+        extras: sourceConfig.extras.map((source) =>
+          source.id === sourceId
+            ? {
+                ...source,
+                base_dir: nextBaseDir,
+                updated_at: new Date().toISOString(),
+              }
+            : source,
+        ),
+      };
+    }
+    await writeSourceConfig(sourceConfigPath, sourceConfig);
+
+    const synced = body.sync ?? true;
+    if (synced) {
+      await syncSources({
+        source_ids: [sourceId],
+        limit_files_per_source: body.limit_files_per_source,
+        persist: true,
+      });
+    }
+
+    return {
+      source: await getConfiguredSourceStatus(sourceId),
+      synced,
+    };
+  });
+
+  app.post("/api/admin/source-config/:sourceId/reset", async (request, reply) => {
+    const sourceId = (request.params as { sourceId: string }).sourceId;
+    if (!getDefaultSourceDefinition(sourceId)) {
+      reply.code(400);
+      return { error: `Source ${sourceId} does not support reset` };
+    }
+
+    const body = (request.body ?? {}) as {
+      sync?: boolean;
+      limit_files_per_source?: number;
+    };
+
+    if (sourceConfig.overrides[sourceId]) {
+      const nextOverrides = { ...sourceConfig.overrides };
+      delete nextOverrides[sourceId];
+      sourceConfig = {
+        ...sourceConfig,
+        overrides: nextOverrides,
+      };
+      await writeSourceConfig(sourceConfigPath, sourceConfig);
+    }
+
+    const synced = body.sync ?? true;
+    if (synced) {
+      await syncSources({
+        source_ids: [sourceId],
+        limit_files_per_source: body.limit_files_per_source,
+        persist: true,
+      });
+    }
+
+    return {
+      source: await getConfiguredSourceStatus(sourceId),
+      synced,
+    };
+  });
+
+  app.get("/api/admin/probe/sources", async () => {
+    return {
+      sources: await listConfiguredSourceStatuses(),
+    };
   });
 
   app.post("/api/admin/probe/runs", async (request) => {
@@ -84,21 +293,18 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.get("/api/sources", async () => {
-    await ensureSeeded();
     return {
-      sources: storage.listSources(),
+      sources: await listConfiguredSourceStatuses(),
     };
   });
 
   app.get("/api/turns", async () => {
-    await ensureSeeded();
     return {
       turns: storage.listResolvedTurns().map(summarizeTurn),
     };
   });
 
   app.get("/api/turns/search", async (request) => {
-    await ensureSeeded();
     const query = request.query as Record<string, string | undefined>;
     return {
       results: storage
@@ -115,7 +321,6 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.get("/api/turns/:turnId", async (request, reply) => {
-    await ensureSeeded();
     const turnId = (request.params as { turnId: string }).turnId;
     const turn = storage.getResolvedTurn(turnId) ?? storage.getTurn(turnId);
     if (!turn) {
@@ -131,7 +336,6 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.get("/api/turns/:turnId/context", async (request, reply) => {
-    await ensureSeeded();
     const turnId = (request.params as { turnId: string }).turnId;
     const context = storage.getTurnContext(turnId);
     if (!context) {
@@ -142,7 +346,6 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.get("/api/sessions/:sessionId", async (request, reply) => {
-    await ensureSeeded();
     const sessionId = (request.params as { sessionId: string }).sessionId;
     const session = storage.getResolvedSession(sessionId) ?? storage.getSession(sessionId);
     if (!session) {
@@ -153,14 +356,12 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.get("/api/sessions", async () => {
-    await ensureSeeded();
     return {
       sessions: storage.listResolvedSessions(),
     };
   });
 
   app.get("/api/projects", async (request) => {
-    await ensureSeeded();
     const query = request.query as Record<string, string | undefined>;
     const state = query.state === "committed" || query.state === "candidate" ? query.state : "all";
     const projects = storage.listProjects();
@@ -173,7 +374,6 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.get("/api/projects/:projectId", async (request, reply) => {
-    await ensureSeeded();
     const projectId = (request.params as { projectId: string }).projectId;
     const project = storage.getProject(projectId);
     if (!project) {
@@ -184,7 +384,6 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.get("/api/projects/:projectId/turns", async (request) => {
-    await ensureSeeded();
     const projectId = (request.params as { projectId: string }).projectId;
     const query = request.query as Record<string, string | undefined>;
     const state = query.state === "committed" || query.state === "candidate" ? query.state : "all";
@@ -194,7 +393,6 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.get("/api/projects/:projectId/revisions", async (request) => {
-    await ensureSeeded();
     const projectId = (request.params as { projectId: string }).projectId;
     return {
       revisions: storage.listProjectRevisions(projectId),
@@ -203,7 +401,6 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.get("/api/artifacts", async (request) => {
-    await ensureSeeded();
     const query = request.query as Record<string, string | undefined>;
     return {
       artifacts: storage.listKnowledgeArtifacts(query.project_id),
@@ -211,7 +408,6 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.post("/api/artifacts", async (request, reply) => {
-    await ensureSeeded();
     const body = (request.body ?? {}) as {
       artifact_id?: string;
       artifact_kind?: "decision" | "instruction" | "fact" | "pattern" | "other";
@@ -239,7 +435,6 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.get("/api/artifacts/:artifactId/coverage", async (request) => {
-    await ensureSeeded();
     const artifactId = (request.params as { artifactId: string }).artifactId;
     return {
       coverage: storage.listArtifactCoverage(artifactId),
@@ -247,19 +442,16 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.get("/api/admin/linking", async () => {
-    await ensureSeeded();
     return summarizeLinkingReview(storage.getLinkingReview());
   });
 
   app.get("/api/admin/linking/overrides", async () => {
-    await ensureSeeded();
     return {
       overrides: storage.listProjectOverrides(),
     };
   });
 
   app.post("/api/admin/linking/overrides", async (request, reply) => {
-    await ensureSeeded();
     const body = (request.body ?? {}) as {
       target_kind?: "turn" | "session" | "observation";
       target_ref?: string;
@@ -294,7 +486,6 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.post("/api/admin/projects/lineage-events", async (request, reply) => {
-    await ensureSeeded();
     const body = (request.body ?? {}) as {
       project_id?: string;
       project_revision_id?: string;
@@ -318,7 +509,6 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.post("/api/admin/lifecycle/candidate-gc", async (request) => {
-    await ensureSeeded();
     const body = (request.body ?? {}) as {
       before_iso?: string;
       older_than_days?: number;
@@ -334,47 +524,38 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   });
 
   app.get("/api/admin/pipeline/runs", async () => {
-    await ensureSeeded();
     return { runs: storage.listStageRuns() };
   });
 
   app.get("/api/admin/pipeline/blobs", async () => {
-    await ensureSeeded();
     return { blobs: storage.listBlobs() };
   });
 
   app.get("/api/admin/pipeline/records", async () => {
-    await ensureSeeded();
     return { records: storage.listRecords() };
   });
 
   app.get("/api/admin/pipeline/fragments", async () => {
-    await ensureSeeded();
     return { fragments: storage.listFragments() };
   });
 
   app.get("/api/admin/pipeline/atoms", async () => {
-    await ensureSeeded();
     return { atoms: storage.listAtoms() };
   });
 
   app.get("/api/admin/pipeline/edges", async () => {
-    await ensureSeeded();
     return { edges: storage.listEdges() };
   });
 
   app.get("/api/admin/pipeline/candidates", async () => {
-    await ensureSeeded();
     return { candidates: storage.listCandidates() };
   });
 
   app.get("/api/admin/pipeline/loss-audits", async () => {
-    await ensureSeeded();
     return { loss_audits: storage.listLossAudits() };
   });
 
   app.get("/api/admin/pipeline/lineage/:turnId", async (request, reply) => {
-    await ensureSeeded();
     const turnId = (request.params as { turnId: string }).turnId;
     const lineage = storage.getTurnLineage(turnId);
     if (!lineage) {
@@ -389,12 +570,10 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   }));
 
   app.get("/api/admin/drift", async () => {
-    await ensureSeeded();
     return storage.getDriftReport();
   });
 
   app.get("/api/tombstones/:logicalId", async (request, reply) => {
-    await ensureSeeded();
     const logicalId = (request.params as { logicalId: string }).logicalId;
     const tombstone = storage.getTombstone(logicalId);
     if (!tombstone) {
@@ -404,7 +583,7 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     return { tombstone };
   });
 
-  async function ensureSeeded(): Promise<void> {
+  async function bootstrapStorage(): Promise<void> {
     if (!storage.isEmpty()) {
       return;
     }
@@ -419,6 +598,7 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     limit_files_per_source?: number;
     persist: boolean;
   }): Promise<{ host: Awaited<ReturnType<typeof runSourceProbe>>["host"]; sources: SourceSyncPayload[] }> {
+    const sources = getConfiguredSources();
     const result = await probeRunner(
       {
         source_ids: options.source_ids,
@@ -430,12 +610,90 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     if (options.persist) {
       for (const sourcePayload of result.sources) {
         await snapshotRawBlobs(rawStoreDir, sourcePayload);
-        storage.replaceSourcePayload(sourcePayload);
+        storage.replaceSourcePayload(sourcePayload, { allow_host_rekey: true });
       }
     }
 
     return result;
   }
+
+  function getConfiguredSources(): SourceDefinition[] {
+    if (options.sources) {
+      return dedupeSourceDefinitions([
+        ...defaultSourceDefinitions.map((source) => applySourceOverride(source, sourceConfig.overrides[source.id])),
+        ...sourceConfig.extras,
+      ]);
+    }
+
+    const discoveredDefaults = new Map(getDefaultSources().map((source) => [source.id, source]));
+    const configuredDefaults = defaultSourceDefinitions.flatMap((source) => {
+      const discovered = discoveredDefaults.get(source.id);
+      if (discovered) {
+        return [applySourceOverride(discovered, sourceConfig.overrides[source.id])];
+      }
+      if (sourceConfig.overrides[source.id]) {
+        return [applySourceOverride(source, sourceConfig.overrides[source.id])];
+      }
+      return [];
+    });
+
+    return dedupeSourceDefinitions([...configuredDefaults, ...sourceConfig.extras]);
+  }
+
+  function getConfiguredSourceDefinition(sourceId: string): SourceDefinition | undefined {
+    return getConfiguredSources().find((source) => source.id === sourceId) ?? getDefaultSourceDefinition(sourceId);
+  }
+
+  function getDefaultSourceDefinition(sourceId: string): SourceDefinition | undefined {
+    return defaultSourceDefinitions.find((source) => source.id === sourceId);
+  }
+
+  function getDefaultSourceTemplateByPlatform(
+    platform: SourceDefinition["platform"],
+  ): SourceDefinition | undefined {
+    return defaultSourceDefinitions.find((source) => source.platform === platform);
+  }
+
+  async function getConfiguredSourceStatus(sourceId: string): Promise<ConfiguredSourceStatus | undefined> {
+    const rows = await listConfiguredSourceStatuses();
+    return rows.find((source) => source.id === sourceId);
+  }
+
+  async function listConfiguredSourceStatuses(): Promise<ConfiguredSourceStatus[]> {
+    const storedSources = new Map(storage.listSources().map((source) => [source.id, source]));
+    const configuredSources = getConfiguredSources();
+    const configuredSourceIds = new Set(configuredSources.map((source) => source.id));
+    const rows = await Promise.all(
+      configuredSources.map((source) =>
+        buildConfiguredSourceStatus({
+          defaultSource: getDefaultSourceDefinition(source.id),
+          configuredSource: source,
+          override: sourceConfig.overrides[source.id],
+          storedSource: storedSources.get(source.id),
+          hostName,
+        }),
+      ),
+    );
+    const storedOnlyRows = await Promise.all(
+      [...storedSources.values()]
+        .filter((source) => !configuredSourceIds.has(source.id))
+        .filter(hasMeaningfulStoredSourceData)
+        .map((source) => {
+          const defaultSource = getDefaultSourceDefinition(source.id);
+          return buildConfiguredSourceStatus({
+            defaultSource,
+            configuredSource: defaultSource ? applySourceOverride(defaultSource, sourceConfig.overrides[source.id]) : source,
+            override: sourceConfig.overrides[source.id],
+            storedSource: source,
+            hostName,
+          });
+        }),
+    );
+
+    return [...rows, ...storedOnlyRows].sort((left, right) => left.display_name.localeCompare(right.display_name));
+  }
+
+  await bootstrapStorage();
 
   return { app, dataDir, rawStoreDir, storage };
 }
@@ -615,6 +873,12 @@ function buildOpenApiDocument() {
         post: { summary: "Append explicit split, merge, superseded, or override lineage events for a project" },
       },
       "/api/admin/lifecycle/candidate-gc": { post: { summary: "Archive or purge candidate turns older than a cutoff" } },
+      "/api/admin/source-config": {
+        get: { summary: "List source configuration and current effective directories" },
+        post: { summary: "Add a manual source instance for a supported source platform" },
+      },
+      "/api/admin/source-config/{sourceId}": { post: { summary: "Override the base directory for a configured source" } },
+      "/api/admin/source-config/{sourceId}/reset": { post: { summary: "Reset a source base directory back to its default" } },
       "/api/admin/probe/sources": { get: { summary: "List probe source definitions" } },
       "/api/admin/probe/runs": { post: { summary: "Run a local probe" } },
       "/api/admin/pipeline/replay": { post: { summary: "Replay the pipeline without persistence" } },
@@ -632,4 +896,244 @@ function buildOpenApiDocument() {
       "/api/tombstones/{logicalId}": { get: { summary: "Resolve a purged logical id to a tombstone projection" } },
     },
   };
+}
+
+function normalizeConfiguredSourceDefinitions(
+  sources: readonly SourceDefinition[],
+  hostId: string,
+): SourceDefinition[] {
+  return sources.map((source) => {
+    const slotId = source.slot_id || deriveSourceSlotId(source.platform);
+    return {
+      ...source,
+      id: isLegacySourceInstanceId(source.id)
+        ? deriveSourceInstanceId({
+            host_id: hostId,
+            slot_id: slotId,
+            base_dir: source.base_dir,
+          })
+        : source.id,
+      slot_id: slotId,
+    };
+  });
+}
+
+function normalizePersistedSourceConfig(
+  config: { overrides: SourceOverrideMap; extras: ManualSourceRecord[] },
+  hostId: string,
+): { overrides: SourceOverrideMap; extras: ManualSourceRecord[] } {
+  return {
+    overrides: config.overrides,
+    extras: config.extras.map((source) => {
+      const slotId = source.slot_id || deriveSourceSlotId(source.platform);
+      return {
+        ...source,
+        id: isLegacySourceInstanceId(source.id)
+          ? deriveSourceInstanceId({
+              host_id: hostId,
+              slot_id: slotId,
+              base_dir: source.base_dir,
+            })
+          : source.id,
+        slot_id: slotId,
+      };
+    }),
+  };
+}
+
+function applySourceOverride(source: SourceDefinition, override?: SourceOverrideRecord): SourceDefinition {
+  return {
+    ...source,
+    base_dir: override?.base_dir ?? source.base_dir,
+  };
+}
+
+async function buildConfiguredSourceStatus(options: {
+  defaultSource?: SourceDefinition;
+  configuredSource: SourceDefinition;
+  override?: SourceOverrideRecord;
+  storedSource?: {
+    host_id: string;
+    last_sync: string | null;
+    sync_status: "healthy" | "stale" | "error";
+    error_message?: string;
+    total_blobs: number;
+    total_records: number;
+    total_fragments: number;
+    total_atoms: number;
+    total_sessions: number;
+    total_turns: number;
+    base_dir: string;
+  };
+  hostName: string;
+}): Promise<ConfiguredSourceStatus> {
+  const { configuredSource, defaultSource, hostName, override, storedSource } = options;
+  const exists = await pathExists(configuredSource.base_dir);
+  const configChangedSinceLastSync = Boolean(storedSource && storedSource.base_dir !== configuredSource.base_dir);
+
+  return {
+    id: configuredSource.id,
+    family: configuredSource.family,
+    platform: configuredSource.platform,
+    display_name: configuredSource.display_name,
+    base_dir: configuredSource.base_dir,
+    default_base_dir: defaultSource?.base_dir,
+    override_base_dir: override?.base_dir,
+    is_overridden: Boolean(override),
+    is_default_source: Boolean(defaultSource),
+    path_exists: exists,
+    host_id: storedSource?.host_id ?? hostName,
+    last_sync: storedSource?.last_sync ?? null,
+    sync_status: !exists ? "error" : configChangedSinceLastSync ? "stale" : storedSource?.sync_status ?? "stale",
+    error_message: !exists
+      ? `Configured directory does not exist: ${configuredSource.base_dir}`
+      : configChangedSinceLastSync
+        ? "Source directory changed after the last sync. Run a rescan to load data from the new path."
+        : storedSource?.error_message,
+    total_blobs: storedSource?.total_blobs ?? 0,
+    total_records: storedSource?.total_records ?? 0,
+    total_fragments: storedSource?.total_fragments ?? 0,
+    total_atoms: storedSource?.total_atoms ?? 0,
+    total_sessions: storedSource?.total_sessions ?? 0,
+    total_turns: storedSource?.total_turns ?? 0,
+  };
+}
+
+async function readSourceConfig(sourceConfigPath: string): Promise<{ overrides: SourceOverrideMap; extras: ManualSourceRecord[] }> {
+  try {
+    const payload = JSON.parse(await readFile(sourceConfigPath, "utf8")) as Partial<PersistedSourceConfig> & {
+      version?: number;
+    };
+    if (!payload || typeof payload !== "object") {
+      return { overrides: {}, extras: [] };
+    }
+
+    const overrides = Object.fromEntries(
+      Object.entries(payload.overrides ?? {})
+        .filter(([, value]) => typeof value?.base_dir === "string" && value.base_dir.trim().length > 0)
+        .map(([sourceId, value]) => [
+          sourceId,
+          {
+            base_dir: value.base_dir.trim(),
+            updated_at:
+              typeof value.updated_at === "string" && value.updated_at.length > 0
+                ? value.updated_at
+                : new Date().toISOString(),
+          },
+        ]),
+    );
+    const extras =
+      payload.version === 2 && Array.isArray(payload.extras)
+        ? payload.extras
+            .filter(
+              (value): value is ManualSourceRecord =>
+                typeof value?.id === "string" &&
+                typeof value?.family === "string" &&
+                typeof value?.platform === "string" &&
+                typeof value?.display_name === "string" &&
+                typeof value?.base_dir === "string" &&
+                value.id.trim().length > 0 &&
+                value.base_dir.trim().length > 0,
+            )
+            .map((value) => ({
+              ...value,
+              id: value.id.trim(),
+              slot_id:
+                typeof value.slot_id === "string" && value.slot_id.trim().length > 0
+                  ? value.slot_id.trim()
+                  : deriveSourceSlotId(value.platform),
+              display_name: value.display_name.trim() || value.platform,
+              base_dir: value.base_dir.trim(),
+              created_at:
+                typeof value.created_at === "string" && value.created_at.length > 0
+                  ? value.created_at
+                  : new Date().toISOString(),
+              updated_at:
+                typeof value.updated_at === "string" && value.updated_at.length > 0
+                  ? value.updated_at
+                  : new Date().toISOString(),
+            }))
+        : [];
+
+    return { overrides, extras };
+  } catch {
+    return { overrides: {}, extras: [] };
+  }
+}
+
+async function writeSourceConfig(
+  sourceConfigPath: string,
+  config: { overrides: SourceOverrideMap; extras: ManualSourceRecord[] },
+): Promise<void> {
+  await writeFile(
+    sourceConfigPath,
+    JSON.stringify(
+      {
+        version: 2,
+        overrides: config.overrides,
+        extras: config.extras,
+      } satisfies PersistedSourceConfig,
+      null,
+      2,
+    ),
+    "utf8",
+  );
+}
+
+function createManualSourceRecord(
+  sourceTemplate: SourceDefinition,
+  baseDir: string,
+  displayName?: string,
+): ManualSourceRecord {
+  const normalizedBaseDir = baseDir.trim();
+  const now = new Date().toISOString();
+  return {
+    id: deriveSourceInstanceId({
+      host_id: deriveHostId(os.hostname()),
+      slot_id: sourceTemplate.slot_id || deriveSourceSlotId(sourceTemplate.platform),
+      base_dir: normalizedBaseDir,
+    }),
+    slot_id: sourceTemplate.slot_id || deriveSourceSlotId(sourceTemplate.platform),
+    family: sourceTemplate.family,
+    platform: sourceTemplate.platform,
+    display_name: displayName?.trim() || `${sourceTemplate.display_name} (manual)`,
+    base_dir: normalizedBaseDir,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+function hasMeaningfulStoredSourceData(source: {
+  total_blobs: number;
+  total_records: number;
+  total_fragments: number;
+  total_atoms: number;
+  total_sessions: number;
+  total_turns: number;
+}): boolean {
+  return (
+    source.total_blobs > 0 ||
+    source.total_records > 0 ||
+    source.total_fragments > 0 ||
+    source.total_atoms > 0 ||
+    source.total_sessions > 0 ||
+    source.total_turns > 0
+  );
+}
+
+function dedupeSourceDefinitions(sources: readonly SourceDefinition[]): SourceDefinition[] {
+  const seen = new Set<string>();
+  const unique: SourceDefinition[] = [];
+  for (const source of sources) {
+    if (seen.has(source.id)) {
+      continue;
+    }
+    seen.add(source.id);
+    unique.push(source);
+  }
+  return unique;
+}
+
+function normalizePathKey(value: string): string {
+  return value.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/u, "");
 }
