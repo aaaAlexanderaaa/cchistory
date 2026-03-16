@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import type { SourceSyncPayload } from "@cchistory/domain";
 import { CCHistoryStorage } from "@cchistory/storage";
 import { runCli } from "./index.js";
 
@@ -95,6 +97,41 @@ test("pnpm-style leading -- is ignored before the command name", async () => {
     assert.match(listResult.stdout, /Name/);
   } finally {
     process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("search upgrades legacy atom_edges schema in an existing indexed store", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const storage = new CCHistoryStorage(storeDir);
+    try {
+      storage.replaceSourcePayload(createLegacySchemaFixturePayload());
+    } finally {
+      storage.close();
+    }
+
+    rewriteAtomEdgesAsLegacyTable(path.join(storeDir, "cchistory.sqlite"));
+
+    const result = await runCliCapture(["search", "claw", "--store", storeDir], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(result.stdout, /Legacy claw search/);
+
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const columns = (
+        db.prepare("PRAGMA table_info(atom_edges)").all() as Array<{
+          name: string;
+        }>
+      ).map((column) => column.name);
+      assert.ok(columns.includes("from_atom_id"));
+      assert.ok(columns.includes("to_atom_id"));
+    } finally {
+      db.close();
+    }
+  } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -471,6 +508,231 @@ async function runCliJson<T>(argv: string[], cwd: string): Promise<T> {
   const result = await runCliCapture([...argv, "--json"], cwd);
   assert.equal(result.exitCode, 0, result.stderr);
   return JSON.parse(result.stdout) as T;
+}
+
+function rewriteAtomEdgesAsLegacyTable(dbPath: string): void {
+  const db = new DatabaseSync(dbPath);
+
+  try {
+    db.exec("DROP INDEX IF EXISTS idx_atom_edges_from");
+    db.exec("DROP INDEX IF EXISTS idx_atom_edges_to");
+    db.exec(`
+      CREATE TABLE atom_edges_legacy (
+        id TEXT PRIMARY KEY,
+        source_id TEXT NOT NULL,
+        session_ref TEXT NOT NULL,
+        payload_json TEXT NOT NULL
+      );
+    `);
+    db.exec(`
+      INSERT INTO atom_edges_legacy (id, source_id, session_ref, payload_json)
+      SELECT id, source_id, session_ref, payload_json FROM atom_edges;
+    `);
+    db.exec("DROP TABLE atom_edges");
+    db.exec("ALTER TABLE atom_edges_legacy RENAME TO atom_edges");
+  } finally {
+    db.close();
+  }
+}
+
+function createLegacySchemaFixturePayload(): SourceSyncPayload {
+  return {
+    source: {
+      id: "src-cli-legacy-search",
+      slot_id: "codex",
+      family: "local_coding_agent",
+      platform: "codex",
+      display_name: "CLI legacy search fixture",
+      base_dir: "/tmp/cli-legacy-search",
+      host_id: "host-cli-legacy-search",
+      last_sync: "2026-03-09T00:00:00.000Z",
+      sync_status: "healthy",
+      total_blobs: 1,
+      total_records: 1,
+      total_fragments: 4,
+      total_atoms: 4,
+      total_sessions: 1,
+      total_turns: 1,
+    },
+    stage_runs: [],
+    loss_audits: [],
+    blobs: [],
+    records: [],
+    fragments: [],
+    atoms: [
+      {
+        id: "atom-cli-legacy-user",
+        source_id: "src-cli-legacy-search",
+        session_ref: "session-cli-legacy-search",
+        seq_no: 0,
+        actor_kind: "user",
+        origin_kind: "user_authored",
+        content_kind: "text",
+        time_key: "2026-03-09T00:00:00.000Z",
+        display_policy: "show",
+        payload: { text: "Legacy claw search" },
+        fragment_refs: [],
+        source_format_profile_id: "codex:jsonl:v1",
+      },
+      {
+        id: "atom-cli-legacy-assistant",
+        source_id: "src-cli-legacy-search",
+        session_ref: "session-cli-legacy-search",
+        seq_no: 1,
+        actor_kind: "assistant",
+        origin_kind: "assistant_authored",
+        content_kind: "text",
+        time_key: "2026-03-09T00:00:01.000Z",
+        display_policy: "show",
+        payload: { text: "Found claw" },
+        fragment_refs: [],
+        source_format_profile_id: "codex:jsonl:v1",
+      },
+      {
+        id: "atom-cli-legacy-tool-call",
+        source_id: "src-cli-legacy-search",
+        session_ref: "session-cli-legacy-search",
+        seq_no: 2,
+        actor_kind: "tool",
+        origin_kind: "tool_generated",
+        content_kind: "tool_call",
+        time_key: "2026-03-09T00:00:02.000Z",
+        display_policy: "show",
+        payload: { call_id: "call-cli-legacy", tool_name: "shell", input: {} },
+        fragment_refs: [],
+        source_format_profile_id: "codex:jsonl:v1",
+      },
+      {
+        id: "atom-cli-legacy-tool-result",
+        source_id: "src-cli-legacy-search",
+        session_ref: "session-cli-legacy-search",
+        seq_no: 3,
+        actor_kind: "tool",
+        origin_kind: "tool_generated",
+        content_kind: "tool_result",
+        time_key: "2026-03-09T00:00:03.000Z",
+        display_policy: "show",
+        payload: { call_id: "call-cli-legacy", output: "claw" },
+        fragment_refs: [],
+        source_format_profile_id: "codex:jsonl:v1",
+      },
+    ],
+    edges: [
+      {
+        id: "edge-cli-legacy-1",
+        source_id: "src-cli-legacy-search",
+        session_ref: "session-cli-legacy-search",
+        from_atom_id: "atom-cli-legacy-tool-call",
+        to_atom_id: "atom-cli-legacy-assistant",
+        edge_kind: "spawned_from",
+      },
+      {
+        id: "edge-cli-legacy-2",
+        source_id: "src-cli-legacy-search",
+        session_ref: "session-cli-legacy-search",
+        from_atom_id: "atom-cli-legacy-tool-result",
+        to_atom_id: "atom-cli-legacy-tool-call",
+        edge_kind: "tool_result_for",
+      },
+    ],
+    candidates: [],
+    sessions: [
+      {
+        id: "session-cli-legacy-search",
+        source_id: "src-cli-legacy-search",
+        source_platform: "codex",
+        host_id: "host-cli-legacy-search",
+        title: "Legacy claw search",
+        created_at: "2026-03-09T00:00:00.000Z",
+        updated_at: "2026-03-09T00:00:03.000Z",
+        turn_count: 1,
+        model: "gpt-5",
+        working_directory: "/workspace/legacy-claw",
+        sync_axis: "current",
+      },
+    ],
+    turns: [
+      {
+        id: "turn-cli-legacy-search",
+        revision_id: "turn-cli-legacy-search:r1",
+        user_messages: [
+          {
+            id: "message-cli-legacy-user",
+            raw_text: "Legacy claw search",
+            sequence: 0,
+            is_injected: false,
+            created_at: "2026-03-09T00:00:00.000Z",
+            atom_refs: ["atom-cli-legacy-user"],
+          },
+        ],
+        raw_text: "Legacy claw search",
+        canonical_text: "Legacy claw search",
+        display_segments: [{ type: "text", content: "Legacy claw search" }],
+        created_at: "2026-03-09T00:00:00.000Z",
+        submission_started_at: "2026-03-09T00:00:00.000Z",
+        last_context_activity_at: "2026-03-09T00:00:03.000Z",
+        session_id: "session-cli-legacy-search",
+        source_id: "src-cli-legacy-search",
+        link_state: "unlinked",
+        sync_axis: "current",
+        value_axis: "active",
+        retention_axis: "keep_raw_and_derived",
+        context_ref: "turn-cli-legacy-search",
+        context_summary: {
+          assistant_reply_count: 1,
+          tool_call_count: 1,
+          primary_model: "gpt-5",
+          has_errors: false,
+        },
+        lineage: {
+          atom_refs: [
+            "atom-cli-legacy-user",
+            "atom-cli-legacy-assistant",
+            "atom-cli-legacy-tool-call",
+            "atom-cli-legacy-tool-result",
+          ],
+          candidate_refs: [],
+          fragment_refs: [],
+          record_refs: [],
+          blob_refs: [],
+        },
+      },
+    ],
+    contexts: [
+      {
+        turn_id: "turn-cli-legacy-search",
+        system_messages: [],
+        assistant_replies: [
+          {
+            id: "reply-cli-legacy-assistant",
+            content: "Found claw",
+            display_segments: [{ type: "text", content: "Found claw" }],
+            content_preview: "Found claw",
+            model: "gpt-5",
+            created_at: "2026-03-09T00:00:01.000Z",
+            tool_call_ids: ["tool-call-cli-legacy"],
+          },
+        ],
+        tool_calls: [
+          {
+            id: "tool-call-cli-legacy",
+            tool_name: "shell",
+            input: {},
+            input_summary: "{}",
+            input_display_segments: [{ type: "text", content: "{}" }],
+            output: "claw",
+            output_preview: "claw",
+            output_display_segments: [{ type: "text", content: "claw" }],
+            status: "success",
+            reply_id: "reply-cli-legacy-assistant",
+            sequence: 0,
+            created_at: "2026-03-09T00:00:02.000Z",
+          },
+        ],
+        raw_event_refs: [],
+      },
+    ],
+  };
 }
 
 function getRepoMockDataRoot(): string {

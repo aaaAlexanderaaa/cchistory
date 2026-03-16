@@ -194,7 +194,7 @@ export function AllTurnsView() {
               </span>
             </div>
             <div className="text-xs text-muted">
-              Canonical `UserTurn` feed. Session remains a provenance projection.
+              Everything you asked across all coding sessions.
             </div>
           </div>
 
@@ -265,6 +265,7 @@ export function AllTurnsView() {
             count={isLoading ? undefined : stats.committed}
             active={filters.linkStates.includes('committed')}
             color="success"
+            title="Turns confidently linked to a project"
             onClick={() => toggleLinkState('committed')}
           />
           <FilterChip
@@ -272,6 +273,7 @@ export function AllTurnsView() {
             count={isLoading ? undefined : stats.candidate}
             active={filters.linkStates.includes('candidate')}
             color="candidate"
+            title="Turns with a possible project match — review in Inbox"
             onClick={() => toggleLinkState('candidate')}
           />
           <FilterChip
@@ -279,6 +281,7 @@ export function AllTurnsView() {
             count={isLoading ? undefined : stats.unlinked}
             active={filters.linkStates.includes('unlinked')}
             color="muted"
+            title="Turns not yet associated with any project"
             onClick={() => toggleLinkState('unlinked')}
           />
         </div>
@@ -289,11 +292,13 @@ export function AllTurnsView() {
           <FilterChip
             label="Active"
             active={filters.valueAxes.includes('active')}
+            title="Current, relevant turns"
             onClick={() => toggleValueAxis('active')}
           />
           <FilterChip
             label="Archived"
             active={filters.valueAxes.includes('archived')}
+            title="Older turns you've archived"
             onClick={() => toggleValueAxis('archived')}
           />
         </div>
@@ -388,10 +393,11 @@ interface FilterChipProps {
   count?: number
   active: boolean
   color?: 'success' | 'candidate' | 'muted' | 'default'
+  title?: string
   onClick: () => void
 }
 
-function FilterChip({ label, count, active, color = 'default', onClick }: FilterChipProps) {
+function FilterChip({ label, count, active, color = 'default', title, onClick }: FilterChipProps) {
   const colorClasses = {
     success: active ? 'bg-success/10 text-success border-success/30' : 'text-muted border-border',
     candidate: active ? 'bg-candidate/10 text-candidate border-candidate/30' : 'text-muted border-border',
@@ -403,6 +409,7 @@ function FilterChip({ label, count, active, color = 'default', onClick }: Filter
     <button
       type="button"
       onClick={onClick}
+      title={title}
       className={cn(
         'px-2 py-0.5 text-[10px] stamp-text border transition-colors',
         colorClasses[color],

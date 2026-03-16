@@ -3,6 +3,7 @@ import type { TokenUsageSummary, UserTurn } from './types'
 export interface AggregatedTokenUsage {
   usage?: TokenUsageSummary
   trackedTurns: number
+  excludedKnownZeroToken?: number
 }
 
 export interface TokenUsageItem {
@@ -38,8 +39,19 @@ export function summarizeTurnsTokenUsage(turns: UserTurn[]): AggregatedTokenUsag
   let hasOutputTokens = false
   let hasReasoningOutputTokens = false
   let hasTotalTokens = false
+  let excludedKnownZeroToken = 0
 
   for (const turn of turns) {
+    const isKnownZeroToken = turn.context_summary.zero_token_reason
+      || turn.context_summary.assistant_reply_count === 0
+    if (isKnownZeroToken) {
+      const usage = normalizeTokenUsage(turn.context_summary.token_usage, turn.context_summary.total_tokens)
+      if (!usage) {
+        excludedKnownZeroToken += 1
+        continue
+      }
+    }
+
     const usage = normalizeTokenUsage(turn.context_summary.token_usage, turn.context_summary.total_tokens)
     if (!usage) {
       continue
@@ -86,11 +98,12 @@ export function summarizeTurnsTokenUsage(turns: UserTurn[]): AggregatedTokenUsag
     !hasReasoningOutputTokens &&
     !hasTotalTokens
   ) {
-    return { trackedTurns }
+    return { trackedTurns, excludedKnownZeroToken: excludedKnownZeroToken || undefined }
   }
 
   return {
     trackedTurns,
+    excludedKnownZeroToken: excludedKnownZeroToken || undefined,
     usage: {
       input_tokens: hasInputTokens ? inputTokens : undefined,
       cache_read_input_tokens: hasCacheReadInputTokens ? cacheReadInputTokens : undefined,

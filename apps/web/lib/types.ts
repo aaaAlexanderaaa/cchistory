@@ -29,6 +29,7 @@ export type {
   UserMessage,
   UserTurn,
   ValueAxis,
+  ZeroTokenReason,
 } from "@cchistory/presentation";
 
 export type AppArea = "history" | "admin";

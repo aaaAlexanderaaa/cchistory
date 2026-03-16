@@ -30,8 +30,16 @@ export function dedupeByKey<T>(items: readonly T[], getKey: (item: T) => string)
   return unique;
 }
 
-export function fromJson<T>(value: string): T {
-  return JSON.parse(value) as T;
+export function fromJson<T>(value: string, context?: string): T {
+  try {
+    return JSON.parse(value) as T;
+  } catch (error) {
+    const preview = value.length > 120 ? value.slice(0, 120) + "..." : value;
+    const message = context
+      ? `Failed to parse JSON (${context}): ${preview}`
+      : `Failed to parse JSON: ${preview}`;
+    throw new Error(message, { cause: error });
+  }
 }
 
 export function stableId(prefix: string, ...parts: string[]): string {

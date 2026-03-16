@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile, utimes } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -996,6 +996,128 @@ test("runSourceProbe prioritizes Cursor workspaceStorage before globalStorage wh
     assert.equal(payload.blobs.length, 1);
     assert.equal(payload.blobs[0]?.origin_path, path.join(workspaceDir, "state.vscdb"));
     assert.equal(payload.sessions[0]?.working_directory, "/workspace/cursor-limited");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe uses file mtime as session end when factory_droid records share one timestamp", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const factoryDir = path.join(tempRoot, "factory");
+    await mkdir(factoryDir, { recursive: true });
+
+    const sharedTimestamp = "2026-03-09T05:00:00.000Z";
+    await writeFile(
+      path.join(factoryDir, "session.jsonl"),
+      [
+        { timestamp: sharedTimestamp, type: "session_start", sessionTitle: "Flat session", cwd: "/workspace/flat" },
+        { timestamp: sharedTimestamp, type: "message", message: { role: "user", content: [{ type: "text", text: "Hello" }] } },
+        { timestamp: sharedTimestamp, type: "message", message: { role: "assistant", content: [{ type: "text", text: "Hi there!" }] } },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8",
+    );
+
+    const fileMtime = new Date("2026-03-09T05:10:00.000Z");
+    await utimes(path.join(factoryDir, "session.jsonl"), fileMtime, fileMtime);
+
+    const [payload] = (
+      await runSourceProbe({ limit_files_per_source: 1 }, [
+        createSourceDefinition("src-factory-flat", "factory_droid", factoryDir),
+      ])
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.sessions.length, 1);
+    const session = payload.sessions[0]!;
+    assert.equal(session.created_at, sharedTimestamp);
+    assert.equal(session.updated_at, fileMtime.toISOString());
+
+    assert.ok(payload.blobs[0]?.file_modified_at);
+    assert.equal(payload.blobs[0]!.file_modified_at, fileMtime.toISOString());
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe uses file mtime as session end when amp messages share one timestamp", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const ampDir = path.join(tempRoot, "amp");
+    await mkdir(ampDir, { recursive: true });
+
+    const sharedTimestamp = "2026-03-09T06:00:00.000Z";
+    const sharedEpoch = new Date(sharedTimestamp).getTime();
+    await writeFile(
+      path.join(ampDir, "thread.json"),
+      JSON.stringify({
+        id: "amp-flat-1",
+        created: sharedEpoch,
+        title: "Flat AMP thread",
+        env: { initial: { trees: [{ uri: "file:///workspace/amp-flat", displayName: "amp-flat" }] } },
+        messages: [
+          { meta: { sentAt: sharedEpoch }, role: "user", content: [{ type: "text", text: "Summarize." }] },
+          { meta: { sentAt: sharedEpoch }, role: "assistant", content: [{ type: "text", text: "Here is the summary." }] },
+        ],
+      }),
+      "utf8",
+    );
+
+    const fileMtime = new Date("2026-03-09T06:05:00.000Z");
+    await utimes(path.join(ampDir, "thread.json"), fileMtime, fileMtime);
+
+    const [payload] = (
+      await runSourceProbe({ limit_files_per_source: 1 }, [
+        createSourceDefinition("src-amp-flat", "amp", ampDir),
+      ])
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.sessions.length, 1);
+    const session = payload.sessions[0]!;
+    assert.equal(session.created_at, sharedTimestamp);
+    assert.equal(session.updated_at, fileMtime.toISOString());
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe does not use file mtime when atom timestamps already differ", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const factoryDir = path.join(tempRoot, "factory");
+    await mkdir(factoryDir, { recursive: true });
+
+    await writeFile(
+      path.join(factoryDir, "session.jsonl"),
+      [
+        { timestamp: "2026-03-09T07:00:00.000Z", type: "session_start", sessionTitle: "Normal", cwd: "/workspace/normal" },
+        { timestamp: "2026-03-09T07:00:01.000Z", type: "message", message: { role: "user", content: [{ type: "text", text: "Go" }] } },
+        { timestamp: "2026-03-09T07:00:05.000Z", type: "message", message: { role: "assistant", content: [{ type: "text", text: "Done." }] } },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8",
+    );
+
+    const fileMtime = new Date("2026-03-09T08:00:00.000Z");
+    await utimes(path.join(factoryDir, "session.jsonl"), fileMtime, fileMtime);
+
+    const [payload] = (
+      await runSourceProbe({ limit_files_per_source: 1 }, [
+        createSourceDefinition("src-factory-normal", "factory_droid", factoryDir),
+      ])
+    ).sources;
+
+    assert.ok(payload);
+    const session = payload.sessions[0]!;
+    assert.equal(session.updated_at, "2026-03-09T07:00:05.000Z");
+    assert.notEqual(session.updated_at, fileMtime.toISOString());
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

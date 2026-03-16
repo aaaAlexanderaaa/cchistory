@@ -1,8 +1,13 @@
-import { hostname } from 'node:os'
+import { hostname, networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 
 const localHostname = hostname()
 const workspaceRoot = fileURLToPath(new URL('../../', import.meta.url))
+
+const localIPs = Object.values(networkInterfaces())
+  .flat()
+  .filter((iface) => iface && !iface.internal && iface.family === 'IPv4')
+  .map((iface) => iface.address)
 
 const allowedDevOrigins = [
   'localhost',
@@ -13,6 +18,8 @@ const allowedDevOrigins = [
   '0.0.0.0:8085',
   localHostname,
   `${localHostname}:8085`,
+  ...localIPs,
+  ...localIPs.map((ip) => `${ip}:8085`),
   process.env.CCHISTORY_PUBLIC_WEB_ORIGIN,
   ...(process.env.CCHISTORY_ALLOWED_DEV_ORIGINS?.split(',') ?? []),
 ]
@@ -25,16 +32,18 @@ const allowedDevOrigins = [
 const nextConfig = {
   allowedDevOrigins,
   outputFileTracingRoot: workspaceRoot,
-  // React Compiler disabled - not needed for this prototype
-  async rewrites() {
-    const internalApiOrigin = process.env.CCHISTORY_INTERNAL_API_ORIGIN || 'http://127.0.0.1:8040';
-
+  async headers() {
     return [
       {
-        source: '/api/cchistory/:path*',
-        destination: `${internalApiOrigin}/:path*`,
+        source: '/(.*)',
+        headers: [
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+        ],
       },
-    ];
+    ]
   },
 };
 

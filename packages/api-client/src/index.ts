@@ -477,6 +477,7 @@ export interface LinkingObservationDto {
 
 interface TurnsResponse {
   turns: UserTurnProjectionDto[];
+  total: number;
 }
 
 interface TurnResponse {
@@ -633,8 +634,14 @@ export function createCCHistoryApiClient(options: CCHistoryApiClientOptions = {}
   }
 
   return {
-    async getTurns(): Promise<UserTurnProjectionDto[]> {
-      return (await fetchJson<TurnsResponse>(fetchImpl, baseUrl, "/api/turns")).turns;
+    async getTurns(params?: { limit?: number; offset?: number }): Promise<{ turns: UserTurnProjectionDto[]; total: number }> {
+      const searchParams = new URLSearchParams();
+      if (params?.limit != null) searchParams.set("limit", String(params.limit));
+      if (params?.offset != null) searchParams.set("offset", String(params.offset));
+      const qs = searchParams.toString();
+      const path = qs ? `/api/turns?${qs}` : "/api/turns";
+      const response = await fetchJson<TurnsResponse>(fetchImpl, baseUrl, path);
+      return { turns: response.turns, total: response.total };
     },
     async searchTurns(params: {
       q?: string;

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rm, stat, writeFile, copyFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile, copyFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   BundleChecksums,
@@ -10,6 +10,33 @@ import type {
   SourceSyncPayload,
 } from "@cchistory/domain";
 import { CCHistoryStorage } from "@cchistory/storage";
+
+function assertSafePathComponent(value: string, label: string): void {
+  if (value.includes("/") || value.includes("\\") || value.includes("..") || value.includes("\0")) {
+    throw new Error(`Unsafe ${label}: ${value}`);
+  }
+}
+
+function assertPathWithinDirectory(resolvedPath: string, baseDir: string, label: string): void {
+  const normalizedBase = path.resolve(baseDir);
+  const normalizedPath = path.resolve(resolvedPath);
+  if (!normalizedPath.startsWith(normalizedBase + path.sep) && normalizedPath !== normalizedBase) {
+    throw new Error(`${label} escapes the target directory: ${resolvedPath}`);
+  }
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return "[" + value.map(stableStringify).join(",") + "]";
+  }
+  const entries = Object.keys(value as Record<string, unknown>)
+    .sort()
+    .map((key) => JSON.stringify(key) + ":" + stableStringify((value as Record<string, unknown>)[key]));
+  return "{" + entries.join(",") + "}";
+}
 
 export const BUNDLE_VERSION = "cchistory.bundle.v1";
 export const BUNDLE_SCHEMA_VERSION = "2026-03-14.1";
@@ -58,6 +85,7 @@ export async function exportBundle(options: {
   const serializedPayloads = payloads.map(serializePayloadForBundle);
 
   for (const payload of serializedPayloads) {
+    assertSafePathComponent(payload.source.id, "source_id");
     const payloadJson = JSON.stringify(payload, null, 2);
     payloadChecksums[payload.source.id] = computePayloadChecksum(payload);
     await writeFile(path.join(bundleDir, "payloads", `${payload.source.id}.json`), payloadJson, "utf8");
@@ -125,7 +153,9 @@ export async function readBundle(bundleDir: string): Promise<BundleReadResult> {
 
   const payloads: SourceSyncPayload[] = [];
   for (const sourceId of manifest.source_instance_ids) {
+    assertSafePathComponent(sourceId, "source_instance_id");
     const payloadPath = path.join(resolvedBundleDir, "payloads", `${sourceId}.json`);
+    assertPathWithinDirectory(payloadPath, resolvedBundleDir, "payload path");
     const payloadJson = await readFile(payloadPath, "utf8");
     const payload = JSON.parse(payloadJson) as SourceSyncPayload;
     if (checksums.payload_sha256_by_source_id[sourceId] !== computePayloadChecksum(payload)) {
@@ -150,7 +180,7 @@ export async function importBundleIntoStore(options: {
 }): Promise<BundleImportResult> {
   const bundle = await readBundle(options.bundleDir);
   const importedBundle = options.storage.getImportedBundle(bundle.manifest.bundle_id);
-  if (importedBundle && JSON.stringify(importedBundle.checksums) !== JSON.stringify(bundle.checksums)) {
+  if (importedBundle && stableStringify(importedBundle.checksums) !== stableStringify(bundle.checksums)) {
     throw new Error(`Bundle id ${bundle.manifest.bundle_id} already exists with different checksums.`);
   }
   const importedSourceIds: string[] = [];
@@ -279,10 +309,12 @@ async function materializePayloadRawBlobs(
   for (const blob of nextPayload.blobs) {
     const relativePath = blob.captured_path ?? bundleRawRelativePath(payload.source.id, blob);
     const bundleRawPath = path.join(bundle.bundleDir, relativePath);
+    assertPathWithinDirectory(bundleRawPath, bundle.bundleDir, "bundle raw path");
     if (bundle.checksums.raw_sha256_by_path[relativePath] !== sha256(await readFile(bundleRawPath))) {
       throw new Error(`Raw checksum mismatch for ${relativePath}`);
     }
     const targetPath = path.join(rawDir, payload.source.id, path.basename(relativePath));
+    assertPathWithinDirectory(targetPath, rawDir, "raw target path");
     await mkdir(path.dirname(targetPath), { recursive: true });
     await copyFile(bundleRawPath, targetPath);
     blob.captured_path = targetPath;
@@ -303,12 +335,14 @@ async function ensureEmptyDirectory(targetDir: string): Promise<void> {
     if (entries.length > 0) {
       throw new Error(`Bundle output directory already exists and is not empty: ${targetDir}`);
     }
+    // Directory exists and is already empty — reuse as-is
+    return;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       throw error;
     }
   }
-  await rm(targetDir, { recursive: true, force: true });
+  // Directory doesn't exist — create atomically
   await mkdir(targetDir, { recursive: true });
 }
 

@@ -229,6 +229,7 @@ export interface CapturedBlob {
   size_bytes: number;
   captured_at: string;
   capture_run_id: string;
+  file_modified_at?: string;
 }
 
 export interface RawRecord {
@@ -476,6 +477,8 @@ export interface DisplaySegment {
   original_content?: string;
 }
 
+export type ZeroTokenReason = "no_assistant_reply" | "command_only";
+
 export interface TurnContextSummary {
   assistant_reply_count: number;
   tool_call_count: number;
@@ -483,6 +486,7 @@ export interface TurnContextSummary {
   total_tokens?: number;
   primary_model?: string;
   has_errors: boolean;
+  zero_token_reason?: ZeroTokenReason;
 }
 
 export interface TokenUsageSummary {
@@ -711,6 +715,7 @@ export interface UsageStatsOverview {
   total_output_tokens: number;
   total_reasoning_output_tokens: number;
   total_tokens: number;
+  excluded_zero_token_turns?: number;
 }
 
 export interface UsageStatsRollupRow {
@@ -732,6 +737,7 @@ export interface UsageStatsRollup {
   generated_at: string;
   dimension: UsageStatsDimension;
   rows: UsageStatsRollupRow[];
+  excluded_zero_token_turns?: number;
 }
 
 export function deriveSourceSlotId(platform: SourcePlatform): string {

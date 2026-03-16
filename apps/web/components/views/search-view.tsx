@@ -34,7 +34,7 @@ export function SearchView({
   const [query, setQuery] = useState(initialQuery)
   const [showArchived, setShowArchived] = useState(false)
   const [showCovered, setShowCovered] = useState(false)
-  const [showCandidates, setShowCandidates] = useState(false)
+  const [showCandidates, setShowCandidates] = useState(true)
   const [sortBy, setSortBy] = useState<SearchSort>('relevance')
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null)
   const [collapsedProjectIds, setCollapsedProjectIds] = useState<Set<string>>(new Set())
@@ -44,7 +44,7 @@ export function SearchView({
     hasQuery
       ? {
           query,
-          link_states: showCandidates ? ['committed', 'candidate', 'unlinked'] : ['committed'],
+          link_states: showCandidates ? ['committed', 'candidate', 'unlinked'] : ['committed', 'candidate'],
           value_axes: [
             'active',
             ...(showCovered ? (['covered'] as const) : []),
@@ -158,10 +158,10 @@ export function SearchView({
           </div>
 
           <div className="flex flex-wrap items-center gap-3 border-t border-border px-4 py-3 text-xs sm:px-6">
-            <span className="text-muted">Canonical UserTurn results; project and session stay contextual.</span>
+            <span className="text-muted">Search your coding history across all sessions and projects.</span>
             <FilterChip label="Archived" active={showArchived} onClick={() => setShowArchived((value) => !value)} />
             <FilterChip label="Covered" active={showCovered} onClick={() => setShowCovered((value) => !value)} />
-            <FilterChip label="Candidates" active={showCandidates} onClick={() => setShowCandidates((value) => !value)} />
+            <FilterChip label="Include Unlinked" active={showCandidates} onClick={() => setShowCandidates((value) => !value)} />
             <select
               value={sortBy}
               onChange={(event) => setSortBy(event.target.value as SearchSort)}

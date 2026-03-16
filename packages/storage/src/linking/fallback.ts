@@ -8,6 +8,8 @@ import type {
 } from "@cchistory/domain";
 import { stableId, uniqueStrings } from "../internal/utils.js";
 
+const FALLBACK_LINKER_RULE_VERSION = "storage-linker-fallback@2026-03-13.1";
+
 export function buildFallbackProjectObservationCandidates(input: {
   sessions: readonly SessionProjection[];
   turns: readonly UserTurnProjection[];
@@ -66,7 +68,7 @@ export function buildFallbackProjectObservationCandidates(input: {
       input_atom_refs: [],
       started_at: observedAt,
       ended_at: observedAt,
-      rule_version: "storage-linker-fallback@2026-03-13.1",
+      rule_version: FALLBACK_LINKER_RULE_VERSION,
       evidence: {
         workspace_path: session.working_directory,
         workspace_path_normalized: workspacePathNormalized,

@@ -50,6 +50,7 @@ interface SessionGroup {
   activeDurationMs: number
   tokenUsage?: TokenUsageSummary
   trackedTokenTurnCount: number
+  excludedKnownZeroToken?: number
 }
 
 interface SessionLane {
@@ -64,6 +65,7 @@ interface SessionLane {
   activeDurationMs: number
   tokenUsage?: TokenUsageSummary
   trackedTokenTurnCount: number
+  excludedKnownZeroToken?: number
 }
 
 interface TurnWindow {
@@ -150,6 +152,7 @@ export function SessionMap({
           activeDurationMs: turnWindows.reduce((sum, window) => sum + (window.endMs - window.startMs), 0),
           tokenUsage: tokenStats.usage,
           trackedTokenTurnCount: tokenStats.trackedTurns,
+          excludedKnownZeroToken: tokenStats.excludedKnownZeroToken,
         } satisfies SessionLane
       })
       .sort((left, right) => compareSessionLanes(left, right, sortBy, sortDirection))
@@ -192,6 +195,7 @@ export function SessionMap({
           activeDurationMs: orderedLanes.reduce((sum, lane) => sum + lane.activeDurationMs, 0),
           tokenUsage: tokenStats.usage,
           trackedTokenTurnCount: tokenStats.trackedTurns,
+          excludedKnownZeroToken: tokenStats.excludedKnownZeroToken,
         } satisfies SessionGroup
       })
       .sort((left, right) => compareSessionGroups(left, right, sortBy, sortDirection))
@@ -230,7 +234,7 @@ export function SessionMap({
                 <SummaryChip icon={<Clock3 className="h-3.5 w-3.5" />} label={`Active ${formatDurationCompact(overallActiveDurationMs)}`} />
                 <SummaryChip
                   icon={<Sparkles className="h-3.5 w-3.5" />}
-                  label={formatTokenUsageOverview(overallTokenStats.usage, overallTokenStats.trackedTurns, turns.length)}
+                  label={formatTokenUsageOverview(overallTokenStats.usage, overallTokenStats.trackedTurns, turns.length - (overallTokenStats.excludedKnownZeroToken ?? 0))}
                 />
               </div>
             ) : (
@@ -337,7 +341,7 @@ function ProjectGroupSection({
     group.projectClosedAt.getTime() - group.projectStartedAt.getTime(),
     1,
   )
-  const groupTokenTracking = formatTokenTrackingLabel(group.trackedTokenTurnCount, group.turns.length)
+  const groupTokenTracking = formatTokenTrackingLabel(group.trackedTokenTurnCount, group.turns.length - (group.excludedKnownZeroToken ?? 0))
   const tickDates =
     axisMode === 'shared'
       ? buildAxisTicks(group.projectStartedAt, group.projectClosedAt)
@@ -484,7 +488,7 @@ function SessionLaneRow({
   const tokenSummary = formatTokenUsageInline(
     lane.tokenUsage,
     lane.trackedTokenTurnCount,
-    lane.turns.length,
+    lane.turns.length - (lane.excludedKnownZeroToken ?? 0),
   )
   const tokenSummaryText = tokenSummary === 'Tokens unavailable' ? 'Unavailable' : tokenSummary
   const workspacePath = lane.session.working_directory

@@ -64,9 +64,9 @@ export function replaceSourcePayloadWithOptions(
       insertAtom.run(atom.id, normalizedPayload.source.id, atom.session_ref, atom.time_key, atom.seq_no, toJson(atom));
     }
 
-    const insertEdge = db.prepare("INSERT INTO atom_edges (id, source_id, session_ref, payload_json) VALUES (?, ?, ?, ?)");
+    const insertEdge = db.prepare("INSERT INTO atom_edges (id, source_id, session_ref, from_atom_id, to_atom_id, payload_json) VALUES (?, ?, ?, ?, ?, ?)");
     for (const edge of normalizedPayload.edges) {
-      insertEdge.run(edge.id, normalizedPayload.source.id, edge.session_ref, toJson(edge));
+      insertEdge.run(edge.id, normalizedPayload.source.id, edge.session_ref, edge.from_atom_id, edge.to_atom_id, toJson(edge));
     }
 
     const insertCandidate = db.prepare(

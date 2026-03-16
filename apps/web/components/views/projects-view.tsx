@@ -43,9 +43,10 @@ type ProjectSort = 'activity' | 'name' | 'turns'
 type ProjectTurnSort = 'newest' | 'oldest'
 
 export function ProjectsView() {
-  const { data: projects = [] } = useProjectsQuery('all')
-  const { data: turns = [] } = useTurnsQuery()
+  const { data: projects = [], error: projectsError } = useProjectsQuery('all')
+  const { data: turns = [], error: turnsError } = useTurnsQuery()
   const { data: sessions = [] } = useSessionsQuery()
+  const apiError = projectsError || turnsError
   const [viewMode, setViewMode] = useState<ProjectViewMode>('list')
   const [overviewMode, setOverviewMode] = useState<OverviewMode>('grid')
   const [projectSort, setProjectSort] = useState<ProjectSort>('activity')
@@ -168,7 +169,7 @@ export function ProjectsView() {
                 <span className="text-sm text-muted">{projects.length} linked identities</span>
               </div>
               <div className="text-xs text-muted">
-                Project is the context boundary. `UserTurn` remains the recall unit.
+                Browse and manage your coding projects.
               </div>
             </div>
 
@@ -211,6 +212,11 @@ export function ProjectsView() {
         </header>
 
         <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+          {apiError && (
+            <div className="mb-4 border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+              Could not load data from the API. Make sure the API server is running (pnpm services:start).
+            </div>
+          )}
           {overviewMode === 'grid' ? (
             <div className="grid auto-rows-fr grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
               {sortedProjects.map((project) => (
@@ -900,7 +906,7 @@ function summarizeTurnMetrics(turns: UserTurn[]) {
   }
 
   return {
-    turns: turns.length,
+    turns: turns.length - (tokenStats.excludedKnownZeroToken ?? 0),
     tokenUsage: tokenStats.usage,
     trackedTurns: tokenStats.trackedTurns,
     activeDurationMs,
