@@ -845,6 +845,7 @@ async function captureBlob(
       size_bytes: stats.size,
       captured_at: nowIso(),
       capture_run_id: captureRunId,
+      file_modified_at: stats.mtime.toISOString(),
     },
     fileBuffer,
   };
@@ -897,7 +898,7 @@ function buildAdapterBlobResult(
   const atomized = atomizeFragments(source.id, sessionId, sourceFormatProfile.id, fragments);
   atoms.push(...atomized.atoms);
   edges.push(...atomized.edges);
-  hydrateDraftFromAtoms(draft, atoms);
+  hydrateDraftFromAtoms(draft, atoms, blob.file_modified_at);
 
   return {
     draft,
@@ -1078,11 +1079,8 @@ async function extractRecords(
     return records;
   }
 
-  const lines = text
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  for (const [index, line] of lines.entries()) {
+  const observedAt = nowIso();
+  forEachNonEmptyTrimmedLine(text, (line, index) => {
     records.push({
       id: baseRecordId(index, `${index}`),
       source_id: context.source.id,
@@ -1090,11 +1088,11 @@ async function extractRecords(
       session_ref: context.sessionId,
       ordinal: index,
       record_path_or_offset: `${index}`,
-      observed_at: nowIso(),
+      observed_at: observedAt,
       parseable: true,
       raw_json: line,
     });
-  }
+  });
 
   if (context.source.platform === "factory_droid") {
     const settingsPath = context.filePath.replace(/\.jsonl?$/u, ".settings.json");
@@ -2253,11 +2251,14 @@ function fragmentToAtom(
   return undefined;
 }
 
-function hydrateDraftFromAtoms(draft: SessionDraft, atoms: ConversationAtom[]): void {
+function hydrateDraftFromAtoms(draft: SessionDraft, atoms: ConversationAtom[], fileModifiedAt?: string): void {
   const firstAtom = atoms[0];
   const lastAtom = atoms.at(-1);
   draft.created_at = draft.created_at ?? firstAtom?.time_key ?? nowIso();
   draft.updated_at = draft.updated_at ?? lastAtom?.time_key ?? draft.created_at;
+  if (draft.updated_at === draft.created_at && fileModifiedAt && fileModifiedAt > draft.created_at) {
+    draft.updated_at = fileModifiedAt;
+  }
   for (const atom of atoms) {
     if (atom.content_kind === "meta_signal" && atom.payload.signal_kind === "workspace_signal") {
       draft.working_directory = (atom.payload.path as string | undefined) ?? draft.working_directory;
@@ -2604,6 +2605,7 @@ function buildTurnsAndContext(
 
     contexts.push(contextProjection);
     const contextTokenUsage = summarizeAssistantReplyUsage(contextProjection.assistant_replies);
+    const hasNoAssistantReply = contextProjection.assistant_replies.length === 0;
     turns.push({
       id: turnId,
       revision_id: `${turnId}:r1`,
@@ -2632,6 +2634,7 @@ function buildTurnsAndContext(
           (contextProjection.assistant_replies.reduce((sum, reply) => sum + (reply.token_count ?? 0), 0) || undefined),
         primary_model: summarizeAssistantReplyPrimaryModel(contextProjection.assistant_replies) ?? draft.model,
         has_errors: contextProjection.assistant_replies.some((reply) => reply.stop_reason === "error"),
+        zero_token_reason: hasNoAssistantReply ? "no_assistant_reply" : undefined,
       },
       lineage: {
         atom_refs: [...group.input_atom_refs, ...contextAtoms.map((atom) => atom.id)],
@@ -3353,6 +3356,61 @@ function dedupeById<T extends { id: string }>(items: readonly T[]): T[] {
   return unique;
 }
 
+function forEachNonEmptyTrimmedLine(
+  value: string,
+  visitor: (line: string, ordinal: number) => void,
+): void {
+  let start = 0;
+  let ordinal = 0;
+
+  for (let index = 0; index <= value.length; index += 1) {
+    const isEnd = index === value.length;
+    const charCode = isEnd ? -1 : value.charCodeAt(index);
+    if (!isEnd && charCode !== 10 && charCode !== 13) {
+      continue;
+    }
+
+    const line = value.slice(start, index).trim();
+    if (line) {
+      visitor(line, ordinal);
+      ordinal += 1;
+    }
+
+    if (charCode === 13 && index + 1 < value.length && value.charCodeAt(index + 1) === 10) {
+      index += 1;
+    }
+    start = index + 1;
+  }
+}
+
+function firstNonEmptyLineFromBuffer(fileBuffer: Buffer): string | undefined {
+  let start = 0;
+
+  for (let index = 0; index <= fileBuffer.length; index += 1) {
+    const isEnd = index === fileBuffer.length;
+    const byte = isEnd ? -1 : fileBuffer[index] ?? -1;
+    if (!isEnd && byte !== 10 && byte !== 13) {
+      continue;
+    }
+
+    let lineBuffer = fileBuffer.subarray(start, index);
+    if (lineBuffer.length > 0 && lineBuffer[lineBuffer.length - 1] === 13) {
+      lineBuffer = lineBuffer.subarray(0, lineBuffer.length - 1);
+    }
+    const line = lineBuffer.toString("utf8").trim();
+    if (line) {
+      return line;
+    }
+
+    if (byte === 13 && index + 1 < fileBuffer.length && fileBuffer[index + 1] === 10) {
+      index += 1;
+    }
+    start = index + 1;
+  }
+
+  return undefined;
+}
+
 async function listSourceFiles(
   platform: SourcePlatform,
   baseDir: string,
@@ -3404,7 +3462,7 @@ function deriveSessionId(platform: SourcePlatform, filePath: string, fileBuffer:
   }
 
   if (platform === "codex") {
-    const firstLine = fileBuffer.toString("utf8").split(/\r?\n/u).find(Boolean);
+    const firstLine = firstNonEmptyLineFromBuffer(fileBuffer);
     if (firstLine) {
       try {
         const parsed = JSON.parse(firstLine) as Record<string, unknown>;

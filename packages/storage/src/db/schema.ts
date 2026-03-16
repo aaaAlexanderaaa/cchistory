@@ -52,6 +52,8 @@ export function initializeStorageSchema(db: DatabaseSync): boolean {
       id TEXT PRIMARY KEY,
       source_id TEXT NOT NULL,
       session_ref TEXT NOT NULL,
+      from_atom_id TEXT NOT NULL DEFAULT '',
+      to_atom_id TEXT NOT NULL DEFAULT '',
       payload_json TEXT NOT NULL
     );
 
@@ -133,6 +135,24 @@ export function initializeStorageSchema(db: DatabaseSync): boolean {
     );
   `);
 
+  ensureAtomEdgeEndpointColumns(db);
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_atom_edges_from ON atom_edges (from_atom_id);
+    CREATE INDEX IF NOT EXISTS idx_atom_edges_to ON atom_edges (to_atom_id);
+
+    CREATE INDEX IF NOT EXISTS idx_user_turns_source ON user_turns (source_id);
+    CREATE INDEX IF NOT EXISTS idx_user_turns_session ON user_turns (session_id);
+    CREATE INDEX IF NOT EXISTS idx_user_turns_submission ON user_turns (submission_started_at);
+    CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions (source_id);
+    CREATE INDEX IF NOT EXISTS idx_turn_contexts_source ON turn_contexts (source_id);
+    CREATE INDEX IF NOT EXISTS idx_project_link_revisions_project ON project_link_revisions (project_id);
+    CREATE INDEX IF NOT EXISTS idx_project_lineage_events_project ON project_lineage_events (project_id);
+    CREATE INDEX IF NOT EXISTS idx_artifact_coverage_artifact ON artifact_coverage (artifact_id);
+    CREATE INDEX IF NOT EXISTS idx_artifact_coverage_turn ON artifact_coverage (turn_id);
+    CREATE INDEX IF NOT EXISTS idx_derived_candidates_source ON derived_candidates (source_id);
+  `);
+
   try {
     db.exec(`
       CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
@@ -147,7 +167,58 @@ export function initializeStorageSchema(db: DatabaseSync): boolean {
       );
     `);
     return true;
-  } catch {
+  } catch (error) {
+    console.warn(
+      "[cchistory/storage] FTS5 unavailable — using fallback substring search.",
+      error instanceof Error ? error.message : error,
+    );
     return false;
+  }
+}
+
+function ensureAtomEdgeEndpointColumns(db: DatabaseSync): void {
+  const columnNames = new Set(
+    (
+      db.prepare("PRAGMA table_info(atom_edges)").all() as Array<{
+        name: string;
+      }>
+    ).map((column) => column.name),
+  );
+
+  if (!columnNames.has("from_atom_id")) {
+    db.exec("ALTER TABLE atom_edges ADD COLUMN from_atom_id TEXT NOT NULL DEFAULT ''");
+  }
+
+  if (!columnNames.has("to_atom_id")) {
+    db.exec("ALTER TABLE atom_edges ADD COLUMN to_atom_id TEXT NOT NULL DEFAULT ''");
+  }
+
+  const rows = db.prepare("SELECT id, payload_json, from_atom_id, to_atom_id FROM atom_edges").all() as Array<{
+    id: string;
+    payload_json: string;
+    from_atom_id: string;
+    to_atom_id: string;
+  }>;
+  const update = db.prepare("UPDATE atom_edges SET from_atom_id = ?, to_atom_id = ? WHERE id = ?");
+
+  for (const row of rows) {
+    if (row.from_atom_id && row.to_atom_id) {
+      continue;
+    }
+
+    let payload: { from_atom_id?: unknown; to_atom_id?: unknown } | undefined;
+    try {
+      payload = JSON.parse(row.payload_json) as { from_atom_id?: unknown; to_atom_id?: unknown };
+    } catch {
+      continue;
+    }
+
+    const fromAtomId = typeof payload.from_atom_id === "string" ? payload.from_atom_id : row.from_atom_id;
+    const toAtomId = typeof payload.to_atom_id === "string" ? payload.to_atom_id : row.to_atom_id;
+    if (fromAtomId === row.from_atom_id && toAtomId === row.to_atom_id) {
+      continue;
+    }
+
+    update.run(fromAtomId, toAtomId, row.id);
   }
 }

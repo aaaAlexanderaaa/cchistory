@@ -23,7 +23,7 @@ import {
 } from 'recharts'
 
 export function DriftView() {
-  const { data: drift } = useDriftQuery()
+  const { data: drift, error: driftError } = useDriftQuery()
   const { data: sources = [] } = useSourcesQuery()
   const { mutate } = useSWRConfig()
   const [sourceSort, setSourceSort] = useState<'status' | 'last_sync' | 'turns' | 'name'>('status')
@@ -56,8 +56,18 @@ export function DriftView() {
     return items
   }, [sourceSort, sources])
 
+  if (driftError) {
+    return (
+      <div className="flex flex-1 items-center justify-center p-8">
+        <div className="border border-warning/30 bg-warning/10 px-6 py-4 text-sm text-warning">
+          Could not load data health diagnostics. Make sure the API server is running (pnpm services:start).
+        </div>
+      </div>
+    )
+  }
+
   if (!drift) {
-    return <div className="flex flex-1 items-center justify-center text-sm text-muted">Loading drift diagnostics…</div>
+    return <div className="flex flex-1 items-center justify-center text-sm text-muted">Loading diagnostics…</div>
   }
 
   return (
@@ -67,7 +77,7 @@ export function DriftView() {
           <div className="space-y-1">
             <div className="flex flex-wrap items-center gap-3">
               <Activity className="h-5 w-5 text-ink" />
-              <h1 className="text-lg font-bold font-display text-ink">Drift Monitor</h1>
+              <h1 className="text-lg font-bold font-display text-ink">Data Health</h1>
               {drift.consistency_score < 0.95 && (
                 <span className="inline-flex items-center gap-1 border border-warning/30 bg-warning/10 px-2 py-1 text-[10px] stamp-text text-warning">
                   <AlertTriangle className="h-3 w-3" />

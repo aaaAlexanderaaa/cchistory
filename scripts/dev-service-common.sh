@@ -94,13 +94,16 @@ cleanup_stale_pid_file() {
 port_listener_pids() {
   local service="$1"
   local port
+  local results=""
   port="$(service_port "${service}")"
   if command -v lsof >/dev/null 2>&1; then
-    lsof -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true
-    return
+    results="$(lsof -tiTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true)"
   fi
-  if command -v fuser >/dev/null 2>&1; then
-    fuser "${port}/tcp" 2>/dev/null || true
+  if [[ -z "${results}" ]] && command -v fuser >/dev/null 2>&1; then
+    results="$(fuser "${port}/tcp" 2>/dev/null || true)"
+  fi
+  if [[ -n "${results}" ]]; then
+    printf '%s\n' "${results}" | tr ' ' '\n' | sed '/^$/d'
   fi
 }
 
@@ -215,39 +218,84 @@ service_prepare() {
         echo "pnpm not found in PATH" >&2
         return 1
       fi
-      "${PNPM_BIN}" --filter @cchistory/api-client build
+      run_with_prepare_node_options "${PNPM_BIN}" --filter @cchistory/api-client build
       ;;
     api)
       tsc_bin="${ROOT_DIR}/node_modules/.bin/tsc"
-      "${tsc_bin}" -p "${ROOT_DIR}/packages/domain/tsconfig.json"
-      "${tsc_bin}" -p "${ROOT_DIR}/packages/source-adapters/tsconfig.json"
-      "${tsc_bin}" -p "${ROOT_DIR}/packages/storage/tsconfig.json"
+      run_with_prepare_node_options "${tsc_bin}" -p "${ROOT_DIR}/packages/domain/tsconfig.json"
+      run_with_prepare_node_options "${tsc_bin}" -p "${ROOT_DIR}/packages/source-adapters/tsconfig.json"
+      run_with_prepare_node_options "${tsc_bin}" -p "${ROOT_DIR}/packages/storage/tsconfig.json"
       ;;
   esac
 }
 
+run_with_prepare_node_options() {
+  local node_options_value
+  node_options_value="--max-old-space-size=${SERVICE_PREPARE_NODE_MEMORY_MB:-512}"
+  if [[ -n "${NODE_OPTIONS:-}" ]]; then
+    node_options_value="${NODE_OPTIONS} ${node_options_value}"
+  fi
+  env NODE_OPTIONS="${node_options_value}" "$@"
+}
+
 service_launch_command() {
   local service="$1"
-  local web_dir api_dir next_bin tsx_bin node_options_value service_tmp_dir
+  local web_dir api_dir next_bin tsx_bin node_options_value api_node_options_value service_tmp_dir
   service_tmp_dir="$(service_temp_dir "${service}")"
   case "${service}" in
     web)
       web_dir="${ROOT_DIR}/apps/web"
       next_bin="${web_dir}/node_modules/.bin/next"
-      node_options_value="--max-old-space-size=${NODE_MEMORY_MB:-1536}"
+      node_options_value="--max-old-space-size=${NODE_MEMORY_MB:-640}"
       if [[ -n "${NODE_OPTIONS:-}" ]]; then
         node_options_value="${NODE_OPTIONS} ${node_options_value}"
       fi
-      printf 'cd %q && exec env TMPDIR=%q TMP=%q TEMP=%q NODE_OPTIONS=%q %q dev --hostname 0.0.0.0 --port 8085' \
+      printf 'cd %q && exec env TMPDIR=%q TMP=%q TEMP=%q NODE_OPTIONS=%q %q dev --webpack --hostname 0.0.0.0 --port 8085' \
         "${web_dir}" "${service_tmp_dir}" "${service_tmp_dir}" "${service_tmp_dir}" "${node_options_value}" "${next_bin}"
       ;;
     api)
       api_dir="${ROOT_DIR}/apps/api"
       tsx_bin="${api_dir}/node_modules/.bin/tsx"
-      printf 'cd %q && exec env TMPDIR=%q TMP=%q TEMP=%q PORT=%q %q watch src/index.ts' \
-        "${api_dir}" "${service_tmp_dir}" "${service_tmp_dir}" "${service_tmp_dir}" "${PORT:-8040}" "${tsx_bin}"
+      api_node_options_value="--max-old-space-size=${API_NODE_MEMORY_MB:-256}"
+      if [[ -n "${NODE_OPTIONS:-}" ]]; then
+        api_node_options_value="${NODE_OPTIONS} ${api_node_options_value}"
+      fi
+      printf 'cd %q && exec env TMPDIR=%q TMP=%q TEMP=%q PORT=%q NODE_OPTIONS=%q %q watch src/index.ts' \
+        "${api_dir}" "${service_tmp_dir}" "${service_tmp_dir}" "${service_tmp_dir}" "${PORT:-8040}" "${api_node_options_value}" "${tsx_bin}"
       ;;
   esac
+}
+
+wait_for_service_ready() {
+  local service="$1"
+  local max_attempts="${2:-120}"
+  local supervisor_pid_file child_pid_file supervisor_pid listener_pid attempt
+  supervisor_pid_file="$(service_supervisor_pid_file "${service}")"
+  child_pid_file="$(service_child_pid_file "${service}")"
+
+  for attempt in $(seq 1 "${max_attempts}"); do
+    cleanup_stale_pid_file "${supervisor_pid_file}"
+    cleanup_stale_pid_file "${child_pid_file}"
+
+    supervisor_pid="$(read_pid_file "${supervisor_pid_file}")"
+    if [[ -z "${supervisor_pid}" ]]; then
+      sleep 0.5
+      continue
+    fi
+    if ! is_pid_alive "${supervisor_pid}"; then
+      return 1
+    fi
+
+    # Start-all must wait for the actual bound listener, not just the watch parent process.
+    listener_pid="$(port_listener_pids "${service}" | head -n 1)"
+    if [[ -n "${listener_pid}" ]]; then
+      return 0
+    fi
+
+    sleep 0.5
+  done
+
+  return 1
 }
 
 wait_for_service_listener() {

@@ -59,6 +59,18 @@ interface OpenedReadStore {
   close: () => Promise<void>;
 }
 
+interface SyncedSourceSummary {
+  source: SourceStatus;
+  counts: {
+    sessions: number;
+    turns: number;
+    records: number;
+    fragments: number;
+    atoms: number;
+    blobs: number;
+  };
+}
+
 export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<number> {
   const parsed = parseArgs(argv);
   const jsonMode = hasFlag(parsed, "json");
@@ -131,7 +143,7 @@ async function handleSync(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput>
   const storage = openStorage(layout);
 
   try {
-    const { host, persistedPayloads } = await syncSelectedSources({
+    const { host, syncedSources } = await syncSelectedSources({
       layout,
       storage,
       sourceRefs,
@@ -139,16 +151,16 @@ async function handleSync(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput>
       snapshotRawBlobs: true,
     });
 
-    const rows = persistedPayloads.map((payload) => [
-      `${payload.source.display_name} (${payload.source.slot_id})`,
-      shortId(payload.source.host_id),
-      String(payload.sessions.length),
-      String(payload.turns.length),
-      payload.source.sync_status,
+    const rows = syncedSources.map((entry) => [
+      `${entry.source.display_name} (${entry.source.slot_id})`,
+      shortId(entry.source.host_id),
+      String(entry.counts.sessions),
+      String(entry.counts.turns),
+      entry.source.sync_status,
     ]);
     return {
       text: [
-        `Synced ${persistedPayloads.length} source(s) into ${layout.dbPath}`,
+        `Synced ${syncedSources.length} source(s) into ${layout.dbPath}`,
         "",
         renderTable(["Source", "Host", "Sessions", "Turns", "Status"], rows),
       ].join("\n"),
@@ -156,16 +168,9 @@ async function handleSync(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput>
         command: "sync",
         db_path: layout.dbPath,
         host,
-        sources: persistedPayloads.map((payload) => ({
-          source: payload.source,
-          counts: {
-            sessions: payload.sessions.length,
-            turns: payload.turns.length,
-            records: payload.records.length,
-            fragments: payload.fragments.length,
-            atoms: payload.atoms.length,
-            blobs: payload.blobs.length,
-          },
+        sources: syncedSources.map((entry) => ({
+          source: entry.source,
+          counts: entry.counts,
         })),
       },
     };
@@ -503,27 +508,37 @@ async function handleStats(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput
   const readStore = await openReadStore(parsed, io);
   try {
     const { layout, storage } = readStore;
+    const showAll = hasFlag(parsed, "showall");
+    const usageFilters = { include_known_zero_token: showAll };
     if (!target) {
-      const overview = storage.getUsageOverview();
+      const overview = storage.getUsageOverview(usageFilters);
       const sources = storage.listSources();
       const projects = storage.listProjects();
       const sessions = storage.listResolvedSessions();
       const turns = storage.listResolvedTurns();
+      const excludedNote = overview.excluded_zero_token_turns
+        ? `${overview.excluded_zero_token_turns} non-API turns excluded (slash commands, cancellations). Use --showall to include.`
+        : undefined;
       return {
-        text: renderKeyValue([
-          ["DB", layout.dbPath],
-          ["Sources", String(sources.length)],
-          ["Projects", String(projects.length)],
-          ["Sessions", String(sessions.length)],
-          ["Turns", String(turns.length)],
-          ["Turns With Tokens", `${overview.turns_with_token_usage}/${overview.total_turns}`],
-          ["Coverage", formatRatio(overview.turn_coverage_ratio)],
-          ["Input Tokens", formatNumber(overview.total_input_tokens)],
-          ["Cached Input Tokens", formatNumber(overview.total_cached_input_tokens)],
-          ["Output Tokens", formatNumber(overview.total_output_tokens)],
-          ["Reasoning Tokens", formatNumber(overview.total_reasoning_output_tokens)],
-          ["Total Tokens", formatNumber(overview.total_tokens)],
-        ]),
+        text: [
+          renderKeyValue([
+            ["DB", layout.dbPath],
+            ["Sources", String(sources.length)],
+            ["Projects", String(projects.length)],
+            ["Sessions", String(sessions.length)],
+            ["Turns", String(turns.length)],
+            ["Turns With Tokens", `${overview.turns_with_token_usage}/${overview.total_turns}`],
+            ["Coverage", formatRatio(overview.turn_coverage_ratio)],
+            ["Input Tokens", formatNumber(overview.total_input_tokens)],
+            ["Cached Input Tokens", formatNumber(overview.total_cached_input_tokens)],
+            ["Output Tokens", formatNumber(overview.total_output_tokens)],
+            ["Reasoning Tokens", formatNumber(overview.total_reasoning_output_tokens)],
+            ["Total Tokens", formatNumber(overview.total_tokens)],
+          ]),
+          excludedNote,
+        ]
+          .filter((value): value is string => Boolean(value))
+          .join("\n\n"),
         json: {
           kind: "stats-overview",
           db_path: layout.dbPath,
@@ -543,8 +558,11 @@ async function handleStats(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput
       if (!["model", "project", "source", "host", "day", "month"].includes(dimension)) {
         throw new Error("`stats usage --by` must be one of model, project, source, host, day, or month.");
       }
-      const rollup = storage.listUsageRollup(dimension);
+      const rollup = storage.listUsageRollup(dimension, usageFilters);
       const notesText = renderUsageNotes(rollup.rows, dimension);
+      const excludedNote = rollup.excluded_zero_token_turns
+        ? `${rollup.excluded_zero_token_turns} non-API turns excluded (slash commands, cancellations). Use --showall to include.`
+        : undefined;
       const chartText =
         dimension === "day" || dimension === "month" ? renderUsageCharts(rollup.rows, dimension) : undefined;
       return {
@@ -563,6 +581,7 @@ async function handleStats(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput
           ),
           chartText,
           notesText,
+          excludedNote,
         ]
           .filter((value): value is string => Boolean(value))
           .join("\n\n"),
@@ -570,7 +589,7 @@ async function handleStats(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput
           kind: "stats-usage",
           db_path: layout.dbPath,
           dimension,
-          overview: storage.getUsageOverview(),
+          overview: storage.getUsageOverview(usageFilters),
           rollup,
         },
       };
@@ -952,25 +971,58 @@ async function syncSelectedSources(input: {
   sourceRefs: string[];
   limitFiles?: number;
   snapshotRawBlobs: boolean;
-}): Promise<{ host: Awaited<ReturnType<typeof runSourceProbe>>["host"]; persistedPayloads: SourceSyncPayload[] }> {
+}): Promise<{ host: Awaited<ReturnType<typeof runSourceProbe>>["host"]; syncedSources: SyncedSourceSummary[] }> {
   const sources = applySourceSelection(getDefaultSources(), input.sourceRefs);
-  const result = await runSourceProbe(
-    {
-      source_ids: input.sourceRefs.length > 0 ? input.sourceRefs : undefined,
-      limit_files_per_source: input.limitFiles,
-    },
-    sources,
-  );
-  const persistedPayloads: SourceSyncPayload[] = [];
-  for (const payload of result.sources) {
-    const persistedPayload = input.snapshotRawBlobs ? await snapshotPayloadRawBlobs(input.layout.rawDir, payload) : payload;
-    input.storage.replaceSourcePayload(persistedPayload, { allow_host_rekey: true });
-    persistedPayloads.push(persistedPayload);
+  if (sources.length === 0) {
+    const result = await runSourceProbe(
+      {
+        source_ids: input.sourceRefs.length > 0 ? input.sourceRefs : undefined,
+        limit_files_per_source: input.limitFiles,
+      },
+      [],
+    );
+    return {
+      host: result.host,
+      syncedSources: [],
+    };
+  }
+
+  let host: Awaited<ReturnType<typeof runSourceProbe>>["host"] | undefined;
+  const syncedSources: SyncedSourceSummary[] = [];
+  for (const source of sources) {
+    // Probe one source at a time so sync does not retain every source payload in memory at once.
+    const result = await runSourceProbe(
+      {
+        source_ids: [source.id],
+        limit_files_per_source: input.limitFiles,
+      },
+      [source],
+    );
+    host ??= result.host;
+    for (const payload of result.sources) {
+      const persistedPayload = input.snapshotRawBlobs ? await snapshotPayloadRawBlobs(input.layout.rawDir, payload) : payload;
+      input.storage.replaceSourcePayload(persistedPayload, { allow_host_rekey: true });
+      syncedSources.push(summarizeSyncedSource(persistedPayload));
+    }
   }
 
   return {
-    host: result.host,
-    persistedPayloads,
+    host: host!,
+    syncedSources,
+  };
+}
+
+function summarizeSyncedSource(payload: SourceSyncPayload): SyncedSourceSummary {
+  return {
+    source: payload.source,
+    counts: {
+      sessions: payload.sessions.length,
+      turns: payload.turns.length,
+      records: payload.records.length,
+      fragments: payload.fragments.length,
+      atoms: payload.atoms.length,
+      blobs: payload.blobs.length,
+    },
   };
 }
 

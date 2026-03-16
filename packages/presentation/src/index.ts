@@ -68,6 +68,8 @@ export interface TokenUsageSummary {
   total_tokens?: number;
 }
 
+export type ZeroTokenReason = "no_assistant_reply" | "command_only";
+
 export interface TurnContextSummary {
   assistant_reply_count: number;
   tool_call_count: number;
@@ -75,6 +77,7 @@ export interface TurnContextSummary {
   total_tokens?: number;
   primary_model?: string;
   has_errors: boolean;
+  zero_token_reason?: ZeroTokenReason;
 }
 
 export interface UserTurn {

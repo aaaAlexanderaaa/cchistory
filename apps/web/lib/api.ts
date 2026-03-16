@@ -51,8 +51,24 @@ function getApiClient() {
 export function useTurnsQuery() {
   return useSWR<UserTurn[]>('/api/turns', async (path: string) => {
     void path
-    return (await getApiClient().getTurns()).map(mapUserTurn)
+    const response = await getApiClient().getTurns()
+    return response.turns.map(mapUserTurn)
   }, { revalidateOnFocus: false })
+}
+
+/**
+ * Paginated turns query. Returns a page of turns with total count.
+ * Use this when you need pagination; use useTurnsQuery() for full access.
+ */
+export function usePaginatedTurnsQuery(params: { limit: number; offset: number }) {
+  return useSWR<{ turns: UserTurn[]; total: number }>(
+    `/api/turns?limit=${params.limit}&offset=${params.offset}`,
+    async () => {
+      const response = await getApiClient().getTurns({ limit: params.limit, offset: params.offset })
+      return { turns: response.turns.map(mapUserTurn), total: response.total }
+    },
+    { revalidateOnFocus: false },
+  )
 }
 
 export function useTurnQuery(turnId?: string) {

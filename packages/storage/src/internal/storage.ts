@@ -63,10 +63,42 @@ import {
   uniqueStrings,
 } from "./utils.js";
 
+const ALLOWED_TABLE_NAMES = new Set([
+  "captured_blobs",
+  "raw_records",
+  "source_fragments",
+  "conversation_atoms",
+  "atom_edges",
+  "derived_candidates",
+  "sessions",
+  "user_turns",
+  "turn_contexts",
+  "stage_runs",
+  "loss_audits",
+  "knowledge_artifacts",
+  "artifact_coverage",
+  "project_link_revisions",
+  "project_lineage_events",
+  "project_manual_overrides",
+  "import_bundles",
+  "project_current",
+  "source_instances",
+  "tombstones",
+]);
+
+function assertTableName(name: string): void {
+  if (!ALLOWED_TABLE_NAMES.has(name)) {
+    throw new Error(`Invalid table name: ${name}`);
+  }
+}
+
 export class CCHistoryStorage {
   private readonly db: DatabaseSync;
   private readonly searchIndexReady: boolean;
   private cachedProjectLinkSnapshot?: ReturnType<typeof deriveProjectLinkSnapshot>;
+  private cachedTurnsById?: Map<string, UserTurnProjection>;
+  private cachedProjectsById?: Map<string, ProjectIdentity>;
+  private cachedSessionsById?: Map<string, SessionProjection>;
   readonly dbPath: string;
 
   constructor(location: string | { dataDir?: string; dbPath?: string }) {
@@ -79,12 +111,17 @@ export class CCHistoryStorage {
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA busy_timeout = 5000;");
     this.db.exec("PRAGMA journal_mode = WAL;");
+    this.db.exec("PRAGMA foreign_keys = ON;");
     this.searchIndexReady = this.initialize();
     this.refreshDerivedState();
   }
 
   close(): void {
     this.db.close();
+  }
+
+  get searchMode(): "fts5" | "fallback" {
+    return this.searchIndexReady ? "fts5" : "fallback";
   }
 
   private initialize(): boolean {
@@ -323,19 +360,26 @@ export class CCHistoryStorage {
     );
     const tombstones: TombstoneProjection[] = [];
 
-    for (const turn of candidates) {
-      if (mode === "archive") {
-        this.rewriteStoredTurn(turn.id, (storedTurn) => ({
-          ...storedTurn,
-          value_axis: "archived",
-          retention_axis: "keep_raw_only",
-        }));
-        continue;
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      for (const turn of candidates) {
+        if (mode === "archive") {
+          this.rewriteStoredTurn(turn.id, (storedTurn) => ({
+            ...storedTurn,
+            value_axis: "archived",
+            retention_axis: "keep_raw_only",
+          }));
+          continue;
+        }
+        const tombstone = this.purgeTurnInTransaction(turn.id, "candidate_gc");
+        if (tombstone) {
+          tombstones.push(tombstone);
+        }
       }
-      const tombstone = this.purgeTurn(turn.id, "candidate_gc");
-      if (tombstone) {
-        tombstones.push(tombstone);
-      }
+      this.db.exec("COMMIT;");
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
     }
 
     this.invalidateProjectLinkSnapshot();
@@ -372,6 +416,7 @@ export class CCHistoryStorage {
         .run(tombstone.logical_id, toJson(tombstone));
       this.db.prepare("DELETE FROM user_turns WHERE id = ?").run(turnId);
       this.db.prepare("DELETE FROM turn_contexts WHERE turn_id = ?").run(turnId);
+      this.db.prepare("DELETE FROM artifact_coverage WHERE turn_id = ?").run(turnId);
       this.db.exec("COMMIT;");
     } catch (error) {
       this.db.exec("ROLLBACK;");
@@ -380,6 +425,35 @@ export class CCHistoryStorage {
 
     this.invalidateProjectLinkSnapshot();
     this.refreshDerivedState();
+    return tombstone;
+  }
+
+  /** Purge a turn without opening a new transaction — for use inside an existing BEGIN/COMMIT block. */
+  private purgeTurnInTransaction(turnId: string, reason: string): TombstoneProjection | undefined {
+    const turn = this.getResolvedTurn(turnId) ?? this.getTurn(turnId);
+    if (!turn) {
+      return this.getTombstone(turnId);
+    }
+
+    const tombstone: TombstoneProjection = {
+      object_kind: "turn",
+      logical_id: turn.turn_id ?? turn.id,
+      last_revision_id: turn.turn_revision_id ?? turn.revision_id,
+      sync_axis: turn.sync_axis,
+      value_axis: turn.value_axis,
+      retention_axis: "purged",
+      purged_at: nowIso(),
+      purge_reason: reason,
+      replaced_by_logical_ids: [],
+      lineage_event_refs: turn.lineage.candidate_refs,
+    };
+
+    this.db
+      .prepare("INSERT OR REPLACE INTO tombstones (logical_id, payload_json) VALUES (?, ?)")
+      .run(tombstone.logical_id, toJson(tombstone));
+    this.db.prepare("DELETE FROM user_turns WHERE id = ?").run(turnId);
+    this.db.prepare("DELETE FROM turn_contexts WHERE turn_id = ?").run(turnId);
+    this.db.prepare("DELETE FROM artifact_coverage WHERE turn_id = ?").run(turnId);
     return tombstone;
   }
 
@@ -526,7 +600,7 @@ export class CCHistoryStorage {
   } = {}): TurnSearchResult[] {
     const limit = options.limit ?? 50;
     const query = options.query?.trim() ?? "";
-    const turnsById = new Map(this.listResolvedTurns().map((turn) => [turn.id, turn]));
+    const turnsById = this.getTurnsById();
     let candidateTurnIds: string[];
 
     if (query.length === 0) {
@@ -541,8 +615,8 @@ export class CCHistoryStorage {
       });
     }
 
-    const projectsById = new Map(this.listProjects().map((project) => [project.project_id, project]));
-    const sessionsById = new Map(this.listSessions().map((session) => [session.id, session]));
+    const projectsById = this.getProjectsById();
+    const sessionsById = this.getSessionsById();
     const loweredQuery = query.toLowerCase();
     const results: TurnSearchResult[] = [];
 
@@ -590,6 +664,10 @@ export class CCHistoryStorage {
     const turnsWithTokenUsage = rows.filter((row) => row.has_token_usage).length;
     const turnsWithPrimaryModel = rows.filter((row) => row.model !== "unknown").length;
 
+    const excludedCount = filters.include_known_zero_token
+      ? 0
+      : this.countExcludedZeroTokenTurns(filters);
+
     return {
       generated_at: nowIso(),
       total_turns: turnCount,
@@ -601,6 +679,7 @@ export class CCHistoryStorage {
       total_output_tokens: sumUsageRows(rows, "output_tokens"),
       total_reasoning_output_tokens: sumUsageRows(rows, "reasoning_output_tokens"),
       total_tokens: sumUsageRows(rows, "total_tokens"),
+      excluded_zero_token_turns: excludedCount > 0 ? excludedCount : undefined,
     };
   }
 
@@ -643,10 +722,15 @@ export class CCHistoryStorage {
       }))
       .sort((left, right) => compareUsageRollupRows(dimension, left, right));
 
+    const excludedCount = filters.include_known_zero_token
+      ? 0
+      : this.countExcludedZeroTokenTurns(filters);
+
     return {
       generated_at: nowIso(),
       dimension,
       rows: rollupRows,
+      excluded_zero_token_turns: excludedCount > 0 ? excludedCount : undefined,
     };
   }
 
@@ -722,6 +806,9 @@ export class CCHistoryStorage {
         const session = sessionsById.get(turn.session_id);
         const source = sourcesById.get(turn.source_id);
         const project = turn.project_id ? projectsById.get(turn.project_id) : undefined;
+        const hasTokUsage = hasAnyTokenUsage(turn);
+        const zeroTokenReason = turn.context_summary.zero_token_reason
+          ?? (turn.context_summary.assistant_reply_count === 0 && !hasTokUsage ? "no_assistant_reply" : undefined);
         return {
           turn_id: turn.id,
           source_id: turn.source_id,
@@ -732,7 +819,8 @@ export class CCHistoryStorage {
           model: turn.context_summary.primary_model ?? session?.model ?? "unknown",
           day: turn.submission_started_at.slice(0, 10),
           month: turn.submission_started_at.slice(0, 7),
-          has_token_usage: hasAnyTokenUsage(turn),
+          has_token_usage: hasTokUsage,
+          zero_token_reason: zeroTokenReason,
           input_tokens: turn.context_summary.token_usage?.input_tokens ?? 0,
           cached_input_tokens:
             turn.context_summary.token_usage?.cached_input_tokens ??
@@ -743,7 +831,13 @@ export class CCHistoryStorage {
           total_tokens: turn.context_summary.token_usage?.total_tokens ?? turn.context_summary.total_tokens ?? 0,
         };
       })
-      .filter((row) => (filters.host_ids && filters.host_ids.length > 0 ? filters.host_ids.includes(row.host_id) : true));
+      .filter((row) => (filters.host_ids && filters.host_ids.length > 0 ? filters.host_ids.includes(row.host_id) : true))
+      .filter((row) => (filters.include_known_zero_token ? true : !row.zero_token_reason || row.has_token_usage));
+  }
+
+  private countExcludedZeroTokenTurns(filters: UsageFilters): number {
+    const allRows = this.buildUsageRows({ ...filters, include_known_zero_token: true });
+    return allRows.filter((row) => row.zero_token_reason && !row.has_token_usage).length;
   }
 
   private rewriteStoredTurn(
@@ -762,17 +856,41 @@ export class CCHistoryStorage {
   }
 
   private listAtomsEdgesForAtomIds(atomIds: Set<string>): AtomEdge[] {
-    return this.db
-      .prepare("SELECT payload_json FROM atom_edges")
-      .all()
-      .map((row) => fromJson<AtomEdge>((row as { payload_json: string }).payload_json))
-      .filter((edge) => atomIds.has(edge.from_atom_id) || atomIds.has(edge.to_atom_id));
+    if (atomIds.size === 0) {
+      return [];
+    }
+    const selectByFrom = this.db.prepare(
+      "SELECT payload_json FROM atom_edges WHERE from_atom_id = ?",
+    );
+    const selectByTo = this.db.prepare(
+      "SELECT payload_json FROM atom_edges WHERE to_atom_id = ?",
+    );
+    const seen = new Set<string>();
+    const results: AtomEdge[] = [];
+    for (const id of atomIds) {
+      for (const row of selectByFrom.all(id) as Array<{ payload_json: string }>) {
+        const edge = fromJson<AtomEdge>(row.payload_json);
+        if (!seen.has(edge.id)) {
+          seen.add(edge.id);
+          results.push(edge);
+        }
+      }
+      for (const row of selectByTo.all(id) as Array<{ payload_json: string }>) {
+        const edge = fromJson<AtomEdge>(row.payload_json);
+        if (!seen.has(edge.id)) {
+          seen.add(edge.id);
+          results.push(edge);
+        }
+      }
+    }
+    return results;
   }
 
   private selectJsonByIds<T>(tableName: string, ids: string[]): T[] {
     if (ids.length === 0) {
       return [];
     }
+    assertTableName(tableName);
     const select = this.db.prepare(`SELECT payload_json FROM ${tableName} WHERE id = ?`);
     return ids
       .map((id) => select.get(id) as { payload_json: string } | undefined)
@@ -781,6 +899,7 @@ export class CCHistoryStorage {
   }
 
   private selectPayloads<T>(tableName: string, limit: number, orderBy = "ORDER BY id DESC"): T[] {
+    assertTableName(tableName);
     return this.db
       .prepare(`SELECT payload_json FROM ${tableName} ${orderBy} LIMIT ?`)
       .all(limit)
@@ -788,6 +907,7 @@ export class CCHistoryStorage {
   }
 
   private selectAllPayloads<T>(tableName: string, orderBy = "ORDER BY id DESC"): T[] {
+    assertTableName(tableName);
     return this.db
       .prepare(`SELECT payload_json FROM ${tableName} ${orderBy}`)
       .all()
@@ -795,6 +915,7 @@ export class CCHistoryStorage {
   }
 
   private selectPayloadsBySource<T>(tableName: string, sourceId: string, orderBy = "ORDER BY id"): T[] {
+    assertTableName(tableName);
     return this.db
       .prepare(`SELECT payload_json FROM ${tableName} WHERE source_id = ? ${orderBy}`)
       .all(sourceId)
@@ -850,6 +971,30 @@ export class CCHistoryStorage {
 
   private invalidateProjectLinkSnapshot(): void {
     this.cachedProjectLinkSnapshot = undefined;
+    this.cachedTurnsById = undefined;
+    this.cachedProjectsById = undefined;
+    this.cachedSessionsById = undefined;
+  }
+
+  private getTurnsById(): Map<string, UserTurnProjection> {
+    if (!this.cachedTurnsById) {
+      this.cachedTurnsById = new Map(this.listResolvedTurns().map((turn) => [turn.id, turn]));
+    }
+    return this.cachedTurnsById;
+  }
+
+  private getProjectsById(): Map<string, ProjectIdentity> {
+    if (!this.cachedProjectsById) {
+      this.cachedProjectsById = new Map(this.listProjects().map((project) => [project.project_id, project]));
+    }
+    return this.cachedProjectsById;
+  }
+
+  private getSessionsById(): Map<string, SessionProjection> {
+    if (!this.cachedSessionsById) {
+      this.cachedSessionsById = new Map(this.listSessions().map((session) => [session.id, session]));
+    }
+    return this.cachedSessionsById;
   }
 
   private computeProjectLinkSnapshot() {
@@ -914,6 +1059,7 @@ export class CCHistoryStorage {
   }
 
   private countRowsBySource(tableName: string, sourceId: string): number {
+    assertTableName(tableName);
     const row = this.db.prepare(`SELECT COUNT(*) AS count FROM ${tableName} WHERE source_id = ?`).get(sourceId) as {
       count: number;
     };
@@ -925,6 +1071,7 @@ interface UsageFilters {
   project_id?: string;
   source_ids?: string[];
   host_ids?: string[];
+  include_known_zero_token?: boolean;
 }
 
 function compareUsageRollupRows(
@@ -955,6 +1102,7 @@ interface UsageAggregationRow {
   day: string;
   month: string;
   has_token_usage: boolean;
+  zero_token_reason?: string;
   input_tokens: number;
   cached_input_tokens: number;
   output_tokens: number;

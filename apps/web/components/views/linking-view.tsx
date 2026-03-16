@@ -37,7 +37,7 @@ const EMPTY_OBSERVATIONS: LinkingObservation[] = []
 type LinkingSort = 'newest' | 'oldest' | 'confidence' | 'replies'
 
 export function LinkingView() {
-  const { data: review } = useLinkingReviewQuery()
+  const { data: review, error: reviewError } = useLinkingReviewQuery()
   const { data: sessions = [] } = useSessionsQuery()
   const { mutate } = useSWRConfig()
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null)
@@ -217,6 +217,11 @@ export function LinkingView() {
         </header>
 
         <div className="flex-1 overflow-y-auto">
+          {reviewError && (
+            <div className="m-4 border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+              Could not load linking review data. Make sure the API server is running (pnpm services:start).
+            </div>
+          )}
           {unlinkedTurns.length > 0 && (
             <section className="p-4">
               <h2 className="text-[10px] stamp-text text-muted mb-3 flex items-center gap-2">

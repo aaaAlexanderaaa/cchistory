@@ -17,7 +17,7 @@ import {
 } from 'lucide-react'
 
 export function MasksView() {
-  const { data: templates = [] } = useMasksQuery()
+  const { data: templates = [], error: masksError } = useMasksQuery()
   const [selectedTemplate, setSelectedTemplate] = useState<MaskTemplate | null>(null)
   const [testInput, setTestInput] = useState('')
   const [sortBy, setSortBy] = useState<'priority' | 'name' | 'updated'>('priority')
@@ -76,6 +76,11 @@ export function MasksView() {
 
       <div className="flex flex-1 overflow-hidden">
         <div className={cn('flex-1 overflow-y-auto p-4 sm:p-6', selectedTemplate && 'lg:border-r lg:border-border')}>
+          {masksError && (
+            <div className="mb-4 border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+              Could not load mask templates. Make sure the API server is running (pnpm services:start).
+            </div>
+          )}
           <TemplateSection
             title="Built-in Templates"
             description="Current canonical mask rules from the local API."

@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { copyFile, readFile, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -90,15 +90,46 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   mkdirSync(rawStoreDir, { recursive: true });
 
   const storage = options.storage ?? new CCHistoryStorage(dataDir);
-  const app = Fastify({ logger: false });
-  await app.register(cors, { origin: true });
+  const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
+  const corsOrigins = (process.env.CCHISTORY_CORS_ORIGIN ?? "http://localhost:8085,http://127.0.0.1:8085")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((origin) => {
+      try {
+        new URL(origin);
+        return true;
+      } catch {
+        console.warn(`[cchistory/api] Ignoring invalid CORS origin: ${origin}`);
+        return false;
+      }
+    });
+  await app.register(cors, { origin: corsOrigins });
+
+  const apiToken = process.env.CCHISTORY_API_TOKEN;
+  if (apiToken) {
+    const expectedAuth = Buffer.from(`Bearer ${apiToken}`, "utf8");
+    app.addHook("onRequest", async (request, reply) => {
+      if (request.url === "/health" || request.url === "/openapi.json") {
+        return;
+      }
+      const header = request.headers.authorization ?? "";
+      const providedAuth = Buffer.from(header, "utf8");
+      const isValid =
+        expectedAuth.length === providedAuth.length &&
+        timingSafeEqual(expectedAuth, providedAuth);
+      if (!isValid) {
+        reply.code(401);
+        return reply.send({ error: "Unauthorized" });
+      }
+    });
+  }
 
   let bootstrapPromise: Promise<void> | undefined;
 
   app.get("/health", async () => ({
     status: "ok",
     hostname: hostName,
-    data_dir: dataDir,
   }));
 
   app.get("/openapi.json", async () => buildOpenApiDocument());
@@ -107,7 +138,21 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     sources: await listConfiguredSourceStatuses(),
   }));
 
-  app.post("/api/admin/source-config", async (request, reply) => {
+  app.post("/api/admin/source-config", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["platform", "base_dir"],
+        properties: {
+          platform: { type: "string" },
+          base_dir: { type: "string" },
+          display_name: { type: "string" },
+          sync: { type: "boolean" },
+          limit_files_per_source: { type: "number" },
+        },
+      },
+    },
+  }, async (request, reply) => {
     const body = (request.body ?? {}) as {
       platform?: SourceDefinition["platform"];
       base_dir?: string;
@@ -160,7 +205,19 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     };
   });
 
-  app.post("/api/admin/source-config/:sourceId", async (request, reply) => {
+  app.post("/api/admin/source-config/:sourceId", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["base_dir"],
+        properties: {
+          base_dir: { type: "string" },
+          sync: { type: "boolean" },
+          limit_files_per_source: { type: "number" },
+        },
+      },
+    },
+  }, async (request, reply) => {
     const sourceId = (request.params as { sourceId: string }).sourceId;
     const configuredSource = getConfiguredSourceDefinition(sourceId);
     if (!configuredSource) {
@@ -222,7 +279,17 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     };
   });
 
-  app.post("/api/admin/source-config/:sourceId/reset", async (request, reply) => {
+  app.post("/api/admin/source-config/:sourceId/reset", {
+    schema: {
+      body: {
+        type: "object",
+        properties: {
+          sync: { type: "boolean" },
+          limit_files_per_source: { type: "number" },
+        },
+      },
+    },
+  }, async (request, reply) => {
     const sourceId = (request.params as { sourceId: string }).sourceId;
     if (!getDefaultSourceDefinition(sourceId)) {
       reply.code(400);
@@ -265,7 +332,18 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     };
   });
 
-  app.post("/api/admin/probe/runs", async (request) => {
+  app.post("/api/admin/probe/runs", {
+    schema: {
+      body: {
+        type: "object",
+        properties: {
+          source_ids: { type: "array", items: { type: "string" } },
+          limit_files_per_source: { type: "number" },
+          persist: { type: "boolean" },
+        },
+      },
+    },
+  }, async (request) => {
     const body = (request.body ?? {}) as {
       source_ids?: string[];
       limit_files_per_source?: number;
@@ -279,7 +357,17 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     return summarizeRun(result);
   });
 
-  app.post("/api/admin/pipeline/replay", async (request) => {
+  app.post("/api/admin/pipeline/replay", {
+    schema: {
+      body: {
+        type: "object",
+        properties: {
+          source_ids: { type: "array", items: { type: "string" } },
+          limit_files_per_source: { type: "number" },
+        },
+      },
+    },
+  }, async (request) => {
     const body = (request.body ?? {}) as {
       source_ids?: string[];
       limit_files_per_source?: number;
@@ -298,15 +386,22 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     };
   });
 
-  app.get("/api/turns", async () => {
+  app.get("/api/turns", async (request) => {
+    const query = request.query as Record<string, string | undefined>;
+    const limit = asOptionalNumber(query.limit);
+    const offset = asOptionalNumber(query.offset) ?? 0;
+    const allTurns = storage.listResolvedTurns();
+    const sliced = limit != null ? allTurns.slice(offset, offset + limit) : allTurns.slice(offset);
     return {
-      turns: storage.listResolvedTurns().map(summarizeTurn),
+      turns: sliced.map(summarizeTurn),
+      total: allTurns.length,
     };
   });
 
   app.get("/api/turns/search", async (request) => {
     const query = request.query as Record<string, string | undefined>;
     return {
+      search_mode: storage.searchMode,
       results: storage
         .searchTurns({
           query: query.q,
@@ -407,7 +502,22 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     };
   });
 
-  app.post("/api/artifacts", async (request, reply) => {
+  app.post("/api/artifacts", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["title", "summary", "source_turn_refs"],
+        properties: {
+          artifact_id: { type: "string" },
+          artifact_kind: { type: "string" },
+          title: { type: "string" },
+          summary: { type: "string" },
+          project_id: { type: "string" },
+          source_turn_refs: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+  }, async (request, reply) => {
     const body = (request.body ?? {}) as {
       artifact_id?: string;
       artifact_kind?: "decision" | "instruction" | "fact" | "pattern" | "other";
@@ -451,7 +561,21 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     };
   });
 
-  app.post("/api/admin/linking/overrides", async (request, reply) => {
+  app.post("/api/admin/linking/overrides", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["target_kind", "target_ref"],
+        properties: {
+          target_kind: { type: "string" },
+          target_ref: { type: "string" },
+          project_id: { type: "string" },
+          display_name: { type: "string" },
+          note: { type: "string" },
+        },
+      },
+    },
+  }, async (request, reply) => {
     const body = (request.body ?? {}) as {
       target_kind?: "turn" | "session" | "observation";
       target_ref?: string;
@@ -485,7 +609,21 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     };
   });
 
-  app.post("/api/admin/projects/lineage-events", async (request, reply) => {
+  app.post("/api/admin/projects/lineage-events", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["project_id", "event_kind"],
+        properties: {
+          project_id: { type: "string" },
+          project_revision_id: { type: "string" },
+          previous_project_revision_id: { type: "string" },
+          event_kind: { type: "string" },
+          detail: { type: "object" },
+        },
+      },
+    },
+  }, async (request, reply) => {
     const body = (request.body ?? {}) as {
       project_id?: string;
       project_revision_id?: string;
@@ -508,7 +646,18 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     };
   });
 
-  app.post("/api/admin/lifecycle/candidate-gc", async (request) => {
+  app.post("/api/admin/lifecycle/candidate-gc", {
+    schema: {
+      body: {
+        type: "object",
+        properties: {
+          before_iso: { type: "string" },
+          older_than_days: { type: "number" },
+          mode: { type: "string", enum: ["archive", "purge"] },
+        },
+      },
+    },
+  }, async (request) => {
     const body = (request.body ?? {}) as {
       before_iso?: string;
       older_than_days?: number;
@@ -517,10 +666,13 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     const beforeIso =
       body.before_iso ??
       new Date(Date.now() - (body.older_than_days ?? 30) * 24 * 60 * 60 * 1000).toISOString();
-    return storage.garbageCollectCandidateTurns({
+    console.warn(`[cchistory/api] candidate-gc invoked: mode=${body.mode ?? "archive"}, before=${beforeIso}`);
+    const result = storage.garbageCollectCandidateTurns({
       before_iso: beforeIso,
       mode: body.mode,
     });
+    console.warn(`[cchistory/api] candidate-gc completed: processed=${result.processed_turn_ids.length}, tombstones=${result.tombstones.length}`);
+    return result;
   });
 
   app.get("/api/admin/pipeline/runs", async () => {
@@ -588,7 +740,13 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
       return;
     }
     if (!bootstrapPromise) {
-      bootstrapPromise = syncSources({ persist: true }).then(() => undefined);
+      bootstrapPromise = syncSources({ persist: true }).then(
+        () => undefined,
+        (error) => {
+          bootstrapPromise = undefined;
+          throw error;
+        },
+      );
     }
     await bootstrapPromise;
   }

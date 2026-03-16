@@ -34,11 +34,12 @@ type ViewMode = 'grid' | 'list' | 'sessions'
 type SortMode = 'newest' | 'oldest'
 
 export function InboxView() {
-  const { data: turns = [] } = useTurnsQuery()
-  const { data: review } = useLinkingReviewQuery()
+  const { data: turns = [], error: turnsError } = useTurnsQuery()
+  const { data: review, error: reviewError } = useLinkingReviewQuery()
   const { data: projects = [] } = useProjectsQuery('all')
   const { data: sessions = [] } = useSessionsQuery()
   const { mutate } = useSWRConfig()
+  const apiError = turnsError || reviewError
   const [activeTab, setActiveTab] = useState<InboxTab>('unlinked')
   const [selectedTurnId, setSelectedTurnId] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<ViewMode>('list')
@@ -130,7 +131,7 @@ export function InboxView() {
                 <span className="text-sm text-muted">{sortedTurns.length} in view</span>
               </div>
               <div className="text-xs text-muted">
-                UserTurn is the review unit. Project remains the linking target.
+                Review and link turns to projects. Unlinked turns need your attention.
               </div>
               <div className="flex flex-wrap items-center gap-2 text-[10px] stamp-text text-muted">
                 <span className="border border-border bg-paper px-2 py-1">PENDING {unlinkedTurns.length + candidateTurns.length}</span>
@@ -281,6 +282,11 @@ export function InboxView() {
         )}
 
         <div className="flex-1 overflow-y-auto p-4 sm:p-6">
+          {apiError && (
+            <div className="mb-4 border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+              Could not load data from the API. Make sure the API server is running (pnpm services:start).
+            </div>
+          )}
           {viewMode === 'sessions' ? (
             <SessionMap
               turns={sortedTurns}

@@ -43,7 +43,7 @@ const adminNavItems: NavItem[] = [
   { id: 'sources', label: 'Sources', icon: <Database className="h-4 w-4" /> },
   { id: 'linking', label: 'Linking', icon: <Link2 className="h-4 w-4" /> },
   { id: 'masks', label: 'Masks', icon: <Shield className="h-4 w-4" /> },
-  { id: 'drift', label: 'Drift Monitor', icon: <Activity className="h-4 w-4" /> },
+  { id: 'drift', label: 'Data Health', icon: <Activity className="h-4 w-4" /> },
 ]
 
 export function AppShell({

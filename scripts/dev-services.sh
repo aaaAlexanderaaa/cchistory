@@ -10,7 +10,9 @@ TARGET="${2:-all}"
 usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/dev-services.sh <start|stop|restart|status> [web|api|all]
+  bash scripts/dev-services.sh <start|stop|restart|run|status> [web|api|all]
+
+  run   - run a single service in the foreground (no daemon, no auto-restart)
 EOF
 }
 
@@ -54,12 +56,17 @@ start_service() {
   mkdir -p "$(dirname "${supervisor_log_file}")"
   printf '\n[%s] starting %s supervisor\n' "$(date '+%Y-%m-%d %H:%M:%S')" "${service}" >> "${supervisor_log_file}"
   nohup bash "${ROOT_DIR}/scripts/dev-service-supervisor.sh" "${service}" >> "${supervisor_log_file}" 2>&1 < /dev/null &
-  sleep 1
+
+  if wait_for_service_ready "${service}" 120; then
+    supervisor_pid="$(read_pid_file "${supervisor_pid_file}")"
+    echo "${service}: started supervisor ${supervisor_pid}"
+    return
+  fi
 
   supervisor_pid="$(read_pid_file "${supervisor_pid_file}")"
   if is_pid_alive "${supervisor_pid}"; then
-    echo "${service}: started supervisor ${supervisor_pid}"
-    return
+    echo "${service}: supervisor started but service did not become ready in time" >&2
+    return 1
   fi
 
   echo "${service}: failed to start supervisor" >&2
@@ -77,6 +84,25 @@ restart_service() {
   local service="$1"
   stop_service "${service}"
   start_service "${service}"
+}
+
+run_service() {
+  local service="$1"
+  local command
+  require_service_name "${service}"
+  stop_service_processes "${service}"
+
+  echo "[run] preparing ${service}..."
+  if ! service_prepare "${service}"; then
+    echo "[run] ${service}: prepare failed" >&2
+    return 1
+  fi
+
+  command="$(service_launch_command "${service}")"
+  echo "[run] ${service}: starting in foreground (no auto-restart)"
+  echo "[run] command: ${command}"
+  echo "---"
+  bash -lc "${command}"
 }
 
 status_service() {
@@ -133,6 +159,9 @@ case "${ACTION}" in
     while read -r service; do
       restart_service "${service}"
     done < <(service_targets "${TARGET}")
+    ;;
+  run)
+    run_service "${TARGET}"
     ;;
   status)
     while read -r service; do
