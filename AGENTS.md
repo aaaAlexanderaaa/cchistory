@@ -135,3 +135,38 @@ Apply this protocol to any non-trivial explanation, review, design note, or deci
 - Remove conversational filler and meta-output. Avoid phrases that narrate the answering process or comment on the answer itself.
 - Keep each item dense and direct. Prefer short factual statements over decorative language, but do not compress away necessary context.
 - Avoid ambiguous pronouns or shifting references. If two entities can be confused, name them explicitly instead of relying on `it`, `this`, or similar shorthand.
+
+## Cursor Cloud specific instructions
+
+> The Cloud Agent VM has ~16 GB RAM. The 4 GB / 3 GB memory constraints in the sections above apply to the original developer host, not this environment. Root-level `pnpm install` and parallel builds are safe here.
+
+### Two-step dependency install
+The workspace uses two separate lockfiles. After pulling latest changes:
+1. `pnpm install` at the repository root (covers `apps/api`, `apps/cli`, and all `packages/*`).
+2. `cd apps/web && pnpm install` (the web app has its own `pnpm-lock.yaml`).
+
+pnpm may warn about ignored build scripts for `esbuild`, `sharp`, and `unrs-resolver`. These packages work correctly without their postinstall scripts on this platform; no action is needed.
+
+### Building
+Build commands and dependency order are documented in the "Build, Test, And Development Commands" section above. The standard sequential build is `pnpm run build` (builds all non-web packages), followed by `NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build` for the web app.
+
+### Running services
+- **API** (Fastify): port 8040. Canonical start: `pnpm services:start` or `bash scripts/dev-services.sh start api`.
+- **Web** (Next.js 16 dev): port 8085. Canonical start: `bash scripts/dev-services.sh start web`. The supervisor readiness check may time out even though the service starts successfully; verify with `curl -s -o /dev/null -w '%{http_code}' http://localhost:8085/`.
+- **CLI**: `node apps/cli/dist/index.js <command>` (build first with `pnpm --filter @cchistory/cli build`).
+
+### Testing
+All test suites use Node.js built-in test runner (`node --test`). Key commands:
+- `pnpm --filter @cchistory/source-adapters test` (27 tests)
+- `pnpm --filter @cchistory/storage test` (59 tests)
+- `pnpm --filter @cchistory/presentation test` (5 tests)
+- `pnpm --filter @cchistory/cli test` (12 tests)
+- `pnpm --filter @cchistory/api test` (10 tests)
+
+### Lint
+- `cd apps/web && pnpm lint` runs ESLint with `--max-warnings=0`.
+
+### Notable runtime details
+- Storage uses Node.js 22's experimental `node:sqlite` (`DatabaseSync`). No external SQLite library or database server needed.
+- FTS5 is unavailable in the built-in SQLite; the storage layer falls back to substring search automatically. The "FTS5 unavailable" warning in test/CLI output is benign.
+- No Docker, no external databases, no `.env` files required.
