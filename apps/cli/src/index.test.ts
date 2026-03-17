@@ -12,10 +12,12 @@ import { runCli } from "./index.js";
 test("sync, ls, search, and stats usage render human-readable output for real source shapes", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
 
   try {
     await seedCliFixtures(tempRoot);
     process.env.HOME = tempRoot;
+    process.env.USERPROFILE = tempRoot;
 
     const storeDir = path.join(tempRoot, "store");
     const syncResult = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--source", "claude_code"], tempRoot);
@@ -53,6 +55,7 @@ test("sync, ls, search, and stats usage render human-readable output for real so
     assert.match(monthStatsResult.stdout, /2026-03/);
   } finally {
     process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -60,10 +63,12 @@ test("sync, ls, search, and stats usage render human-readable output for real so
 test("stats usage --by model labels Claude synthetic error replies separately from provider models", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
 
   try {
     await seedCliFixtures(tempRoot, { includeSyntheticClaudeError: true });
     process.env.HOME = tempRoot;
+    process.env.USERPROFILE = tempRoot;
 
     const storeDir = path.join(tempRoot, "store");
     const syncResult = await runCliCapture(["sync", "--store", storeDir, "--source", "claude_code"], tempRoot);
@@ -77,6 +82,7 @@ test("stats usage --by model labels Claude synthetic error replies separately fr
     assert.equal(statsResult.stdout.includes("<synthetic>"), false);
   } finally {
     process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -84,10 +90,12 @@ test("stats usage --by model labels Claude synthetic error replies separately fr
 test("pnpm-style leading -- is ignored before the command name", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
 
   try {
     await seedCliFixtures(tempRoot);
     process.env.HOME = tempRoot;
+    process.env.USERPROFILE = tempRoot;
 
     const storeDir = path.join(tempRoot, "store");
     assert.equal((await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot)).exitCode, 0);
@@ -97,6 +105,7 @@ test("pnpm-style leading -- is ignored before the command name", async () => {
     assert.match(listResult.stdout, /Name/);
   } finally {
     process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -139,10 +148,12 @@ test("search upgrades legacy atom_edges schema in an existing indexed store", as
 test("sync and ls cover repo mock_data default roots for codex claude factory amp cursor and antigravity", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
 
   try {
     await seedCliMockDataHome(tempRoot);
     process.env.HOME = tempRoot;
+    process.env.USERPROFILE = tempRoot;
 
     const storeDir = path.join(tempRoot, "store");
     const syncResult = await runCliCapture(["sync", "--store", storeDir], tempRoot);
@@ -176,6 +187,7 @@ test("sync and ls cover repo mock_data default roots for codex claude factory am
     }
   } finally {
     process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -183,10 +195,12 @@ test("sync and ls cover repo mock_data default roots for codex claude factory am
 test("sync picks up openclaw and opencode default roots in the CLI", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
 
   try {
     await seedCliOpenSourceFixtures(tempRoot);
     process.env.HOME = tempRoot;
+    process.env.USERPROFILE = tempRoot;
 
     const storeDir = path.join(tempRoot, "store");
     const syncResult = await runCliCapture(["sync", "--store", storeDir], tempRoot);
@@ -218,6 +232,7 @@ test("sync picks up openclaw and opencode default roots in the CLI", async () =>
     }
   } finally {
     process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -225,10 +240,12 @@ test("sync picks up openclaw and opencode default roots in the CLI", async () =>
 test("read commands support --full to rescan sources without mutating the indexed store", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
 
   try {
     await seedCliFixtures(tempRoot);
     process.env.HOME = tempRoot;
+    process.env.USERPROFILE = tempRoot;
 
     const storeDir = path.join(tempRoot, "store");
     assert.equal((await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot)).exitCode, 0);
@@ -269,6 +286,7 @@ test("read commands support --full to rescan sources without mutating the indexe
     }
   } finally {
     process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -276,10 +294,12 @@ test("read commands support --full to rescan sources without mutating the indexe
 test("project listings hide empty projects unless --showall is requested", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
 
   try {
     await seedCliFixtures(tempRoot);
     process.env.HOME = tempRoot;
+    process.env.USERPROFILE = tempRoot;
 
     const storeDir = path.join(tempRoot, "store");
     assert.equal((await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot)).exitCode, 0);
@@ -324,6 +344,7 @@ test("project listings hide empty projects unless --showall is requested", async
     assert.equal(shownTree.projects.some((project) => project.project_id === "project-empty"), true);
   } finally {
     process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -331,6 +352,7 @@ test("project listings hide empty projects unless --showall is requested", async
 test("project listings sort by total turns descending", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
 
   try {
     await seedCliFixtures(tempRoot);
@@ -343,6 +365,7 @@ test("project listings sort by total turns descending", async () => {
       startAt: "2026-03-09T02:00:00.000Z",
     });
     process.env.HOME = tempRoot;
+    process.env.USERPROFILE = tempRoot;
 
     const storeDir = path.join(tempRoot, "store");
     assert.equal((await runCliCapture(["sync", "--store", storeDir], tempRoot)).exitCode, 0);
@@ -382,6 +405,7 @@ test("project listings sort by total turns descending", async () => {
     assert.ok(largeIndex < smallIndex);
   } finally {
     process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -389,10 +413,12 @@ test("project listings sort by total turns descending", async () => {
 test("export and import round-trip preserves source, session, turn, and usage counts", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
 
   try {
     await seedCliFixtures(tempRoot);
     process.env.HOME = tempRoot;
+    process.env.USERPROFILE = tempRoot;
 
     const sourceStoreDir = path.join(tempRoot, "source-store");
     const targetStoreDir = path.join(tempRoot, "target-store");
@@ -416,6 +442,7 @@ test("export and import round-trip preserves source, session, turn, and usage co
     }
   } finally {
     process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -423,10 +450,12 @@ test("export and import round-trip preserves source, session, turn, and usage co
 test("import is idempotent for an already imported bundle", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
 
   try {
     await seedCliFixtures(tempRoot);
     process.env.HOME = tempRoot;
+    process.env.USERPROFILE = tempRoot;
 
     const storeDir = path.join(tempRoot, "store");
     const bundleDir = path.join(tempRoot, "bundle.cchistory-bundle");
@@ -439,6 +468,7 @@ test("import is idempotent for an already imported bundle", async () => {
     assert.match(secondImport.stdout, /Skipped Sources/);
   } finally {
     process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -446,10 +476,12 @@ test("import is idempotent for an already imported bundle", async () => {
 test("import detects payload conflicts and supports skip and replace", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
+  const originalUserProfile = process.env.USERPROFILE;
 
   try {
     await seedCliFixtures(tempRoot);
     process.env.HOME = tempRoot;
+    process.env.USERPROFILE = tempRoot;
 
     const sourceStoreDir = path.join(tempRoot, "source-store");
     const targetStoreDir = path.join(tempRoot, "target-store");
@@ -485,6 +517,7 @@ test("import detects payload conflicts and supports skip and replace", async () 
     }
   } finally {
     process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
