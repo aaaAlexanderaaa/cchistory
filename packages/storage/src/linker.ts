@@ -698,10 +698,18 @@ function decodeUriLabel(value: string | undefined): string | undefined {
 }
 
 function isWeakWorkspacePath(workspacePath: string): boolean {
-  const normalized = workspacePath.toLowerCase();
+  const normalized = workspacePath.replace(/\\/g, "/").toLowerCase();
   const basename = path.posix.basename(normalized);
 
   if (normalized === "/root" || normalized === "/tmp" || normalized.startsWith("/tmp/")) {
+    return true;
+  }
+
+  if (/^[a-z]:\/(?:temp|tmp)(?:\/|$)/.test(normalized)) {
+    return true;
+  }
+
+  if (normalized.includes("/appdata/local/temp/") || normalized.endsWith("/appdata/local/temp")) {
     return true;
   }
 
