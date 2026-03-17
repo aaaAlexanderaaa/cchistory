@@ -1,11 +1,12 @@
 {
   "name": "cchistory",
-  "private": true,
+  "license": "MIT",
   "packageManager": "pnpm@10.30.3",
   "scripts": {
     "build": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/storage build && pnpm --filter @cchistory/api-client build && pnpm --filter @cchistory/presentation build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/api build",
     "build:all:safe": "pnpm run build && NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build",
     "cli": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=${CLI_NODE_MEMORY_MB:-768}\" node apps/cli/dist/index.js",
+    "cli:link": "pnpm --filter @cchistory/cli build && cd apps/cli && npm link",
     "restart:api": "bash scripts/restart-api-dev.sh",
     "restart:web": "bash scripts/restart-web-dev.sh",
     "services:start": "bash scripts/dev-services.sh start all",
