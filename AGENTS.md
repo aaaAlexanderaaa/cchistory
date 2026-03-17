@@ -48,12 +48,12 @@ Repository-root aggregate scripts exist, but they are not the default validation
 
 - `cd frontend_demo && pnpm dev`: view the reference UI locally.
 - `cd frontend_demo && pnpm build`: verify the imported demo still builds.
-- `pnpm services:start`: canonical user-operated startup entrypoint for the managed API (`0.0.0.0:8040`) and web (`0.0.0.0:8085`) dev services via `scripts/dev-services.sh`.
+- `pnpm services:start`: canonical user-operated startup entrypoint for the managed API (`0.0.0.0:8040`) and web (`0.0.0.0:8085`) dev services via `scripts/dev-services.mjs`.
 - `pnpm services:stop`: canonical user-operated stop entrypoint for the managed dev services.
 - `pnpm services:restart`: canonical user-operated restart entrypoint for the managed dev services.
 - `pnpm services:status`: canonical status entrypoint for the managed dev services.
-- `pnpm restart:api`: compatibility alias for `scripts/dev-services.sh restart api`. It is not a separate startup system.
-- `pnpm restart:web`: compatibility alias for `scripts/dev-services.sh restart web`. It is not a separate startup system.
+- `pnpm restart:api`: compatibility alias for `scripts/dev-services.mjs restart api`. It is not a separate startup system.
+- `pnpm restart:web`: compatibility alias for `scripts/dev-services.mjs restart web`. It is not a separate startup system.
 - `cd archive/legacy/server && pytest`: validate legacy parser or ingestion behavior when mining reference code.
 - `cd archive/legacy/server && python -m ruff check cchistory tests`: lint archived Python reference code.
 - `cd archive/legacy/web && pnpm test`: compare old MVP frontend behavior if needed.
@@ -64,16 +64,16 @@ When a user is actively reviewing `apps/web` UI changes, the web dev server shou
 ## Dev Service Hard Constraints
 > These rules are hard constraints for this repository. Do not change them unless the user explicitly asks to redesign the startup system.
 >
-> The managed product runtime is `scripts/dev-services.sh` with the `pnpm services:*` wrappers. `pnpm restart:web` and `pnpm restart:api` are aliases only.
+> The managed product runtime is `scripts/dev-services.mjs` (cross-platform Node.js) with the `pnpm services:*` wrappers. `pnpm restart:web` and `pnpm restart:api` are aliases only. The legacy bash scripts (`scripts/dev-services.sh`, `scripts/dev-service-common.sh`, `scripts/dev-service-supervisor.sh`) remain in the repository for reference but are no longer invoked by `package.json`.
 >
 > The Codex agent environment for this repository cannot perform reliable persistent service lifecycle actions. Even with sandbox escalation, the agent must not attempt to start, stop, restart, daemonize, or otherwise launch long-lived service processes.
 
-- Treat `scripts/dev-services.sh` and `pnpm services:*` as the only canonical startup and lifecycle path for `apps/api` and `apps/web`.
+- Treat `scripts/dev-services.mjs` and `pnpm services:*` as the only canonical startup and lifecycle path for `apps/api` and `apps/web`.
 - Do not introduce, document, or normalize alternate default startup flows such as direct `pnpm dev`, `next dev`, `tsx watch`, `nohup`, background shell jobs, `tmux`, or per-app ad hoc launch recipes for the product runtime.
 - Do not modify the startup mechanism, wrapper layering, port assignments, supervisor model, PID/log file locations, or alias behavior unless the user explicitly requests a startup-system change.
-- Do not treat `pnpm restart:web` or `pnpm restart:api` as independent runtime architectures. They must remain thin compatibility wrappers around `scripts/dev-services.sh`.
+- Do not treat `pnpm restart:web` or `pnpm restart:api` as independent runtime architectures. They must remain thin compatibility wrappers around `scripts/dev-services.mjs`.
 - Treat `pnpm restart:web:preview` as a preview-only helper around a production build/start flow, not as part of the canonical dev runtime. The agent must not run it.
-- The agent must never run `pnpm services:start`, `pnpm services:stop`, `pnpm services:restart`, `pnpm restart:web`, `pnpm restart:api`, `scripts/dev-services.sh`, direct dev-server commands, or any other persistent process command for this repository.
+- The agent must never run `pnpm services:start`, `pnpm services:stop`, `pnpm services:restart`, `pnpm restart:web`, `pnpm restart:api`, `scripts/dev-services.mjs`, direct dev-server commands, or any other persistent process command for this repository.
 - If a task needs a running API or web server, stop after code or config changes and ask the user to run the appropriate command manually.
 - Non-persistent inspection such as `pnpm services:status`, `lsof`, `curl`, and browser checks is allowed only against services the user has already started.
 
@@ -151,8 +151,8 @@ pnpm may warn about ignored build scripts for `esbuild`, `sharp`, and `unrs-reso
 Build commands and dependency order are documented in the "Build, Test, And Development Commands" section above. The standard sequential build is `pnpm run build` (builds all non-web packages), followed by `NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build` for the web app.
 
 ### Running services
-- **API** (Fastify): port 8040. Canonical start: `pnpm services:start` or `bash scripts/dev-services.sh start api`.
-- **Web** (Next.js 16 dev): port 8085. Canonical start: `bash scripts/dev-services.sh start web`. The supervisor readiness check may time out even though the service starts successfully; verify with `curl -s -o /dev/null -w '%{http_code}' http://localhost:8085/`.
+- **API** (Fastify): port 8040. Canonical start: `pnpm services:start` or `node scripts/dev-services.mjs start api`.
+- **Web** (Next.js 16 dev): port 8085. Canonical start: `node scripts/dev-services.mjs start web`. The supervisor readiness check may time out even though the service starts successfully; verify with `curl -s -o /dev/null -w '%{http_code}' http://localhost:8085/`.
 - **CLI**: `node apps/cli/dist/index.js <command>` (build first with `pnpm --filter @cchistory/cli build`).
 
 ### Testing

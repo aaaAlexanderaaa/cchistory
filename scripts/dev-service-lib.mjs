@@ -203,7 +203,7 @@ export function stopPidTree(pid) {
 
   if (IS_WIN) {
     try { execSync(`taskkill /PID ${pid} /T /F`, { stdio: "pipe" }); } catch { /* ignore */ }
-    sleepMs(500);
+    sleepMs(300);
     return;
   }
 
@@ -212,9 +212,9 @@ export function stopPidTree(pid) {
   }
 
   let waited = 0;
-  while (isPidAlive(pid) && waited < 10000) {
-    sleepMs(500);
-    waited += 500;
+  while (isPidAlive(pid) && waited < 3000) {
+    sleepMs(200);
+    waited += 200;
   }
 
   if (isPidAlive(pid)) {
