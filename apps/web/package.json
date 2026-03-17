@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=${NODE_MEMORY_MB:-1536}\" next dev --hostname 0.0.0.0 --port 8085",
+    "dev": "next dev --hostname 0.0.0.0 --port 8085",
     "build": "next build",
     "start": "next start --hostname 0.0.0.0 --port 8085",
     "lint": "eslint . --max-warnings=0"
