@@ -1,5 +1,5 @@
 # Web Frontend Validation Matrix
-**Verdict: the reduced UI now passes code-path validation for small, medium, and large history shapes without reintroducing duplicate summaries or semantically-empty session rows.**
+The reduced UI passes code-path validation for small, medium, and large history shapes without reintroducing duplicate summaries or semantically-empty session rows.
 
 > Validation commands run:
 >
@@ -9,7 +9,7 @@
 > Validation basis: code-path review against the current canonical web components plus successful lint and production build. This is not a screenshot test harness.
 
 # Scenario Matrix
-**Verdict: each representative data shape now maps to one expected reading pattern.**
+Each representative data shape now maps to one expected reading pattern.
 
 | Scenario | Representative shape | Surfaces checked | Expected behavior | Basis | Status |
 | --- | --- | --- | --- | --- | --- |
@@ -23,7 +23,7 @@
 | Admin diagnostics | sources + drift snapshots | `Sources`, `Drift` | one primary header band plus one control/summary band; content begins immediately after | `apps/web/components/views/sources-view.tsx`; `apps/web/components/views/drift-view.tsx` | pass |
 
 # Acceptance Mapping
-**Verdict: the KR targets are covered end to end by the current changeset.**
+The KR targets are covered end to end by the current changeset.
 
 | KR | Coverage |
 | --- | --- |
@@ -34,7 +34,7 @@
 | `KR-128` | search no longer nests a modal over a detail panel; inbox no longer combines list, project rail, and detail rail in one workflow |
 
 # Remaining Validation Gap
-**Verdict: the only missing layer is a dedicated visual regression harness, not missing frontend behavior.**
+The only missing layer is a dedicated visual regression harness; no frontend behavior is absent.
 
 - No screenshot diff suite exists for `apps/web`.
 - No story-driven fixture harness exists for canonical `UserTurn` / `Session` / `ProjectIdentity` combinations.

@@ -29,7 +29,7 @@ cchistory sync --source antigravity     # Sync only Antigravity
 cchistory sync --limit-files 10         # Limit files per source (for testing)
 ```
 
-> Antigravity: full-fidelity sync requires the Antigravity desktop app to be running on the same machine. CCHistory prefers the local trajectory API for raw `USER_INPUT` turns. When the app is unavailable, it can still ingest offline `workspaceStorage`, `History`, and `brain` evidence, but that is not a reliable source of raw conversations.
+> Antigravity: CCHistory uses two complementary paths. The live trajectory API (requires the desktop app running) provides conversation content. Offline files (`workspaceStorage`, `History`, `brain`) are always scanned for project paths and workspace signals. Without the running app, only offline evidence is collected — no raw conversation content will be recovered.
 
 **Example output:**
 

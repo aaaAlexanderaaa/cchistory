@@ -48,7 +48,7 @@ CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对
 
 > **更多平台支持即将到来。** 希望看到某个平台被支持？欢迎 [提交 Issue](https://github.com/aaaAlexanderaaa/cchistory/issues) 告诉我们。
 
-> Antigravity 说明：CCHistory 现在会优先通过正在运行的 Antigravity 桌面应用暴露出的本地 language server trajectory API，恢复 `~/.gemini/antigravity/conversations/*.pb` 对应的原始 `USER_INPUT`。如果应用没有启动，CCHistory 仍然可以摄取离线的 `workspaceStorage`、`History` 和 `brain` 证据层用于元数据和附件，但这条路径并不能可靠恢复原始 conversation 流。
+> Antigravity 说明：CCHistory 对 Antigravity 采用两条互补的采集链路。运行中的桌面应用通过本地 language server trajectory API 提供实际对话内容（用户输入、助手回复、工具调用）。离线文件（`workspaceStorage`、`History`、`brain`）始终会被扫描，用于获取项目路径和 workspace 信号。如果桌面应用未运行，则只有离线链路会执行，此时不会恢复原始对话内容，只能获取项目元数据和证据工件。
 
 ## 系统架构
 
@@ -200,6 +200,8 @@ cchistory stats
 - **[CLI 指南](docs/guide/cli.md)** — 所有命令、参数和输出示例
 - **[API 指南](docs/guide/api.md)** — REST 接口、配置和请求/响应模式
 - **[Web 界面指南](docs/guide/web.md)** — 功能、导航、视图和配置
+- **[数据源技术说明](docs/sources/README.md)** — 已验证数据源的存储布局与采集路径
+- **[开发路线图](docs/ROADMAP.md)** — 当前里程碑式开发计划
 
 设计文档位于 `docs/design/`。
 

@@ -1,12 +1,14 @@
 # Claude Code
-**结论：CCHistory 目前通过扫描 `~/.claude/projects` 下的 JSONL 会话文件接入 Claude Code；一个 project 目录里可能同时存在主线程和 subagent sidechain。**
+
+CCHistory 通过扫描 `~/.claude/projects` 下的 JSONL 会话文件接入 Claude Code。一个 project 目录里可能同时存在主线程和 subagent sidechain。
 
 > 默认根目录：`~/.claude/projects`
 >
 > Windows 下当前实现同样按用户 home 目录解析，也就是 `%USERPROFILE%\\.claude\\projects`。
 
 # 获取方式
-**结论：Claude Code 的接入仍然是文件扫描，但比 Codex 多了一层“project 目录 + sidechain 文件”的关系。**
+
+接入方式基于文件扫描，但比 Codex 多了一层"project 目录 + sidechain 文件"的关系。
 
 1. adapter 从 `~/.claude/projects` 递归扫描所有 `.jsonl` 文件。
 2. 每个文件先作为一个 blob 捕获。
@@ -14,7 +16,8 @@
 4. `parentUuid` / `isSidechain` 会被保留成 session relation，而不是简单丢掉。
 
 # 上游存储结构
-**结论：Claude Code 的磁盘布局通常是“一个 workspace 对应一个目录，目录下有主 session 文件，也可能有 `subagents/` 目录”。**
+
+磁盘布局通常是"一个 workspace 对应一个目录，目录下有主 session 文件，也可能有 `subagents/` 目录"。
 
 典型形态：
 
@@ -31,7 +34,8 @@
 这里的 project 目录名通常是 workspace path 的编码形式，所以它对 project linking 有帮助，但不是唯一可信来源。
 
 # 文件结构
-**结论：Claude Code 也是 line-delimited JSON，但单行记录的语义更像“消息节点”而不是统一事件总线。**
+
+文件格式为 line-delimited JSON，但单行记录的语义更像"消息节点"而不是统一事件总线。
 
 常见字段：
 
@@ -64,17 +68,19 @@
 - 本地命令生成的说明性噪声
 
 # CCHistory 当前怎么解释
-**结论：CCHistory 对 Claude Code 的重点不是“能不能解析消息”，而是把 sidechain、meta 噪声和真实对话分开。**
+
+处理重点不在于"能不能解析消息"，而是把 sidechain、meta 噪声和真实对话区分开来。
 
 - 顶层 `cwd` 会被提升成 `workspace_signal`。
 - `parentUuid` / `isSidechain` 会被提升成 `session_relation`。
 - `message.model` 会变成 `model_signal`。
 - `tool_use` 和 `tool_result` 会分别变成 `tool_call` / `tool_result`。
-- `thinking` 会被保留，但按 source meta 处理，不会直接变成用户意图。
+- `thinking` 内容块（格式为 `{type: "thinking", thinking: "..."}`）当前未被特别处理，会被归入未识别内容并记录 loss audit。（注意：Factory Droid 对 thinking 有显式处理，会将其作为隐藏的 source meta 保留。）
 - 某些 Claude interruption marker 会被保留为 `source_meta`，并显式排除出 `UserTurn` 锚点。
 
 # 注意事项
-**结论：Claude Code 的主要风险是“很多看起来像 user 的文本，其实只是命令包装层或 sidechain 噪声”。**
+
+Claude Code 的主要风险在于：很多看起来像 user 的文本，实际上只是命令包装层或 sidechain 噪声。
 
 - slash command 可能先生成一条真实用户请求，再生成一条 meta 展开的系统提示。
 - `subagents/` 里的 sidechain 不能简单和主线程拼成一个会话，也不能直接忽略。

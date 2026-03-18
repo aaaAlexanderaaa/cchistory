@@ -120,22 +120,6 @@ Test the layer you actually changed. Design-only edits should cite the affected 
 ## Commit & Pull Request Guidelines
 Use short Conventional Commit subjects such as `feat:` and `docs:`. PRs should state whether the change affects the frozen design, the imported UI reference, or archived parser research. List commands run, and for UI exploration changes include screenshots labeled as demo/reference output.
 
-## Response Structuring Protocol
-Apply this protocol to any non-trivial explanation, review, design note, or decision memo. The goal is to preserve global context, separate dimensions cleanly, and avoid fragmented answers.
-
-- Start with a global model of the question. Identify the main dimensions before writing, and keep terminology and referents consistent across the full response.
-- Organize by logic, not by narration. When a request contains multiple dimensions, give each dimension its own top-level section using `#` headings. Do not structure the answer as a running timeline of what was checked or done.
-- Anchor each section with a verdict sentence. The first line under each top-level heading should be one bold sentence stating the conclusion for that section.
-- Choose visualization by content type instead of defaulting to paragraphs:
-  - comparisons, tradeoffs, feature matrices, and multi-attribute summaries should use Markdown tables;
-  - procedures, execution paths, and priority order should use numbered lists;
-  - concepts, causes, and structural explanations should use bullet lists;
-  - use diagrams, pseudocode, or other structured formats when they communicate more clearly than prose.
-- Isolate constraints physically. Put warnings, assumptions, environment limits, version notes, and prerequisites in blockquotes using `>`.
-- Remove conversational filler and meta-output. Avoid phrases that narrate the answering process or comment on the answer itself.
-- Keep each item dense and direct. Prefer short factual statements over decorative language, but do not compress away necessary context.
-- Avoid ambiguous pronouns or shifting references. If two entities can be confused, name them explicitly instead of relying on `it`, `this`, or similar shorthand.
-
 ## Cursor Cloud specific instructions
 
 > The Cloud Agent VM has ~16 GB RAM. The 4 GB / 3 GB memory constraints in the sections above apply to the original developer host, not this environment. Root-level `pnpm install` and parallel builds are safe here.

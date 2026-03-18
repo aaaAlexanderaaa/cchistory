@@ -1,5 +1,5 @@
 # Implementation Plan And Slice Record
-**Verdict: this document is now best read as the delivered baseline and status record for the 2026-03 local-source slice, not as the complete live roadmap for the current repository state.**
+This document serves as the delivered baseline and status record for the 2026-03 local-source slice. It should not be treated as the complete live roadmap for the current repository state.
 
 > The source of truth remains [`HIGH_LEVEL_DESIGN_FREEZE.md`](/root/cchistory/HIGH_LEVEL_DESIGN_FREEZE.md).
 >
@@ -12,7 +12,7 @@
 > Current adapters, CLI workflows, and some UI interactions may be ahead of this document because additional work landed outside the ledger captured here. Verify current runtime surface against `apps/*`, `packages/*`, and focused tests before treating this file as exhaustive.
 
 # Product Frame
-**Verdict: the product is project-first recall over canonical `UserTurn` objects, not a session browser and not a source-native log viewer.**
+The product provides project-first recall over canonical `UserTurn` objects. It is not a session browser and not a source-native log viewer.
 
 - The primary recall object is `UserTurn`.
 - `Session` remains traceability context, not the primary browsing primitive.
@@ -21,7 +21,7 @@
 - Every final object must remain traceable back to raw local evidence.
 
 # Runtime Shape
-**Verdict: the current runtime is a three-entrypoint TypeScript workspace with shared packages that isolate canonical semantics from source-specific parsing, storage, DTOs, and presentation mapping.**
+The current runtime is a three-entrypoint TypeScript workspace with shared packages that isolate canonical semantics from source-specific parsing, storage, DTOs, and presentation mapping.
 
 | Layer | Role | Status |
 | --- | --- | --- |
@@ -35,7 +35,7 @@
 | `packages/presentation` | presentation-layer mapping consumed by the canonical frontend | implemented |
 
 # Data Pipeline
-**Verdict: the pipeline is fixed as staged transformations, and no source is allowed to map raw input directly to final product objects.**
+The pipeline uses fixed staged transformations. No source is allowed to map raw input directly to final product objects.
 
 The fixed object chain is:
 
@@ -58,7 +58,7 @@ The fixed object chain is:
 - Unknown or partially supported source structures must generate `LossAuditRecord` output instead of being silently dropped.
 
 # Turn And Context Logic
-**Verdict: turn boundaries are owned by submission grouping, so a `user` message is not automatically a new `UserTurn`.**
+Turn boundaries are owned by submission grouping, which means a `user` message is not automatically a new `UserTurn`.
 
 - `SubmissionGroupCandidate` is the boundary layer between message atoms and `UserTurn`.
 - A fresh `UserTurn` opens only when the parser has evidence for a new user submission boundary.
@@ -68,7 +68,7 @@ The fixed object chain is:
 - Assistant, tool, and system atoms are part of `TurnContext`; they are not promoted to primary recall objects.
 
 # Time, Priority, And Organization
-**Verdict: the system uses one canonical temporal model with view-specific sort policies for session replay, recall, project review, and admin triage.**
+The system uses one canonical temporal model with view-specific sort policies for session replay, recall, project review, and admin triage.
 
 | View | Primary sort key | Direction | Purpose |
 | --- | --- | --- | --- |
@@ -84,14 +84,14 @@ The fixed object chain is:
 - Candidate and unlinked material must remain opt-in review surfaces.
 
 # Ordering Key Normalization
-**Verdict: all source families now converge on the same atom ordering pair, `time_key + seq_no`, before any turn or context projection is built.**
+All source families now converge on the same atom ordering pair, `time_key + seq_no`, before any turn or context projection is built.
 
 - Source-local timestamps are normalized into `time_key`.
 - Fragment-to-atom conversion assigns one monotonic `seq_no` within each session.
 - Session replay, submission grouping, and context spans consume the normalized ordering pair rather than source-native offsets.
 
 # Identity And Revisions
-**Verdict: logical IDs are now separated from revision IDs at the domain edge, and current project details resolve through persisted current revisions instead of raw source grouping.**
+Logical IDs are now separated from revision IDs at the domain edge. Current project details resolve through persisted current revisions instead of raw source grouping.
 
 - `project_id`, `turn_id`, and `artifact_id` remain the stable logical identifiers.
 - `project_revision_id`, `turn_revision_id`, and `artifact_revision_id` represent the current derived revision.
@@ -99,7 +99,7 @@ The fixed object chain is:
 - Detail queries resolve through current derived projections first, then lineage/tombstone fallbacks when needed.
 
 # Live Probe, Replay, And Compatibility
-**Verdict: local read-only probing and forward-compatible parsing are first-class product requirements, not debugging extras.**
+Local read-only probing and forward-compatible parsing are first-class product requirements, not debugging extras.
 
 - The runtime must be able to probe real local source roots on demand.
 - Probe mode must support read-only inspection without committing final objects.
@@ -120,7 +120,7 @@ Current implemented source adapters in this repository:
 9. `LobeChat` export bundles
 
 # Delivery Order
-**Verdict: the sequence below describes the delivered 2026-03 slice logic and should not be treated as the complete remaining backlog for the current repository state.**
+The sequence below describes the delivered 2026-03 slice logic and should not be treated as the complete remaining backlog for the current repository state.
 
 1. Establish stage contracts, live probe, and replay scaffolding.
 2. Bring the supported local and export source adapters to `ConversationAtom`.
@@ -131,7 +131,7 @@ Current implemented source adapters in this repository:
 7. Add masking, search, lifecycle, artifacts, and drift controls.
 
 # Memory Constraints
-**Verdict: this host must be treated as a 4 GB machine, so installation and build workflows must stay strictly scoped.**
+This host must be treated as a 4 GB machine, so installation and build workflows must stay strictly scoped.
 
 > Never use repository-root `pnpm install` or repository-root `pnpm build` as a default step on this host.
 >
@@ -148,7 +148,7 @@ Preferred commands:
 5. `NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build`
 
 # Package Bootstrap
-**Verdict: fresh dependency setup must happen one package at a time from the repository root, and installs should be filtered to the smallest package slice that can answer the question.**
+Fresh dependency setup must happen one package at a time from the repository root, with installs filtered to the smallest package slice that can answer the question.
 
 > If `/root/cchistory/node_modules` already exists, prefer reusing it and running a build or test before attempting any install.
 >
@@ -163,7 +163,7 @@ Preferred commands:
 | `@cchistory/web` | UI integration work only | `pnpm install --filter @cchistory/web` | `NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build` |
 
 # Safe Dependency Order
-**Verdict: sequential builds must follow the actual workspace dependency graph, with `apps/web` reserved for last because it is the most memory-expensive package.**
+Sequential builds must follow the actual workspace dependency graph, with `apps/web` reserved for last as the most memory-expensive package.
 
 | Package | Direct workspace dependencies | Safe build position | Reason |
 | --- | --- | --- | --- |
@@ -174,7 +174,7 @@ Preferred commands:
 | `@cchistory/web` | `@cchistory/api-client` | 5 | the Next.js app is still the most memory-expensive package and should stay last |
 
 # Validation Matrix
-**Verdict: validation should stay narrow, package-scoped, and probe-driven, with API routes used for source inspection instead of full workspace builds.**
+Validation should stay narrow, package-scoped, and probe-driven, with API routes used for source inspection instead of full workspace builds.
 
 > Probe and replay commands assume the managed dev services are already running via `pnpm services:start` in a separate terminal.
 >
@@ -197,7 +197,7 @@ Preferred commands:
 | `@cchistory/web` | verify web after real API integration | `NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build` | highest; run alone |
 
 # Adapter Conformance
-**Verdict: the low-memory harness now checks discovery, parser metadata, source-specific fragments, atomization, projections, and malformed-input handling for all four supported local source families using source-shaped synthetic fixtures.**
+The low-memory harness now checks discovery, parser metadata, source-specific fragments, atomization, projections, and malformed-input handling for all four supported local source families using source-shaped synthetic fixtures.
 
 | Source family target | Discovery invariant | Parse/atomize invariant | Projection invariant | Malformed-input coverage |
 | --- | --- | --- | --- | --- |
@@ -207,7 +207,7 @@ Preferred commands:
 | `AMP` | source is selectable through `source_ids` | root metadata plus message records yield fragments, atoms, and tool edges | one session and one `UserTurn` are emitted with workspace evidence | explicit malformed root JSON fixture preserves a `RawRecord`, unknown fragment, and `LossAuditRecord` |
 
 # Parse Boundary Discipline
-**Verdict: source-specific quirks now stop at fragments and inspectable opaque/meta atoms rather than leaking into canonical projections.**
+Source-specific quirks now stop at fragments and inspectable opaque/meta atoms rather than leaking into canonical projections.
 
 - `Codex` parser quirks stop at `session_meta`, `turn_context`, response-item, and unknown-content fragments.
 - `Claude Code` parser quirks stop at content-item, relation-hint, and unsupported-item fragments.
@@ -217,7 +217,7 @@ Preferred commands:
 - Submission-group candidates now carry explicit boundary explanations so replay and lineage views can explain why one `UserTurn` started where it did.
 
 # Preflight Checklist
-**Verdict: every install, build, or Next.js run should pass a short preflight check before it is allowed to consume memory on this host.**
+Every install, build, or Next.js run should pass a short preflight check before consuming memory on this host.
 
 > Skip the command if a smaller-scope alternative can answer the same question.
 
@@ -230,7 +230,7 @@ Preferred commands:
 7. Check current disk footprint of generated artifacts before risky recovery work, for example `du -sh node_modules apps/*/node_modules packages/*/node_modules 2>/dev/null`.
 
 # Cleanup And Recovery
-**Verdict: recovery from a failed install or build must target generated dependency artifacts only, and destructive cleanup requires explicit confirmation.**
+Recovery from a failed install or build must target generated dependency artifacts only. Destructive cleanup requires explicit confirmation.
 
 > Never delete `.cchistory/`, source capture roots under `/root/.codex`, `/root/.claude`, `/root/.factory`, or `/root/.local/share/amp`, or any user SQLite data as part of dependency cleanup.
 >
@@ -244,7 +244,7 @@ Preferred commands:
 6. After any cleanup, rerun only the matching package validation command, not a workspace-wide build.
 
 # Current Status
-**Verdict: the current implementation slice is now complete for local-source probe, linking, masked recall, search, lifecycle retention, tombstones, artifact coverage, drift diagnostics, and the main web review surfaces.**
+The current implementation slice is complete for local-source probe, linking, masked recall, search, lifecycle retention, tombstones, artifact coverage, drift diagnostics, and the main web review surfaces.
 
 | Area | State | Notes |
 | --- | --- | --- |
@@ -261,7 +261,7 @@ Preferred commands:
 | test harness | done | low-memory adapter fixtures plus storage, API, and web build validation now cover parser metadata, malformed inputs, submission grouping, masked projections, persistence semantics, replay diffs, override flows, lifecycle/artifact paths, search, and lineage drill-down |
 
 # Immediate Next Slice
-**Verdict: the implementation plan in this repository is now fully delivered for the current frozen local-source slice, and the next slice should be treated as a new scope decision rather than an unfinished tail.**
+The implementation plan is now fully delivered for the current frozen local-source slice. The next slice should be treated as a new scope decision rather than an unfinished tail.
 
 1. Decide whether the next scope is import-bundle ingestion, Family B sources, or richer artifact/product workflows.
 2. Replace the reference-only `Imports` admin surface only when canonical import-bundle semantics are frozen.

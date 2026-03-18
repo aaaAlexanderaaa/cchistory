@@ -1,12 +1,12 @@
 # Fixture Corpus Manifest
-**Verdict: the current fixture corpus is organized by source family shape and parser risk, without copying sensitive real-session content into the repository.**
+The current fixture corpus is organized by source family shape and parser risk, without copying sensitive real-session content into the repository.
 
 > Source-of-truth semantics remain frozen in `HIGH_LEVEL_DESIGN_FREEZE.md`.
 >
 > This manifest records shape coverage only. It does not embed private transcripts, prompts, or tool payloads from sampled local sessions.
 
 # Coverage Model
-**Verdict: each fixture should correspond to one representative source shape or one explicit parser failure mode.**
+Each fixture corresponds to one representative source shape or one explicit parser failure mode.
 
 - One fixture should represent the happy-path shape for each supported local source family.
 - One fixture should represent a malformed or forward-compatible unknown-content shape for each supported local source family.
@@ -14,7 +14,7 @@
 - Real sampled sessions may inform fixture design, but repository fixtures must stay synthetic and redactable.
 
 # Source Families
-**Verdict: the current low-memory fixture set covers the four supported local coding-agent sources.**
+The current low-memory fixture set covers the four supported local coding-agent sources.
 
 | Source family | Happy-path structural coverage | Malformed / edge coverage | Current repository location |
 | --- | --- | --- | --- |
@@ -24,7 +24,7 @@
 | `AMP` | root thread metadata, message array, tool edges, workspace evidence | malformed root JSON preserved as raw record + unknown fragment | `packages/source-adapters/src/index.test.ts` |
 
 # Sampled Shape Rules
-**Verdict: real local samples should be mined only for structure and parser invariants.**
+Real local samples should be mined only for structure and parser invariants, not for content.
 
 - Record stable field names, ordering quirks, and nesting patterns.
 - Record which fields are optional, repeated, renamed, or source-version-dependent.
@@ -33,7 +33,7 @@
 - Do not store raw secrets, long prompts, or identifiable conversation content in the fixture corpus.
 
 # Next Additions
-**Verdict: the next fixture work should target breadth of sampled shapes, not larger synthetic transcripts.**
+The next fixture work should target breadth of sampled shapes rather than larger synthetic transcripts.
 
 1. Add one manifest row per real sampled parser shape version when a source format changes.
 2. Split happy-path fixtures from malformed fixtures into clearly named groups.

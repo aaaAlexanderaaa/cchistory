@@ -1,12 +1,14 @@
 # Codex
-**结论：CCHistory 目前通过扫描 `~/.codex/sessions` 下的会话日志文件接入 Codex；核心输入是按时间分目录的 `.jsonl` 事件流，而不是单独的数据库或索引文件。**
+
+CCHistory 通过扫描 `~/.codex/sessions` 下的会话日志文件接入 Codex。核心输入是按时间分目录的 `.jsonl` 事件流，而不是单独的数据库或索引文件。
 
 > 默认根目录：`~/.codex/sessions`
 >
 > Windows 下当前实现同样按用户 home 目录解析，也就是 `%USERPROFILE%\\.codex\\sessions`。
 
 # 获取方式
-**结论：Codex 的接入方式很直接，就是递归扫会话文件，然后按行解析事件。**
+
+接入方式比较直接：递归扫描会话文件，然后按行解析事件。
 
 1. `getDefaultSourcesForHost()` 会把 Codex 默认根目录解析为 `~/.codex/sessions`。
 2. adapter 递归扫描该目录，匹配所有 `.jsonl` 和 `.json` 文件。
@@ -14,7 +16,8 @@
 4. Codex 专用 runtime parser 根据每条记录里的 `type` 生成 workspace、model、tool call、token usage 等 fragment。
 
 # 上游存储结构
-**结论：Codex 的磁盘结构是“日期目录 + 单文件会话日志”，文件名里通常带时间戳和会话 id。**
+
+磁盘结构为"日期目录 + 单文件会话日志"，文件名里通常带时间戳和会话 id。
 
 典型形态：
 
@@ -33,7 +36,8 @@
 - 单个 `.jsonl` 文件通常就是一个会话线程，但线程里会混入大量指令注入、工具流量、token 事件和元信息。
 
 # 文件结构
-**结论：Codex 会话文件本质上是 line-delimited JSON，常见记录类型包括 `session_meta`、`turn_context`、`response_item`、`event_msg`。**
+
+会话文件本质上是 line-delimited JSON，常见记录类型包括 `session_meta`、`turn_context`、`response_item`、`event_msg`。
 
 当前实现最依赖的几类记录：
 
@@ -52,11 +56,12 @@
 
 对开发者来说，可以把它理解成：
 
-- 同一个文件里同时混有“真正对话”和“系统运行轨迹”。
+- 同一个文件里同时混有"真正对话"和"系统运行轨迹"。
 - `response_item.payload.content[]` 才是最接近用户可见消息的地方。
 
 # CCHistory 当前怎么解释
-**结论：CCHistory 对 Codex 的处理策略是保留完整证据，但只把少数结构化字段提升为 canonical 信号。**
+
+处理策略是保留完整证据，但只把少数结构化字段提升为 canonical 信号。
 
 - `session_meta.payload.cwd` 和 `turn_context.payload.cwd` 会被提升成 `workspace_signal`。
 - `session_meta.payload.model` 或 `turn_context.payload.model` 会被提升成 `model_signal`。
@@ -66,7 +71,8 @@
 - `event_msg.payload.type=token_count` 会变成 token usage signal，并尝试计算累计值和增量值。
 
 # 注意事项
-**结论：Codex 的难点不在“怎么读 JSONL”，而在“怎么区分真实用户意图和大量注入上下文”。**
+
+Codex 的难点不在"怎么读 JSONL"，而在于如何区分真实用户意图和大量注入上下文。
 
 - 很长的 `AGENTS.md`、系统说明、skills 列表可能直接落在同一个会话里。
 - 有些样本会缺失结构化 `cwd`，这时不能假设没有 workspace，只能承认证据变弱。

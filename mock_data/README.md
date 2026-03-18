@@ -20,7 +20,7 @@ Antigravity is split across two fixture families:
 - `Library/Application Support/antigravity/...` and `.gemini/antigravity/brain/...` cover the offline evidence surface (`workspaceStorage`, `History`, `brain`), not the raw conversation stream.
 - `fixtures/antigravity-live/...` captures sanitized local language-server responses used to validate the live trajectory path without depending on a running app inside tests.
 
-> Full-fidelity Antigravity extraction on a real machine still requires the Antigravity desktop app to be running. Without the app, CCHistory may still ingest offline evidence, but that is not a reliable way to recover raw prompts or complete conversation turns.
+> Full-fidelity Antigravity extraction on a real machine still requires the Antigravity desktop app to be running. Without the app, that is not way to recover raw prompts or real conversation turns.
 
 | Scenario | Apps | What A User Would Notice | Why A Naive Parser Gets It Wrong | Paths |
 | --- | --- | --- | --- | --- |

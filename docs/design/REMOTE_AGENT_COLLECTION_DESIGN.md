@@ -1,6 +1,6 @@
 # Remote Agent Collection Design
 
-**Verdict: the remote-host feature should be implemented as a minimal collection control plane around the existing canonical ingest pipeline, not as remote live federation.**
+The remote-host feature should be implemented as a minimal collection control plane around the existing canonical ingest pipeline, not as remote live federation.
 
 > Source of truth: [HIGH_LEVEL_DESIGN_FREEZE.md](/root/cchistory/HIGH_LEVEL_DESIGN_FREEZE.md)
 >
@@ -16,7 +16,7 @@
 > - source replacement ingest: [packages/storage/src/ingest/source-payload.ts](/root/cchistory/packages/storage/src/ingest/source-payload.ts)
 
 # Scope
-**Verdict: this design covers multi-host reporting, targeted collection, and staged rollout, while explicitly avoiding a general-purpose remote execution system.**
+This design covers multi-host reporting, targeted collection, and staged rollout, while explicitly avoiding a general-purpose remote execution system.
 
 Goals:
 
@@ -34,9 +34,7 @@ Non-goals:
 - introducing new product semantics below `UserTurn`
 
 # Decision Surface
-**Verdict: the real design work is choosing where to spend complexity across transport, incrementality, identity, and consistency.**
-
-This feature looks like "multi-host reporting", but four separate design choices carry most of the cost:
+The real design work is choosing where to spend complexity across four axes: transport, incrementality, identity, and consistency. This feature looks like "multi-host reporting", but these four separate design choices carry most of the cost:
 
 | Axis | Simple choice | Powerful choice | What it costs |
 | --- | --- | --- | --- |
@@ -48,7 +46,7 @@ This feature looks like "multi-host reporting", but four separate design choices
 The rest of the design should stay constrained until these choices are explicit.
 
 # Transport Trade-Off
-**Verdict: push-only is too weak for operators, direct pull is too heavy for v1, and lease-based pull is the best default compromise.**
+Push-only is too weak for operators, direct pull is too heavy for v1, and lease-based pull is the best default compromise.
 
 Transport options:
 
@@ -72,7 +70,7 @@ Why not lead with direct pull:
 - the same operator requirement can be met by lease-based pull with less system surface
 
 # Incrementality Trade-Off
-**Verdict: source-dirty snapshots are the right v1, because finer-grained delta is materially harder than it first appears.**
+Source-dirty snapshots are the right v1 approach, because finer-grained delta is materially harder than it first appears.
 
 Incremental options:
 
@@ -97,7 +95,7 @@ For this repository, "incremental" should mean:
 - keep import atomic at the source payload boundary
 
 # Identity And Alias Trade-Off
-**Verdict: using a mutable alias as the operator handle is good, using it as canonical identity is not.**
+Using a mutable alias as the operator handle is good UX, but using it as canonical identity is not.
 
 Possible identity models:
 
@@ -119,7 +117,7 @@ Recommended naming split:
 This keeps mutable names out of IDs while still giving you compact orchestration selectors.
 
 # Consistency Trade-Off
-**Verdict: v1 must not rely on blind last-write-wins, because overlapping jobs can regress a source to older data.**
+v1 must not rely on blind last-write-wins, because overlapping jobs can regress a source to older data.
 
 The current import path replaces a source payload as a unit. That is acceptable only if the main service can reject stale results.
 
@@ -140,7 +138,7 @@ Required early protections:
 This is a bigger practical risk than transport direction and should be handled in phase 1.
 
 # Source Absence Trade-Off
-**Verdict: dirty-only upload is not enough unless the system can also express "this source is now absent".**
+Dirty-only upload is not enough unless the system can also express "this source is now absent."
 
 There are three distinct absence cases:
 
@@ -160,9 +158,7 @@ If the agent uploads only dirty changed sources, the main service cannot infer t
 Without this, "incremental" quietly becomes "never delete anything and never know if a source vanished".
 
 # Global Model
-**Verdict: the correct mental model is "agent-local capture, central canonical import".**
-
-The system has three roles:
+The correct mental model is "agent-local capture, central canonical import." The system has three roles:
 
 1. Agent:
    runs on a remote host, discovers local sources, performs local probe and raw snapshot work, and uploads canonical data.
@@ -174,7 +170,7 @@ The system has three roles:
 The main service does not read remote source files directly. Even when the main service "pulls", it does so by asking an agent to collect and upload.
 
 # Identity Model
-**Verdict: mutable operator-facing names must be separated from evidence identity.**
+Mutable operator-facing names must be separated from evidence identity.
 
 Required identities:
 
@@ -196,7 +192,7 @@ Rules:
 This avoids the current weakness where `host_id` is derived from hostname alone.
 
 # Collection Model
-**Verdict: early incrementality should be source-scoped and dirty-only, plus explicit source-manifest reporting, not true row-level delta ingest.**
+Early incrementality should be source-scoped and dirty-only, with explicit source-manifest reporting rather than true row-level delta ingest.
 
 There are three different meanings of "incremental":
 
@@ -220,9 +216,7 @@ This is not full-fleet full-snapshot sync. It is incremental at the host and sou
 True delta ingest is intentionally deferred because the current storage path replaces source payloads as a unit.
 
 # Transport Model
-**Verdict: one job model should support manual upload, schedule, and main-service-triggered pull.**
-
-The control plane uses a typed collection job instead of generic remote execution.
+One job model should support manual upload, schedule, and main-service-triggered pull. The control plane uses a typed collection job instead of generic remote execution.
 
 Minimal job fields:
 
@@ -250,7 +244,7 @@ Delivery modes by phase:
 This lets the main service trigger full-fleet or partial refresh without operator SSH.
 
 # Bundle And Upload Shape
-**Verdict: the wire format should reuse the existing bundle format, but uploads also need lightweight metadata for ordering and absence reporting.**
+The wire format should reuse the existing bundle format, with additional lightweight metadata for ordering and absence reporting.
 
 Upload path:
 
@@ -281,7 +275,7 @@ Required upload metadata:
 - source-manifest summary for slots not included in the dirty bundle payload
 
 # Main-Service APIs
-**Verdict: remote-agent APIs must be separate from the existing local-only admin probe APIs.**
+Remote-agent APIs must be separate from the existing local-only admin probe APIs.
 
 Proposed minimal agent APIs:
 
@@ -305,7 +299,7 @@ Proposed minimal admin APIs:
 Existing `/api/admin/source-config` and `/api/admin/probe/*` remain host-local admin surfaces and should not become the remote-agent API.
 
 # Agent Local State
-**Verdict: the agent should persist only enough state to pair once, detect dirtiness, and resume safely.**
+The agent should persist only enough state to pair once, detect dirtiness, and resume safely.
 
 Minimal local files:
 
@@ -330,10 +324,10 @@ Minimal per-source state:
 This is enough for dirty-only source uploads without requiring full local historical storage semantics.
 
 # Rollout Plan
-**Verdict: the lowest-risk rollout is upload first, then liveness, then schedule, then pull, with true delta later only if justified.**
+The lowest-risk rollout sequence is upload first, then liveness, then schedule, then pull, with true delta deferred until justified by measured need.
 
 ## Phase 1: Upload
-**Verdict: the first deliverable should make one paired remote host upload dirty source snapshots safely, with stale-write rejection and source-manifest reporting.**
+The first deliverable should make one paired remote host upload dirty source snapshots safely, with stale-write rejection and source-manifest reporting.
 
 Deliver:
 
@@ -352,7 +346,7 @@ Do not deliver yet:
 - server-triggered pull
 
 ## Phase 2: Keepalive And Schedule
-**Verdict: the second deliverable should add liveness and host-local periodic reporting without adding remote command complexity.**
+The second deliverable adds liveness and host-local periodic reporting without adding remote command complexity.
 
 Deliver:
 
@@ -363,7 +357,7 @@ Deliver:
 - admin agent inventory view
 
 ## Phase 3: Pull
-**Verdict: the third deliverable should let the main service trigger collection through job leasing, not direct file reads.**
+The third deliverable lets the main service trigger collection through job leasing, not direct file reads.
 
 Deliver:
 
@@ -378,7 +372,7 @@ Optional:
 - direct pull transport for reachable hosts only
 
 ## Phase 4: True Delta
-**Verdict: true in-source delta ingest should be postponed until source-scoped dirty snapshots prove too expensive.**
+True in-source delta ingest should be postponed until source-scoped dirty snapshots prove too expensive.
 
 A later delta design may add:
 
@@ -389,7 +383,7 @@ A later delta design may add:
 This phase should be opened only if bundle size, raw blob cost, or probe latency become a measured problem.
 
 # Guardrails
-**Verdict: remote collection must not weaken evidence preservation or create a second semantic pipeline.**
+Remote collection must not weaken evidence preservation or create a second semantic pipeline.
 
 Hard rules:
 
@@ -400,7 +394,7 @@ Hard rules:
 - UI and API continue to project the one central canonical store
 
 # Implementation Notes
-**Verdict: the repository can reuse existing packages heavily; most new work is control-plane state and transport glue.**
+The repository can reuse existing packages heavily; most new work is control-plane state and transport glue.
 
 Likely first implementation surface:
 

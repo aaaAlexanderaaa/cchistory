@@ -1,12 +1,12 @@
 # Web Relationship Rules
-**Verdict: the UI must treat `ProjectIdentity`, `Session`, and `UserTurn` as different responsibilities, not interchangeable reading targets.**
+The UI must treat `ProjectIdentity`, `Session`, and `UserTurn` as different responsibilities, not interchangeable reading targets.
 
 > Source of truth: `HIGH_LEVEL_DESIGN_FREEZE.md`
 >
 > The frozen model is: `ProjectIdentity` is the context boundary, `UserTurn` is the primary recall object, and `Session` is the provenance container.
 
 # Global Rules
-**Verdict: relationship clarity depends on stable object responsibilities across all views.**
+Relationship clarity depends on stable object responsibilities across all views.
 
 1. `UserTurn` is the default reading unit for recall, search, review, and triage.
 2. `ProjectIdentity` provides scope, grouping, and linking context.
@@ -15,7 +15,7 @@
 5. Context already established by the parent view must not be fully restated in the immediate child surface.
 
 # View Responsibility Matrix
-**Verdict: each primary view now has one anchor object and one clear role for the other two objects.**
+Each primary view has one anchor object and one clear role for the other two objects.
 
 | View | Anchor object | `ProjectIdentity` role | `Session` role | `UserTurn` role |
 | --- | --- | --- | --- | --- |
@@ -30,7 +30,7 @@
 | `Drift` | `DriftReport` | indirect quality context | indirect quality context | indirect quality count only |
 
 # Reduction Rules
-**Verdict: relationship clarity becomes visible only when each layer says one thing once.**
+Relationship clarity becomes visible only when each layer says one thing once.
 
 - Parent views establish scope.
 - Cards summarize.
@@ -39,7 +39,7 @@
 - Session projections show chronology and scale, not another full summary dashboard.
 
 # Implementation Notes
-**Verdict: the current repair work encodes these rules directly in the web surface hierarchy.**
+The current repair work encodes these rules directly in the web surface hierarchy.
 
 - `apps/web/components/views/all-turns-view.tsx` keeps `UserTurn` as the headline object and treats `SessionMap` as a secondary view.
 - `apps/web/components/views/projects-view.tsx` makes project identity the page context while keeping turns as the main project history.

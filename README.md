@@ -48,7 +48,7 @@ CCHistory ingests, parses, and projects your AI coding assistant conversations i
 
 > **More platforms on the way.** Have a platform you'd like to see supported? [Open an issue](https://github.com/aaaAlexanderaaa/cchistory/issues) to let us know.
 
-> Antigravity note: CCHistory now prefers the running Antigravity desktop app's local language-server trajectory API to recover raw `USER_INPUT` turns from `~/.gemini/antigravity/conversations/*.pb`. If the app is not running, CCHistory can still ingest offline `workspaceStorage`, `History`, and `brain` evidence for metadata and attachments, but that path does not reliably recover the raw conversation stream.
+> Antigravity note: CCHistory uses two complementary paths for Antigravity. The running desktop app's local language-server trajectory API provides actual conversation content (user inputs, assistant replies, tool calls). Offline files (`workspaceStorage`, `History`, `brain`) are always scanned for project paths and workspace signals. If the desktop app is not running, only the offline path executes, which means no raw conversation content will be recovered — only project metadata and evidence artifacts.
 
 ## Architecture
 

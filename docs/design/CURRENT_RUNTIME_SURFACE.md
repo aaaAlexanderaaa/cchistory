@@ -1,5 +1,6 @@
 # Current Runtime Surface
-**Verdict: this document records the repository-visible runtime surface as of 2026-03-14; it complements the design freeze and should be used when implementation inventory matters more than frozen semantics.**
+
+This document records the repository-visible runtime surface as of 2026-03-14. It complements the design freeze and should be consulted when implementation inventory matters more than frozen semantics.
 
 > [`HIGH_LEVEL_DESIGN_FREEZE.md`](/root/cchistory/HIGH_LEVEL_DESIGN_FREEZE.md) remains the source of truth for product semantics and invariants.
 >
@@ -8,7 +9,8 @@
 > `tasks.csv` is a historical KR ledger that stops at work explicitly tracked in this repository on this host. It is not the live backlog.
 
 # Entry Points
-**Verdict: the current product runtime is a three-entrypoint TypeScript workspace with shared packages for domain, storage, DTOs, presentation, and source adapters.**
+
+The current product runtime is a three-entrypoint TypeScript workspace with shared packages for domain, storage, DTOs, presentation, and source adapters.
 
 | Path | Role | Current status source |
 | --- | --- | --- |
@@ -22,7 +24,8 @@
 | `packages/presentation` | presentation-layer mapping consumed by web | `packages/presentation/src/index.ts` |
 
 # Implemented Source Adapters
-**Verdict: the repository currently registers nine source adapters, spanning both local coding-agent and conversational-export families.**
+
+The repository currently registers nine source adapters, spanning both local coding-agent and conversational-export families.
 
 | Platform | Family | Notes |
 | --- | --- | --- |
@@ -31,7 +34,7 @@
 | `factory_droid` | `local_coding_agent` | local sessions plus sidecar settings |
 | `amp` | `local_coding_agent` | thread-style local JSON data |
 | `cursor` | `local_coding_agent` | transcript plus VS Code state fallback paths |
-| `antigravity` | `local_coding_agent` | live local trajectory API preferred; offline state and brain evidence retained for metadata/artifacts |
+| `antigravity` | `local_coding_agent` | live local trajectory API for conversation content; offline state and brain always scanned for project/workspace signals |
 | `openclaw` | `local_coding_agent` | local JSONL sessions |
 | `opencode` | `local_coding_agent` | local session/message trees |
 | `lobechat` | `conversational_export` | export-bundle style import source |
@@ -40,10 +43,11 @@ The adapter registry is defined in [`packages/source-adapters/src/platforms/regi
 
 Broader enums in domain or DTO packages may mention additional platforms such as `chatgpt`, `claude_web`, or `gemini`. Those enums should be read as schema allowance, not proof that a live adapter is already registered.
 
-> Antigravity has a runtime precondition: full-fidelity sync depends on the local Antigravity desktop app being open on the same machine so CCHistory can query its local language server for trajectory steps. When that runtime is unavailable, the adapter can still ingest offline `workspaceStorage`, `History`, and `brain` evidence, but that path is not equivalent to recovering the raw conversation stream.
+> Antigravity uses two complementary collection paths. The live trajectory API (requires the desktop app to be running) provides actual conversation content. Offline files (`workspaceStorage`, `History`, `brain`) are always scanned regardless of live availability, providing project paths and workspace signals. Without the running app, only the offline path executes, which does not recover raw conversation content.
 
 # Web Surface
-**Verdict: the canonical frontend currently exposes four history views and four admin views, with session drill-down handled inside the turn flow rather than as a separate top-level page.**
+
+The canonical frontend currently exposes four history views and four admin views. Session drill-down is handled inside the turn flow rather than as a separate top-level page.
 
 History views:
 
@@ -68,7 +72,8 @@ Additional current behavior:
 The current web view wiring is visible in [`apps/web/app/page.tsx`](/root/cchistory/apps/web/app/page.tsx) and [`apps/web/components/app-shell.tsx`](/root/cchistory/apps/web/components/app-shell.tsx).
 
 # CLI Surface
-**Verdict: `apps/cli` is a real operator entrypoint with sync, read, query, and bundle-management workflows, not a thin debug wrapper.**
+
+`apps/cli` is a real operator entrypoint with sync, read, query, and bundle-management workflows, not a thin debug wrapper.
 
 Current command families:
 
@@ -92,7 +97,8 @@ Current read modes:
 The CLI dispatcher and help text live in [`apps/cli/src/index.ts`](/root/cchistory/apps/cli/src/index.ts).
 
 # API Surface
-**Verdict: the managed API already exposes recall, project, artifact, source-config, probe/replay, lineage, lifecycle, mask, drift, and tombstone surfaces.**
+
+The managed API exposes recall, project, artifact, source-config, probe/replay, lineage, lifecycle, mask, drift, and tombstone surfaces.
 
 Current route groups:
 
@@ -107,7 +113,8 @@ Current route groups:
 The OpenAPI path summary is generated in [`apps/api/src/app.ts`](/root/cchistory/apps/api/src/app.ts).
 
 # Document Roles
-**Verdict: the repository now needs separate semantic, runtime, source-reference, roadmap, and historical-plan documents instead of one overloaded plan document.**
+
+The repository now maintains separate semantic, runtime, source-reference, roadmap, and historical-plan documents instead of one overloaded plan document.
 
 | Document | Role | Update policy |
 | --- | --- | --- |

@@ -1,5 +1,5 @@
 # Web Mock Audit
-**Verdict: `apps/web` now spans three classes of data contracts: already-canonical turn detail flows, directly mappable demo shapes, and demo-only admin/history contracts that must not leak into the canonical model.**
+The `apps/web` data layer now spans three classes of contracts: already-canonical turn detail flows, directly mappable demo shapes, and demo-only admin/history contracts that must not leak into the canonical model.
 
 > Source of truth: [`HIGH_LEVEL_DESIGN_FREEZE.md`](/root/cchistory/HIGH_LEVEL_DESIGN_FREEZE.md)
 >
@@ -8,7 +8,7 @@
 > Canonical comparison baseline: [`packages/domain/src/index.ts`](/root/cchistory/packages/domain/src/index.ts) and [`packages/api-client/src/index.ts`](/root/cchistory/packages/api-client/src/index.ts).
 
 # Surface Status
-**Verdict: only the `All Turns` and turn-detail drill-down path is substantially rewired to canonical API data; the rest of the web shell still consumes demo exports or demo-only helper selectors.**
+Only the `All Turns` and turn-detail drill-down path is substantially rewired to canonical API data; the rest of the web shell still consumes demo exports or demo-only helper selectors.
 
 | Web surface | Current data source | Canonical replacement | Status | Blocking drift |
 | --- | --- | --- | --- | --- |
@@ -23,7 +23,7 @@
 | `turn-inspector` | `getSessionById()`, `getProjectById()`, `getSourceDisplayName()` | canonical session/project/source queries | partially mappable | helper selectors still assume in-memory mock registries |
 
 # Entity Mapping
-**Verdict: `UserTurn` and `Session` are close enough to keep, `ProjectIdentity` and `SourceInstance` need controlled remapping, and several admin/demo entities should be treated as temporary view models instead of canonical contracts.**
+`UserTurn` and `Session` are close enough to the canonical model to keep as-is. `ProjectIdentity` and `SourceInstance` need controlled remapping, and several admin/demo entities should be treated as temporary view models rather than canonical contracts.
 
 | Demo type/export | Survives | Changes | Disappears |
 | --- | --- | --- | --- |
@@ -37,7 +37,7 @@
 | `DriftMetrics` | none directly | must come from a future admin aggregate endpoint | current demo aggregate shape is entirely synthetic |
 
 # Critical Drift
-**Verdict: three demo assumptions conflict with the frozen model and should be removed before broader UI rewiring.**
+Three demo assumptions conflict with the frozen model and should be removed before broader UI rewiring.
 
 | Demo assumption | Why it is wrong | Required correction |
 | --- | --- | --- |
@@ -46,7 +46,7 @@
 | `SourcePlatform` includes `cursor` in the web type | the canonical domain type and live source adapters do not currently support `cursor` | keep `cursor` as demo-only reference material or remove it from the canonical web type |
 
 # Export Disposition
-**Verdict: most `mock-data.ts` exports should either disappear behind API calls or be narrowed into purely local presentation helpers.**
+Most `mock-data.ts` exports should either disappear behind API calls or be narrowed into purely local presentation helpers.
 
 | Export | Disposition |
 | --- | --- |
@@ -58,7 +58,7 @@
 | `getSourceDisplayName` | replace with a selector over canonical `/api/sources` data |
 
 # Rewrite Order
-**Verdict: the safest next rewiring order is project surfaces first, linking review second, and only then the blocked admin views that still lack canonical endpoints.**
+The safest rewiring sequence is project surfaces first, linking review second, and only then the blocked admin views that still lack canonical endpoints.
 
 1. Replace `ProjectsView` with `/api/projects` plus `/api/turns` filtering and keep color as a local derived visual property.
 2. Replace `InboxView` and `LinkingView` with `/api/admin/linking`, then add typed client coverage for that route.

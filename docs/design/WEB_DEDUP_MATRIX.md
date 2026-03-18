@@ -1,12 +1,12 @@
 # Web Dedup Matrix
-**Verdict: the frontend should remove repeated summaries and repeated containers, not remove canonical product facts.**
+The frontend should remove repeated summaries and repeated containers without removing canonical product facts.
 
 > Source of truth: `HIGH_LEVEL_DESIGN_FREEZE.md`
 >
 > Frozen invariants preserved here: project-first history, `UserTurn` as primary recall object, evidence-preserving provenance, and UI/API as projections of one canonical model.
 
 # Reduction Standard
-**Verdict: every surface must keep one anchor object, one summary layer, and one detail layer.**
+Every surface must keep one anchor object, one summary layer, and one detail layer.
 
 - Keep facts that change user judgment.
 - Remove repeated facts that only restate already-visible context.
@@ -14,7 +14,7 @@
 - Let data scale change layout weight before adding more badges or more chrome.
 
 # Surface Matrix
-**Verdict: the matrix below defines what stays, what moves, and what should not repeat on each primary surface.**
+The matrix below defines what stays, what moves, and what should not repeat on each primary surface.
 
 | Surface | Anchor object | Retain at top layer | Move lower / collapse | Remove as duplicate |
 | --- | --- | --- | --- | --- |
@@ -29,7 +29,7 @@
 | `Drift` | `DriftReport` diagnostics | drift headline, refresh, compact summary pills, chart, source health matrix | source-level detail inside the matrix | full KPI wall above the chart; global warning banner duplicated outside the header |
 
 # Session Projection Rules
-**Verdict: `SessionMap` is a projection surface and must not behave like a second dashboard when embedded inside another page.**
+`SessionMap` is a projection surface and must not behave like a second dashboard when embedded inside another page.
 
 - Embedded `SessionMap` instances keep axis controls and visual lanes.
 - Embedded `SessionMap` instances drop the global overview summary.
@@ -38,7 +38,7 @@
 - Multi-row stacking is not allowed unless rows have explicit semantic meaning.
 
 # Review Outcome
-**Verdict: the current repair work should treat duplication as a structural bug, not a styling issue.**
+The current repair work should treat duplication as a structural bug, not a styling issue. The following files are affected:
 
 - `apps/web/components/views/all-turns-view.tsx`
 - `apps/web/components/views/projects-view.tsx`
