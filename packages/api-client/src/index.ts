@@ -554,6 +554,17 @@ interface CandidateGcResponse {
   tombstones: TombstoneProjectionDto[];
 }
 
+export interface DeleteProjectResponse {
+  project_id: string;
+  deleted_session_ids: string[];
+  deleted_turn_ids: string[];
+  deleted_candidate_ids: string[];
+  deleted_blob_ids: string[];
+  deleted_artifact_ids: string[];
+  updated_artifact_ids: string[];
+  tombstones: TombstoneProjectionDto[];
+}
+
 interface TombstoneResponse {
   tombstone: TombstoneProjectionDto;
 }
@@ -733,6 +744,14 @@ export function createCCHistoryApiClient(options: CCHistoryApiClientOptions = {}
         fetchImpl,
         baseUrl,
         `/api/projects/${encodeURIComponent(projectId)}/revisions`,
+      );
+    },
+    async deleteProject(projectId: string, payload?: { reason?: string }): Promise<DeleteProjectResponse> {
+      return fetchJsonWithBody(
+        fetchImpl,
+        baseUrl,
+        `/api/admin/projects/${encodeURIComponent(projectId)}/delete`,
+        payload ?? {},
       );
     },
     async getLinkingReview(): Promise<LinkingReviewResponse> {

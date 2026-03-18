@@ -37,6 +37,13 @@ interface MaskApplicationResult {
   canonical_text: string;
 }
 
+export const LITERAL_PROMPT_MASK_TEMPLATE_IDS = [
+  "mask-agents-md-instructions",
+  "mask-standalone-instructions-block",
+  "mask-environment-context-block",
+  "mask-system-reminder-block",
+] as const;
+
 const BUILTIN_MASK_TEMPLATES: readonly BuiltinMaskTemplate[] = [
   {
     id: "mask-agents-md-instructions",
@@ -167,14 +174,20 @@ export function getBuiltinMaskTemplates(): BuiltinMaskTemplate[] {
 export function applyMaskTemplates(
   rawText: string,
   context: MaskApplicationContext,
-  options: { injected?: boolean } = {},
+  options: { injected?: boolean; exclude_template_ids?: readonly string[] } = {},
 ): MaskApplicationResult {
   if (rawText.length === 0) {
     return { display_segments: [{ type: options.injected ? "injected" : "text", content: "" }], canonical_text: "" };
   }
 
+  const excludedTemplateIds = new Set(options.exclude_template_ids ?? []);
   const templates = getBuiltinMaskTemplates()
-    .filter((template) => template.is_active && template.applies_to.includes(context))
+    .filter(
+      (template) =>
+        template.is_active &&
+        template.applies_to.includes(context) &&
+        !excludedTemplateIds.has(template.id),
+    )
     .sort((left, right) => left.priority - right.priority);
   const regions: MatchRegion[] = [];
 

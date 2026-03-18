@@ -347,6 +347,274 @@ export class CCHistoryStorage {
     return row ? fromJson<TombstoneProjection>(row.payload_json) : undefined;
   }
 
+  deleteProject(projectId: string, reason = "manual_project_delete"):
+    | {
+        project_id: string;
+        deleted_session_ids: string[];
+        deleted_turn_ids: string[];
+        deleted_candidate_ids: string[];
+        deleted_blob_ids: string[];
+        deleted_artifact_ids: string[];
+        updated_artifact_ids: string[];
+        tombstones: TombstoneProjection[];
+      }
+    | undefined {
+    const project = this.getProject(projectId);
+    if (!project) {
+      const tombstone = this.getTombstone(projectId);
+      if (tombstone?.object_kind !== "project") {
+        return undefined;
+      }
+      return {
+        project_id: projectId,
+        deleted_session_ids: [],
+        deleted_turn_ids: [],
+        deleted_candidate_ids: [],
+        deleted_blob_ids: [],
+        deleted_artifact_ids: [],
+        updated_artifact_ids: [],
+        tombstones: [tombstone],
+      };
+    }
+
+    const projectTurns = this.listProjectTurns(projectId, "all");
+    const deletedTurnIds = uniqueStrings(projectTurns.map((turn) => turn.id));
+    const deletedTurnIdSet = new Set(deletedTurnIds);
+    const projectObservationIds = uniqueStrings(
+      this.listProjectObservations()
+        .filter((observation) => observation.project_id === projectId)
+        .map((observation) => observation.id),
+    );
+    const projectObservationIdSet = new Set(projectObservationIds);
+    const allTurns = this.listTurns();
+    const deletedTurns = allTurns.filter((turn) => deletedTurnIdSet.has(turn.id));
+    const remainingTurns = allTurns.filter((turn) => !deletedTurnIdSet.has(turn.id));
+    const remainingSessionIdSet = new Set(remainingTurns.map((turn) => turn.session_id));
+    const sessionsById = new Map(this.listSessions().map((session) => [session.id, session]));
+    const deletedSessionIds = uniqueStrings(
+      deletedTurns
+        .map((turn) => turn.session_id)
+        .filter((sessionId) => !remainingSessionIdSet.has(sessionId)),
+    );
+    const deletedSessionIdSet = new Set(deletedSessionIds);
+    const retainedSessionIds = uniqueStrings(
+      deletedTurns
+        .map((turn) => turn.session_id)
+        .filter((sessionId) => remainingSessionIdSet.has(sessionId)),
+    );
+    const deletedTurnCandidateIds = uniqueStrings(
+      deletedTurns.flatMap((turn) => turn.lineage.candidate_refs),
+    );
+    const deletedTurnCandidateIdSet = new Set(deletedTurnCandidateIds);
+    const remainingBlobIdSet = new Set(
+      remainingTurns
+        .flatMap((turn) => turn.lineage.blob_refs),
+    );
+    const deletedBlobIds = uniqueStrings(
+      deletedTurns
+        .flatMap((turn) => turn.lineage.blob_refs)
+        .filter((blobId) => !remainingBlobIdSet.has(blobId)),
+    );
+    const deletedBlobIdSet = new Set(deletedBlobIds);
+    const deletedCandidateIds = uniqueStrings(
+      this.selectAllPayloads<DerivedCandidate>("derived_candidates")
+        .filter(
+          (candidate) =>
+            deletedSessionIdSet.has(candidate.session_ref) ||
+            projectObservationIdSet.has(candidate.id) ||
+            deletedTurnCandidateIdSet.has(candidate.id),
+        )
+        .map((candidate) => candidate.id),
+    );
+    const deletedCandidateIdSet = new Set(deletedCandidateIds);
+    const deletedObservationIds = uniqueStrings(
+      this.listProjectObservations()
+        .filter(
+          (observation) =>
+            deletedSessionIdSet.has(observation.session_ref) || projectObservationIdSet.has(observation.id),
+        )
+        .map((observation) => observation.id),
+    );
+    const deletedObservationIdSet = new Set(deletedObservationIds);
+    const deletedOverrideIds = uniqueStrings(
+      this.listProjectOverrides()
+        .filter(
+          (override) =>
+            override.project_id === projectId ||
+            deletedTurnIdSet.has(override.target_ref) ||
+            deletedSessionIdSet.has(override.target_ref) ||
+            deletedObservationIdSet.has(override.target_ref),
+        )
+        .map((override) => override.id),
+    );
+    const deletedLossAuditIds = uniqueStrings(
+      this.selectAllPayloads<LossAuditRecord>("loss_audits")
+        .filter(
+          (audit) =>
+            (audit.session_ref ? deletedSessionIdSet.has(audit.session_ref) : false) ||
+            (audit.candidate_ref ? deletedCandidateIdSet.has(audit.candidate_ref) : false) ||
+            (audit.blob_ref ? deletedBlobIdSet.has(audit.blob_ref) : false),
+        )
+        .map((audit) => audit.id),
+    );
+    const affectedSourceIds = uniqueStrings(
+      deletedTurns.map((turn) => turn.source_id),
+    );
+    const projectLineageEventRefs = this.listProjectLineageEvents(projectId).map((event) => event.id);
+    const projectTombstone: TombstoneProjection = {
+      object_kind: "project",
+      logical_id: project.project_id,
+      last_revision_id: project.project_revision_id,
+      sync_axis: "current",
+      value_axis: "active",
+      retention_axis: "purged",
+      purged_at: nowIso(),
+      purge_reason: reason,
+      replaced_by_logical_ids: [],
+      lineage_event_refs: projectLineageEventRefs,
+    };
+    const tombstones: TombstoneProjection[] = [projectTombstone];
+    const deletedArtifactIds: string[] = [];
+    const updatedArtifactIds: string[] = [];
+    const impactedArtifacts = this.listKnowledgeArtifacts().filter(
+      (artifact) =>
+        artifact.project_id === projectId ||
+        artifact.source_turn_refs.some((turnId) => deletedTurnIdSet.has(turnId)),
+    );
+
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      this.insertTombstoneInTransaction(projectTombstone);
+
+      for (const artifact of impactedArtifacts) {
+        const remainingTurnRefs = uniqueStrings(
+          artifact.source_turn_refs.filter((turnId) => !deletedTurnIdSet.has(turnId)),
+        );
+        if (artifact.project_id === projectId || remainingTurnRefs.length === 0) {
+          const tombstone = this.purgeArtifactInTransaction(artifact, reason);
+          tombstones.push(tombstone);
+          deletedArtifactIds.push(artifact.artifact_id);
+          continue;
+        }
+
+        const nextArtifact: KnowledgeArtifact = {
+          ...artifact,
+          artifact_revision_id: incrementArtifactRevisionId(artifact.artifact_revision_id),
+          source_turn_refs: remainingTurnRefs,
+          updated_at: nowIso(),
+        };
+        this.db
+          .prepare("INSERT OR REPLACE INTO knowledge_artifacts (artifact_id, payload_json) VALUES (?, ?)")
+          .run(nextArtifact.artifact_id, toJson(nextArtifact));
+        this.db.prepare("DELETE FROM artifact_coverage WHERE artifact_id = ?").run(nextArtifact.artifact_id);
+        const insertCoverage = this.db.prepare(
+          "INSERT INTO artifact_coverage (id, artifact_id, turn_id, payload_json) VALUES (?, ?, ?, ?)",
+        );
+        for (const turnId of nextArtifact.source_turn_refs) {
+          const coverage: ArtifactCoverageRecord = {
+            id: stableId("artifact-coverage", nextArtifact.artifact_id, turnId),
+            artifact_id: nextArtifact.artifact_id,
+            artifact_revision_id: nextArtifact.artifact_revision_id,
+            turn_id: turnId,
+            created_at: nextArtifact.updated_at,
+          };
+          insertCoverage.run(coverage.id, coverage.artifact_id, coverage.turn_id, toJson(coverage));
+        }
+        updatedArtifactIds.push(nextArtifact.artifact_id);
+      }
+
+      for (const turnId of deletedTurnIds) {
+        const tombstone = this.purgeTurnInTransaction(turnId, reason);
+        if (tombstone) {
+          tombstones.push(tombstone);
+        }
+      }
+
+      const updateSession = this.db.prepare(
+        "UPDATE sessions SET updated_at = ?, payload_json = ? WHERE id = ?",
+      );
+      for (const sessionId of retainedSessionIds) {
+        const session = sessionsById.get(sessionId);
+        if (!session) {
+          continue;
+        }
+        const remainingSessionTurns = remainingTurns.filter((turn) => turn.session_id === sessionId);
+        const latestTurnActivity = remainingSessionTurns.reduce<string | undefined>(
+          (latest, turn) =>
+            !latest || turn.last_context_activity_at > latest ? turn.last_context_activity_at : latest,
+          undefined,
+        );
+        const nextSession: SessionProjection = {
+          ...session,
+          turn_count: remainingSessionTurns.length,
+          updated_at: latestTurnActivity ?? session.updated_at,
+        };
+        updateSession.run(nextSession.updated_at, toJson(nextSession), nextSession.id);
+      }
+
+      const deleteBySessionRef = {
+        rawRecords: this.db.prepare("DELETE FROM raw_records WHERE session_ref = ?"),
+        fragments: this.db.prepare("DELETE FROM source_fragments WHERE session_ref = ?"),
+        atoms: this.db.prepare("DELETE FROM conversation_atoms WHERE session_ref = ?"),
+        edges: this.db.prepare("DELETE FROM atom_edges WHERE session_ref = ?"),
+        candidates: this.db.prepare("DELETE FROM derived_candidates WHERE session_ref = ?"),
+        sessions: this.db.prepare("DELETE FROM sessions WHERE id = ?"),
+      };
+      for (const sessionId of deletedSessionIds) {
+        deleteBySessionRef.rawRecords.run(sessionId);
+        deleteBySessionRef.fragments.run(sessionId);
+        deleteBySessionRef.atoms.run(sessionId);
+        deleteBySessionRef.edges.run(sessionId);
+        deleteBySessionRef.candidates.run(sessionId);
+        deleteBySessionRef.sessions.run(sessionId);
+      }
+
+      const deleteCandidate = this.db.prepare("DELETE FROM derived_candidates WHERE id = ?");
+      for (const candidateId of deletedCandidateIds) {
+        deleteCandidate.run(candidateId);
+      }
+
+      const deleteBlob = this.db.prepare("DELETE FROM captured_blobs WHERE id = ?");
+      for (const blobId of deletedBlobIds) {
+        deleteBlob.run(blobId);
+      }
+
+      const deleteOverride = this.db.prepare("DELETE FROM project_manual_overrides WHERE id = ?");
+      for (const overrideId of deletedOverrideIds) {
+        deleteOverride.run(overrideId);
+      }
+
+      const deleteLossAudit = this.db.prepare("DELETE FROM loss_audits WHERE id = ?");
+      for (const lossAuditId of deletedLossAuditIds) {
+        deleteLossAudit.run(lossAuditId);
+      }
+
+      this.db.prepare("DELETE FROM project_link_revisions WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM project_lineage_events WHERE project_id = ?").run(projectId);
+      this.db.prepare("DELETE FROM project_current WHERE project_id = ?").run(projectId);
+
+      this.refreshSourceStatusCountsInTransaction(affectedSourceIds);
+
+      this.db.exec("COMMIT;");
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+
+    this.invalidateProjectLinkSnapshot();
+    this.refreshDerivedState();
+    return {
+      project_id: projectId,
+      deleted_session_ids: deletedSessionIds,
+      deleted_turn_ids: deletedTurnIds,
+      deleted_candidate_ids: deletedCandidateIds,
+      deleted_blob_ids: deletedBlobIds,
+      deleted_artifact_ids: deletedArtifactIds,
+      updated_artifact_ids: updatedArtifactIds,
+      tombstones,
+    };
+  }
+
   garbageCollectCandidateTurns(options: {
     before_iso: string;
     mode?: "archive" | "purge";
@@ -455,6 +723,56 @@ export class CCHistoryStorage {
     this.db.prepare("DELETE FROM turn_contexts WHERE turn_id = ?").run(turnId);
     this.db.prepare("DELETE FROM artifact_coverage WHERE turn_id = ?").run(turnId);
     return tombstone;
+  }
+
+  private insertTombstoneInTransaction(tombstone: TombstoneProjection): void {
+    this.db
+      .prepare("INSERT OR REPLACE INTO tombstones (logical_id, payload_json) VALUES (?, ?)")
+      .run(tombstone.logical_id, toJson(tombstone));
+  }
+
+  private purgeArtifactInTransaction(artifact: KnowledgeArtifact, reason: string): TombstoneProjection {
+    const tombstone: TombstoneProjection = {
+      object_kind: "artifact",
+      logical_id: artifact.artifact_id,
+      last_revision_id: artifact.artifact_revision_id,
+      sync_axis: artifact.sync_axis,
+      value_axis: artifact.value_axis,
+      retention_axis: "purged",
+      purged_at: nowIso(),
+      purge_reason: reason,
+      replaced_by_logical_ids: [],
+    };
+    this.insertTombstoneInTransaction(tombstone);
+    this.db.prepare("DELETE FROM knowledge_artifacts WHERE artifact_id = ?").run(artifact.artifact_id);
+    this.db.prepare("DELETE FROM artifact_coverage WHERE artifact_id = ?").run(artifact.artifact_id);
+    return tombstone;
+  }
+
+  private refreshSourceStatusCountsInTransaction(sourceIds: readonly string[]): void {
+    if (sourceIds.length === 0) {
+      return;
+    }
+
+    const selectSource = this.db.prepare("SELECT payload_json FROM source_instances WHERE id = ?");
+    const updateSource = this.db.prepare("UPDATE source_instances SET payload_json = ? WHERE id = ?");
+    for (const sourceId of sourceIds) {
+      const row = selectSource.get(sourceId) as { payload_json: string } | undefined;
+      if (!row) {
+        continue;
+      }
+      const source = hydrateSourceStatus(fromJson<SourceStatus>(row.payload_json));
+      const nextSource: SourceStatus = {
+        ...source,
+        total_blobs: this.countRowsBySource("captured_blobs", sourceId),
+        total_records: this.countRowsBySource("raw_records", sourceId),
+        total_fragments: this.countRowsBySource("source_fragments", sourceId),
+        total_atoms: this.countRowsBySource("conversation_atoms", sourceId),
+        total_sessions: this.countRowsBySource("sessions", sourceId),
+        total_turns: this.countRowsBySource("user_turns", sourceId),
+      };
+      updateSource.run(toJson(nextSource), sourceId);
+    }
   }
 
   listKnowledgeArtifacts(projectId?: string): KnowledgeArtifact[] {

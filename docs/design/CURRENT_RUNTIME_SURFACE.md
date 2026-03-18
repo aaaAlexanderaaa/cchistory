@@ -31,7 +31,7 @@
 | `factory_droid` | `local_coding_agent` | local sessions plus sidecar settings |
 | `amp` | `local_coding_agent` | thread-style local JSON data |
 | `cursor` | `local_coding_agent` | transcript plus VS Code state fallback paths |
-| `antigravity` | `local_coding_agent` | trajectory/state-store derived sessions |
+| `antigravity` | `local_coding_agent` | live local trajectory API preferred; offline state and brain evidence retained for metadata/artifacts |
 | `openclaw` | `local_coding_agent` | local JSONL sessions |
 | `opencode` | `local_coding_agent` | local session/message trees |
 | `lobechat` | `conversational_export` | export-bundle style import source |
@@ -39,6 +39,8 @@
 The adapter registry is defined in [`packages/source-adapters/src/platforms/registry.ts`](/root/cchistory/packages/source-adapters/src/platforms/registry.ts).
 
 Broader enums in domain or DTO packages may mention additional platforms such as `chatgpt`, `claude_web`, or `gemini`. Those enums should be read as schema allowance, not proof that a live adapter is already registered.
+
+> Antigravity has a runtime precondition: full-fidelity sync depends on the local Antigravity desktop app being open on the same machine so CCHistory can query its local language server for trajectory steps. When that runtime is unavailable, the adapter can still ingest offline `workspaceStorage`, `History`, and `brain` evidence, but that path is not equivalent to recovering the raw conversation stream.
 
 # Web Surface
 **Verdict: the canonical frontend currently exposes four history views and four admin views, with session drill-down handled inside the turn flow rather than as a separate top-level page.**
@@ -105,11 +107,13 @@ Current route groups:
 The OpenAPI path summary is generated in [`apps/api/src/app.ts`](/root/cchistory/apps/api/src/app.ts).
 
 # Document Roles
-**Verdict: the repository now needs three distinct document roles instead of one overloaded plan document.**
+**Verdict: the repository now needs separate semantic, runtime, source-reference, roadmap, and historical-plan documents instead of one overloaded plan document.**
 
 | Document | Role | Update policy |
 | --- | --- | --- |
 | [`HIGH_LEVEL_DESIGN_FREEZE.md`](/root/cchistory/HIGH_LEVEL_DESIGN_FREEZE.md) | semantic source of truth | change only when product invariants actually change |
 | [`docs/CURRENT_RUNTIME_SURFACE.md`](/root/cchistory/docs/CURRENT_RUNTIME_SURFACE.md) | current repository-visible inventory | refresh when runtime surface materially changes |
+| `docs/sources/*.md` | per-source technical reference | refresh when adapter discovery, storage assumptions, or parser entrypoints materially change |
+| `docs/ROADMAP.md` | live milestone roadmap | update when milestone priorities or current-status assumptions materially change |
 | [`docs/IMPLEMENTATION_PLAN.md`](/root/cchistory/docs/IMPLEMENTATION_PLAN.md) | delivered slice record and historical baseline | keep as historical context; avoid treating it as the live roadmap |
 | `tasks.csv` | historical KR ledger | do not rely on it as the authoritative current backlog |

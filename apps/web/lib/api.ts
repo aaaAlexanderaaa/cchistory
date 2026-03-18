@@ -4,6 +4,7 @@ import useSWR from 'swr'
 import {
   createCCHistoryApiClient,
   type CreateSourceConfigRequest,
+  type DeleteProjectResponse,
   type UpsertLinkingOverrideRequest,
 } from '@cchistory/api-client'
 import {
@@ -239,6 +240,10 @@ export async function resetSourceConfig(sourceId: string) {
     source: mapSourceStatus(response.source),
     synced: response.synced,
   }
+}
+
+export async function deleteProject(projectId: string, reason?: string): Promise<DeleteProjectResponse> {
+  return getApiClient().deleteProject(projectId, reason ? { reason } : undefined)
 }
 
 export function createProjectStub(projectId: string): ProjectIdentity {

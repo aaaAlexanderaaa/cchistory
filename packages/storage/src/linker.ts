@@ -56,6 +56,12 @@ interface DecoratedTurn extends UserTurnProjection {
   project_id?: string;
 }
 
+interface ClassifiedObservation {
+  observation: LinkedProjectObservation;
+  committed_rules: ObservationLinkRule[];
+  candidate_rules: ObservationLinkRule[];
+}
+
 export function deriveProjectLinkSnapshot(input: {
   sessions: SessionProjection[];
   turns: UserTurnProjection[];
@@ -73,62 +79,20 @@ export function deriveProjectLinkSnapshot(input: {
   const overrideByObservationId = new Map(
     overrides.filter((override) => override.target_kind === "observation").map((override) => [override.target_ref, override]),
   );
-  const classifiedObservations: Array<{
-    observation: LinkedProjectObservation;
-    rule?: ObservationLinkRule;
-  }> = input.candidates
+  const classifiedObservations: ClassifiedObservation[] = input.candidates
     .filter((candidate) => candidate.candidate_kind === "project_observation")
     .map((candidate) => hydrateProjectObservation(candidate, sessionsById.get(candidate.session_ref)))
     .filter((observation): observation is LinkedProjectObservation => Boolean(observation))
     .map((observation) => ({
       observation,
-      rule: classifyObservation(observation),
+      committed_rules: classifyObservation(observation, "committed"),
+      candidate_rules: classifyObservation(observation, "candidate"),
     }))
     .sort((left, right) => left.observation.observed_at.localeCompare(right.observation.observed_at));
-
-  const groups = new Map<string, ProjectGroup>();
-  for (const { observation, rule } of classifiedObservations) {
-    if (!rule) {
-      continue;
-    }
-    const existing = groups.get(rule.key);
-    if (existing) {
-      existing.observations.push(observation);
-      continue;
-    }
-    const projectId = stableProjectId(rule.key);
-    groups.set(rule.key, {
-      project_id: projectId,
-      project_revision_id: `${projectId}:r1`,
-      linkage_state: rule.linkage_state,
-      reason: rule.reason,
-      confidence: rule.confidence,
-      observations: [observation],
-    });
-  }
-
-  for (const group of groups.values()) {
-    group.confidence = deriveProjectGroupConfidence(group);
-  }
-
-  const linkedObservations = classifiedObservations.map(({ observation, rule }) => {
-    if (!rule) {
-      return observation;
-    }
-    const project = groups.get(rule.key);
-    if (!project) {
-      return observation;
-    }
-    return {
-      ...observation,
-      project_id: project.project_id,
-      linkage_state: project.linkage_state,
-      link_reason: project.reason,
-    };
-  });
+  const { groups, linkedObservations } = buildObservationGroups(classifiedObservations);
 
   const projectById = new Map<string, ProjectIdentity>();
-  for (const group of groups.values()) {
+  for (const group of groups) {
     const project = buildProjectIdentity(group);
     projectById.set(project.project_id, project);
   }
@@ -284,55 +248,278 @@ function hydrateProjectObservation(
   };
 }
 
-function classifyObservation(observation: LinkedProjectObservation): ObservationLinkRule | undefined {
-  const workspaceIdentity = observation.workspace_subpath ?? observation.workspace_path_normalized;
+function buildObservationGroups(classifiedObservations: ClassifiedObservation[]): {
+  groups: ProjectGroup[];
+  linkedObservations: LinkedProjectObservation[];
+} {
+  const groups: ProjectGroup[] = [];
+  const observationToGroup = new Map<string, ProjectGroup>();
 
-  if (observation.repo_fingerprint && workspaceIdentity) {
-    return {
-      linkage_state: "committed",
-      reason: "repo_fingerprint_match",
-      confidence: 0.95,
-      key: `fingerprint:${observation.repo_fingerprint}|workspace:${workspaceIdentity}`,
+  for (const linkageState of ["committed", "candidate"] as const) {
+    const scopedObservations = classifiedObservations
+      .filter((classification) =>
+        linkageState === "committed"
+          ? classification.committed_rules.length > 0
+          : classification.committed_rules.length === 0 && classification.candidate_rules.length > 0,
+      );
+    if (scopedObservations.length === 0) {
+      continue;
+    }
+
+    const parent = scopedObservations.map((_, index) => index);
+    const find = (index: number): number => {
+      const current = parent[index]!;
+      if (current === index) {
+        return index;
+      }
+      const root = find(current);
+      parent[index] = root;
+      return root;
     };
+    const union = (left: number, right: number): void => {
+      const leftRoot = find(left);
+      const rightRoot = find(right);
+      if (leftRoot !== rightRoot) {
+        parent[rightRoot] = leftRoot;
+      }
+    };
+
+    const keyToIndexes = new Map<string, number[]>();
+    for (const [index, classification] of scopedObservations.entries()) {
+      const rules = linkageState === "committed" ? classification.committed_rules : classification.candidate_rules;
+      for (const rule of rules) {
+        const indexes = keyToIndexes.get(rule.key);
+        if (indexes) {
+          indexes.push(index);
+          continue;
+        }
+        keyToIndexes.set(rule.key, [index]);
+      }
+    }
+
+    for (const indexes of keyToIndexes.values()) {
+      for (let index = 1; index < indexes.length; index += 1) {
+        union(indexes[0]!, indexes[index]!);
+      }
+    }
+
+    const components = new Map<number, ClassifiedObservation[]>();
+    for (const [index, classification] of scopedObservations.entries()) {
+      const root = find(index);
+      const component = components.get(root);
+      if (component) {
+        component.push(classification);
+        continue;
+      }
+      components.set(root, [classification]);
+    }
+
+    for (const component of components.values()) {
+      const rule = selectPrimaryRuleForGroup(component, linkageState);
+      if (!rule) {
+        continue;
+      }
+      const observations = component.map((classification) => classification.observation);
+      const promoteWorkspaceContinuity =
+        linkageState === "candidate" && shouldCommitWorkspaceContinuityComponent(observations, rule);
+      const projectId = stableProjectId(rule.key);
+      const group: ProjectGroup = {
+        project_id: projectId,
+        project_revision_id: `${projectId}:r1`,
+        linkage_state: promoteWorkspaceContinuity ? "committed" : rule.linkage_state,
+        reason: rule.reason,
+        confidence: promoteWorkspaceContinuity
+          ? deriveWorkspaceContinuityConfidence(deriveObservationComponentMetrics(observations))
+          : rule.confidence,
+        observations,
+      };
+      group.confidence = deriveProjectGroupConfidence(group);
+      groups.push(group);
+      for (const classification of component) {
+        observationToGroup.set(classification.observation.id, group);
+      }
+    }
   }
 
-  if (observation.repo_remote && observation.host_id && workspaceIdentity) {
+  const linkedObservations = classifiedObservations.map(({ observation }) => {
+    const group = observationToGroup.get(observation.id);
+    if (!group) {
+      return observation;
+    }
     return {
-      linkage_state: "committed",
-      reason: "repo_remote_match",
-      confidence: 0.85,
-      key: `host:${observation.host_id}|remote:${observation.repo_remote}|workspace:${workspaceIdentity}`,
+      ...observation,
+      project_id: group.project_id,
+      linkage_state: group.linkage_state,
+      link_reason: group.reason,
     };
+  });
+
+  return { groups, linkedObservations };
+}
+
+function shouldCommitWorkspaceContinuityComponent(
+  observations: readonly LinkedProjectObservation[],
+  rule: ObservationLinkRule,
+): boolean {
+  if (rule.reason !== "workspace_path_continuity") {
+    return false;
+  }
+
+  return deriveObservationComponentMetrics(observations).sessionCount >= 2;
+}
+
+function deriveObservationComponentMetrics(observations: readonly LinkedProjectObservation[]): {
+  sessionCount: number;
+  platformCount: number;
+  hasRepoRoot: boolean;
+} {
+  return {
+    sessionCount: new Set(observations.map((observation) => observation.session_ref)).size,
+    platformCount: new Set(observations.map((observation) => observation.source_platform)).size,
+    hasRepoRoot: observations.some((observation) => Boolean(observation.repo_root)),
+  };
+}
+
+function selectPrimaryRuleForGroup(
+  component: ClassifiedObservation[],
+  linkageState: ProjectLinkageState,
+): ObservationLinkRule | undefined {
+  const rules = component.flatMap((classification) =>
+    linkageState === "committed" ? classification.committed_rules : classification.candidate_rules,
+  );
+  if (rules.length === 0) {
+    return undefined;
+  }
+
+  const countsByKey = new Map<string, number>();
+  for (const classification of component) {
+    const seenKeys = new Set<string>();
+    const componentRules = linkageState === "committed" ? classification.committed_rules : classification.candidate_rules;
+    for (const rule of componentRules) {
+      if (seenKeys.has(rule.key)) {
+        continue;
+      }
+      seenKeys.add(rule.key);
+      countsByKey.set(rule.key, (countsByKey.get(rule.key) ?? 0) + 1);
+    }
+  }
+
+  const sharedRules = dedupeRulesByKey(rules).filter((rule) => (countsByKey.get(rule.key) ?? 0) > 1);
+  const pool = sharedRules.length > 0 ? sharedRules : dedupeRulesByKey(rules);
+  return [...pool].sort(compareObservationRules)[0];
+}
+
+function dedupeRulesByKey(rules: ObservationLinkRule[]): ObservationLinkRule[] {
+  const seen = new Set<string>();
+  const deduped: ObservationLinkRule[] = [];
+  for (const rule of rules) {
+    if (seen.has(rule.key)) {
+      continue;
+    }
+    seen.add(rule.key);
+    deduped.push(rule);
+  }
+  return deduped;
+}
+
+function compareObservationRules(left: ObservationLinkRule, right: ObservationLinkRule): number {
+  const priorityDelta = observationRulePriority(left.reason) - observationRulePriority(right.reason);
+  if (priorityDelta !== 0) {
+    return priorityDelta;
+  }
+  if (left.confidence !== right.confidence) {
+    return right.confidence - left.confidence;
+  }
+  return left.key.localeCompare(right.key);
+}
+
+function observationRulePriority(reason: ProjectLinkReason): number {
+  switch (reason) {
+    case "repo_fingerprint_match":
+      return 0;
+    case "repo_remote_match":
+      return 1;
+    case "repo_root_match":
+      return 2;
+    case "source_native_project":
+      return 3;
+    case "workspace_path_continuity":
+      return 4;
+    case "weak_path_hint":
+      return 5;
+    case "metadata_hint":
+      return 6;
+    case "manual_override":
+      return 7;
+  }
+}
+
+function classifyObservation(
+  observation: LinkedProjectObservation,
+  linkageState: ProjectLinkageState,
+): ObservationLinkRule[] {
+  const workspaceIdentity = observation.workspace_subpath ?? observation.workspace_path_normalized;
+  const rules: ObservationLinkRule[] = [];
+
+  if (linkageState === "committed") {
+    if (observation.repo_fingerprint && workspaceIdentity) {
+      rules.push({
+        linkage_state: "committed",
+        reason: "repo_fingerprint_match",
+        confidence: 0.95,
+        key: `fingerprint:${observation.repo_fingerprint}|workspace:${workspaceIdentity}`,
+      });
+    }
+
+    if (observation.repo_remote && observation.host_id && workspaceIdentity) {
+      rules.push({
+        linkage_state: "committed",
+        reason: "repo_remote_match",
+        confidence: 0.85,
+        key: `host:${observation.host_id}|remote:${observation.repo_remote}|workspace:${workspaceIdentity}`,
+      });
+    }
+
+    if (observation.repo_root && observation.host_id && workspaceIdentity) {
+      rules.push({
+        linkage_state: "committed",
+        reason: "repo_root_match",
+        confidence: 0.82,
+        key: `host:${observation.host_id}|repo_root:${observation.repo_root}|workspace:${workspaceIdentity}`,
+      });
+    }
+
+    return rules;
   }
 
   if (observation.source_native_project_ref && observation.host_id) {
-    return {
+    rules.push({
       linkage_state: "candidate",
       reason: "source_native_project",
       confidence: 0.7,
       key: `host:${observation.host_id}|native:${observation.source_native_project_ref}`,
-    };
+    });
   }
 
   if (observation.workspace_path_normalized && observation.host_id) {
-    return {
+    rules.push({
       linkage_state: "candidate",
       reason: isWeakWorkspacePath(observation.workspace_path_normalized) ? "weak_path_hint" : "workspace_path_continuity",
       confidence: isWeakWorkspacePath(observation.workspace_path_normalized) ? 0.42 : 0.55,
       key: `host:${observation.host_id}|workspace:${observation.workspace_path_normalized}`,
-    };
+    });
   }
 
   if (observation.repo_remote && observation.host_id) {
-    return {
+    rules.push({
       linkage_state: "candidate",
       reason: "metadata_hint",
       confidence: 0.6,
       key: `host:${observation.host_id}|remote_hint:${observation.repo_remote}`,
-    };
+    });
   }
 
-  return undefined;
+  return rules;
 }
 
 function buildProjectIdentity(group: ProjectGroup): ProjectIdentity {
@@ -378,28 +565,14 @@ function deriveProjectGroupConfidence(group: ProjectGroup): number {
     return roundConfidence(group.confidence);
   }
 
-  const sessionCount = new Set(group.observations.map((observation) => observation.session_ref)).size;
-  const platformCount = new Set(group.observations.map((observation) => observation.source_platform)).size;
-  const hasRepoRoot = group.observations.some((observation) => Boolean(observation.repo_root));
+  const metrics = deriveObservationComponentMetrics(group.observations);
 
   if (group.reason === "workspace_path_continuity") {
-    let confidence = 0.68;
-    if (sessionCount >= 2) {
-      confidence += 0.12;
-    }
-    if (sessionCount >= 3) {
-      confidence += 0.05;
-    }
-    if (platformCount >= 2) {
-      confidence += 0.03;
-    }
-    if (hasRepoRoot) {
-      confidence += 0.03;
-    }
-    return clampConfidence(confidence, 0.68, 0.88);
+    return deriveWorkspaceContinuityConfidence(metrics);
   }
 
   if (group.reason === "source_native_project") {
+    const { sessionCount, platformCount } = metrics;
     let confidence = 0.72;
     if (sessionCount >= 2) {
       confidence += 0.08;
@@ -414,6 +587,7 @@ function deriveProjectGroupConfidence(group: ProjectGroup): number {
   }
 
   if (group.reason === "metadata_hint") {
+    const { sessionCount, platformCount } = metrics;
     let confidence = 0.6;
     if (sessionCount >= 2) {
       confidence += 0.08;
@@ -425,6 +599,7 @@ function deriveProjectGroupConfidence(group: ProjectGroup): number {
   }
 
   if (group.reason === "weak_path_hint") {
+    const { sessionCount, platformCount } = metrics;
     let confidence = 0.42;
     if (sessionCount >= 2) {
       confidence += 0.08;
@@ -439,6 +614,27 @@ function deriveProjectGroupConfidence(group: ProjectGroup): number {
   }
 
   return roundConfidence(group.confidence);
+}
+
+function deriveWorkspaceContinuityConfidence(input: {
+  sessionCount: number;
+  platformCount: number;
+  hasRepoRoot: boolean;
+}): number {
+  let confidence = 0.68;
+  if (input.sessionCount >= 2) {
+    confidence += 0.12;
+  }
+  if (input.sessionCount >= 3) {
+    confidence += 0.05;
+  }
+  if (input.platformCount >= 2) {
+    confidence += 0.03;
+  }
+  if (input.hasRepoRoot) {
+    confidence += 0.03;
+  }
+  return clampConfidence(confidence, 0.68, 0.88);
 }
 
 function decorateTurn(

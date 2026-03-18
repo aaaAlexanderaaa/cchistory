@@ -8,6 +8,8 @@ import type {
 
 export interface GenericSessionMetadata {
   workspacePath?: string;
+  repoRoot?: string;
+  repoRemote?: string;
   model?: string;
   title?: string;
   parentUuid?: string;
@@ -36,6 +38,8 @@ export function parseGenericConversationRecord(
     fragments.push(
       helpers.createFragment(context, record, fragments.length, "workspace_signal", timeKey, {
         path: meta.workspacePath,
+        repo_root: meta.repoRoot,
+        repo_remote: meta.repoRemote,
       }),
     );
   }
@@ -163,6 +167,15 @@ export function extractGenericSessionMetadata(
   const message = helpers.isObject(parsed.message) ? parsed.message : undefined;
   const workspace = helpers.isObject(parsed.workspace) ? parsed.workspace : undefined;
   const project = helpers.isObject(parsed.project) ? parsed.project : undefined;
+  const repository = helpers.isObject(parsed.repository) ? parsed.repository : undefined;
+  const antigravityLive = helpers.isObject(parsed.antigravityLive) ? parsed.antigravityLive : undefined;
+  const antigravitySummary = helpers.isObject(antigravityLive?.summary) ? antigravityLive.summary : undefined;
+  const antigravityWorkspace = Array.isArray(antigravitySummary?.workspaces)
+    ? antigravitySummary.workspaces.find((candidate): candidate is Record<string, unknown> => helpers.isObject(candidate))
+    : undefined;
+  const antigravityRepository = helpers.isObject(antigravityWorkspace?.repository)
+    ? antigravityWorkspace.repository
+    : undefined;
 
   const workspaceCandidate =
     helpers.asString(parsed.cwd) ??
@@ -177,10 +190,47 @@ export function extractGenericSessionMetadata(
     helpers.asString(message?.cwd) ??
     helpers.asString(workspace?.path) ??
     helpers.asString(workspace?.uri) ??
-    helpers.asString(project?.path);
+    helpers.asString(project?.path) ??
+    helpers.asString(antigravityWorkspace?.workspaceFolderAbsoluteUri);
+
+  const repoRootCandidate =
+    helpers.asString(parsed.repoRoot) ??
+    helpers.asString(parsed.repo_root) ??
+    helpers.asString(metadata?.repoRoot) ??
+    helpers.asString(metadata?.repo_root) ??
+    helpers.asString(session?.repoRoot) ??
+    helpers.asString(session?.repo_root) ??
+    helpers.asString(message?.repoRoot) ??
+    helpers.asString(message?.repo_root) ??
+    helpers.asString(workspace?.repoRoot) ??
+    helpers.asString(workspace?.repo_root) ??
+    helpers.asString(workspace?.gitRootAbsoluteUri) ??
+    helpers.asString(project?.repoRoot) ??
+    helpers.asString(project?.repo_root) ??
+    helpers.asString(antigravityWorkspace?.gitRootAbsoluteUri);
+
+  const repoRemoteCandidate =
+    helpers.asString(parsed.repoRemote) ??
+    helpers.asString(parsed.repo_remote) ??
+    helpers.asString(metadata?.repoRemote) ??
+    helpers.asString(metadata?.repo_remote) ??
+    helpers.asString(session?.repoRemote) ??
+    helpers.asString(session?.repo_remote) ??
+    helpers.asString(message?.repoRemote) ??
+    helpers.asString(message?.repo_remote) ??
+    helpers.asString(workspace?.repoRemote) ??
+    helpers.asString(workspace?.repo_remote) ??
+    helpers.asString(workspace?.gitOriginUrl) ??
+    helpers.asString(project?.repoRemote) ??
+    helpers.asString(project?.repo_remote) ??
+    helpers.asString(project?.gitOriginUrl) ??
+    helpers.asString(repository?.gitOriginUrl) ??
+    helpers.asString(antigravityRepository?.gitOriginUrl);
 
   return {
     workspacePath: workspaceCandidate ? helpers.normalizeWorkspacePath(workspaceCandidate) : undefined,
+    repoRoot: repoRootCandidate ? helpers.normalizeWorkspacePath(repoRootCandidate) : undefined,
+    repoRemote: repoRemoteCandidate?.trim() || undefined,
     model:
       helpers.asString(parsed.model) ??
       helpers.asString(parsed.modelName) ??

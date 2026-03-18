@@ -72,20 +72,6 @@
     ]
   },
   {
-    "id": "claude-same-app-different-path",
-    "apps": [
-      "Claude"
-    ],
-    "visible_cue": "The same visible app family appears again, but this time under a docker/codeserver path with an API-error retry sequence.",
-    "tricky": "If matching leans on app name alone these threads collapse together; if matching leans on full path alone the user sees one product split into separate silos.",
-    "visible_roots": [
-      "/Users/mock_user/docker/codeserver2/project/cursor_temp/chat-ui-kit"
-    ],
-    "paths": [
-      ".claude/projects/-Users-mock-user-docker-codeserver2-project-cursor-temp-chat-ui-kit/7364d923-4c8b-4b3f-a9c9-d19fbfff4fac.jsonl"
-    ]
-  },
-  {
     "id": "claude-sidechain-subagent",
     "apps": [
       "Claude"
@@ -263,6 +249,48 @@
       "Library/Application Support/antigravity/User/workspaceStorage/6da0015ba5dc048c049cc941f93fd4c2/state.vscdb",
       "Library/Application Support/antigravity/User/workspaceStorage/6da0015ba5dc048c049cc941f93fd4c2/state.vscdb.backup",
       "Library/Application Support/antigravity/User/workspaceStorage/6da0015ba5dc048c049cc941f93fd4c2/workspace.json"
+    ]
+  },
+  {
+    "id": "antigravity-brain-artifacts",
+    "apps": [
+      "antigravity"
+    ],
+    "visible_cue": "Antigravity also keeps per-cascade brain artifacts under `~/.gemini/antigravity/brain`, including task files, plans, walkthroughs, browser scratchpads, and conversation-history snapshots referenced by workspace state.",
+    "tricky": "If a parser only scans workspaceStorage it misses these artifact files; if it treats every artifact as a user turn it over-weights assistant-authored plans and walkthroughs.",
+    "visible_roots": [
+      "/Users/mock_user/.gemini/antigravity/brain/46ef2b37-3a9b-43b9-a57f-a306d08af7dc",
+      "/Users/mock_user/.gemini/antigravity/brain/f016bbd7-ad8f-4b3b-bab0-a73e197f391a",
+      "/Users/mock_user/.gemini/antigravity/brain/9b28d5a6-dee3-4f2a-bc6e-2c8c21aa61bc"
+    ],
+    "paths": [
+      ".gemini/antigravity/brain/46ef2b37-3a9b-43b9-a57f-a306d08af7dc/task.md",
+      ".gemini/antigravity/brain/46ef2b37-3a9b-43b9-a57f-a306d08af7dc/task.md.metadata.json",
+      ".gemini/antigravity/brain/46ef2b37-3a9b-43b9-a57f-a306d08af7dc/browser/scratchpad_dqnf6lzn.md",
+      ".gemini/antigravity/brain/f016bbd7-ad8f-4b3b-bab0-a73e197f391a/task.md",
+      ".gemini/antigravity/brain/f016bbd7-ad8f-4b3b-bab0-a73e197f391a/task.md.metadata.json",
+      ".gemini/antigravity/brain/f016bbd7-ad8f-4b3b-bab0-a73e197f391a/implementation_plan.md",
+      ".gemini/antigravity/brain/f016bbd7-ad8f-4b3b-bab0-a73e197f391a/implementation_plan.md.metadata.json",
+      ".gemini/antigravity/brain/f016bbd7-ad8f-4b3b-bab0-a73e197f391a/walkthrough.md",
+      ".gemini/antigravity/brain/f016bbd7-ad8f-4b3b-bab0-a73e197f391a/walkthrough.md.metadata.json",
+      ".gemini/antigravity/brain/9b28d5a6-dee3-4f2a-bc6e-2c8c21aa61bc/Conversation_1bcefd41_History.md",
+      ".gemini/antigravity/brain/9b28d5a6-dee3-4f2a-bc6e-2c8c21aa61bc/Conversation_1bcefd41_History.md.metadata.json"
+    ]
+  },
+  {
+    "id": "antigravity-live-trajectory-responses",
+    "apps": [
+      "antigravity"
+    ],
+    "visible_cue": "With the Antigravity desktop app running, the local language server exposes trajectory summaries and step streams whose `userInput.userResponse` contains the raw prompt text, including short follow-ups like `Continue`.",
+    "tricky": "A parser that trusts titles, `items[].text`, or brain markdown over the live `userResponse` field will rewrite the user's text or promote review artifacts into turns.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/history-lab"
+    ],
+    "paths": [
+      "fixtures/antigravity-live/trajectory-summaries.json",
+      "fixtures/antigravity-live/steps/035b86d5-8ae6-4dfd-bdf0-3a28e9f1df5e.json",
+      "fixtures/antigravity-live/steps/f016bbd7-ad8f-4b3b-bab0-a73e197f391a.json"
     ]
   }
 ]

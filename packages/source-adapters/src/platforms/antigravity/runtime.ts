@@ -18,7 +18,24 @@ interface AntigravityRuntimeHelpers {
   normalizeWorkspacePath(value: string): string | undefined;
 }
 
+type AntigravityHistoryResourceKind = "task" | "implementation_plan" | "conversation_history";
+
 export async function extractAntigravityBrainSeed(
+  filePath: string,
+  fileBuffer: Buffer,
+  helpers: AntigravityRuntimeHelpers,
+): Promise<ExtractedSessionSeed | undefined> {
+  const fileName = path.basename(filePath);
+  if (fileName === "task.md") {
+    return extractAntigravityTaskSeed(filePath, fileBuffer, helpers);
+  }
+  if (/^Conversation_.*_History\.md$/u.test(fileName)) {
+    return extractAntigravityConversationHistorySeed(filePath, fileBuffer, helpers);
+  }
+  return undefined;
+}
+
+async function extractAntigravityTaskSeed(
   filePath: string,
   fileBuffer: Buffer,
   helpers: AntigravityRuntimeHelpers,
@@ -77,6 +94,136 @@ export async function extractAntigravityBrainSeed(
     title,
     createdAt: updatedAt,
     updatedAt,
+    records,
+  };
+}
+
+export async function extractAntigravityHistorySeed(
+  filePath: string,
+  fileBuffer: Buffer,
+  helpers: AntigravityRuntimeHelpers,
+): Promise<ExtractedSessionSeed | undefined> {
+  const parsed = parseAntigravityHistoryIndex(fileBuffer);
+  if (!parsed) {
+    return undefined;
+  }
+  const resource = parsed.resource.replace(/\\/g, "/");
+  const resourceInfo = resolveAntigravityHistoryResource(resource);
+  if (!resourceInfo) {
+    return undefined;
+  }
+
+  const records: ExtractedSessionSeed["records"] = [];
+  let sessionId = resourceInfo.sessionId;
+
+  for (const entry of parsed.entries) {
+    const snapshotPath = path.join(path.dirname(filePath), entry.id);
+    let snapshotText: string;
+    try {
+      snapshotText = (await fs.readFile(snapshotPath, "utf8")).trim();
+    } catch {
+      continue;
+    }
+    if (!snapshotText) {
+      continue;
+    }
+
+    if (resourceInfo.kind === "conversation_history") {
+      const conversationId = extractAntigravityConversationId(snapshotText);
+      if (!conversationId) {
+        continue;
+      }
+      sessionId = conversationId;
+    }
+
+    const prompt = extractAntigravityPromptCandidate(snapshotText, resourceInfo.kind);
+    if (!prompt) {
+      continue;
+    }
+
+    const observedAt = new Date(entry.timestamp).toISOString();
+    records.push({
+      pointer: `history:${path.basename(resourceInfo.resourcePath)}:${entry.id}`,
+      observedAt,
+      rawJson: JSON.stringify({
+        id: `sess:antigravity:${sessionId}:history:${entry.id}`,
+        role: "user",
+        content: prompt,
+        createdAt: observedAt,
+        updatedAt: observedAt,
+      }),
+    });
+  }
+
+  if (records.length === 0) {
+    return undefined;
+  }
+
+  records.sort((left, right) => (left.observedAt ?? "").localeCompare(right.observedAt ?? ""));
+  const title = resourceInfo.kind === "conversation_history"
+    ? deriveAntigravityConversationTitleFromRecord(records[0]?.rawJson)
+    : undefined;
+
+  return {
+    sessionId: `sess:antigravity:${sessionId}`,
+    title,
+    createdAt: records[0]?.observedAt,
+    updatedAt: records[records.length - 1]?.observedAt,
+    records,
+  };
+}
+
+async function extractAntigravityConversationHistorySeed(
+  filePath: string,
+  fileBuffer: Buffer,
+  helpers: AntigravityRuntimeHelpers,
+): Promise<ExtractedSessionSeed | undefined> {
+  const historyText = fileBuffer.toString("utf8").trim();
+  if (!historyText) {
+    return undefined;
+  }
+
+  const sessionId = extractAntigravityConversationId(historyText);
+  if (!sessionId) {
+    return undefined;
+  }
+
+  const observedAt = await readAntigravityArtifactObservedAt(filePath, helpers);
+  const rawTitle = helpers.extractMarkdownHeading(historyText) ?? `Conversation ${sessionId}`;
+  const title = rawTitle.replace(/^Conversation History:\s*/u, "").trim() || rawTitle;
+  const objective = extractAntigravityPromptCandidate(historyText, "conversation_history");
+  const records: ExtractedSessionSeed["records"] = [
+    {
+      pointer: path.basename(filePath),
+      observedAt,
+      rawJson: JSON.stringify({
+        role: "system",
+        title,
+        updatedAt: observedAt,
+        content: historyText,
+      }),
+    },
+  ];
+
+  if (objective) {
+    records.push({
+      pointer: `${path.basename(filePath)}:objective`,
+      observedAt,
+      rawJson: JSON.stringify({
+        id: `sess:antigravity:${sessionId}:conversation_history_objective`,
+        role: "user",
+        content: objective,
+        createdAt: observedAt,
+        updatedAt: observedAt,
+      }),
+    });
+  }
+
+  return {
+    sessionId: `sess:antigravity:${sessionId}`,
+    title,
+    createdAt: observedAt,
+    updatedAt: observedAt,
     records,
   };
 }
@@ -151,9 +298,238 @@ export function extractAntigravityTrajectorySeeds(
   return seeds;
 }
 
+interface AntigravityHistoryIndexEntry {
+  id: string;
+  timestamp: number;
+}
+
+function parseAntigravityHistoryIndex(
+  fileBuffer: Buffer,
+): { resource: string; entries: AntigravityHistoryIndexEntry[] } | undefined {
+  try {
+    const parsed = JSON.parse(fileBuffer.toString("utf8")) as {
+      resource?: unknown;
+      entries?: Array<{ id?: unknown; timestamp?: unknown }>;
+    };
+    if (typeof parsed.resource !== "string" || !Array.isArray(parsed.entries)) {
+      return undefined;
+    }
+    const entries = parsed.entries
+      .map((entry) => ({
+        id: typeof entry?.id === "string" ? entry.id : undefined,
+        timestamp: typeof entry?.timestamp === "number" ? entry.timestamp : undefined,
+      }))
+      .filter((entry): entry is AntigravityHistoryIndexEntry => !!entry.id && typeof entry.timestamp === "number")
+      .sort((left, right) => left.timestamp - right.timestamp);
+    return entries.length > 0 ? { resource: parsed.resource, entries } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveAntigravityHistoryResource(
+  resource: string,
+): { sessionId: string; kind: AntigravityHistoryResourceKind; resourcePath: string } | undefined {
+  const taskMatch = resource.match(/\/brain\/([0-9a-f-]{36})\/task\.md$/iu);
+  const taskSessionId = taskMatch?.[1];
+  if (taskSessionId) {
+    return {
+      sessionId: taskSessionId,
+      kind: "task",
+      resourcePath: resource,
+    };
+  }
+  const implementationPlanMatch = resource.match(/\/brain\/([0-9a-f-]{36})\/implementation_plan\.md$/iu);
+  const implementationPlanSessionId = implementationPlanMatch?.[1];
+  if (implementationPlanSessionId) {
+    return {
+      sessionId: implementationPlanSessionId,
+      kind: "implementation_plan",
+      resourcePath: resource,
+    };
+  }
+  const conversationHistoryMatch = resource.match(/\/brain\/([0-9a-f-]{36})\/Conversation_.*_History\.md$/iu);
+  const conversationHistorySessionId = conversationHistoryMatch?.[1];
+  if (conversationHistorySessionId) {
+    return {
+      sessionId: conversationHistorySessionId,
+      kind: "conversation_history",
+      resourcePath: resource,
+    };
+  }
+  return undefined;
+}
+
 function parseUnknownProtobufBase64(encodedValue: string): UnknownProtobufField[] | undefined {
   try {
     return parseUnknownProtobuf(Buffer.from(encodedValue, "base64"));
+  } catch {
+    return undefined;
+  }
+}
+
+async function readAntigravityArtifactObservedAt(
+  filePath: string,
+  helpers: Pick<AntigravityRuntimeHelpers, "readOptionalJsonFile" | "coerceIso" | "nowIso">,
+): Promise<string> {
+  const metadata = await helpers.readOptionalJsonFile(`${filePath}.metadata.json`);
+  const metadataTimestamp =
+    helpers.coerceIso(metadata?.updatedAt) ??
+    helpers.coerceIso(metadata?.createdAt);
+  if (metadataTimestamp) {
+    return metadataTimestamp;
+  }
+  try {
+    return (await fs.stat(filePath)).mtime.toISOString();
+  } catch {
+    return helpers.nowIso();
+  }
+}
+
+function extractAntigravityMarkdownSection(markdown: string, heading: string): string | undefined {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  let sectionStart = -1;
+  for (const [index, line] of lines.entries()) {
+    if (line.trim() === `## ${heading}`) {
+      sectionStart = index + 1;
+      break;
+    }
+  }
+  if (sectionStart < 0) {
+    return undefined;
+  }
+
+  const sectionLines: string[] = [];
+  for (let index = sectionStart; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (line.startsWith("## ")) {
+      break;
+    }
+    sectionLines.push(line);
+  }
+
+  const sectionText = sectionLines.join("\n").trim();
+  return sectionText || undefined;
+}
+
+function extractAntigravityConversationId(markdown: string): string | undefined {
+  return markdown.match(/^\*\*Conversation ID\*\*:\s*([0-9a-f-]{36})\s*$/imu)?.[1];
+}
+
+function extractAntigravityPromptCandidate(
+  markdown: string,
+  kind: AntigravityHistoryResourceKind | "task",
+): string | undefined {
+  const sectionCandidate =
+    kind === "conversation_history"
+      ? extractAntigravityMarkdownSection(markdown, "Objective")
+      : extractAntigravityPreferredSection(markdown, ["Objective", "Goal", "Main Objective", "User Request", "Prompt", "Context", "Overview"]);
+  const candidate = normalizeAntigravityPromptText(sectionCandidate ?? extractAntigravityLeadParagraph(markdown));
+  if (!candidate || isAntigravityDiscardedPrompt(candidate)) {
+    return undefined;
+  }
+  return candidate;
+}
+
+function extractAntigravityPreferredSection(markdown: string, headings: string[]): string | undefined {
+  for (const heading of headings) {
+    const section = extractAntigravityMarkdownSection(markdown, heading);
+    if (section) {
+      return section;
+    }
+  }
+  return undefined;
+}
+
+function extractAntigravityLeadParagraph(markdown: string): string | undefined {
+  const lines = markdown.replace(/\r\n/g, "\n").split("\n");
+  let seenHeading = false;
+  const paragraphLines: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!seenHeading) {
+      if (trimmed.startsWith("# ")) {
+        seenHeading = true;
+      }
+      continue;
+    }
+    if (!trimmed) {
+      if (paragraphLines.length > 0) {
+        break;
+      }
+      continue;
+    }
+    if (
+      trimmed.startsWith("#") ||
+      trimmed.startsWith("- ") ||
+      /^\d+\./u.test(trimmed) ||
+      trimmed.startsWith("|")
+    ) {
+      if (paragraphLines.length > 0) {
+        break;
+      }
+      continue;
+    }
+    paragraphLines.push(trimmed);
+  }
+
+  return paragraphLines.length > 0 ? paragraphLines.join(" ") : undefined;
+}
+
+function normalizeAntigravityPromptText(text: string | undefined): string | undefined {
+  const normalized = text
+    ?.replace(/^>\s*/gmu, "")
+    .replace(/\*\*/gu, "")
+    .replace(/`/gu, "")
+    .replace(/\n---[\s\S]*$/u, "")
+    .replace(/\s+/gu, " ")
+    .trim();
+  return normalized ? normalized.replace(/^(Goal|Objective|Main Objective|User Request|Prompt|Context|Overview)\s*:\s*/iu, "").trim() : undefined;
+}
+
+function isAntigravityDiscardedPrompt(text: string): boolean {
+  return [
+    /^---$/iu,
+    /^\[!IMPORTANT\]/iu,
+    /^Review Date:/iu,
+    /^Date:/iu,
+    /^Scope:/iu,
+    /^Status:/iu,
+    /^Note:/iu,
+    /^All tasks completed/iu,
+    /^Progress:/iu,
+    /^Key Changes/iu,
+    /^Root cause:/iu,
+    /^This walkthrough/iu,
+    /^I have /iu,
+    /^I've /iu,
+    /^Successfully /iu,
+    /^Completed /iu,
+    /^Created /iu,
+    /^Implemented /iu,
+    /^Enhanced /iu,
+    /^Expanded /iu,
+    /^Fixed /iu,
+    /^Restructured /iu,
+    /^Analyzed /iu,
+    /^Built /iu,
+    /^Research Method:/iu,
+    /^Purpose:/iu,
+    /^The honest answer/iu,
+    /^Previous research /iu,
+    /^Additional files /iu,
+  ].some((pattern) => pattern.test(text));
+}
+
+function deriveAntigravityConversationTitleFromRecord(rawJson: string | undefined): string | undefined {
+  if (!rawJson) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(rawJson) as { content?: unknown };
+    const content = typeof parsed.content === "string" ? parsed.content : undefined;
+    return content ? content.slice(0, 72) : undefined;
   } catch {
     return undefined;
   }

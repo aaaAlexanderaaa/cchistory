@@ -550,6 +550,8 @@ function formatLinkReason(reason: ProjectIdentity['link_reason']) {
       return 'repo fingerprint'
     case 'repo_remote_match':
       return 'repo remote'
+    case 'repo_root_match':
+      return 'repo root'
     case 'workspace_path_continuity':
       return 'workspace path'
     case 'source_native_project':

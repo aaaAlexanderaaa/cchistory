@@ -33,7 +33,7 @@ def sanitize_text(text: str, replacements: dict[str, str]) -> str:
     result = result.replace("chatGPTBox", "chat-ui-kit")
     result = result.replace("cchistory", "history-lab")
     result = result.replace("my_spl", "log-query-validator")
-    result = result.replace("git.example.invalid", "git.example.invalid")
+    result = re.sub(r"\bgitea\.[A-Za-z0-9.-]+\b", "git.example.invalid", result)
     result = result.replace("github.com/alex_m4", "github.example.invalid/mock-user")
     result = re.sub(
         r"https://git\.example\.invalid/[^\s\"')]+",
@@ -63,6 +63,12 @@ def sanitize_text(text: str, replacements: dict[str, str]) -> str:
     result = re.sub(
         r'("VSCODE_GIT_IPC_AUTH_TOKEN","value":")([^"]+)(")',
         r'\1mock-git-ipc-auth-token\3',
+        result,
+    )
+    result = re.sub(
+        r'("(?:shellIntegrationNonce|VSCODE_NONCE|nonce)":")'
+        r'([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})(")',
+        r'\1mock-shell-integration-nonce\3',
         result,
     )
     return result
@@ -294,6 +300,41 @@ def copy_workspace_storage_dir(
         shutil.copy2(path, destination_path)
 
 
+def copy_antigravity_brain_files(
+    source_dir: Path,
+    destination_dir: Path,
+    replacements: dict[str, str],
+    relative_paths: list[str],
+) -> list[Path]:
+    copied_paths: list[Path] = []
+    for relative_path in relative_paths:
+        source_path = source_dir / relative_path
+        if not source_path.exists() or source_path.is_dir():
+            continue
+        destination_path = destination_dir / relative_path
+        copy_text_file(source_path, destination_path, replacements)
+        copied_paths.append(destination_path)
+    return copied_paths
+
+
+def write_selected_jsonl_fixture(
+    source_path: Path,
+    destination_path: Path,
+    selector: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+    replacements: dict[str, str],
+) -> bool:
+    if not source_path.exists():
+        print(f"Skipping missing fixture source: {source_path}", file=sys.stderr)
+        return False
+    write_jsonl(
+        source_path,
+        destination_path,
+        selector(load_jsonl(source_path)),
+        replacements,
+    )
+    return True
+
+
 def relative_output(path: Path) -> str:
     return path.relative_to(OUTPUT_ROOT).as_posix()
 
@@ -436,78 +477,78 @@ def main() -> None:
     claude_workspace_replacements = {
         "/Users/alex_m4/workspace/chatGPTBox": f"{MOCK_HOME}/workspace/chat-ui-kit",
     }
-    write_jsonl(
+    if write_selected_jsonl_fixture(
         claude_workspace_source,
         claude_workspace_output,
-        select_claude_records(load_jsonl(claude_workspace_source)),
+        select_claude_records,
         claude_workspace_replacements,
-    )
-    add_scenario(
-        scenario_rows,
-        id="claude-workspace-path",
-        apps=["Claude"],
-        visible_cue="Claude stores one project directly under a workspace path, and the thread contains long review instructions plus subagent/tool traffic.",
-        tricky="The visible project path is clean, but the file itself mixes user asks, meta review prompts, tool traffic, and subagent progress that should not all be treated as equal turns.",
-        paths=[claude_workspace_output],
-        visible_roots=[f"{MOCK_HOME}/workspace/chat-ui-kit"],
-    )
+    ):
+        add_scenario(
+            scenario_rows,
+            id="claude-workspace-path",
+            apps=["Claude"],
+            visible_cue="Claude stores one project directly under a workspace path, and the thread contains long review instructions plus subagent/tool traffic.",
+            tricky="The visible project path is clean, but the file itself mixes user asks, meta review prompts, tool traffic, and subagent progress that should not all be treated as equal turns.",
+            paths=[claude_workspace_output],
+            visible_roots=[f"{MOCK_HOME}/workspace/chat-ui-kit"],
+        )
 
     claude_docker_source = HOME / ".claude/projects/-Users-alex-m4-docker-codeserver2-project-cursor-temp-my-opensource-chatGPTBox/7364d923-4c8b-4b3f-a9c9-d19fbfff4fac.jsonl"
     claude_docker_output = OUTPUT_ROOT / ".claude/projects/-Users-mock-user-docker-codeserver2-project-cursor-temp-chat-ui-kit/7364d923-4c8b-4b3f-a9c9-d19fbfff4fac.jsonl"
     claude_docker_replacements = {
         "/Users/alex_m4/docker/codeserver2/project/cursor_temp/my_opensource/chatGPTBox": f"{MOCK_HOME}/docker/codeserver2/project/cursor_temp/chat-ui-kit",
     }
-    write_jsonl(
+    if write_selected_jsonl_fixture(
         claude_docker_source,
         claude_docker_output,
-        select_claude_records(load_jsonl(claude_docker_source)),
+        select_claude_records,
         claude_docker_replacements,
-    )
-    add_scenario(
-        scenario_rows,
-        id="claude-same-app-different-path",
-        apps=["Claude"],
-        visible_cue="The same visible app family appears again, but this time under a docker/codeserver path with an API-error retry sequence.",
-        tricky="If matching leans on app name alone these threads collapse together; if matching leans on full path alone the user sees one product split into separate silos.",
-        paths=[claude_docker_output],
-        visible_roots=[f"{MOCK_HOME}/docker/codeserver2/project/cursor_temp/chat-ui-kit"],
-    )
+    ):
+        add_scenario(
+            scenario_rows,
+            id="claude-same-app-different-path",
+            apps=["Claude"],
+            visible_cue="The same visible app family appears again, but this time under a docker/codeserver path with an API-error retry sequence.",
+            tricky="If matching leans on app name alone these threads collapse together; if matching leans on full path alone the user sees one product split into separate silos.",
+            paths=[claude_docker_output],
+            visible_roots=[f"{MOCK_HOME}/docker/codeserver2/project/cursor_temp/chat-ui-kit"],
+        )
 
     claude_subagent_source = HOME / ".claude/projects/-Users-alex-m4-workspace-chatGPTBox/cc1df109-4282-4321-8248-8bbcd471da78/subagents/agent-a0a2928875cb36a92.jsonl"
     claude_subagent_output = OUTPUT_ROOT / ".claude/projects/-Users-mock-user-workspace-chat-ui-kit/cc1df109-4282-4321-8248-8bbcd471da78/subagents/agent-a0a2928875cb36a92.jsonl"
-    write_jsonl(
+    if write_selected_jsonl_fixture(
         claude_subagent_source,
         claude_subagent_output,
-        select_claude_records(load_jsonl(claude_subagent_source)),
+        select_claude_records,
         claude_workspace_replacements,
-    )
-    add_scenario(
-        scenario_rows,
-        id="claude-sidechain-subagent",
-        apps=["Claude"],
-        visible_cue="A subagent sidechain file sits under the same Claude project tree as the main session.",
-        tricky="Users see it as part of the same working area on disk, but parsers that flatten everything into one thread or ignore sidechains entirely both lose information.",
-        paths=[claude_subagent_output],
-        visible_roots=[f"{MOCK_HOME}/workspace/chat-ui-kit"],
-    )
+    ):
+        add_scenario(
+            scenario_rows,
+            id="claude-sidechain-subagent",
+            apps=["Claude"],
+            visible_cue="A subagent sidechain file sits under the same Claude project tree as the main session.",
+            tricky="Users see it as part of the same working area on disk, but parsers that flatten everything into one thread or ignore sidechains entirely both lose information.",
+            paths=[claude_subagent_output],
+            visible_roots=[f"{MOCK_HOME}/workspace/chat-ui-kit"],
+        )
 
     claude_local_command_source = HOME / ".claude/projects/-Users-alex-m4-workspace-chatGPTBox/b98095d7-b7ee-4d23-9d4c-beb9725d1dc5.jsonl"
     claude_local_command_output = OUTPUT_ROOT / ".claude/projects/-Users-mock-user-workspace-chat-ui-kit/b98095d7-b7ee-4d23-9d4c-beb9725d1dc5.jsonl"
-    write_jsonl(
+    if write_selected_jsonl_fixture(
         claude_local_command_source,
         claude_local_command_output,
-        select_claude_records(load_jsonl(claude_local_command_source)),
+        select_claude_records,
         claude_workspace_replacements,
-    )
-    add_scenario(
-        scenario_rows,
-        id="claude-local-command-meta-noise",
-        apps=["Claude"],
-        visible_cue="The thread begins with a meta caveat explaining that some messages were generated by local commands and should not be treated like normal conversation.",
-        tricky="A parser that only sees role=`user` will over-count meta noise as intent, even though the user-visible thread itself is warning that those messages are special.",
-        paths=[claude_local_command_output],
-        visible_roots=[f"{MOCK_HOME}/workspace/chat-ui-kit"],
-    )
+    ):
+        add_scenario(
+            scenario_rows,
+            id="claude-local-command-meta-noise",
+            apps=["Claude"],
+            visible_cue="The thread begins with a meta caveat explaining that some messages were generated by local commands and should not be treated like normal conversation.",
+            tricky="A parser that only sees role=`user` will over-count meta noise as intent, even though the user-visible thread itself is warning that those messages are special.",
+            paths=[claude_local_command_output],
+            visible_roots=[f"{MOCK_HOME}/workspace/chat-ui-kit"],
+        )
 
     factory_output_dir = OUTPUT_ROOT / ".factory/sessions/-Users-mock-user-workspace-history-lab"
     factory_session_output = factory_output_dir / "11111111-2222-4333-8444-555555555555.jsonl"
@@ -912,12 +953,219 @@ def main() -> None:
         visible_roots=[f"{MOCK_HOME}/workspace/history-lab"],
     )
 
+    antigravity_brain_replacements = {
+        "/Users/alex_m4/workspace/cchistory": f"{MOCK_HOME}/workspace/history-lab",
+        "/Users/alex_m4/.gemini/antigravity/brain": f"{MOCK_HOME}/.gemini/antigravity/brain",
+    }
+    antigravity_brain_paths: list[Path] = []
+
+    antigravity_brain_review_source_dir = HOME / ".gemini/antigravity/brain/46ef2b37-3a9b-43b9-a57f-a306d08af7dc"
+    antigravity_brain_review_output_dir = OUTPUT_ROOT / ".gemini/antigravity/brain/46ef2b37-3a9b-43b9-a57f-a306d08af7dc"
+    antigravity_brain_paths.extend(
+        copy_antigravity_brain_files(
+            antigravity_brain_review_source_dir,
+            antigravity_brain_review_output_dir,
+            antigravity_brain_replacements,
+            [
+                "task.md",
+                "task.md.metadata.json",
+                "browser/scratchpad_dqnf6lzn.md",
+            ],
+        )
+    )
+
+    antigravity_brain_plan_source_dir = HOME / ".gemini/antigravity/brain/f016bbd7-ad8f-4b3b-bab0-a73e197f391a"
+    antigravity_brain_plan_output_dir = OUTPUT_ROOT / ".gemini/antigravity/brain/f016bbd7-ad8f-4b3b-bab0-a73e197f391a"
+    antigravity_brain_paths.extend(
+        copy_antigravity_brain_files(
+            antigravity_brain_plan_source_dir,
+            antigravity_brain_plan_output_dir,
+            antigravity_brain_replacements,
+            [
+                "task.md",
+                "task.md.metadata.json",
+                "implementation_plan.md",
+                "implementation_plan.md.metadata.json",
+                "walkthrough.md",
+                "walkthrough.md.metadata.json",
+            ],
+        )
+    )
+
+    antigravity_brain_history_source_dir = HOME / ".gemini/antigravity/brain/9b28d5a6-dee3-4f2a-bc6e-2c8c21aa61bc"
+    antigravity_brain_history_output_dir = OUTPUT_ROOT / ".gemini/antigravity/brain/9b28d5a6-dee3-4f2a-bc6e-2c8c21aa61bc"
+    antigravity_brain_paths.extend(
+        copy_antigravity_brain_files(
+            antigravity_brain_history_source_dir,
+            antigravity_brain_history_output_dir,
+            antigravity_brain_replacements,
+            [
+                "Conversation_1bcefd41_History.md",
+                "Conversation_1bcefd41_History.md.metadata.json",
+            ],
+        )
+    )
+
+    add_scenario(
+        scenario_rows,
+        id="antigravity-brain-artifacts",
+        apps=["antigravity"],
+        visible_cue="Antigravity also keeps per-cascade brain artifacts under `~/.gemini/antigravity/brain`, including task files, plans, walkthroughs, browser scratchpads, and conversation-history snapshots referenced by workspace state.",
+        tricky="If a parser only scans workspaceStorage it misses these artifact files; if it treats every artifact as a user turn it over-weights assistant-authored plans and walkthroughs.",
+        paths=antigravity_brain_paths,
+        visible_roots=[
+            f"{MOCK_HOME}/.gemini/antigravity/brain/46ef2b37-3a9b-43b9-a57f-a306d08af7dc",
+            f"{MOCK_HOME}/.gemini/antigravity/brain/f016bbd7-ad8f-4b3b-bab0-a73e197f391a",
+            f"{MOCK_HOME}/.gemini/antigravity/brain/9b28d5a6-dee3-4f2a-bc6e-2c8c21aa61bc",
+        ],
+    )
+
+    antigravity_live_fixture_dir = OUTPUT_ROOT / "fixtures/antigravity-live"
+    antigravity_live_steps_dir = antigravity_live_fixture_dir / "steps"
+    antigravity_live_summaries = antigravity_live_fixture_dir / "trajectory-summaries.json"
+    antigravity_live_prompt_steps = antigravity_live_steps_dir / "035b86d5-8ae6-4dfd-bdf0-3a28e9f1df5e.json"
+    antigravity_live_review_steps = antigravity_live_steps_dir / "f016bbd7-ad8f-4b3b-bab0-a73e197f391a.json"
+
+    write_json(
+        antigravity_live_summaries,
+        {
+            "trajectorySummaries": {
+                "035b86d5-8ae6-4dfd-bdf0-3a28e9f1df5e": {
+                    "summary": "Interactive UX Testing",
+                    "createdTime": "2026-03-11T15:40:03.894311Z",
+                    "lastModifiedTime": "2026-03-11T15:45:26.374684Z",
+                    "workspaces": [
+                        {
+                            "workspaceFolderAbsoluteUri": f"file://{MOCK_HOME}/workspace/history-lab",
+                            "gitRootAbsoluteUri": f"file://{MOCK_HOME}/workspace/history-lab",
+                            "repository": {
+                                "computedName": "mock-user/history-lab",
+                                "gitOriginUrl": "https://git.example.invalid/acme/history-lab.git",
+                            },
+                        }
+                    ],
+                },
+                "f016bbd7-ad8f-4b3b-bab0-a73e197f391a": {
+                    "summary": "Refining Startup Configuration",
+                    "createdTime": "2026-03-12T01:10:56.625283Z",
+                    "lastModifiedTime": "2026-03-12T01:16:22.868540Z",
+                    "workspaces": [
+                        {
+                            "workspaceFolderAbsoluteUri": f"file://{MOCK_HOME}/workspace/history-lab",
+                            "gitRootAbsoluteUri": f"file://{MOCK_HOME}/workspace/history-lab",
+                            "repository": {
+                                "computedName": "mock-user/history-lab",
+                                "gitOriginUrl": "https://git.example.invalid/acme/history-lab.git",
+                            },
+                        }
+                    ],
+                },
+            }
+        },
+    )
+    write_json(
+        antigravity_live_prompt_steps,
+        {
+            "steps": [
+                {
+                    "type": "CORTEX_STEP_TYPE_USER_INPUT",
+                    "metadata": {
+                        "createdAt": "2026-03-11T15:40:03.894311Z",
+                    },
+                    "userInput": {
+                        "items": [
+                            {
+                                "text": "AI-translated objective that should not be preferred over userResponse",
+                            }
+                        ],
+                        "userResponse": "我把API起在了8040端口，web起在了8085端口，你自己访问浏览做个交互测试吧，我觉得有点问题，用户体验不太舒服，但是你最好看看",
+                    },
+                },
+                {
+                    "type": "CORTEX_STEP_TYPE_NOTIFY_USER",
+                    "metadata": {
+                        "createdAt": "2026-03-11T15:44:12.100000Z",
+                    },
+                    "notifyUser": {
+                        "notificationContent": "Verified both services and continuing the UX review.",
+                    },
+                },
+                {
+                    "type": "CORTEX_STEP_TYPE_USER_INPUT",
+                    "metadata": {
+                        "createdAt": "2026-03-11T15:44:50.026068Z",
+                    },
+                    "userInput": {
+                        "userResponse": "Continue",
+                    },
+                },
+            ]
+        },
+    )
+    write_json(
+        antigravity_live_review_steps,
+        {
+            "steps": [
+                {
+                    "type": "CORTEX_STEP_TYPE_USER_INPUT",
+                    "metadata": {
+                        "createdAt": "2026-03-12T01:10:56.625283Z",
+                    },
+                    "userInput": {
+                        "items": [
+                            {
+                                "text": "Task summary rewritten by the agent",
+                            }
+                        ],
+                        "userResponse": "启动方式有点混乱，帮我规整一下，最开始只是 web/API分别起，后来包装成了service，最近一次debug改成了node apps/api/dist/index.js起后端，而之前的service启动方式失效了",
+                    },
+                },
+                {
+                    "type": "CORTEX_STEP_TYPE_USER_INPUT",
+                    "metadata": {
+                        "createdAt": "2026-03-12T01:14:13.417734Z",
+                    },
+                    "userInput": {
+                        "userResponse": "",
+                        "artifactComments": [
+                            {
+                                "absolutePathUri": f"file://{MOCK_HOME}/.gemini/antigravity/brain/f016bbd7-ad8f-4b3b-bab0-a73e197f391a/implementation_plan.md",
+                            }
+                        ],
+                    },
+                },
+                {
+                    "type": "CORTEX_STEP_TYPE_PLANNER_RESPONSE",
+                    "metadata": {
+                        "createdAt": "2026-03-12T01:11:04.243852Z",
+                    },
+                    "plannerResponse": {
+                        "modifiedResponse": "I investigated the startup configuration and found conflicting startup paths.",
+                    },
+                },
+            ]
+        },
+    )
+    add_scenario(
+        scenario_rows,
+        id="antigravity-live-trajectory-responses",
+        apps=["antigravity"],
+        visible_cue="With the Antigravity desktop app running, the local language server exposes trajectory summaries and step streams whose `userInput.userResponse` contains the raw prompt text, including short follow-ups like `Continue`.",
+        tricky="A parser that trusts titles, `items[].text`, or brain markdown over the live `userResponse` field will rewrite the user's text or promote review artifacts into turns.",
+        paths=[
+            antigravity_live_summaries,
+            antigravity_live_prompt_steps,
+            antigravity_live_review_steps,
+        ],
+        visible_roots=[f"{MOCK_HOME}/workspace/history-lab"],
+    )
+
     readme_lines = [
         "# Mock Data",
         "",
         "This directory is built from local real session/app data, then sanitized and reorganized into a smaller scenario set.",
         "",
-        "The scenarios are intentionally framed around what a user actually notices on disk or in local app storage:",
+        "The scenarios are intentionally framed around what a user actually notices on disk, in local app storage, or from an app-local runtime surface when the runtime path is essential:",
         "",
         "- same app, different visible paths",
         "- same visible path, different apps",
@@ -928,6 +1176,14 @@ def main() -> None:
         "- current and backup state disagreeing about recent activity",
         "- traces from a second host root",
         "- meta/tool noise that looks like normal conversation unless you inspect carefully",
+        "- live runtime responses that are the real source of raw turns",
+        "",
+        "Antigravity is split across two fixture families:",
+        "",
+        "- `Library/Application Support/antigravity/...` and `.gemini/antigravity/brain/...` cover the offline evidence surface (`workspaceStorage`, `History`, `brain`), not the raw conversation stream.",
+        "- `fixtures/antigravity-live/...` captures sanitized local language-server responses used to validate the live trajectory path without depending on a running app inside tests.",
+        "",
+        "> Full-fidelity Antigravity extraction on a real machine still requires the Antigravity desktop app to be running. Without the app, CCHistory may still ingest offline evidence, but that is not a reliable way to recover raw prompts or complete conversation turns.",
         "",
         "| Scenario | Apps | What A User Would Notice | Why A Naive Parser Gets It Wrong | Paths |",
         "| --- | --- | --- | --- | --- |",

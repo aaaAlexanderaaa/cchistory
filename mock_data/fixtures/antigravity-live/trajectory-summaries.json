@@ -1,0 +1,34 @@
+{
+  "trajectorySummaries": {
+    "035b86d5-8ae6-4dfd-bdf0-3a28e9f1df5e": {
+      "summary": "Interactive UX Testing",
+      "createdTime": "2026-03-11T15:40:03.894311Z",
+      "lastModifiedTime": "2026-03-11T15:45:26.374684Z",
+      "workspaces": [
+        {
+          "workspaceFolderAbsoluteUri": "file:///Users/mock_user/workspace/history-lab",
+          "gitRootAbsoluteUri": "file:///Users/mock_user/workspace/history-lab",
+          "repository": {
+            "computedName": "mock-user/history-lab",
+            "gitOriginUrl": "https://git.example.invalid/acme/history-lab.git"
+          }
+        }
+      ]
+    },
+    "f016bbd7-ad8f-4b3b-bab0-a73e197f391a": {
+      "summary": "Refining Startup Configuration",
+      "createdTime": "2026-03-12T01:10:56.625283Z",
+      "lastModifiedTime": "2026-03-12T01:16:22.868540Z",
+      "workspaces": [
+        {
+          "workspaceFolderAbsoluteUri": "file:///Users/mock_user/workspace/history-lab",
+          "gitRootAbsoluteUri": "file:///Users/mock_user/workspace/history-lab",
+          "repository": {
+            "computedName": "mock-user/history-lab",
+            "gitOriginUrl": "https://git.example.invalid/acme/history-lab.git"
+          }
+        }
+      ]
+    }
+  }
+}

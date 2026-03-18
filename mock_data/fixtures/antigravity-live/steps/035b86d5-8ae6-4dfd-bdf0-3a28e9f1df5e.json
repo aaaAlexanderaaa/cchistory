@@ -1,0 +1,36 @@
+{
+  "steps": [
+    {
+      "type": "CORTEX_STEP_TYPE_USER_INPUT",
+      "metadata": {
+        "createdAt": "2026-03-11T15:40:03.894311Z"
+      },
+      "userInput": {
+        "items": [
+          {
+            "text": "AI-translated objective that should not be preferred over userResponse"
+          }
+        ],
+        "userResponse": "我把API起在了8040端口，web起在了8085端口，你自己访问浏览做个交互测试吧，我觉得有点问题，用户体验不太舒服，但是你最好看看"
+      }
+    },
+    {
+      "type": "CORTEX_STEP_TYPE_NOTIFY_USER",
+      "metadata": {
+        "createdAt": "2026-03-11T15:44:12.100000Z"
+      },
+      "notifyUser": {
+        "notificationContent": "Verified both services and continuing the UX review."
+      }
+    },
+    {
+      "type": "CORTEX_STEP_TYPE_USER_INPUT",
+      "metadata": {
+        "createdAt": "2026-03-11T15:44:50.026068Z"
+      },
+      "userInput": {
+        "userResponse": "Continue"
+      }
+    }
+  ]
+}

@@ -24,7 +24,7 @@ CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对
 
 ## 核心特性
 
-- **多平台采集** — 通过本地文件解析，从多个 AI 编程助手平台收集对话数据
+- **多平台采集** — 通过本地文件解析以及必要时的本地应用实时探测，从多个 AI 编程助手平台收集对话数据
 - **证据保全** — 原始证据被完整保留并可追溯；每个 `UserTurn` 都从源数据派生，绝不直接手动创建
 - **基于项目的关联** — 通过仓库指纹、工作空间路径和手动覆盖将对话轮次关联到项目
 - **全文搜索** — 在所有规范化对话文本中搜索，支持按项目和数据源过滤
@@ -41,12 +41,14 @@ CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对
 | Cursor | **已支持** | 平台用户数据 + 项目历史 |
 | AMP | **已支持** | `~/.local/share/amp/threads/` |
 | Factory Droid | **已支持** | `~/.factory/sessions/` |
-| Antigravity | **已支持** | 平台用户数据 `workspaceStorage/` |
+| Antigravity | **已支持** | 平台用户数据 `User/` + `~/.gemini/antigravity/{conversations,brain}` |
 | OpenClaw | 即将推出 | — |
 | OpenCode | 即将推出 | — |
 | LobeChat | 即将推出 | — |
 
 > **更多平台支持即将到来。** 希望看到某个平台被支持？欢迎 [提交 Issue](https://github.com/aaaAlexanderaaa/cchistory/issues) 告诉我们。
+
+> Antigravity 说明：CCHistory 现在会优先通过正在运行的 Antigravity 桌面应用暴露出的本地 language server trajectory API，恢复 `~/.gemini/antigravity/conversations/*.pb` 对应的原始 `USER_INPUT`。如果应用没有启动，CCHistory 仍然可以摄取离线的 `workspaceStorage`、`History` 和 `brain` 证据层用于元数据和附件，但这条路径并不能可靠恢复原始 conversation 流。
 
 ## 系统架构
 
@@ -147,6 +149,8 @@ cchistory ls sources
 cchistory ls projects
 cchistory stats
 ```
+
+> 如果要完整同步 Antigravity 的 turn，请先在同一台机器上启动 Antigravity 桌面应用，再运行 `cchistory sync`。
 
 ## 截图
 

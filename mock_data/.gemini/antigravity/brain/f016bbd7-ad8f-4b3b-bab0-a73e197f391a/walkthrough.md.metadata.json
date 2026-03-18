@@ -1,0 +1,5 @@
+{
+  "artifactType": "ARTIFACT_TYPE_WALKTHROUGH",
+  "summary": "Documents the root cause of the broken service startup system (nohup detaching child PIDs from supervisor), the one-line fix, the package.json cleanup, and the verification results showing both services healthy.",
+  "updatedAt": "2026-03-12T01:16:13.964078Z"
+}

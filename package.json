@@ -18,6 +18,7 @@
     "restart:web:preview": "bash scripts/restart-web-preview.sh",
     "mock-data:validate": "python3 scripts/validate_mock_data.py",
     "probe:smoke": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && node scripts/probe-smoke.mjs",
+    "probe:antigravity-live": "node scripts/antigravity-live-dump.mjs",
     "validate:core": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/api build",
     "test": "pnpm --filter @cchistory/source-adapters test"
   },

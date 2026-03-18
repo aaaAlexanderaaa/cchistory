@@ -2,6 +2,7 @@
 
 import { createElement, type ComponentProps } from 'react'
 import { useMemo, useState } from 'react'
+import { useSWRConfig } from 'swr'
 import {
   formatTokenUsageOverview,
   formatTokenValue,
@@ -15,6 +16,7 @@ import { ResponsiveSidePanel } from '@/components/responsive-side-panel'
 import type { ProjectIdentity, Session, UserTurn } from '@/lib/types'
 import {
   createProjectStub,
+  deleteProject as deleteProjectRecord,
   useProjectsQuery,
   useProjectRevisionsQuery,
   useProjectTurnsQuery,
@@ -32,6 +34,7 @@ import {
   FolderTree,
   GitBranch,
   Link2,
+  Trash2,
 } from 'lucide-react'
 
 type ProjectViewMode = 'list' | 'detail'
@@ -365,10 +368,13 @@ function ProjectDetailView({
   onSelectTurn,
   onBack,
 }: ProjectDetailViewProps) {
+  const { mutate } = useSWRConfig()
   const currentTurns = activeTab === 'committed' ? turns : candidates
   const [contentMode, setContentMode] = useState<DetailContentMode>('turns')
   const [turnLayout, setTurnLayout] = useState<ProjectTurnLayout>('rows')
   const [turnSort, setTurnSort] = useState<ProjectTurnSort>('newest')
+  const [deletePending, setDeletePending] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
   const hasStale = allProjectTurns.some((turn) => turn.sync_axis === 'superseded' || turn.sync_axis === 'source_absent')
   const currentMetrics = summarizeTurnMetrics(currentTurns)
   const currentTokenSummary = formatTokenUsageOverview(
@@ -386,6 +392,40 @@ function ProjectDetailView({
     )
     return items
   }, [currentTurns, turnSort])
+
+  const handleDeleteProject = async () => {
+    const sessionCount = projectSessionCount || project.session_count
+    const confirmed = window.confirm(
+      `Delete "${project.name}" and purge its currently linked local data?\n\nThis removes ${allProjectTurns.length} linked turns across ${sessionCount} sessions from local storage. Linked observations and project artifacts will also be removed.`,
+    )
+    if (!confirmed) {
+      return
+    }
+
+    setDeletePending(true)
+    setDeleteError(null)
+    try {
+      await deleteProjectRecord(project.id, 'web_project_delete')
+      await Promise.all([
+        mutate('/api/turns'),
+        mutate('/api/sessions'),
+        mutate('/api/projects?state=all'),
+        mutate('/api/projects?state=committed'),
+        mutate('/api/projects?state=candidate'),
+        mutate('/api/admin/linking'),
+        mutate(`/api/projects/${encodeURIComponent(project.id)}`),
+        mutate(`/api/projects/${encodeURIComponent(project.id)}/turns?state=committed`),
+        mutate(`/api/projects/${encodeURIComponent(project.id)}/turns?state=candidate`),
+        mutate(`/api/projects/${encodeURIComponent(project.id)}/revisions`),
+      ])
+      onSelectTurn(null)
+      onBack()
+    } catch (error) {
+      setDeleteError(formatProjectDeleteError(error))
+    } finally {
+      setDeletePending(false)
+    }
+  }
 
   return (
     <div className="flex flex-1 overflow-hidden">
@@ -449,7 +489,30 @@ function ProjectDetailView({
                 <span>{formatLinkReason(project.link_reason)}</span>
               </div>
             </div>
+
+            <div className="flex items-start justify-end xl:min-w-[16rem]">
+              <button
+                type="button"
+                onClick={() => void handleDeleteProject()}
+                disabled={deletePending}
+                className={cn(
+                  'inline-flex items-center gap-2 border px-3 py-2 text-sm transition-colors',
+                  deletePending
+                    ? 'cursor-wait border-danger/20 bg-danger/10 text-danger/60'
+                    : 'border-danger/40 bg-danger/10 text-danger hover:border-danger hover:bg-danger hover:text-white',
+                )}
+              >
+                <Trash2 className="h-4 w-4" />
+                {deletePending ? 'Deleting…' : 'Delete Project'}
+              </button>
+            </div>
           </div>
+
+          {deleteError && (
+            <div className="border-t border-danger/20 bg-danger/10 px-4 py-3 text-sm text-danger sm:px-6">
+              {deleteError}
+            </div>
+          )}
 
           <div className="flex flex-col gap-3 border-t border-border bg-paper px-4 py-3 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-wrap items-center gap-4 sm:gap-6">
@@ -894,6 +957,13 @@ function CompactProjectMetric({
   )
 }
 
+function formatProjectDeleteError(error: unknown) {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+  return 'Failed to delete the project from local storage.'
+}
+
 function summarizeTurnMetrics(turns: UserTurn[]) {
   const tokenStats = summarizeTurnsTokenUsage(turns)
   let activeDurationMs = 0
@@ -987,6 +1057,8 @@ function formatLinkReason(reason: ProjectIdentity['link_reason']) {
       return 'Repo fingerprint'
     case 'repo_remote_match':
       return 'Repo remote'
+    case 'repo_root_match':
+      return 'Repo root'
     case 'workspace_path_continuity':
       return 'Workspace path'
     case 'source_native_project':

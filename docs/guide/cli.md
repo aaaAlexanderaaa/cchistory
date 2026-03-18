@@ -25,8 +25,11 @@ Ingest local source files into the store.
 ```bash
 cchistory sync                          # Sync all default sources
 cchistory sync --source codex           # Sync only Codex
+cchistory sync --source antigravity     # Sync only Antigravity
 cchistory sync --limit-files 10         # Limit files per source (for testing)
 ```
+
+> Antigravity: full-fidelity sync requires the Antigravity desktop app to be running on the same machine. CCHistory prefers the local trajectory API for raw `USER_INPUT` turns. When the app is unavailable, it can still ingest offline `workspaceStorage`, `History`, and `brain` evidence, but that is not a reliable source of raw conversations.
 
 **Example output:**
 

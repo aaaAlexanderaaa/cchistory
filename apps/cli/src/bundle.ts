@@ -40,6 +40,7 @@ function stableStringify(value: unknown): string {
 
 export const BUNDLE_VERSION = "cchistory.bundle.v1";
 export const BUNDLE_SCHEMA_VERSION = "2026-03-14.1";
+const VIRTUAL_BLOB_PATH_PREFIXES = ["antigravity-live://"];
 
 export interface BundleReadResult {
   bundleDir: string;
@@ -97,13 +98,10 @@ export async function exportBundle(options: {
     for (const [index, blob] of payload.blobs.entries()) {
       const sourceBlob = payloads.find((entry) => entry.source.id === payload.source.id)?.blobs[index];
       const sourcePath = sourceBlob?.captured_path ?? sourceBlob?.origin_path;
-      if (!sourcePath) {
-        throw new Error(`Missing raw source path for blob ${blob.id}`);
-      }
       const relativePath = bundleRawRelativePath(payload.source.id, blob);
       const targetPath = path.join(bundleDir, relativePath);
       await mkdir(path.dirname(targetPath), { recursive: true });
-      await copyFile(sourcePath, targetPath);
+      await materializeBlobSnapshot(targetPath, payloads.find((entry) => entry.source.id === payload.source.id) ?? payload, blob, sourcePath);
       rawChecksums[relativePath] = sha256(await readFile(targetPath));
     }
   }
@@ -254,12 +252,9 @@ export async function snapshotPayloadRawBlobs(rawDir: string, payload: SourceSyn
 
   for (const blob of nextPayload.blobs) {
     const sourcePath = blob.origin_path;
-    if (!sourcePath) {
-      continue;
-    }
     const targetPath = path.join(rawDir, payload.source.id, path.basename(bundleRawRelativePath(payload.source.id, blob)));
     await mkdir(path.dirname(targetPath), { recursive: true });
-    await copyFile(sourcePath, targetPath);
+    await materializeBlobSnapshot(targetPath, payload, blob, sourcePath);
     blob.captured_path = targetPath;
     blob.size_bytes = (await stat(targetPath)).size;
   }
@@ -327,6 +322,42 @@ async function materializePayloadRawBlobs(
 function bundleRawRelativePath(sourceId: string, blob: CapturedBlob): string {
   const extension = path.extname(blob.origin_path || blob.captured_path || "") || ".json";
   return path.join("raw", sourceId, `${blob.id}${extension}`);
+}
+
+async function materializeBlobSnapshot(
+  targetPath: string,
+  payload: SourceSyncPayload,
+  blob: CapturedBlob,
+  sourcePath: string | undefined,
+): Promise<void> {
+  if (sourcePath && !isVirtualBlobPath(sourcePath)) {
+    await copyFile(sourcePath, targetPath);
+    return;
+  }
+
+  const records = payload.records
+    .filter((record) => record.blob_id === blob.id)
+    .sort((left, right) => left.ordinal - right.ordinal);
+  if (records.length === 0) {
+    throw new Error(`Missing raw source path and record snapshot for blob ${blob.id}`);
+  }
+
+  await writeFile(
+    targetPath,
+    `${JSON.stringify(
+      {
+        blob,
+        records,
+      },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+}
+
+function isVirtualBlobPath(value: string): boolean {
+  return VIRTUAL_BLOB_PATH_PREFIXES.some((prefix) => value.startsWith(prefix));
 }
 
 async function ensureEmptyDirectory(targetDir: string): Promise<void> {

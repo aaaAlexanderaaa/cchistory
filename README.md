@@ -24,7 +24,7 @@ CCHistory ingests, parses, and projects your AI coding assistant conversations i
 
 ## Key Features
 
-- **Multi-platform ingestion** — Collects conversations from multiple AI coding assistant platforms via local file parsing
+- **Multi-platform ingestion** — Collects conversations from multiple AI coding assistant platforms via local file parsing and app-local live probes where required
 - **Evidence-preserving** — Raw evidence is retained and traceable; every `UserTurn` is derived, never authored directly
 - **Project-based linking** — Turns are linked to projects via repo fingerprints, workspace paths, and manual overrides
 - **Full-text search** — Search across all canonical turn text with project and source filters
@@ -41,12 +41,14 @@ CCHistory ingests, parses, and projects your AI coding assistant conversations i
 | Cursor | **Supported** | Platform user-data + project history |
 | AMP | **Supported** | `~/.local/share/amp/threads/` |
 | Factory Droid | **Supported** | `~/.factory/sessions/` |
-| Antigravity | **Supported** | Platform user-data `workspaceStorage/` |
+| Antigravity | **Supported** | Platform user-data `User/` + `~/.gemini/antigravity/{conversations,brain}` |
 | OpenClaw | Coming Soon | — |
 | OpenCode | Coming Soon | — |
 | LobeChat | Coming Soon | — |
 
 > **More platforms on the way.** Have a platform you'd like to see supported? [Open an issue](https://github.com/aaaAlexanderaaa/cchistory/issues) to let us know.
+
+> Antigravity note: CCHistory now prefers the running Antigravity desktop app's local language-server trajectory API to recover raw `USER_INPUT` turns from `~/.gemini/antigravity/conversations/*.pb`. If the app is not running, CCHistory can still ingest offline `workspaceStorage`, `History`, and `brain` evidence for metadata and attachments, but that path does not reliably recover the raw conversation stream.
 
 ## Architecture
 
@@ -148,6 +150,8 @@ cchistory ls projects
 cchistory stats
 ```
 
+> To sync Antigravity with full turn coverage, start the Antigravity desktop app on the same machine before running `cchistory sync`.
+
 ## Screenshots
 
 <table>
@@ -196,6 +200,8 @@ For detailed guides, see the `docs/guide/` directory:
 - **[CLI Guide](docs/guide/cli.md)** — All commands, flags, and output examples
 - **[API Guide](docs/guide/api.md)** — REST endpoints, configuration, and request/response schemas
 - **[Web UI Guide](docs/guide/web.md)** — Features, navigation, views, and configuration
+- **[Source Notes](docs/sources/README.md)** — Technical notes for validated source storage layouts and ingestion paths
+- **[Roadmap](docs/ROADMAP.md)** — Current milestone-oriented development plan
 
 Design documents are in `docs/design/`.
 

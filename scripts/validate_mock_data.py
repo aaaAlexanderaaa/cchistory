@@ -14,6 +14,8 @@ MOCK_ROOT = REPO_ROOT / "mock_data"
 ALLOWED_FILE_PATTERNS = [
     re.compile(r"README\.md"),
     re.compile(r"scenarios\.json"),
+    re.compile(r"fixtures/antigravity-live/trajectory-summaries\.json"),
+    re.compile(r"fixtures/antigravity-live/steps/[0-9a-f-]+\.json"),
     re.compile(r"\.codex/sessions/\d{4}/\d{2}/\d{2}/rollout-[^/]+\.jsonl"),
     re.compile(r"host_remote/\.codex/sessions/\d{4}/\d{2}/\d{2}/rollout-[^/]+\.jsonl"),
     re.compile(r"\.claude/projects/[^/]+/[0-9a-f-]+\.jsonl"),
@@ -27,12 +29,23 @@ ALLOWED_FILE_PATTERNS = [
         r"anysphere\.cursor-retrieval/embeddable_files\.txt|"
         r"anysphere\.cursor-retrieval/high_level_folder_description\.txt)"
     ),
+    re.compile(
+        r"\.gemini/antigravity/brain/[0-9a-f-]+/"
+        r"(task|implementation_plan|walkthrough|project_review|research_quality_review|"
+        r"SOTA_Agents_Context_Engineering_Research|Conversation_[^/]+_History)\.md"
+    ),
+    re.compile(
+        r"\.gemini/antigravity/brain/[0-9a-f-]+/"
+        r"(task|implementation_plan|walkthrough|project_review|research_quality_review|"
+        r"SOTA_Agents_Context_Engineering_Research|Conversation_[^/]+_History)\.md\.metadata\.json"
+    ),
+    re.compile(r"\.gemini/antigravity/brain/[0-9a-f-]+/browser/scratchpad_[^/]+\.md"),
 ]
 
 FORBIDDEN_CONTENT_PATTERNS = [
     ("unexpected home path", re.compile(r"/Users/(?!mock_user/)[^/\s\"')]+/")),
     ("real username", re.compile(r"alex_m4")),
-    ("private host", re.compile(r"gitea\.whatif\.top")),
+    ("unsanitized git forge host", re.compile(r"\bgitea\.[A-Za-z0-9.-]+\b")),
     ("real GitHub path", re.compile(r"github\.com/alex_m4")),
     ("unsanitized temp root", re.compile(r"/private/var/folders/(?!mock/)")),
     ("unsanitized temp root", re.compile(r"/var/folders/(?!mock/)")),
@@ -43,6 +56,14 @@ FORBIDDEN_CONTENT_PATTERNS = [
     ("OpenAI-style token", re.compile(r"\bsk-[A-Za-z0-9]{20,}\b")),
     ("authorization header", re.compile(r"Authorization:\s+Bearer (?!\$\{token\})[A-Za-z0-9._-]{16,}")),
     ("bearer token", re.compile(r"Bearer (?!\$\{token\})[A-Za-z0-9._-]{16,}")),
+    (
+        "unsanitized shell integration nonce",
+        re.compile(
+            r'"(?:shellIntegrationNonce|VSCODE_NONCE|nonce)":"'
+            r'(?!mock-shell-integration-nonce")'
+            r'[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}"'
+        ),
+    ),
 ]
 
 

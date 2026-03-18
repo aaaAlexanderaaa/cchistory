@@ -1,0 +1,5 @@
+{
+  "artifactType": "ARTIFACT_TYPE_IMPLEMENTATION_PLAN",
+  "summary": "Plan to fix the broken supervisor-based service startup system and consolidate the three redundant startup paths (bare dev:api/dev:web, services:*, and manual node dist/index.js) into one canonical service-based mechanism. Identifies the root cause as nohup bash -lc preventing wait from tracking child PIDs, and proposes switching to direct exec without nohup interposition.",
+  "updatedAt": "2026-03-12T01:14:03.279934Z"
+}

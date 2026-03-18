@@ -38,10 +38,17 @@ import {
   deriveSourceInstanceId,
   deriveSourceSlotId,
 } from "@cchistory/domain";
-import { applyMaskTemplates, getBuiltinMaskTemplates } from "../masks.js";
+import { applyMaskTemplates, getBuiltinMaskTemplates, LITERAL_PROMPT_MASK_TEMPLATE_IDS } from "../masks.js";
 import { extractVscodeStateSeeds } from "./vscode-state.js";
 import { parseAmpRecord as parseAmpRuntimeRecord } from "../platforms/amp/runtime.js";
-import { extractAntigravityBrainSeed, extractAntigravityTrajectorySeeds, isAntigravityTrajectoryKey } from "../platforms/antigravity/runtime.js";
+import { isAntigravityBrainSourceFile, isAntigravityHistoryIndexFile } from "../platforms/antigravity.js";
+import { extractAntigravityLiveSeeds } from "../platforms/antigravity/live.js";
+import {
+  extractAntigravityBrainSeed,
+  extractAntigravityHistorySeed,
+  extractAntigravityTrajectorySeeds,
+  isAntigravityTrajectoryKey,
+} from "../platforms/antigravity/runtime.js";
 import { parseClaudeRecord as parseClaudeRuntimeRecord } from "../platforms/claude-code/runtime.js";
 import { parseCodexRecord as parseCodexRuntimeRecord } from "../platforms/codex/runtime.js";
 import { buildCursorComposerSeed, buildCursorPromptHistorySeed } from "../platforms/cursor/runtime.js";
@@ -269,8 +276,9 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     id: "antigravity:vscode-state-sqlite:v1",
     family: DEFAULT_SOURCE_FAMILY,
     platform: "antigravity",
-    parser_version: "antigravity-parser@2026-03-12.1",
-    description: "Antigravity trajectory summaries and VS Code state.vscdb storage, with brain task artifacts treated as auxiliary evidence.",
+    parser_version: "antigravity-parser@2026-03-18.1",
+    description:
+      "Antigravity live trajectory steps from the local language server when available, with VS Code state.vscdb and brain artifacts retained as offline evidence rather than a guaranteed raw-conversation fallback.",
     capabilities: ["session_meta", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
   openclaw: {
@@ -561,12 +569,40 @@ async function collectSourceInputs(
   limitFilesPerSource: number | undefined,
   startedAt: string,
 ): Promise<CollectionCoreResult> {
-  const files = await listSourceFiles(source.platform, source.base_dir, limitFilesPerSource);
   const captureRunId = stableId("capture-run", source.id, startedAt);
   const sessionsById = new Map<string, SessionBuildInput>();
   const orphanBlobs: CapturedBlob[] = [];
   const sourceLossAudits: LossAuditRecord[] = [];
   const fileProcessingErrors: string[] = [];
+  const liveFiles: string[] = [];
+  let remainingFileLimit = limitFilesPerSource;
+
+  if (source.platform === "antigravity") {
+    const liveCollection = await extractAntigravityLiveSeeds(source.base_dir, {
+      limit: remainingFileLimit,
+    });
+    if (liveCollection) {
+      for (const [index, seed] of liveCollection.seeds.entries()) {
+        mergeAdapterBlobResult(
+          sessionsById,
+          buildSyntheticSeedAdapterResult(
+            source,
+            sourceFormatProfile,
+            host.id,
+            captureRunId,
+            liveCollection.virtualPaths[index] ?? `antigravity-live://${seed.sessionId}`,
+            seed,
+          ),
+        );
+      }
+      liveFiles.push(...liveCollection.virtualPaths);
+      if (typeof remainingFileLimit === "number") {
+        remainingFileLimit = Math.max(remainingFileLimit - liveCollection.virtualPaths.length, 0);
+      }
+    }
+  }
+
+  const files = await listSourceFiles(source.platform, source.base_dir, remainingFileLimit);
 
   for (const filePath of files) {
     let capturedBlob: CapturedBlobInput | undefined;
@@ -611,7 +647,7 @@ async function collectSourceInputs(
   }
 
   return {
-    files,
+    files: [...liveFiles, ...files],
     sessionsById,
     orphanBlobs,
     sourceLossAudits,
@@ -668,6 +704,9 @@ async function processCollectedSessions(
 
   for (const sessionInput of sessionsById.values()) {
     sessionInput.atoms.sort(compareTimeThenSeq);
+    if (sessionInput.draft.source_platform === "antigravity") {
+      sessionInput.atoms = collapseAntigravityUserTurnAtoms(sessionInput.atoms);
+    }
 
     const gitProjectEvidence = await readGitProjectEvidence(sessionInput.draft.working_directory);
     const sessionProjectCandidates = buildProjectObservationCandidates(
@@ -826,6 +865,59 @@ async function processBlob(
   ];
 }
 
+function buildSyntheticSeedAdapterResult(
+  source: SourceDefinition,
+  sourceFormatProfile: SourceFormatProfile,
+  hostId: string,
+  captureRunId: string,
+  originPath: string,
+  seed: ExtractedSessionSeed,
+): AdapterBlobResult {
+  const serializedSeed = JSON.stringify(seed.records);
+  const fileBuffer = Buffer.from(serializedSeed, "utf8");
+  const checksum = sha1(fileBuffer);
+  const capturedAt = nowIso();
+  const blob: CapturedBlob = {
+    id: stableId("blob", source.id, originPath, checksum),
+    source_id: source.id,
+    host_id: hostId,
+    origin_path: originPath,
+    checksum,
+    size_bytes: fileBuffer.length,
+    captured_at: capturedAt,
+    capture_run_id: captureRunId,
+    file_modified_at: seed.updatedAt ?? seed.createdAt ?? capturedAt,
+  };
+
+  return buildAdapterBlobResult(
+    source,
+    sourceFormatProfile,
+    hostId,
+    originPath,
+    captureRunId,
+    blob,
+    seed.sessionId,
+    seed.records.map((record, ordinal) => ({
+      id: stableId("record", source.id, seed.sessionId, blob.id, String(ordinal), record.pointer),
+      source_id: source.id,
+      blob_id: blob.id,
+      session_ref: seed.sessionId,
+      ordinal,
+      record_path_or_offset: record.pointer,
+      observed_at: record.observedAt ?? capturedAt,
+      parseable: true,
+      raw_json: record.rawJson,
+    })),
+    {
+      title: seed.title,
+      created_at: seed.createdAt,
+      updated_at: seed.updatedAt,
+      model: seed.model,
+      working_directory: seed.workingDirectory,
+    },
+  );
+}
+
 async function captureBlob(
   source: SourceDefinition,
   hostId: string,
@@ -947,7 +1039,7 @@ async function extractMultiSessionSeeds(
     });
   }
   if (source.platform === "antigravity" && path.basename(filePath) === "state.vscdb") {
-    return extractVscodeStateSeeds(source, filePath, {
+    return (await extractVscodeStateSeeds(source, filePath, {
       safeJsonParse,
       isObject,
       asArray,
@@ -973,9 +1065,21 @@ async function extractMultiSessionSeeds(
       buildCursorPromptHistorySeed,
       isAntigravityTrajectoryKey,
       extractAntigravityTrajectorySeeds,
-    });
+    })) ?? [];
   }
-  if (source.platform === "antigravity" && path.basename(filePath) === "task.md") {
+  if (source.platform === "antigravity" && isAntigravityHistoryIndexFile(filePath)) {
+    const historySeed = await extractAntigravityHistorySeed(filePath, fileBuffer, {
+      readOptionalJsonFile,
+      extractMarkdownHeading,
+      pathExists,
+      coerceIso,
+      asString,
+      nowIso,
+      normalizeWorkspacePath,
+    });
+    return historySeed ? [historySeed] : [];
+  }
+  if (source.platform === "antigravity" && isAntigravityBrainSourceFile(filePath)) {
     const brainSeed = await extractAntigravityBrainSeed(filePath, fileBuffer, {
       readOptionalJsonFile,
       extractMarkdownHeading,
@@ -985,7 +1089,7 @@ async function extractMultiSessionSeeds(
       nowIso,
       normalizeWorkspacePath,
     });
-    return brainSeed ? [brainSeed] : undefined;
+    return brainSeed ? [brainSeed] : [];
   }
   if (source.platform === "lobechat") {
     return extractConversationExportSeeds(source, filePath, fileBuffer, blobId);
@@ -1341,7 +1445,7 @@ function appendChunkedTextFragments(
   } = {},
 ): { nextSeq: number; usageApplied: boolean } {
   let usageApplied = options.usageApplied ?? false;
-  const chunks = buildTextChunks(actorKind, text);
+  const chunks = buildTextChunks(context.source.platform, actorKind, text);
   for (const chunk of chunks) {
     const firstAssistantChunk = actorKind === "assistant" && !usageApplied;
     fragments.push(
@@ -2321,35 +2425,50 @@ function buildProjectObservationCandidates(
     workspaceSignals.set(workspacePathNormalized, atom);
   }
 
-  const workspaceCandidates: DerivedCandidate[] = [...workspaceSignals.values()].map((atom) => ({
-    id: stableId(
-      "candidate",
-      "project_observation",
-      draft.source_id,
-      draft.id,
-      normalizeWorkspacePath(asString(atom.payload.path) ?? "") ?? String(atom.payload.path),
-    ),
-    source_id: draft.source_id,
-    session_ref: draft.id,
-    candidate_kind: "project_observation" as const,
-    input_atom_refs: [atom.id],
-    started_at: atom.time_key,
-    ended_at: atom.time_key,
-    rule_version: RULE_VERSION,
-    evidence: {
-      workspace_path: atom.payload.path,
-      workspace_path_normalized: normalizeWorkspacePath(asString(atom.payload.path) ?? ""),
-      repo_root: gitProjectEvidence?.repoRoot,
-      repo_remote: gitProjectEvidence?.repoRemote,
-      repo_fingerprint: gitProjectEvidence?.repoFingerprint,
-      source_native_project_ref: draft.source_native_project_ref,
-      confidence: 0.5,
-      reason: "workspace_signal_detected",
-      debug_summary: gitProjectEvidence?.repoFingerprint
-        ? "workspace signal with git-backed repository evidence"
-        : "workspace signal without git repository evidence",
-    },
-  }));
+  const workspaceCandidates: DerivedCandidate[] = [...workspaceSignals.values()].map((atom) => {
+    const sourceBackedRepoRoot = normalizeWorkspacePath(asString(atom.payload.repo_root) ?? "");
+    const sourceBackedRepoRemote = normalizeGitRemote(asString(atom.payload.repo_remote));
+    const observedRepoRoot = sourceBackedRepoRoot ?? gitProjectEvidence?.repoRoot;
+    const observedRepoRemote = sourceBackedRepoRemote;
+    const observedRepoFingerprint = sourceBackedRepoRemote
+      ? sha1(Buffer.from(`repo-remote:${sourceBackedRepoRemote}`))
+      : undefined;
+    const debugSummary = sourceBackedRepoRemote
+      ? "workspace signal with source-backed repository evidence"
+      : sourceBackedRepoRoot
+        ? "workspace signal with source-backed repository root"
+        : observedRepoRoot
+          ? "workspace signal with git-backed repository root"
+          : "workspace signal without git repository evidence";
+
+    return {
+      id: stableId(
+        "candidate",
+        "project_observation",
+        draft.source_id,
+        draft.id,
+        normalizeWorkspacePath(asString(atom.payload.path) ?? "") ?? String(atom.payload.path),
+      ),
+      source_id: draft.source_id,
+      session_ref: draft.id,
+      candidate_kind: "project_observation" as const,
+      input_atom_refs: [atom.id],
+      started_at: atom.time_key,
+      ended_at: atom.time_key,
+      rule_version: RULE_VERSION,
+      evidence: {
+        workspace_path: atom.payload.path,
+        workspace_path_normalized: normalizeWorkspacePath(asString(atom.payload.path) ?? ""),
+        repo_root: observedRepoRoot,
+        repo_remote: observedRepoRemote,
+        repo_fingerprint: observedRepoFingerprint,
+        source_native_project_ref: draft.source_native_project_ref,
+        confidence: 0.5,
+        reason: "workspace_signal_detected",
+        debug_summary: debugSummary,
+      },
+    };
+  });
 
   if (workspaceCandidates.length > 0) {
     return workspaceCandidates;
@@ -2437,8 +2556,11 @@ function buildSubmissionGroups(
       continue;
     }
 
+    const antigravityStartsFreshGroup =
+      draft.source_platform === "antigravity" && atom.origin_kind === "user_authored" && currentGroupAtomIds.length > 0;
     const continuesCurrentGroup =
       currentGroupAtomIds.length > 0 &&
+      !antigravityStartsFreshGroup &&
       (!assistantSeenAfterGroupStart || atom.origin_kind === "injected_user_shaped");
 
     if (!continuesCurrentGroup) {
@@ -2520,7 +2642,11 @@ function buildTurnsAndContext(
       .map((atom, userIndex): UserMessageProjection => {
         const rawText = asString(atom.payload.text) ?? "";
         const isInjected = atom.origin_kind === "injected_user_shaped";
-        const masked = applyMaskTemplates(rawText, "user_message", { injected: isInjected });
+        const masked = applyMaskTemplates(rawText, "user_message", {
+          injected: isInjected,
+          exclude_template_ids:
+            draft.source_platform === "antigravity" && !isInjected ? LITERAL_PROMPT_MASK_TEMPLATE_IDS : undefined,
+        });
         return {
           id: stableId("user-message", draft.source_id, draft.id, atom.id),
           raw_text: rawText,
@@ -3296,8 +3422,19 @@ function extractLeadingInjectedUserChunk(
   return undefined;
 }
 
-function buildTextChunks(actorKind: ActorKind, text: string): UserTextChunk[] {
+function buildTextChunks(platform: SourcePlatform, actorKind: ActorKind, text: string): UserTextChunk[] {
   if (actorKind === "user") {
+    if (platform === "antigravity") {
+      const normalized = text.replace(/\r\n/g, "\n").trim();
+      return normalized
+        ? [
+            {
+              originKind: "user_authored",
+              text: normalized,
+            },
+          ]
+        : [];
+    }
     return splitUserText(text);
   }
   return [
@@ -3417,7 +3554,19 @@ async function listSourceFiles(
   limit?: number,
 ): Promise<string[]> {
   const adapter = getPlatformAdapter(platform);
-  const files = await walkFiles(baseDir);
+  const roots = [baseDir, ...(adapter?.getSupplementalSourceRoots?.(baseDir) ?? [])];
+  const fileSet = new Set<string>();
+
+  for (const rootDir of roots) {
+    if (!(await pathExists(rootDir))) {
+      continue;
+    }
+    for (const filePath of await walkFiles(rootDir)) {
+      fileSet.add(filePath);
+    }
+  }
+
+  const files = [...fileSet];
   const filtered = adapter ? files.filter((filePath) => adapter.matchesSourceFile(filePath)) : [];
   filtered.sort((left, right) => {
     const priorityDelta = getSourceFilePriority(platform, left) - getSourceFilePriority(platform, right);
@@ -3496,6 +3645,128 @@ function isUserTurnAtom(atom: ConversationAtom): boolean {
     atom.content_kind === "text" &&
     (atom.origin_kind === "user_authored" || atom.origin_kind === "injected_user_shaped")
   );
+}
+
+function collapseAntigravityUserTurnAtoms(atoms: ConversationAtom[]): ConversationAtom[] {
+  const collapsed: ConversationAtom[] = [];
+  let lastKeptUserAtom: ConversationAtom | undefined;
+  let assistantSeenSinceLastUser = false;
+  for (const atom of atoms) {
+    if (atom.actor_kind === "assistant" && atom.content_kind === "text" && atom.display_policy !== "hide") {
+      assistantSeenSinceLastUser = true;
+    }
+    if (isUserTurnAtom(atom)) {
+      if (
+        lastKeptUserAtom &&
+        !assistantSeenSinceLastUser &&
+        areAntigravityPromptVariantsSimilar(asString(lastKeptUserAtom.payload.text), asString(atom.payload.text)) &&
+        antigravityAtomTimeDeltaMs(lastKeptUserAtom.time_key, atom.time_key) <= 10 * 60 * 1000
+      ) {
+        continue;
+      }
+      lastKeptUserAtom = atom;
+      assistantSeenSinceLastUser = false;
+    }
+    collapsed.push(atom);
+  }
+  return collapsed;
+}
+
+function areAntigravityPromptVariantsSimilar(left: string | undefined, right: string | undefined): boolean {
+  const normalizedLeft = normalizeAntigravityPromptVariant(left);
+  const normalizedRight = normalizeAntigravityPromptVariant(right);
+  if (!normalizedLeft || !normalizedRight) {
+    return false;
+  }
+  if (normalizedLeft === normalizedRight) {
+    return true;
+  }
+  const shorter = normalizedLeft.length < normalizedRight.length ? normalizedLeft : normalizedRight;
+  const longer = normalizedLeft.length < normalizedRight.length ? normalizedRight : normalizedLeft;
+  if (shorter.length >= 24 && longer.includes(shorter)) {
+    return true;
+  }
+
+  const leftTokens = extractAntigravityPromptSimilarityTokens(normalizedLeft);
+  const rightTokens = extractAntigravityPromptSimilarityTokens(normalizedRight);
+  if (leftTokens.size === 0 || rightTokens.size === 0) {
+    return false;
+  }
+
+  let overlapCount = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      overlapCount += 1;
+    }
+  }
+  const smallerSize = Math.min(leftTokens.size, rightTokens.size);
+  const largerSize = Math.max(leftTokens.size, rightTokens.size);
+  return overlapCount >= 4 && overlapCount / smallerSize >= 0.6 && overlapCount / largerSize >= 0.45;
+}
+
+function normalizeAntigravityPromptVariant(value: string | undefined): string | undefined {
+  const normalized = value
+    ?.toLowerCase()
+    .replace(/\*\*/gu, "")
+    .replace(/`/gu, "")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
+  return normalized || undefined;
+}
+
+function extractAntigravityPromptSimilarityTokens(value: string): Set<string> {
+  const stopWords = new Set([
+    "the",
+    "and",
+    "for",
+    "with",
+    "from",
+    "that",
+    "this",
+    "into",
+    "onto",
+    "about",
+    "following",
+    "established",
+    "project",
+  ]);
+  const tokens = new Set<string>();
+  for (const rawToken of value.split(/\s+/u)) {
+    const token = normalizeAntigravityPromptSimilarityToken(rawToken);
+    if (!token || stopWords.has(token)) {
+      continue;
+    }
+    tokens.add(token);
+  }
+  return tokens;
+}
+
+function normalizeAntigravityPromptSimilarityToken(token: string): string | undefined {
+  if (!token) {
+    return undefined;
+  }
+  if (/^[a-z]{3,}$/u.test(token)) {
+    if (token.endsWith("ies") && token.length > 4) {
+      return token.slice(0, -3) + "y";
+    }
+    if (token.endsWith("s") && !token.endsWith("ss") && token.length > 4) {
+      return token.slice(0, -1);
+    }
+    return token;
+  }
+  if (/[^\x00-\x7f]/u.test(token)) {
+    return token.length >= 2 ? token : undefined;
+  }
+  return token.length >= 3 ? token : undefined;
+}
+
+function antigravityAtomTimeDeltaMs(left: string, right: string): number {
+  const leftMs = Date.parse(left);
+  const rightMs = Date.parse(right);
+  if (Number.isNaN(leftMs) || Number.isNaN(rightMs)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.abs(rightMs - leftMs);
 }
 
 function inferDisplayPolicy(originKind: OriginKind, text: string): DisplayPolicy {

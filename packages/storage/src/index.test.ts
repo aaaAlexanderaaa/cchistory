@@ -404,7 +404,7 @@ test("derived project linker commits repo continuity and preserves workspace-onl
   }
 });
 
-test("workspace continuity candidates gain confidence when repeated across sessions", async () => {
+test("same-host repeated workspace continuity commits projects without repo evidence", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
 
   try {
@@ -418,7 +418,6 @@ test("workspace continuity candidates gain confidence when repeated across sessi
         workingDirectory: "/workspace/repeated-project",
         projectObservation: {
           workspacePath: "/workspace/repeated-project",
-          repoRoot: "/workspace/repeated-project",
         },
       }),
     );
@@ -431,7 +430,6 @@ test("workspace continuity candidates gain confidence when repeated across sessi
         workingDirectory: "/workspace/repeated-project",
         projectObservation: {
           workspacePath: "/workspace/repeated-project",
-          repoRoot: "/workspace/repeated-project",
         },
       }),
     );
@@ -439,17 +437,19 @@ test("workspace continuity candidates gain confidence when repeated across sessi
     const projects = storage.listProjects();
     assert.equal(projects.length, 1);
 
-    const candidateProject = projects[0]!;
-    assert.equal(candidateProject.linkage_state, "candidate");
-    assert.equal(candidateProject.link_reason, "workspace_path_continuity");
-    assert.equal(candidateProject.session_count, 2);
-    assert.equal(candidateProject.candidate_turn_count, 2);
-    assert.ok(candidateProject.confidence > 0.55);
+    const committedProject = projects[0]!;
+    assert.equal(committedProject.linkage_state, "committed");
+    assert.equal(committedProject.link_reason, "workspace_path_continuity");
+    assert.equal(committedProject.session_count, 2);
+    assert.equal(committedProject.committed_turn_count, 2);
+    assert.equal(committedProject.candidate_turn_count, 0);
+    assert.ok(committedProject.confidence >= 0.8);
 
     const resolvedTurns = storage.listResolvedTurns();
     assert.equal(resolvedTurns.length, 2);
-    assert.ok(resolvedTurns.every((turn) => turn.link_state === "candidate"));
-    assert.ok(resolvedTurns.every((turn) => turn.project_confidence === candidateProject.confidence));
+    assert.ok(resolvedTurns.every((turn) => turn.link_state === "committed"));
+    assert.ok(resolvedTurns.every((turn) => turn.project_confidence === committedProject.confidence));
+    assert.ok(resolvedTurns.every((turn) => turn.candidate_project_ids === undefined));
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -811,6 +811,202 @@ test("candidate lifecycle controls can archive or purge turns and artifact cover
     const tombstone = storage.purgeTurn("turn-lifecycle", "test_purge");
     assert.equal(tombstone?.logical_id, "turn-lifecycle");
     assert.equal(storage.getTombstone("turn-lifecycle")?.purge_reason, "test_purge");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("deleteProject purges linked sessions, removes the project, and rewrites impacted artifacts", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-project-delete-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(
+      createFixturePayload("src-project-delete-a", "Delete project turn", "stage-run-project-delete-a", {
+        sessionId: "session-project-delete-a",
+        turnId: "turn-project-delete-a",
+        hostId: "host-project-delete",
+        workingDirectory: "/workspace/project-delete-a",
+        projectObservation: {
+          workspacePath: "/workspace/project-delete-a",
+          repoRemote: "https://github.com/test/project-delete-a",
+          repoFingerprint: "fp-project-delete-a",
+        },
+      }),
+    );
+    storage.replaceSourcePayload(
+      createFixturePayload("src-project-delete-b", "Keep project turn", "stage-run-project-delete-b", {
+        sessionId: "session-project-delete-b",
+        turnId: "turn-project-delete-b",
+        hostId: "host-project-delete",
+        workingDirectory: "/workspace/project-delete-b",
+        projectObservation: {
+          workspacePath: "/workspace/project-delete-b",
+          repoRemote: "https://github.com/test/project-delete-b",
+          repoFingerprint: "fp-project-delete-b",
+        },
+      }),
+    );
+
+    const projectToDelete = storage
+      .listProjects()
+      .find((project) => project.primary_workspace_path === "/workspace/project-delete-a");
+    assert.ok(projectToDelete, "project to delete should resolve");
+    const preservedProject = storage
+      .listProjects()
+      .find((project) => project.primary_workspace_path === "/workspace/project-delete-b");
+    assert.ok(preservedProject, "preserved project should resolve");
+
+    storage.upsertProjectOverride({
+      target_kind: "turn",
+      target_ref: "turn-project-delete-a",
+      project_id: projectToDelete.project_id,
+      display_name: projectToDelete.display_name,
+    });
+
+    storage.upsertKnowledgeArtifact({
+      artifact_id: "artifact-project-delete-owned",
+      title: "Owned Artifact",
+      summary: "Belongs to the deleted project.",
+      project_id: projectToDelete.project_id,
+      source_turn_refs: ["turn-project-delete-a"],
+    });
+    storage.upsertKnowledgeArtifact({
+      artifact_id: "artifact-project-delete-shared",
+      title: "Shared Artifact",
+      summary: "References turns from both projects.",
+      source_turn_refs: ["turn-project-delete-a", "turn-project-delete-b"],
+    });
+
+    const result = storage.deleteProject(projectToDelete.project_id, "test_delete_project");
+    assert.ok(result, "deleteProject should return a result");
+    assert.equal(result.project_id, projectToDelete.project_id);
+    assert.deepEqual(result.deleted_session_ids, ["session-project-delete-a"]);
+    assert.deepEqual(result.deleted_turn_ids, ["turn-project-delete-a"]);
+    assert.ok(
+      result.deleted_candidate_ids.includes("turn-project-delete-a-candidate-project-observation"),
+      "project observation candidate should be deleted",
+    );
+    assert.equal(result.deleted_artifact_ids.includes("artifact-project-delete-owned"), true);
+    assert.equal(result.updated_artifact_ids.includes("artifact-project-delete-shared"), true);
+    assert.equal(
+      result.tombstones.some(
+        (tombstone) =>
+          tombstone.object_kind === "project" &&
+          tombstone.logical_id === projectToDelete.project_id &&
+          tombstone.purge_reason === "test_delete_project",
+      ),
+      true,
+    );
+
+    assert.equal(storage.getProject(projectToDelete.project_id), undefined, "deleted project should be gone");
+    assert.equal(storage.getTombstone(projectToDelete.project_id)?.object_kind, "project");
+    assert.equal(storage.getTurn("turn-project-delete-a"), undefined, "deleted turn should be removed");
+    assert.equal(storage.getSession("session-project-delete-a"), undefined, "deleted session should be removed");
+    assert.equal(storage.getTombstone("turn-project-delete-a")?.purge_reason, "test_delete_project");
+    assert.equal(storage.listProjects().some((project) => project.project_id === preservedProject.project_id), true);
+    assert.equal(storage.getTurn("turn-project-delete-b")?.canonical_text, "Keep project turn");
+    assert.equal(storage.listProjectOverrides().length, 0, "overrides targeting deleted project data should be removed");
+    assert.equal(
+      storage.listKnowledgeArtifacts().some((artifact) => artifact.artifact_id === "artifact-project-delete-owned"),
+      false,
+      "project-owned artifact should be removed",
+    );
+
+    const sharedArtifact = storage
+      .listKnowledgeArtifacts()
+      .find((artifact) => artifact.artifact_id === "artifact-project-delete-shared");
+    assert.ok(sharedArtifact, "shared artifact should survive");
+    assert.deepEqual(sharedArtifact.source_turn_refs, ["turn-project-delete-b"]);
+    assert.equal(storage.listArtifactCoverage("artifact-project-delete-shared").length, 1);
+    assert.equal(storage.listCandidates(50).some((candidate) => candidate.session_ref === "session-project-delete-a"), false);
+    assert.equal(storage.listRecords(50).some((record) => record.session_ref === "session-project-delete-a"), false);
+    assert.equal(storage.listFragments(50).some((fragment) => fragment.session_ref === "session-project-delete-a"), false);
+    assert.equal(storage.listAtoms(50).some((atom) => atom.session_ref === "session-project-delete-a"), false);
+    assert.equal(storage.listEdges(50).some((edge) => edge.session_ref === "session-project-delete-a"), false);
+
+    const deletedSource = storage
+      .listSources()
+      .find((source) => source.base_dir.endsWith("/src-project-delete-a"));
+    assert.equal(deletedSource?.total_sessions, 0);
+    assert.equal(deletedSource?.total_turns, 0);
+    assert.equal(deletedSource?.total_atoms, 0);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("deleteProject keeps unrelated turns when a session spans multiple projects", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-project-delete-shared-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const sharedSessionId = "session-project-delete-shared";
+    const projectDeletePayload = createFixturePayload(
+      "src-project-delete-shared",
+      "Delete only this turn",
+      "stage-run-project-delete-shared-a",
+      {
+        sessionId: sharedSessionId,
+        turnId: "turn-project-delete-shared-a",
+        hostId: "host-project-delete-shared",
+        workingDirectory: "/workspace/project-delete-a",
+        projectObservation: {
+          workspacePath: "/workspace/project-delete-a",
+          repoRemote: "https://github.com/test/project-delete-a",
+          repoFingerprint: "fp-project-delete-shared-a",
+        },
+      },
+    );
+    const projectKeepPayload = rewriteFixtureTimestamps(
+      createFixturePayload(
+        "src-project-delete-shared",
+        "Keep this turn",
+        "stage-run-project-delete-shared-b",
+        {
+          sessionId: sharedSessionId,
+          turnId: "turn-project-delete-shared-b",
+          hostId: "host-project-delete-shared",
+          workingDirectory: "/workspace/project-delete-b",
+          projectObservation: {
+            workspacePath: "/workspace/project-delete-b",
+            repoRemote: "https://github.com/test/project-delete-b",
+            repoFingerprint: "fp-project-delete-shared-b",
+          },
+        },
+      ),
+      {
+        "2026-03-09T09:00:00.000Z": "2026-03-09T10:00:00.000Z",
+        "2026-03-09T09:00:01.000Z": "2026-03-09T10:00:01.000Z",
+        "2026-03-09T09:00:02.000Z": "2026-03-09T10:00:02.000Z",
+        "2026-03-09T09:00:03.000Z": "2026-03-09T10:00:03.000Z",
+      },
+    );
+
+    storage.replaceSourcePayload(
+      combineFixturePayloads(projectDeletePayload, projectKeepPayload, {
+        sessionId: sharedSessionId,
+        title: "Shared session",
+      }),
+    );
+
+    const projectToDelete = storage
+      .listProjects()
+      .find((project) => project.primary_workspace_path === "/workspace/project-delete-a");
+    assert.ok(projectToDelete, "project to delete should resolve");
+    const preservedProject = storage
+      .listProjects()
+      .find((project) => project.primary_workspace_path === "/workspace/project-delete-b");
+    assert.ok(preservedProject, "preserved project should resolve");
+
+    const result = storage.deleteProject(projectToDelete.project_id, "test_delete_shared_session");
+    assert.ok(result, "deleteProject should return a result");
+    assert.deepEqual(result.deleted_turn_ids, ["turn-project-delete-shared-a"]);
+    assert.deepEqual(result.deleted_session_ids, []);
+    assert.equal(storage.getTurn("turn-project-delete-shared-a"), undefined);
+    assert.equal(storage.getTurn("turn-project-delete-shared-b")?.canonical_text, "Keep this turn");
+    assert.equal(storage.getSession(sharedSessionId)?.turn_count, 1);
+    assert.equal(storage.listProjects().some((project) => project.project_id === preservedProject.project_id), true);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -1430,6 +1626,56 @@ test("linking with repo_fingerprint produces committed project with high confide
   }
 });
 
+test("same host repo root continuity preserves one committed project across repo remote drift", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-link-root-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(
+      createFixturePayload("src-link-root-a", "Remote A", "sr-root-a", {
+        turnId: "turn-root-a",
+        sessionId: "session-root-a",
+        hostId: "host-root",
+        platform: "codex",
+        workingDirectory: "/workspace/cchistory",
+        projectObservation: {
+          workspacePath: "/workspace/cchistory",
+          repoRoot: "/workspace/cchistory",
+          repoRemote: "https://github.com/test/cchistory",
+          repoFingerprint: "fingerprint-remote-a",
+        },
+      }),
+    );
+    storage.replaceSourcePayload(
+      createFixturePayload("src-link-root-b", "Remote B", "sr-root-b", {
+        turnId: "turn-root-b",
+        sessionId: "session-root-b",
+        hostId: "host-root",
+        platform: "antigravity",
+        workingDirectory: "/workspace/cchistory",
+        projectObservation: {
+          workspacePath: "/workspace/cchistory",
+          repoRoot: "/workspace/cchistory",
+          repoRemote: "/workspace/cchistory",
+          repoFingerprint: "fingerprint-remote-b",
+        },
+      }),
+    );
+
+    const projects = storage.listProjects();
+    assert.equal(projects.length, 1);
+    assert.equal(projects[0]?.linkage_state, "committed");
+    assert.equal(projects[0]?.link_reason, "repo_root_match");
+    assert.deepEqual(projects[0]?.source_platforms, ["antigravity", "codex"]);
+
+    const turns = storage.listResolvedTurns();
+    assert.equal(turns[0]?.project_id, turns[1]?.project_id);
+    assert.equal(turns[0]?.link_state, "committed");
+    assert.equal(turns[1]?.link_state, "committed");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("turns without project observations and no workspace stay unlinked", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-link-none-"));
   try {
@@ -1955,7 +2201,7 @@ interface FixturePayloadOptions {
   sessionId?: string;
   turnId?: string;
   hostId?: string;
-  platform?: "codex" | "claude_code" | "factory_droid" | "amp" | "cursor";
+  platform?: "codex" | "claude_code" | "factory_droid" | "amp" | "cursor" | "antigravity";
   baseDir?: string;
   workingDirectory?: string;
   includeProjectObservation?: boolean;
@@ -2381,6 +2627,58 @@ function createFixturePayload(
         raw_event_refs: [recordId],
       },
     ],
+  };
+}
+
+function rewriteFixtureTimestamps(
+  payload: SourceSyncPayload,
+  replacements: Record<string, string>,
+): SourceSyncPayload {
+  let json = JSON.stringify(payload);
+  for (const [from, to] of Object.entries(replacements)) {
+    json = json.replaceAll(from, to);
+  }
+  return JSON.parse(json) as SourceSyncPayload;
+}
+
+function combineFixturePayloads(
+  left: SourceSyncPayload,
+  right: SourceSyncPayload,
+  options: { sessionId: string; title: string },
+): SourceSyncPayload {
+  const leftSession = left.sessions.find((session) => session.id === options.sessionId);
+  const rightSession = right.sessions.find((session) => session.id === options.sessionId);
+  assert.ok(leftSession);
+  assert.ok(rightSession);
+
+  return {
+    source: {
+      ...left.source,
+      total_blobs: left.blobs.length + right.blobs.length,
+      total_records: left.records.length + right.records.length,
+      total_fragments: left.fragments.length + right.fragments.length,
+      total_atoms: left.atoms.length + right.atoms.length,
+      total_sessions: 1,
+      total_turns: left.turns.length + right.turns.length,
+    },
+    stage_runs: [...left.stage_runs, ...right.stage_runs],
+    loss_audits: [...left.loss_audits, ...right.loss_audits],
+    blobs: [...left.blobs, ...right.blobs],
+    records: [...left.records, ...right.records],
+    fragments: [...left.fragments, ...right.fragments],
+    atoms: [...left.atoms, ...right.atoms],
+    edges: [...left.edges, ...right.edges],
+    candidates: [...left.candidates, ...right.candidates],
+    sessions: [
+      {
+        ...leftSession,
+        title: options.title,
+        updated_at: rightSession.updated_at > leftSession.updated_at ? rightSession.updated_at : leftSession.updated_at,
+        turn_count: left.turns.length + right.turns.length,
+      },
+    ],
+    turns: [...left.turns, ...right.turns].sort((a, b) => a.created_at.localeCompare(b.created_at)),
+    contexts: [...left.contexts, ...right.contexts],
   };
 }
 

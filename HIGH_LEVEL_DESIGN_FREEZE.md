@@ -279,10 +279,10 @@ membership.
 
 Committed linking rules for MVP:
 
-- Same host and same normalized workspace path creates a continuity signal, not
-  a committed project by itself.
-- Committed project continuity requires a corroborating strong signal or an
-  explicit manual override.
+- Same host and same normalized workspace path is sufficient committed
+  continuity on that host when it repeats across sessions.
+- A single workspace observation on one host remains candidate-linked until
+  that workspace continuity repeats or a manual override is applied.
 - Directory migration may preserve project continuity when repo fingerprint is
   continuous.
 - Cross-host continuity requires strong repo evidence or manual override.
@@ -290,8 +290,9 @@ Committed linking rules for MVP:
 - Forks default to a new project unless manually merged.
 - Monorepos default to `repo root + workspace subpath`, not the whole repo as
   one project.
-- Non-git projects should remain candidate-linked by default unless source data
-  carries a stable project identifier or a manual override is applied.
+- Non-git projects may become committed on one host through repeated stable
+  workspace continuity; otherwise they remain candidate-linked unless source
+  data carries a stable project identifier or a manual override is applied.
 
 Candidate-only rules for MVP:
 

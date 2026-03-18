@@ -323,6 +323,7 @@ export interface ProjectObservation {
 export type ProjectLinkReason =
   | "repo_fingerprint_match"
   | "repo_remote_match"
+  | "repo_root_match"
   | "workspace_path_continuity"
   | "source_native_project"
   | "manual_override"

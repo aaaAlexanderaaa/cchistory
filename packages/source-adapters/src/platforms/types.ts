@@ -25,6 +25,7 @@ export interface PlatformAdapter {
   getDefaultBaseDirCandidates(options: DefaultSourceResolutionOptions): string[];
   matchesSourceFile(filePath: string): boolean;
   getSourceFilePriority?(filePath: string): number;
+  getSupplementalSourceRoots?(baseDir: string): string[];
 }
 
 export function isSupportedSourcePlatform(platform: SourcePlatform): platform is SupportedSourcePlatform {

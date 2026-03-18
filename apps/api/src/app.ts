@@ -472,6 +472,11 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     const projectId = (request.params as { projectId: string }).projectId;
     const project = storage.getProject(projectId);
     if (!project) {
+      const tombstone = storage.getTombstone(projectId);
+      if (tombstone?.object_kind === "project") {
+        reply.code(410);
+        return { tombstone };
+      }
       reply.code(404);
       return { error: `Project not found: ${projectId}` };
     }
@@ -644,6 +649,26 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
         detail: body.detail ?? {},
       }),
     };
+  });
+
+  app.post("/api/admin/projects/:projectId/delete", {
+    schema: {
+      body: {
+        type: "object",
+        properties: {
+          reason: { type: "string" },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const projectId = (request.params as { projectId: string }).projectId;
+    const body = (request.body ?? {}) as { reason?: string };
+    const result = storage.deleteProject(projectId, body.reason);
+    if (!result) {
+      reply.code(404);
+      return { error: `Project not found: ${projectId}` };
+    }
+    return result;
   });
 
   app.post("/api/admin/lifecycle/candidate-gc", {
@@ -1029,6 +1054,9 @@ function buildOpenApiDocument() {
       },
       "/api/admin/projects/lineage-events": {
         post: { summary: "Append explicit split, merge, superseded, or override lineage events for a project" },
+      },
+      "/api/admin/projects/{projectId}/delete": {
+        post: { summary: "Delete a project and purge its currently linked local data" },
       },
       "/api/admin/lifecycle/candidate-gc": { post: { summary: "Archive or purge candidate turns older than a cutoff" } },
       "/api/admin/source-config": {

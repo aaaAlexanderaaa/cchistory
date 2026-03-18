@@ -828,6 +828,130 @@ test("artifact coverage and candidate lifecycle endpoints expose tombstones afte
   }
 });
 
+test("project delete endpoint purges the project and preserves unrelated projects", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+
+  try {
+    const dataDir = path.join(tempRoot, "data-project-delete");
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(
+      createApiFixturePayload("source-project-delete-a", "Delete via API", {
+        sessionId: "session-project-delete-a",
+        turnId: "turn-project-delete-a",
+        hostId: "host-project-delete",
+        platform: "codex",
+        workingDirectory: "/workspace/project-delete-a",
+        projectObservation: {
+          workspacePath: "/workspace/project-delete-a",
+          repoRoot: "/workspace/project-delete-a",
+          repoRemote: "https://github.com/test/project-delete",
+          repoFingerprint: "fp-project-delete-shared",
+        },
+      }),
+    );
+    storage.replaceSourcePayload(
+      createApiFixturePayload("source-project-delete-a2", "Delete via API again", {
+        sessionId: "session-project-delete-a2",
+        turnId: "turn-project-delete-a2",
+        hostId: "host-project-delete-2",
+        platform: "claude_code",
+        workingDirectory: "/projects/project-delete-a",
+        projectObservation: {
+          workspacePath: "/projects/project-delete-a",
+          repoRoot: "/projects/project-delete-a",
+          repoRemote: "https://github.com/test/project-delete-renamed",
+          repoFingerprint: "fp-project-delete-shared",
+        },
+      }),
+    );
+    storage.replaceSourcePayload(
+      createApiFixturePayload("source-project-keep", "Keep via API", {
+        sessionId: "session-project-keep",
+        turnId: "turn-project-keep",
+        hostId: "host-project-keep",
+        platform: "codex",
+        workingDirectory: "/workspace/project-keep",
+        projectObservation: {
+          workspacePath: "/workspace/project-keep",
+          repoRoot: "/workspace/project-keep",
+          repoRemote: "https://github.com/test/project-keep",
+          repoFingerprint: "fp-project-keep",
+        },
+      }),
+    );
+    const runtime = await createApiRuntime({ dataDir, storage, sources: [] });
+
+    try {
+      const projectToDelete = runtime.storage
+        .listProjects()
+        .find((project) =>
+          runtime.storage
+            .listProjectTurns(project.project_id, "all")
+            .some((turn) => turn.id === "turn-project-delete-a"),
+        );
+      assert.ok(projectToDelete, "project to delete should exist");
+      const preservedProject = runtime.storage
+        .listProjects()
+        .find((project) =>
+          runtime.storage
+            .listProjectTurns(project.project_id, "all")
+            .some((turn) => turn.id === "turn-project-keep"),
+        );
+      assert.ok(preservedProject, "preserved project should exist");
+
+      const deleteResponse = await runtime.app.inject({
+        method: "POST",
+        url: `/api/admin/projects/${encodeURIComponent(projectToDelete.project_id)}/delete`,
+        payload: {
+          reason: "api_test_delete_project",
+        },
+      });
+      assert.equal(deleteResponse.statusCode, 200);
+      const deleteBody = JSON.parse(deleteResponse.body) as {
+        project_id: string;
+        deleted_turn_ids: string[];
+        deleted_session_ids: string[];
+        tombstones: Array<{ logical_id: string; object_kind: string; purge_reason?: string }>;
+      };
+      assert.equal(deleteBody.project_id, projectToDelete.project_id);
+      assert.deepEqual(deleteBody.deleted_turn_ids, ["turn-project-delete-a", "turn-project-delete-a2"]);
+      assert.deepEqual(deleteBody.deleted_session_ids, ["session-project-delete-a", "session-project-delete-a2"]);
+      assert.equal(
+        deleteBody.tombstones.some(
+          (tombstone) =>
+            tombstone.logical_id === projectToDelete.project_id &&
+            tombstone.object_kind === "project" &&
+            tombstone.purge_reason === "api_test_delete_project",
+        ),
+        true,
+      );
+
+      const deletedProjectResponse = await runtime.app.inject({
+        method: "GET",
+        url: `/api/projects/${encodeURIComponent(projectToDelete.project_id)}`,
+      });
+      assert.equal(deletedProjectResponse.statusCode, 410);
+      assert.equal(JSON.parse(deletedProjectResponse.body).tombstone.logical_id, projectToDelete.project_id);
+
+      const preservedProjectResponse = await runtime.app.inject({
+        method: "GET",
+        url: `/api/projects/${encodeURIComponent(preservedProject.project_id)}`,
+      });
+      assert.equal(preservedProjectResponse.statusCode, 200);
+      assert.equal(JSON.parse(preservedProjectResponse.body).project.project_id, preservedProject.project_id);
+
+      const turnsResponse = await runtime.app.inject({ method: "GET", url: "/api/turns" });
+      assert.equal(turnsResponse.statusCode, 200);
+      const turns = JSON.parse(turnsResponse.body).turns as Array<{ id: string }>;
+      assert.deepEqual(turns.map((turn) => turn.id), ["turn-project-keep"]);
+    } finally {
+      await runtime.app.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 async function seedCodexSourceFixture(
   tempRoot: string,
   name: string,
