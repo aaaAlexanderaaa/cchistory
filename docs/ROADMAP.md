@@ -2,9 +2,22 @@
 
 本 roadmap 记录 CCHistory 接下来的主要工作方向，分为以下五个部分。各部分之间没有严格的先后依赖，可以并行推进。
 
-> 截至 2026-03-18，当前 registry 已注册 `codex`、`claude_code`、`factory_droid`、`amp`、`cursor`、`antigravity`、`openclaw`、`opencode`、`lobechat`。
+> 截至 2026-03-20，当前 registry 已注册 `codex`、`claude_code`、`factory_droid`、`amp`、`cursor`、`antigravity`、`openclaw`、`opencode`、`lobechat`。
+>
+> 自 2026-03-20 起，self-host v1 的发布门槛以 [`docs/design/SELF_HOST_V1_RELEASE_GATE.md`](./design/SELF_HOST_V1_RELEASE_GATE.md) 为准。当前 `stable` adapter 为 `codex`、`claude_code`、`factory_droid`、`amp`、`cursor`、`antigravity`；`openclaw`、`opencode`、`lobechat` 保持 `experimental`，直到真实世界验证补齐。
 >
 > 本文档作为 `docs/design/IMPLEMENTATION_PLAN.md` 的补充，但不替代设计冻结。
+
+# Self-Host V1 Release Gate
+
+当前 P0 不是继续扩大对外支持面，而是先满足 self-host v1 的 6 条发布门槛：
+
+- 干净机器能按文档装起来。
+- 升级不会破坏已有库。
+- 备份恢复在干净目录验证通过。
+- `apps/web` production build 不依赖外网。
+- `stable` adapters 都有真实样本和回归测试。
+- README、runtime surface、registry 的支持状态一致。
 
 # Bug 修复
 

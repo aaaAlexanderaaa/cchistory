@@ -34,19 +34,19 @@ CCHistory ingests, parses, and projects your AI coding assistant conversations i
 
 ## Supported Platforms
 
-| Platform | Status | Source Location |
-|----------|--------|-----------------|
-| Codex | **Supported** | `~/.codex/sessions/` |
-| Claude Code | **Supported** | `~/.claude/projects/` |
-| Cursor | **Supported** | Platform user-data + project history |
-| AMP | **Supported** | `~/.local/share/amp/threads/` |
-| Factory Droid | **Supported** | `~/.factory/sessions/` |
-| Antigravity | **Supported** | Platform user-data `User/` + `~/.gemini/antigravity/{conversations,brain}` |
-| OpenClaw | Coming Soon | — |
-| OpenCode | Coming Soon | — |
-| LobeChat | Coming Soon | — |
+| Platform | Self-host v1 Tier | Source Location |
+|----------|-------------------|-----------------|
+| Codex | **Stable** | `~/.codex/sessions/` |
+| Claude Code | **Stable** | `~/.claude/projects/` |
+| Cursor | **Stable** | Platform user-data + project history |
+| AMP | **Stable** | `~/.local/share/amp/threads/` |
+| Factory Droid | **Stable** | `~/.factory/sessions/` |
+| Antigravity | **Stable** | Platform user-data `User/` + `~/.gemini/antigravity/{conversations,brain}` |
+| OpenClaw | Experimental | `~/.openclaw/agents/` |
+| OpenCode | Experimental | `~/.local/share/opencode/{project,storage/session}` |
+| LobeChat | Experimental | `~/.config/lobehub-storage/` |
 
-> **More platforms on the way.** Have a platform you'd like to see supported? [Open an issue](https://github.com/aaaAlexanderaaa/cchistory/issues) to let us know.
+> `Stable` means real-world validated for the self-host v1 support bar. `Experimental` means the adapter is registered in code but is not yet validated enough for self-host v1 support claims.
 
 > Antigravity note: CCHistory uses two complementary paths for Antigravity. The running desktop app's local language-server trajectory API provides actual conversation content (user inputs, assistant replies, tool calls). Offline files (`workspaceStorage`, `History`, `brain`) are always scanned for project paths and workspace signals. If the desktop app is not running, only the offline path executes, which means no raw conversation content will be recovered — only project metadata and evidence artifacts.
 
@@ -201,6 +201,7 @@ For detailed guides, see the `docs/guide/` directory:
 - **[API Guide](docs/guide/api.md)** — REST endpoints, configuration, and request/response schemas
 - **[Web UI Guide](docs/guide/web.md)** — Features, navigation, views, and configuration
 - **[Source Notes](docs/sources/README.md)** — Technical notes for validated source storage layouts and ingestion paths
+- **[Self-Host V1 Release Gate](docs/design/SELF_HOST_V1_RELEASE_GATE.md)** — Minimum release bar for a single-user self-hosted v1
 - **[Roadmap](docs/ROADMAP.md)** — Current milestone-oriented development plan
 
 Design documents are in `docs/design/`.

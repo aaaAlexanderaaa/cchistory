@@ -34,7 +34,7 @@ export function replaceSourcePayloadWithOptions(
     }
 
     const insertLossAudit = db.prepare("INSERT INTO loss_audits (id, source_id, payload_json) VALUES (?, ?, ?)");
-    for (const lossAudit of normalizedPayload.loss_audits) {
+    for (const lossAudit of dedupeByKey(normalizedPayload.loss_audits, (entry) => entry.id)) {
       insertLossAudit.run(lossAudit.id, normalizedPayload.source.id, toJson(lossAudit));
     }
 

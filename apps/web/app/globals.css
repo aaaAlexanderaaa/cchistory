@@ -28,9 +28,9 @@
   --spacing-unit: 8px;
   --radius: 0px;
   --radius-slight: 2px;
-  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
-  --font-mono: 'IBM Plex Mono', monospace;
-  --font-display: 'Space Grotesk', system-ui, sans-serif;
+  --font-sans: 'IBM Plex Sans', 'Aptos', 'Segoe UI', 'Helvetica Neue', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'SFMono-Regular', 'Cascadia Mono', 'JetBrains Mono', ui-monospace, monospace;
+  --font-display: 'Space Grotesk', 'Avenir Next Condensed', 'Arial Narrow', 'Trebuchet MS', system-ui, sans-serif;
 }
 
 @layer base {

@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { deriveSourceInstanceId, type SourceSyncPayload } from "@cchistory/domain";
 import { CCHistoryStorage } from "./index.js";
+import { STORAGE_SCHEMA_VERSION } from "./db/schema.js";
 
 test("replaceSourcePayload persists pipeline layers and lineage drill-down", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
@@ -38,6 +39,62 @@ test("replaceSourcePayload persists pipeline layers and lineage drill-down", asy
     assert.equal(lineage.fragments.length, 4);
     assert.equal(lineage.records.length, 1);
     assert.equal(lineage.blobs.length, 1);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("storage exposes explicit schema version and migration ledger", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-schema-info-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    try {
+      const schema = storage.getSchemaInfo();
+      assert.equal(schema.schema_version, STORAGE_SCHEMA_VERSION);
+      assert.deepEqual(
+        schema.migrations.map((migration) => migration.id),
+        ["2026-03-20.1/base-schema", "2026-03-20.1/atom-edge-endpoints"],
+      );
+    } finally {
+      storage.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("schema metadata stays stable when reopening an up-to-date store", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-schema-stable-"));
+
+  try {
+    let storage = new CCHistoryStorage(dataDir);
+    storage.close();
+
+    const dbPath = path.join(dataDir, "cchistory.sqlite");
+    const firstDb = new DatabaseSync(dbPath);
+    const firstRow = firstDb
+      .prepare("SELECT value_text, updated_at FROM schema_meta WHERE key = ?")
+      .get("schema_version") as { value_text: string; updated_at: string } | undefined;
+    firstDb.close();
+
+    assert.ok(firstRow);
+    assert.equal(firstRow?.value_text, STORAGE_SCHEMA_VERSION);
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    storage = new CCHistoryStorage(dataDir);
+    storage.close();
+
+    const secondDb = new DatabaseSync(dbPath);
+    const secondRow = secondDb
+      .prepare("SELECT value_text, updated_at FROM schema_meta WHERE key = ?")
+      .get("schema_version") as { value_text: string; updated_at: string } | undefined;
+    secondDb.close();
+
+    assert.ok(secondRow);
+    assert.equal(secondRow?.value_text, STORAGE_SCHEMA_VERSION);
+    assert.equal(secondRow?.updated_at, firstRow?.updated_at);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -120,6 +177,28 @@ test("replaceSourcePayload tolerates duplicate blob rows within one payload", as
   }
 });
 
+test("replaceSourcePayload tolerates duplicate loss audit rows within one payload", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const payload = createFixturePayload(
+      "src-storage-duplicate-loss-audit",
+      "Duplicate loss audit",
+      "stage-run-duplicate-loss-audit",
+    );
+    payload.loss_audits.push({ ...payload.loss_audits[0]! });
+
+    storage.replaceSourcePayload(payload);
+
+    const storedPayload = storage.listSourcePayloads()[0];
+    assert.equal(storedPayload?.loss_audits.length, 1);
+    assert.equal(storage.getTurn("turn-1")?.canonical_text, "Duplicate loss audit");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("initializeStorageSchema upgrades legacy atom_edges columns and preserves edge lineage", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-legacy-schema-"));
 
@@ -155,6 +234,34 @@ test("initializeStorageSchema upgrades legacy atom_edges columns and preserves e
       assert.ok(columns.includes("to_atom_id"));
     } finally {
       db.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("legacy stores backfill schema metadata on first open after versioned schema support", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-legacy-schema-meta-"));
+
+  try {
+    const seedStorage = new CCHistoryStorage(dataDir);
+    seedStorage.close();
+
+    const db = new DatabaseSync(path.join(dataDir, "cchistory.sqlite"));
+    try {
+      db.exec("DROP TABLE schema_migrations;");
+      db.exec("DROP TABLE schema_meta;");
+    } finally {
+      db.close();
+    }
+
+    const storage = new CCHistoryStorage(dataDir);
+    try {
+      const schema = storage.getSchemaInfo();
+      assert.equal(schema.schema_version, STORAGE_SCHEMA_VERSION);
+      assert.equal(schema.migrations.length, 2);
+    } finally {
+      storage.close();
     }
   } finally {
     await rm(dataDir, { recursive: true, force: true });

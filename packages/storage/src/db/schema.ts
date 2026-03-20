@@ -1,6 +1,39 @@
 import type { DatabaseSync } from "node:sqlite";
 
+export const STORAGE_SCHEMA_VERSION = "2026-03-20.1";
+
+export interface StorageSchemaMigration {
+  id: string;
+  to_version: string;
+  summary: string;
+  applied_at: string;
+}
+
+export interface StorageSchemaInfo {
+  schema_version: string;
+  migrations: StorageSchemaMigration[];
+}
+
+const STORAGE_SCHEMA_MIGRATIONS: ReadonlyArray<{
+  id: string;
+  to_version: string;
+  summary: string;
+}> = [
+  {
+    id: "2026-03-20.1/base-schema",
+    to_version: STORAGE_SCHEMA_VERSION,
+    summary: "Create canonical storage tables and indexes for the self-host v1 store.",
+  },
+  {
+    id: "2026-03-20.1/atom-edge-endpoints",
+    to_version: STORAGE_SCHEMA_VERSION,
+    summary: "Backfill atom_edges endpoint columns from persisted payload_json lineage.",
+  },
+];
+
 export function initializeStorageSchema(db: DatabaseSync): boolean {
+  ensureSchemaMetadataTables(db);
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS source_instances (
       id TEXT PRIMARY KEY,
@@ -135,7 +168,10 @@ export function initializeStorageSchema(db: DatabaseSync): boolean {
     );
   `);
 
+  recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[0]!);
   ensureAtomEdgeEndpointColumns(db);
+  recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[1]!);
+  setSchemaMeta(db, "schema_version", STORAGE_SCHEMA_VERSION);
 
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_atom_edges_from ON atom_edges (from_atom_id);
@@ -174,6 +210,82 @@ export function initializeStorageSchema(db: DatabaseSync): boolean {
     );
     return false;
   }
+}
+
+export function readStorageSchemaInfo(db: DatabaseSync): StorageSchemaInfo {
+  const versionRow = db.prepare("SELECT value_text FROM schema_meta WHERE key = ?").get("schema_version") as
+    | { value_text: string }
+    | undefined;
+  const migrations = db
+    .prepare("SELECT id, to_version, summary, applied_at FROM schema_migrations ORDER BY applied_at ASC, rowid ASC")
+    .all()
+    .map((row) => ({
+      id: (row as { id: string }).id,
+      to_version: (row as { to_version: string }).to_version,
+      summary: (row as { summary: string }).summary,
+      applied_at: (row as { applied_at: string }).applied_at,
+    }));
+
+  return {
+    schema_version: versionRow?.value_text ?? STORAGE_SCHEMA_VERSION,
+    migrations,
+  };
+}
+
+function ensureSchemaMetadataTables(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS schema_meta (
+      key TEXT PRIMARY KEY,
+      value_text TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+      id TEXT PRIMARY KEY,
+      to_version TEXT NOT NULL,
+      summary TEXT NOT NULL,
+      applied_at TEXT NOT NULL
+    );
+  `);
+}
+
+function recordSchemaMigration(
+  db: DatabaseSync,
+  migration: {
+    id: string;
+    to_version: string;
+    summary: string;
+  },
+): void {
+  const existing = db.prepare("SELECT 1 FROM schema_migrations WHERE id = ?").get(migration.id) as
+    | { 1: number }
+    | undefined;
+  if (existing) {
+    return;
+  }
+
+  db.prepare("INSERT INTO schema_migrations (id, to_version, summary, applied_at) VALUES (?, ?, ?, ?)")
+    .run(migration.id, migration.to_version, migration.summary, nowIso());
+}
+
+function setSchemaMeta(db: DatabaseSync, key: string, value: string): void {
+  const existing = db.prepare("SELECT value_text FROM schema_meta WHERE key = ?").get(key) as
+    | { value_text: string }
+    | undefined;
+  if (existing?.value_text === value) {
+    return;
+  }
+
+  if (existing) {
+    db.prepare("UPDATE schema_meta SET value_text = ?, updated_at = ? WHERE key = ?").run(value, nowIso(), key);
+    return;
+  }
+
+  db.prepare("INSERT INTO schema_meta (key, value_text, updated_at) VALUES (?, ?, ?)").run(key, value, nowIso());
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
 }
 
 function ensureAtomEdgeEndpointColumns(db: DatabaseSync): void {

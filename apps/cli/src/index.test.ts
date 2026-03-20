@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, cp, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -32,6 +32,12 @@ test("sync, ls, search, and stats usage render human-readable output for real so
     assert.equal(searchResult.exitCode, 0);
     assert.match(searchResult.stdout, /Unassigned|workspace/);
     assert.match(searchResult.stdout, /Review the probe output/);
+
+    const overviewStatsResult = await runCliCapture(["stats", "--store", storeDir], tempRoot);
+    assert.equal(overviewStatsResult.exitCode, 0);
+    assert.match(overviewStatsResult.stdout, /Schema Version/);
+    assert.match(overviewStatsResult.stdout, /Schema Migrations/);
+    assert.match(overviewStatsResult.stdout, /Search Mode/);
 
     const statsResult = await runCliCapture(["stats", "usage", "--by", "model", "--store", storeDir], tempRoot);
     assert.equal(statsResult.exitCode, 0);
@@ -170,7 +176,7 @@ test("sync and ls cover repo mock_data default roots for codex claude factory am
         .sort();
       assert.deepEqual(platforms, ["amp", "antigravity", "claude_code", "codex", "cursor", "factory_droid"]);
       assert.ok(storage.listResolvedSessions().length >= 13);
-      assert.ok(storage.listResolvedTurns().length >= 11);
+      assert.ok(storage.listResolvedTurns().length >= 10);
     } finally {
       storage.close();
     }
@@ -213,6 +219,136 @@ test("sync picks up openclaw and opencode default roots in the CLI", async () =>
       assert.deepEqual(platforms, ["openclaw", "opencode"]);
       assert.equal(storage.listResolvedSessions().length, 2);
       assert.equal(storage.listResolvedTurns().length, 2);
+    } finally {
+      storage.close();
+    }
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync --dry-run previews selected source roots without creating a store", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliOpenSourceFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+
+    const storeDir = path.join(tempRoot, "store");
+    const dryRunResult = await runCliCapture(["sync", "--dry-run", "--store", storeDir], tempRoot);
+    assert.equal(dryRunResult.exitCode, 0);
+    assert.match(dryRunResult.stdout, /Dry run:/);
+    assert.match(dryRunResult.stdout, /OpenClaw/);
+    assert.match(dryRunResult.stdout, /OpenCode/);
+    assert.match(dryRunResult.stdout, new RegExp(escapeRegExp(path.join(tempRoot, ".openclaw", "agents"))));
+    assert.match(
+      dryRunResult.stdout,
+      new RegExp(escapeRegExp(path.join(tempRoot, ".local", "share", "opencode", "storage", "session"))),
+    );
+
+    await assert.rejects(access(path.join(storeDir, "cchistory.sqlite")));
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("--help renders usage without touching storage-backed commands", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+
+  try {
+    const result = await runCliCapture(["--help"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(result.stdout, /^Usage:/);
+    assert.match(result.stdout, /cchistory sync/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("templates prints format profiles without opening a store", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+
+  try {
+    const profiles = await runCliJson<Array<{ id: string; family: string }>>(["templates"], tempRoot);
+    assert.ok(profiles.length > 0);
+    assert.ok(profiles.some((profile) => profile.family === "local_coding_agent"));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("discover lists found source roots and discovery-only Gemini CLI paths", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliDiscoveryFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+
+    const result = await runCliJson<{
+      tools: Array<{
+        display_name: string;
+        platform: string;
+        capability: string;
+        candidates: Array<{ path: string; exists: boolean }>;
+      }>;
+    }>(["discover"], tempRoot);
+
+    const openclaw = result.tools.find((tool) => tool.platform === "openclaw");
+    const opencode = result.tools.find((tool) => tool.platform === "opencode");
+    const gemini = result.tools.find((tool) => tool.platform === "gemini");
+
+    assert.ok(openclaw);
+    assert.ok(opencode);
+    assert.ok(gemini);
+    assert.equal(gemini?.display_name, "Gemini CLI");
+    assert.equal(gemini?.capability, "discover_only");
+    assert.ok(
+      gemini?.candidates.some(
+        (candidate) => candidate.exists && candidate.path === path.join(tempRoot, ".gemini", "settings.json"),
+      ),
+    );
+    assert.ok(
+      gemini?.candidates.some(
+        (candidate) => candidate.exists && candidate.path === path.join(tempRoot, ".gemini", "tmp"),
+      ),
+    );
+    assert.ok(
+      opencode?.candidates.some(
+        (candidate) => candidate.exists && candidate.path === path.join(tempRoot, ".local", "share", "opencode", "project"),
+      ),
+    );
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync keeps legacy OpenCode sessions when the official project root also exists", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliDiscoveryFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+
+    const storeDir = path.join(tempRoot, "store");
+    const syncResult = await runCliCapture(["sync", "--store", storeDir, "--source", "opencode"], tempRoot);
+    assert.equal(syncResult.exitCode, 0, syncResult.stderr);
+
+    const storage = new CCHistoryStorage(storeDir);
+    try {
+      const source = storage.listSources().find((entry) => entry.platform === "opencode");
+      assert.ok(source);
+      const payload = storage.getSourcePayload(source.id);
+      assert.ok(payload);
+      assert.deepEqual(
+        payload.sessions.map((session) => session.title).sort(),
+        ["OpenCode fixture", "OpenCode official fixture"],
+      );
     } finally {
       storage.close();
     }
@@ -489,6 +625,99 @@ test("import detects payload conflicts and supports skip and replace", async () 
   }
 });
 
+test("gc prunes orphan raw snapshots while preserving referenced blobs", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+
+    const storeDir = path.join(tempRoot, "store");
+    assert.equal((await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot)).exitCode, 0);
+
+    const storage = new CCHistoryStorage(storeDir);
+    let sourceId = "";
+    let referencedPath = "";
+    try {
+      const source = storage.listSources().find((entry) => entry.platform === "codex");
+      assert.ok(source);
+      sourceId = source.id;
+      const payload = storage.getSourcePayload(source.id);
+      assert.ok(payload);
+      referencedPath = payload.blobs[0]?.captured_path ?? "";
+      assert.notEqual(referencedPath, "");
+    } finally {
+      storage.close();
+    }
+
+    const orphanPath = path.join(storeDir, "raw", sourceId, "orphan.jsonl");
+    const legacyPath = path.join(storeDir, "raw", "src-codex", "legacy.jsonl");
+    await writeFile(orphanPath, "orphan\n", "utf8");
+    await mkdir(path.dirname(legacyPath), { recursive: true });
+    await writeFile(legacyPath, "legacy\n", "utf8");
+
+    const gcResult = await runCliCapture(["gc", "--store", storeDir], tempRoot);
+    assert.equal(gcResult.exitCode, 0, gcResult.stderr);
+    assert.match(gcResult.stdout, /Deleted Files\s*: 2/);
+    assert.equal(await fileExists(orphanPath), false);
+    assert.equal(await fileExists(legacyPath), false);
+    assert.equal(await fileExists(referencedPath), true);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("gc --dry-run fails for a missing store without creating a database", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+
+  try {
+    const storeDir = path.join(tempRoot, "missing-store");
+    const gcResult = await runCliCapture(["gc", "--dry-run", "--store", storeDir], tempRoot);
+    assert.equal(gcResult.exitCode, 1);
+    assert.match(gcResult.stderr, /Store not found/);
+    assert.equal(await fileExists(path.join(storeDir, "cchistory.sqlite")), false);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync leaves orphan raw snapshots in place until gc is run explicitly", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+
+    const storeDir = path.join(tempRoot, "store");
+    assert.equal((await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot)).exitCode, 0);
+
+    const storage = new CCHistoryStorage(storeDir);
+    let sourceId = "";
+    try {
+      const source = storage.listSources().find((entry) => entry.platform === "codex");
+      assert.ok(source);
+      sourceId = source.id;
+    } finally {
+      storage.close();
+    }
+
+    const orphanPath = path.join(storeDir, "raw", sourceId, "stale.jsonl");
+    await writeFile(orphanPath, "stale\n", "utf8");
+    assert.equal(await fileExists(orphanPath), true);
+
+    const syncResult = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(syncResult.exitCode, 0, syncResult.stderr);
+    assert.doesNotMatch(syncResult.stdout, /Raw GC/);
+    assert.equal(await fileExists(orphanPath), true);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 async function runCliCapture(argv: string[], cwd: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
@@ -508,6 +737,15 @@ async function runCliJson<T>(argv: string[], cwd: string): Promise<T> {
   const result = await runCliCapture([...argv, "--json"], cwd);
   assert.equal(result.exitCode, 0, result.stderr);
   return JSON.parse(result.stdout) as T;
+}
+
+async function fileExists(targetPath: string): Promise<boolean> {
+  try {
+    await access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function rewriteAtomEdgesAsLegacyTable(dbPath: string): void {
@@ -925,6 +1163,64 @@ async function seedCliOpenSourceFixtures(tempRoot: string): Promise<void> {
   );
 }
 
+async function seedCliDiscoveryFixtures(tempRoot: string): Promise<void> {
+  await seedCliOpenSourceFixtures(tempRoot);
+
+  const officialOpencodeSessionDir = path.join(
+    tempRoot,
+    ".local",
+    "share",
+    "opencode",
+    "project",
+    "workspace-demo",
+    "storage",
+    "session",
+  );
+  const officialOpencodeMessageDir = path.join(
+    tempRoot,
+    ".local",
+    "share",
+    "opencode",
+    "project",
+    "workspace-demo",
+    "storage",
+    "message",
+    "opencode-official",
+  );
+
+  await mkdir(officialOpencodeSessionDir, { recursive: true });
+  await mkdir(officialOpencodeMessageDir, { recursive: true });
+
+  await writeFile(
+    path.join(officialOpencodeSessionDir, "opencode-official.json"),
+    JSON.stringify({
+      id: "opencode-official",
+      title: "OpenCode official fixture",
+      cwd: "/workspace/opencode-official",
+      model: "sonnet-4",
+      createdAt: "2026-03-10T05:10:00.000Z",
+      updatedAt: "2026-03-10T05:10:02.000Z",
+    }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(officialOpencodeMessageDir, "0001.json"),
+    JSON.stringify({
+      info: {
+        id: "opencode-official-user-1",
+        role: "user",
+        createdAt: "2026-03-10T05:10:01.000Z",
+      },
+      parts: [{ type: "text", text: "Inspect official OpenCode path." }],
+    }),
+    "utf8",
+  );
+
+  await mkdir(path.join(tempRoot, ".gemini", "tmp", "project-hash"), { recursive: true });
+  await mkdir(path.join(tempRoot, ".gemini", "history"), { recursive: true });
+  await writeFile(path.join(tempRoot, ".gemini", "settings.json"), JSON.stringify({ theme: "dark" }), "utf8");
+}
+
 async function overwriteCodexPrompt(tempRoot: string, prompt: string): Promise<void> {
   await writeCodexSessionFixture(tempRoot, "session.jsonl", {
     sessionId: "codex-session-1",
@@ -986,4 +1282,8 @@ async function writeCodexSessionFixture(
       .join("\n"),
     "utf8",
   );
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

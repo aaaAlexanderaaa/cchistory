@@ -215,6 +215,40 @@ test("persisted probe snapshots raw blobs and seeds storage", async () => {
   }
 });
 
+test("persisted probe does not automatically prune orphan raw blobs", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+
+  try {
+    const source = await seedCodexSourceFixture(tempRoot, "persisted-no-auto-gc");
+    const dataDir = path.join(tempRoot, "data-persisted-no-auto-gc");
+    const runtime = await createApiRuntime({ dataDir, sources: [source] });
+
+    try {
+      const orphanPath = path.join(runtime.rawStoreDir, source.id, "orphan.jsonl");
+      await writeFile(orphanPath, "orphan\n", "utf8");
+      assert.equal(existsSync(orphanPath), true);
+
+      const response = await runtime.app.inject({
+        method: "POST",
+        url: "/api/admin/probe/runs",
+        payload: {
+          source_ids: [source.id],
+          limit_files_per_source: 1,
+          persist: true,
+        },
+      });
+
+      assert.equal(response.statusCode, 200);
+      assert.equal(existsSync(orphanPath), true);
+      assert.equal(await countFiles(runtime.rawStoreDir), 2);
+    } finally {
+      await runtime.app.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("source directory overrides persist and drive subsequent syncs", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
 

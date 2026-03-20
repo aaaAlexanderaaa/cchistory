@@ -8,10 +8,10 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { FragmentKind, SourceDefinition, SourceSyncPayload } from "@cchistory/domain";
-import { getDefaultSourcesForHost, getSourceFormatProfiles, runSourceProbe } from "./index.js";
+import { discoverDefaultSourcesForHost, discoverHostToolsForHost, getDefaultSourcesForHost, getSourceFormatProfiles, runSourceProbe } from "./index.js";
 import { buildAntigravityLiveSessionSeed, extractAntigravityLiveSeeds } from "./platforms/antigravity/live.js";
 import { extractGenericSessionMetadata } from "./platforms/generic/runtime.js";
-import { listPlatformAdapters } from "./platforms/registry.js";
+import { listPlatformAdapters, listPlatformAdaptersBySupportTier } from "./platforms/registry.js";
 
 test("platform adapter registry provides exactly one adapter per supported platform", () => {
   const adapters = listPlatformAdapters();
@@ -29,6 +29,25 @@ test("platform adapter registry provides exactly one adapter per supported platf
     "opencode",
   ]);
   assert.equal(new Set(platforms).size, adapters.length);
+});
+
+test("platform adapter registry distinguishes stable and experimental support tiers", () => {
+  const stablePlatforms = listPlatformAdaptersBySupportTier("stable")
+    .map((adapter) => adapter.platform)
+    .sort();
+  const experimentalPlatforms = listPlatformAdaptersBySupportTier("experimental")
+    .map((adapter) => adapter.platform)
+    .sort();
+
+  assert.deepEqual(stablePlatforms, [
+    "amp",
+    "antigravity",
+    "claude_code",
+    "codex",
+    "cursor",
+    "factory_droid",
+  ]);
+  assert.deepEqual(experimentalPlatforms, ["lobechat", "openclaw", "opencode"]);
 });
 
 const execFileAsync = promisify(execFile);
@@ -755,6 +774,162 @@ test("getDefaultSourcesForHost keeps Cursor project transcripts but prefers offi
     antigravitySource?.base_dir,
     path.join(homeDir, "Library", "Application Support", "Antigravity", "User"),
   );
+});
+
+test("discoverDefaultSourcesForHost exposes candidate roots and selected official paths", () => {
+  const homeDir = "/Users/tester";
+  const discoveries = discoverDefaultSourcesForHost({
+    homeDir,
+    platform: "darwin",
+    pathExists(targetPath) {
+      return (
+        targetPath === path.join(homeDir, ".local", "share", "opencode", "project") ||
+        targetPath === path.join(homeDir, ".openclaw", "agents")
+      );
+    },
+  });
+
+  const opencode = discoveries.find((entry) => entry.platform === "opencode");
+  const openclaw = discoveries.find((entry) => entry.platform === "openclaw");
+
+  assert.equal(opencode?.selected_path, path.join(homeDir, ".local", "share", "opencode", "project"));
+  assert.equal(opencode?.selected_exists, true);
+  assert.ok(
+    opencode?.candidates.some(
+      (candidate) =>
+        candidate.path === path.join(homeDir, ".local", "share", "opencode", "project") && candidate.selected,
+    ),
+  );
+  assert.ok(
+    opencode?.candidates.some(
+      (candidate) => candidate.path === path.join(homeDir, ".local", "share", "opencode", "storage", "session"),
+    ),
+  );
+  assert.equal(openclaw?.selected_path, path.join(homeDir, ".openclaw", "agents"));
+  assert.equal(openclaw?.selected_exists, true);
+});
+
+test("discoverHostToolsForHost includes discovery-only Gemini CLI paths", () => {
+  const homeDir = "/Users/tester";
+  const discoveries = discoverHostToolsForHost({
+    homeDir,
+    platform: "darwin",
+    pathExists(targetPath) {
+      return (
+        targetPath === path.join(homeDir, ".gemini", "settings.json") ||
+        targetPath === path.join(homeDir, ".gemini", "tmp")
+      );
+    },
+  });
+
+  const gemini = discoveries.find((entry) => entry.key === "gemini_cli");
+  assert.ok(gemini);
+  assert.equal(gemini?.kind, "tool");
+  assert.equal(gemini?.capability, "discover_only");
+  assert.equal(gemini?.selected_exists, true);
+  assert.deepEqual(gemini?.discovered_paths.sort(), [
+    path.join(homeDir, ".gemini", "settings.json"),
+    path.join(homeDir, ".gemini", "tmp"),
+  ]);
+});
+
+test("getDefaultSourcesForHost keeps legacy OpenCode sessions discoverable when project root exists", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const legacySessionDir = path.join(tempRoot, ".local", "share", "opencode", "storage", "session");
+    const legacyMessageDir = path.join(tempRoot, ".local", "share", "opencode", "storage", "message", "opencode-legacy");
+    const officialSessionDir = path.join(
+      tempRoot,
+      ".local",
+      "share",
+      "opencode",
+      "project",
+      "workspace-demo",
+      "storage",
+      "session",
+    );
+    const officialMessageDir = path.join(
+      tempRoot,
+      ".local",
+      "share",
+      "opencode",
+      "project",
+      "workspace-demo",
+      "storage",
+      "message",
+      "opencode-official",
+    );
+
+    await mkdir(legacySessionDir, { recursive: true });
+    await mkdir(legacyMessageDir, { recursive: true });
+    await mkdir(officialSessionDir, { recursive: true });
+    await mkdir(officialMessageDir, { recursive: true });
+
+    await writeFile(
+      path.join(legacySessionDir, "opencode-legacy.json"),
+      JSON.stringify({
+        id: "opencode-legacy",
+        title: "OpenCode legacy fixture",
+        cwd: "/workspace/opencode-legacy",
+        model: "sonnet-4",
+        createdAt: "2026-03-10T05:00:00.000Z",
+        updatedAt: "2026-03-10T05:00:02.000Z",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(legacyMessageDir, "0001.json"),
+      JSON.stringify({
+        info: {
+          id: "opencode-legacy-user-1",
+          role: "user",
+          createdAt: "2026-03-10T05:00:01.000Z",
+        },
+        parts: [{ type: "text", text: "Inspect legacy OpenCode history." }],
+      }),
+      "utf8",
+    );
+
+    await writeFile(
+      path.join(officialSessionDir, "opencode-official.json"),
+      JSON.stringify({
+        id: "opencode-official",
+        title: "OpenCode official fixture",
+        cwd: "/workspace/opencode-official",
+        model: "sonnet-4",
+        createdAt: "2026-03-11T05:10:00.000Z",
+        updatedAt: "2026-03-11T05:10:02.000Z",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(officialMessageDir, "0001.json"),
+      JSON.stringify({
+        info: {
+          id: "opencode-official-user-1",
+          role: "user",
+          createdAt: "2026-03-11T05:10:01.000Z",
+        },
+        parts: [{ type: "text", text: "Inspect official OpenCode history." }],
+      }),
+      "utf8",
+    );
+
+    const opencodeSource = getDefaultSourcesForHost({ homeDir: tempRoot, includeMissing: true }).find(
+      (source) => source.platform === "opencode",
+    );
+    assert.ok(opencodeSource);
+    assert.equal(opencodeSource?.base_dir, path.join(tempRoot, ".local", "share", "opencode", "project"));
+
+    const result = await runSourceProbe({ source_ids: [opencodeSource.id] }, [opencodeSource]);
+    assert.deepEqual(
+      result.sources[0]?.sessions.map((session) => session.title).sort(),
+      ["OpenCode legacy fixture", "OpenCode official fixture"],
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("runSourceProbe ingests Cursor agent transcripts from project history roots", async () => {

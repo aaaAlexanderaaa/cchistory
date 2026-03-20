@@ -39,7 +39,6 @@ import {
   deriveSourceSlotId,
 } from "@cchistory/domain";
 import { applyMaskTemplates, getBuiltinMaskTemplates, LITERAL_PROMPT_MASK_TEMPLATE_IDS } from "../masks.js";
-import { extractVscodeStateSeeds } from "./vscode-state.js";
 import { parseAmpRecord as parseAmpRuntimeRecord } from "../platforms/amp/runtime.js";
 import { isAntigravityBrainSourceFile, isAntigravityHistoryIndexFile } from "../platforms/antigravity.js";
 import { extractAntigravityLiveSeeds } from "../platforms/antigravity/live.js";
@@ -63,9 +62,35 @@ import {
 import { getPlatformAdapter } from "../platforms/registry.js";
 import type { DefaultSourceResolutionOptions, SupportedSourcePlatform } from "../platforms/types.js";
 
+type ExtractVscodeStateSeeds = typeof import("./vscode-state.js").extractVscodeStateSeeds;
+
+let vscodeStateExtractorPromise: Promise<ExtractVscodeStateSeeds> | undefined;
+
 export interface ProbeOptions {
   source_ids?: string[];
   limit_files_per_source?: number;
+}
+
+export interface HostDiscoveryCandidate {
+  kind: "default" | "supplemental" | "artifact";
+  label: string;
+  path: string;
+  exists: boolean;
+  selected: boolean;
+}
+
+export interface HostDiscoveryEntry {
+  key: string;
+  kind: "source" | "tool";
+  capability: "sync" | "discover_only";
+  platform: SourcePlatform;
+  family?: SourceDefinition["family"];
+  slot_id?: string;
+  display_name: string;
+  selected_path?: string;
+  selected_exists: boolean;
+  discovered_paths: string[];
+  candidates: HostDiscoveryCandidate[];
 }
 
 interface SessionDraft {
@@ -219,6 +244,36 @@ const CLAUDE_INTERRUPTION_MARKERS = new Set([
   "[Request interrupted by user for tool use]",
 ]);
 
+const DISCOVERY_ONLY_TOOL_SPECS = [
+  {
+    key: "gemini_cli",
+    capability: "discover_only" as const,
+    kind: "tool" as const,
+    platform: "gemini" as const,
+    display_name: "Gemini CLI",
+    getCandidates: (options: DefaultSourceResolutionOptions): Array<Pick<HostDiscoveryCandidate, "kind" | "label" | "path">> => {
+      const homeDir = options.homeDir ?? os.homedir();
+      return [
+        {
+          kind: "artifact",
+          label: "user settings",
+          path: path.join(homeDir, ".gemini", "settings.json"),
+        },
+        {
+          kind: "artifact",
+          label: "tmp root",
+          path: path.join(homeDir, ".gemini", "tmp"),
+        },
+        {
+          kind: "artifact",
+          label: "history root",
+          path: path.join(homeDir, ".gemini", "history"),
+        },
+      ];
+    },
+  },
+] as const;
+
 const COMMON_PARSER_CAPABILITIES: readonly ParserCapability[] = [
   "token_usage",
   "text_fragments",
@@ -370,14 +425,98 @@ export function getDefaultSources(): SourceDefinition[] {
   return getDefaultSourcesForHost();
 }
 
+export function discoverDefaultSourcesForHost(
+  options: DefaultSourceResolutionOptions = {},
+): HostDiscoveryEntry[] {
+  const pathExistsFn = options.pathExists ?? existsSync;
+
+  return DEFAULT_SOURCE_SPECS.map((source) => {
+    const slotId = source.slot_id || deriveSourceSlotId(source.platform);
+    const adapter = getPlatformAdapter(source.platform);
+    const defaultCandidates = (adapter?.getDefaultBaseDirCandidates(buildDefaultResolutionContext(options)) ?? []).map(
+      (candidate, index) => ({
+        kind: "default" as const,
+        label: `default ${index + 1}`,
+        path: candidate,
+        exists: pathExistsFn(candidate),
+        selected: false,
+      }),
+    );
+    const selectedPath =
+      defaultCandidates.find((candidate) => candidate.exists)?.path ??
+      defaultCandidates[0]?.path ??
+      os.homedir();
+    const selectedExists = defaultCandidates.some((candidate) => candidate.path === selectedPath && candidate.exists);
+    const candidates: HostDiscoveryCandidate[] = defaultCandidates.map((candidate) => ({
+      ...candidate,
+      selected: candidate.path === selectedPath,
+    }));
+
+    for (const [index, supplementalPath] of (adapter?.getSupplementalSourceRoots?.(selectedPath) ?? []).entries()) {
+      candidates.push({
+        kind: "supplemental",
+        label: `supplemental ${index + 1}`,
+        path: supplementalPath,
+        exists: pathExistsFn(supplementalPath),
+        selected: false,
+      });
+    }
+
+    return {
+      key: slotId,
+      kind: "source",
+      capability: "sync",
+      platform: source.platform,
+      family: source.family,
+      slot_id: slotId,
+      display_name: source.display_name,
+      selected_path: selectedPath,
+      selected_exists: selectedExists,
+      discovered_paths: candidates.filter((candidate) => candidate.exists).map((candidate) => candidate.path),
+      candidates,
+    };
+  });
+}
+
+export function discoverHostToolsForHost(
+  options: DefaultSourceResolutionOptions = {},
+): HostDiscoveryEntry[] {
+  const pathExistsFn = options.pathExists ?? existsSync;
+  const sourceEntries = discoverDefaultSourcesForHost(options);
+  const toolEntries = DISCOVERY_ONLY_TOOL_SPECS.map((spec) => {
+    const candidates = spec.getCandidates(options).map((candidate) => ({
+      ...candidate,
+      exists: pathExistsFn(candidate.path),
+      selected: false,
+    }));
+    const selectedPath = candidates.find((candidate) => candidate.exists)?.path ?? candidates[0]?.path;
+    return {
+      key: spec.key,
+      kind: spec.kind,
+      capability: spec.capability,
+      platform: spec.platform,
+      display_name: spec.display_name,
+      selected_path: selectedPath,
+      selected_exists: candidates.some((candidate) => candidate.exists),
+      discovered_paths: candidates.filter((candidate) => candidate.exists).map((candidate) => candidate.path),
+      candidates,
+    } satisfies HostDiscoveryEntry;
+  });
+
+  return [...sourceEntries, ...toolEntries];
+}
+
 export function getDefaultSourcesForHost(
   options: DefaultSourceResolutionOptions = {},
 ): SourceDefinition[] {
-  const pathExistsFn = options.pathExists ?? existsSync;
   const hostId = deriveHostId(options.hostname ?? os.hostname());
+  const discoveries = discoverDefaultSourcesForHost(options);
+
   return DEFAULT_SOURCE_SPECS.flatMap((source) => {
-    const baseDir = resolveDefaultSourceBaseDir(source.platform, options);
-    if (!options.includeMissing && !pathExistsFn(baseDir)) {
+    const slotId = source.slot_id || deriveSourceSlotId(source.platform);
+    const discovery = discoveries.find((entry) => entry.slot_id === slotId);
+    const baseDir = discovery?.selected_path ?? resolveDefaultSourceBaseDir(source.platform, options);
+    if (!options.includeMissing && !discovery?.selected_exists) {
       return [];
     }
     return [
@@ -385,7 +524,7 @@ export function getDefaultSourcesForHost(
         ...source,
         id: deriveSourceInstanceId({
           host_id: hostId,
-          slot_id: source.slot_id || deriveSourceSlotId(source.platform),
+          slot_id: slotId,
           base_dir: baseDir,
         }),
         base_dir: baseDir,
@@ -403,7 +542,17 @@ function resolveDefaultSourceBaseDir(
   options: DefaultSourceResolutionOptions,
 ): string {
   const adapter = getPlatformAdapter(platform);
-  const candidates = adapter?.getDefaultBaseDirCandidates({
+  const candidates = adapter?.getDefaultBaseDirCandidates(buildDefaultResolutionContext(options)) ?? [];
+  const pathExistsFn = options.pathExists ?? existsSync;
+  return candidates.find((candidate) => pathExistsFn(candidate)) ?? candidates[0] ?? os.homedir();
+}
+
+function buildDefaultResolutionContext(options: DefaultSourceResolutionOptions): Required<Pick<
+  DefaultSourceResolutionOptions,
+  "homeDir" | "platform" | "appDataDir"
+>> &
+  DefaultSourceResolutionOptions {
+  return {
     ...options,
     homeDir: options.homeDir ?? os.homedir(),
     platform: options.platform ?? os.platform(),
@@ -411,9 +560,7 @@ function resolveDefaultSourceBaseDir(
       options.appDataDir ??
       process.env.APPDATA ??
       path.join(options.homeDir ?? os.homedir(), "AppData", "Roaming"),
-  }) ?? [];
-  const pathExistsFn = options.pathExists ?? existsSync;
-  return candidates.find((candidate) => pathExistsFn(candidate)) ?? candidates[0] ?? os.homedir();
+  };
 }
 
 export async function runSourceProbe(
@@ -1010,6 +1157,7 @@ async function extractMultiSessionSeeds(
   blobId: string,
 ): Promise<ExtractedSessionSeed[] | undefined> {
   if (source.platform === "cursor" && path.basename(filePath) === "state.vscdb") {
+    const extractVscodeStateSeeds = await loadExtractVscodeStateSeeds();
     return extractVscodeStateSeeds(source, filePath, {
       safeJsonParse,
       isObject,
@@ -1039,6 +1187,7 @@ async function extractMultiSessionSeeds(
     });
   }
   if (source.platform === "antigravity" && path.basename(filePath) === "state.vscdb") {
+    const extractVscodeStateSeeds = await loadExtractVscodeStateSeeds();
     return (await extractVscodeStateSeeds(source, filePath, {
       safeJsonParse,
       isObject,
@@ -1101,6 +1250,11 @@ async function extractMultiSessionSeeds(
     }
   }
   return undefined;
+}
+
+async function loadExtractVscodeStateSeeds(): Promise<ExtractVscodeStateSeeds> {
+  vscodeStateExtractorPromise ??= import("./vscode-state.js").then((module) => module.extractVscodeStateSeeds);
+  return vscodeStateExtractorPromise;
 }
 
 async function extractRecords(

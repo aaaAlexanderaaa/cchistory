@@ -1,6 +1,6 @@
 # Current Runtime Surface
 
-This document records the repository-visible runtime surface as of 2026-03-14. It complements the design freeze and should be consulted when implementation inventory matters more than frozen semantics.
+This document records the repository-visible runtime surface as of 2026-03-20. It complements the design freeze and should be consulted when implementation inventory matters more than frozen semantics.
 
 > [`HIGH_LEVEL_DESIGN_FREEZE.md`](/root/cchistory/HIGH_LEVEL_DESIGN_FREEZE.md) remains the source of truth for product semantics and invariants.
 >
@@ -23,23 +23,25 @@ The current product runtime is a three-entrypoint TypeScript workspace with shar
 | `packages/api-client` | API DTO surface shared by clients | `packages/api-client/src/index.ts` |
 | `packages/presentation` | presentation-layer mapping consumed by web | `packages/presentation/src/index.ts` |
 
-# Implemented Source Adapters
+# Registered Source Adapters
 
-The repository currently registers nine source adapters, spanning both local coding-agent and conversational-export families.
+The repository currently registers nine source adapters, spanning both local coding-agent and conversational-export families. For self-host v1 support claims, registration and support are distinct concepts.
 
-| Platform | Family | Notes |
-| --- | --- | --- |
-| `codex` | `local_coding_agent` | local session files |
-| `claude_code` | `local_coding_agent` | local project/session logs |
-| `factory_droid` | `local_coding_agent` | local sessions plus sidecar settings |
-| `amp` | `local_coding_agent` | thread-style local JSON data |
-| `cursor` | `local_coding_agent` | transcript plus VS Code state fallback paths |
-| `antigravity` | `local_coding_agent` | live local trajectory API for conversation content; offline state and brain always scanned for project/workspace signals |
-| `openclaw` | `local_coding_agent` | local JSONL sessions |
-| `opencode` | `local_coding_agent` | local session/message trees |
-| `lobechat` | `conversational_export` | export-bundle style import source |
+| Platform | Family | Self-host v1 tier | Notes |
+| --- | --- | --- | --- |
+| `codex` | `local_coding_agent` | `stable` | local session files |
+| `claude_code` | `local_coding_agent` | `stable` | local project/session logs |
+| `factory_droid` | `local_coding_agent` | `stable` | local sessions plus sidecar settings |
+| `amp` | `local_coding_agent` | `stable` | thread-style local JSON data |
+| `cursor` | `local_coding_agent` | `stable` | transcript plus VS Code state fallback paths |
+| `antigravity` | `local_coding_agent` | `stable` | live local trajectory API for conversation content; offline state and brain always scanned for project/workspace signals |
+| `openclaw` | `local_coding_agent` | `experimental` | registered parser and discovery path, but not yet real-world validated enough for self-host v1 support claims |
+| `opencode` | `local_coding_agent` | `experimental` | registered parser and discovery path, but not yet real-world validated enough for self-host v1 support claims |
+| `lobechat` | `conversational_export` | `experimental` | registered parser and discovery path, but not yet real-world validated enough for self-host v1 support claims |
 
 The adapter registry is defined in [`packages/source-adapters/src/platforms/registry.ts`](/root/cchistory/packages/source-adapters/src/platforms/registry.ts).
+
+The self-host v1 release gate is defined in [`docs/design/SELF_HOST_V1_RELEASE_GATE.md`](/root/cchistory/docs/design/SELF_HOST_V1_RELEASE_GATE.md).
 
 Broader enums in domain or DTO packages may mention additional platforms such as `chatgpt`, `claude_web`, or `gemini`. Those enums should be read as schema allowance, not proof that a live adapter is already registered.
 

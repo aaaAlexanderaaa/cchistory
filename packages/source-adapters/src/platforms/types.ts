@@ -1,5 +1,7 @@
 import type { SourcePlatform } from "@cchistory/domain";
 
+export type AdapterSupportTier = "stable" | "experimental";
+
 export type SupportedSourcePlatform =
   | "codex"
   | "claude_code"
@@ -22,6 +24,7 @@ export interface DefaultSourceResolutionOptions {
 
 export interface PlatformAdapter {
   platform: SupportedSourcePlatform;
+  supportTier: AdapterSupportTier;
   getDefaultBaseDirCandidates(options: DefaultSourceResolutionOptions): string[];
   matchesSourceFile(filePath: string): boolean;
   getSourceFilePriority?(filePath: string): number;

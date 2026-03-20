@@ -33,7 +33,7 @@ import type {
   KnowledgeArtifact,
   ImportedBundleRecord,
 } from "@cchistory/domain";
-import { initializeStorageSchema } from "../db/schema.js";
+import { initializeStorageSchema, readStorageSchemaInfo, type StorageSchemaInfo } from "../db/schema.js";
 import {
   replaceSourcePayload as replacePersistedSourcePayload,
   replaceSourcePayloadWithOptions as replacePersistedSourcePayloadWithOptions,
@@ -122,6 +122,10 @@ export class CCHistoryStorage {
 
   get searchMode(): "fts5" | "fallback" {
     return this.searchIndexReady ? "fts5" : "fallback";
+  }
+
+  getSchemaInfo(): StorageSchemaInfo {
+    return readStorageSchemaInfo(this.db);
   }
 
   private initialize(): boolean {
@@ -855,6 +859,10 @@ export class CCHistoryStorage {
 
   listBlobs(limit = 200): CapturedBlob[] {
     return this.selectPayloads<CapturedBlob>("captured_blobs", limit);
+  }
+
+  listAllBlobs(): CapturedBlob[] {
+    return this.selectAllPayloads<CapturedBlob>("captured_blobs");
   }
 
   listRecords(limit = 500): RawRecord[] {

@@ -1,11 +1,18 @@
 import path from "node:path";
-import { CCHistoryStorage } from "@cchistory/storage";
+import process from "node:process";
+import type { CCHistoryStorage, RawSnapshotGcResult } from "@cchistory/storage";
 
 export interface StoreLayout {
   dbPath: string;
   assetDir: string;
   rawDir: string;
 }
+
+const SQLITE_MIN_NODE_MAJOR = 22;
+
+type StorageModule = typeof import("@cchistory/storage");
+
+let storageModulePromise: Promise<StorageModule> | undefined;
 
 export function resolveStoreLayout(input: {
   cwd: string;
@@ -44,6 +51,52 @@ export function resolveStoreLayout(input: {
   };
 }
 
-export function openStorage(layout: StoreLayout): CCHistoryStorage {
-  return new CCHistoryStorage({ dbPath: layout.dbPath });
+export async function createStorage(location: string | { dataDir?: string; dbPath?: string }): Promise<CCHistoryStorage> {
+  try {
+    const { CCHistoryStorage } = await loadStorageModule();
+    return new CCHistoryStorage(location);
+  } catch (error) {
+    throw formatStorageRuntimeError(error);
+  }
+}
+
+export async function openStorage(layout: StoreLayout): Promise<CCHistoryStorage> {
+  return createStorage({ dbPath: layout.dbPath });
+}
+
+export async function pruneOrphanRawSnapshotsSafe(input: {
+  storage: CCHistoryStorage;
+  rawDir: string;
+  dryRun?: boolean;
+}): Promise<RawSnapshotGcResult> {
+  try {
+    const { pruneOrphanRawSnapshots } = await loadStorageModule();
+    return pruneOrphanRawSnapshots(input);
+  } catch (error) {
+    throw formatStorageRuntimeError(error);
+  }
+}
+
+async function loadStorageModule(): Promise<StorageModule> {
+  storageModulePromise ??= import("@cchistory/storage");
+  return storageModulePromise;
+}
+
+function formatStorageRuntimeError(error: unknown): Error {
+  if (!isNodeSqliteImportError(error)) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+
+  return new Error(
+    `This command requires Node.js >= ${SQLITE_MIN_NODE_MAJOR} (current: ${process.versions.node}) because CCHistory storage uses the built-in \`node:sqlite\` module.`,
+  );
+}
+
+function isNodeSqliteImportError(error: unknown): error is Error & { code?: string } {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error as { code?: string }).code === "ERR_UNKNOWN_BUILTIN_MODULE" &&
+    error.message.includes("node:sqlite")
+  );
 }

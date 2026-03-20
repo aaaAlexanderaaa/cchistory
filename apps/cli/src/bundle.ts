@@ -9,7 +9,7 @@ import type {
   ImportedBundleRecord,
   SourceSyncPayload,
 } from "@cchistory/domain";
-import { CCHistoryStorage } from "@cchistory/storage";
+import type { CCHistoryStorage } from "@cchistory/storage";
 
 function assertSafePathComponent(value: string, label: string): void {
   if (value.includes("/") || value.includes("\\") || value.includes("..") || value.includes("\0")) {

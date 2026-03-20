@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { access, mkdtemp, mkdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import type {
+  SourcePlatform,
   ProjectIdentity,
   SourceDefinition,
   SourceSyncPayload,
@@ -15,8 +16,16 @@ import type {
   UsageStatsDimension,
   UserTurnProjection,
 } from "@cchistory/domain";
-import { getDefaultSources, getSourceFormatProfiles, runSourceProbe } from "@cchistory/source-adapters";
-import { CCHistoryStorage } from "@cchistory/storage";
+import {
+  discoverDefaultSourcesForHost,
+  discoverHostToolsForHost,
+  getDefaultSources,
+  getDefaultSourcesForHost,
+  getSourceFormatProfiles,
+  runSourceProbe,
+} from "@cchistory/source-adapters";
+import type { HostDiscoveryEntry } from "@cchistory/source-adapters";
+import type { CCHistoryStorage, RawSnapshotGcResult } from "@cchistory/storage";
 import {
   computePayloadChecksum,
   exportBundle,
@@ -34,7 +43,7 @@ import {
   shortId,
   truncateText,
 } from "./renderers.js";
-import { openStorage, resolveStoreLayout, type StoreLayout } from "./store.js";
+import { createStorage, openStorage, pruneOrphanRawSnapshotsSafe, resolveStoreLayout, type StoreLayout } from "./store.js";
 
 interface ParsedArgs {
   positionals: string[];
@@ -105,6 +114,8 @@ async function dispatchCommand(command: string, parsed: ParsedArgs, io: CliIo): 
   switch (command) {
     case "sync":
       return handleSync(parsed, io);
+    case "discover":
+      return handleDiscover(parsed);
     case "ls":
       return handleLs(parsed, io);
     case "tree":
@@ -121,6 +132,8 @@ async function dispatchCommand(command: string, parsed: ParsedArgs, io: CliIo): 
       return handleImport(parsed, io);
     case "merge":
       return handleMergeAlias(parsed, io);
+    case "gc":
+      return handleGc(parsed, io);
     case "query":
       return handleQueryAlias(parsed, io);
     case "templates":
@@ -131,6 +144,10 @@ async function dispatchCommand(command: string, parsed: ParsedArgs, io: CliIo): 
 }
 
 async function handleSync(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
+  if (hasFlag(parsed, "dry-run")) {
+    return handleSyncDryRun(parsed);
+  }
+
   const layout = resolveStoreLayout({
     cwd: io.cwd,
     storeArg: getFlag(parsed, "store"),
@@ -141,7 +158,7 @@ async function handleSync(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput>
 
   const sourceRefs = getFlagValues(parsed, "source");
   const limitFiles = parseNumberFlag(parsed, "limit-files");
-  const storage = openStorage(layout);
+  const storage = await openStorage(layout);
 
   try {
     const { host, syncedSources } = await syncSelectedSources({
@@ -178,6 +195,73 @@ async function handleSync(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput>
   } finally {
     storage.close();
   }
+}
+
+async function handleSyncDryRun(parsed: ParsedArgs): Promise<CommandOutput> {
+  const sourceRefs = getFlagValues(parsed, "source");
+  const discoveries = applySourceDiscoverySelection(
+    discoverDefaultSourcesForHost({ includeMissing: true }),
+    sourceRefs,
+  );
+  const availableCount = discoveries.filter((entry) => entry.selected_exists).length;
+
+  return {
+    text: [
+      `Dry run: ${availableCount}/${discoveries.length} supported source(s) currently available`,
+      "",
+      renderTable(
+        ["Source", "Slot", "Platform", "Selected Path", "Exists", "Discovered Paths"],
+        discoveries.map((entry) => [
+          entry.display_name,
+          entry.slot_id ?? entry.key,
+          entry.platform,
+          entry.selected_path ?? "(none)",
+          entry.selected_exists ? "yes" : "no",
+          String(entry.discovered_paths.length),
+        ]),
+      ),
+    ].join("\n"),
+    json: {
+      kind: "sync-dry-run",
+      sources: discoveries,
+    },
+  };
+}
+
+async function handleDiscover(parsed: ParsedArgs): Promise<CommandOutput> {
+  const showAll = hasFlag(parsed, "showall");
+  const discoveries = discoverHostToolsForHost({ includeMissing: true });
+  const visibleEntries = showAll ? discoveries : discoveries.filter((entry) => entry.discovered_paths.length > 0);
+  const rows = visibleEntries.flatMap((entry) =>
+    entry.candidates
+      .filter((candidate) => showAll || candidate.exists)
+      .map((candidate) => [
+        entry.display_name,
+        entry.kind,
+        formatDiscoveryCapability(entry.capability),
+        entry.platform,
+        `${candidate.kind} (${candidate.label})`,
+        candidate.path,
+        candidate.exists ? "yes" : "no",
+        candidate.selected ? "yes" : "",
+      ]),
+  );
+
+  return {
+    text:
+      rows.length > 0
+        ? [
+            `Discovered ${visibleEntries.length} item(s) on this host`,
+            "",
+            renderTable(["Name", "Kind", "Capability", "Platform", "Path Type", "Path", "Exists", "Selected"], rows),
+          ].join("\n")
+        : "(no discovered items)",
+    json: {
+      kind: "discover",
+      entries: visibleEntries,
+      tools: visibleEntries,
+    },
+  };
 }
 
 async function handleLs(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
@@ -513,6 +597,7 @@ async function handleStats(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput
     const usageFilters = { include_known_zero_token: showAll };
     if (!target) {
       const overview = storage.getUsageOverview(usageFilters);
+      const schema = storage.getSchemaInfo();
       const sources = storage.listSources();
       const projects = storage.listProjects();
       const sessions = storage.listResolvedSessions();
@@ -524,6 +609,9 @@ async function handleStats(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput
         text: [
           renderKeyValue([
             ["DB", layout.dbPath],
+            ["Schema Version", schema.schema_version],
+            ["Schema Migrations", String(schema.migrations.length)],
+            ["Search Mode", storage.searchMode],
             ["Sources", String(sources.length)],
             ["Projects", String(projects.length)],
             ["Sessions", String(sessions.length)],
@@ -549,6 +637,8 @@ async function handleStats(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput
             sessions: sessions.length,
             turns: turns.length,
           },
+          schema,
+          search_mode: storage.searchMode,
           overview,
         },
       };
@@ -667,7 +757,7 @@ async function handleExport(parsed: ParsedArgs, io: CliIo): Promise<CommandOutpu
   const outDir = requireFlag(parsed, "out");
   const includeRawBlobs = !hasFlag(parsed, "no-raw");
   const sourceRefs = getFlagValues(parsed, "source");
-  const { layout, storage } = openExistingStore(parsed, io);
+  const { layout, storage } = await openExistingStore(parsed, io);
   try {
     const selectedSourceIds = sourceRefs.length > 0 ? sourceRefs.map((ref) => resolveSourceRef(storage, ref).id) : undefined;
     const result = await exportBundle({
@@ -715,7 +805,7 @@ async function handleImport(parsed: ParsedArgs, io: CliIo): Promise<CommandOutpu
   });
   await mkdir(layout.assetDir, { recursive: true });
   await mkdir(layout.rawDir, { recursive: true });
-  const storage = openStorage(layout);
+  const storage = await openStorage(layout);
 
   try {
     const result = await importBundleIntoStore({
@@ -723,6 +813,10 @@ async function handleImport(parsed: ParsedArgs, io: CliIo): Promise<CommandOutpu
       bundleDir: path.resolve(io.cwd, bundleDir),
       rawDir: layout.rawDir,
       onConflict: mode,
+    });
+    const rawGc = await pruneOrphanRawSnapshotsSafe({
+      storage,
+      rawDir: layout.rawDir,
     });
     return {
       text: renderKeyValue([
@@ -733,10 +827,13 @@ async function handleImport(parsed: ParsedArgs, io: CliIo): Promise<CommandOutpu
         ["Skipped Sources", String(result.skipped_source_ids.length)],
         ["Projects Before", String(result.project_count_before)],
         ["Projects After", String(result.project_count_after)],
+        ["Raw GC Deleted Files", formatNumber(rawGc.deleted_files)],
+        ["Raw GC Deleted Bytes", formatBytes(rawGc.deleted_bytes)],
       ]),
       json: {
         kind: "import",
         db_path: layout.dbPath,
+        raw_gc: rawGc,
         ...result,
       },
     };
@@ -754,8 +851,8 @@ async function handleMergeAlias(parsed: ParsedArgs, io: CliIo): Promise<CommandO
   const sourceRefs = getFlagValues(parsed, "source");
   const conflictMode = (getFlag(parsed, "on-conflict") ?? "replace") as "skip" | "replace";
 
-  const sourceStorage = openStorage(fromLayout);
-  const targetStorage = openStorage(toLayout);
+  const sourceStorage = await openStorage(fromLayout);
+  const targetStorage = await openStorage(toLayout);
   try {
     const selectedSourceIds = sourceRefs.length > 0 ? sourceRefs.map((ref) => resolveSourceRef(sourceStorage, ref).id) : undefined;
     await exportBundle({
@@ -770,14 +867,64 @@ async function handleMergeAlias(parsed: ParsedArgs, io: CliIo): Promise<CommandO
       rawDir: toLayout.rawDir,
       onConflict: conflictMode === "replace" ? "replace" : "skip",
     });
+    const rawGc = await pruneOrphanRawSnapshotsSafe({
+      storage: targetStorage,
+      rawDir: toLayout.rawDir,
+    });
     return {
-      text: `Merged via bundle compatibility path: imported=${imported.imported_source_ids.length} replaced=${imported.replaced_source_ids.length} skipped=${imported.skipped_source_ids.length}`,
-      json: imported,
+      text: [
+        `Merged via bundle compatibility path: imported=${imported.imported_source_ids.length} replaced=${imported.replaced_source_ids.length} skipped=${imported.skipped_source_ids.length}`,
+        "",
+        renderSection("Raw GC", renderRawGcSummary(rawGc)),
+      ].join("\n"),
+      json: {
+        ...imported,
+        raw_gc: rawGc,
+      },
     };
   } finally {
     sourceStorage.close();
     targetStorage.close();
     await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+async function handleGc(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
+  const dryRun = hasFlag(parsed, "dry-run");
+  const layout = resolveStoreLayout({
+    cwd: io.cwd,
+    storeArg: getFlag(parsed, "store"),
+    dbArg: getFlag(parsed, "db"),
+  });
+  await requireStoreDatabase(layout.dbPath);
+  const storage = await openStorage(layout);
+  try {
+    const result = await pruneOrphanRawSnapshotsSafe({
+      storage,
+      rawDir: layout.rawDir,
+      dryRun,
+    });
+    return {
+      text: renderKeyValue([
+        ["DB", layout.dbPath],
+        ["Raw Dir", layout.rawDir],
+        ["Dry Run", String(dryRun)],
+        ["Scanned Files", formatNumber(result.scanned_files)],
+        ["Referenced Files", formatNumber(result.referenced_files)],
+        ["Deleted Files", formatNumber(result.deleted_files)],
+        ["Deleted Bytes", formatBytes(result.deleted_bytes)],
+        ["Removed Dirs", formatNumber(result.removed_dirs)],
+      ]),
+      json: {
+        kind: "gc",
+        db_path: layout.dbPath,
+        raw_dir: layout.rawDir,
+        dry_run: dryRun,
+        result,
+      },
+    };
+  } finally {
+    storage.close();
   }
 }
 
@@ -917,7 +1064,7 @@ async function openReadStore(parsed: ParsedArgs, io: CliIo): Promise<OpenedReadS
   });
   const readMode = resolveReadMode(parsed);
   if (readMode === "index") {
-    const storage = openStorage(baseLayout);
+    const storage = await openStorage(baseLayout);
     return {
       layout: baseLayout,
       storage,
@@ -927,7 +1074,7 @@ async function openReadStore(parsed: ParsedArgs, io: CliIo): Promise<OpenedReadS
     };
   }
 
-  const storage = new CCHistoryStorage({ dbPath: ":memory:" });
+  const storage = await createStorage({ dbPath: ":memory:" });
   const layout: StoreLayout = {
     ...baseLayout,
     dbPath: `${baseLayout.dbPath} (full scan in memory)`,
@@ -954,7 +1101,7 @@ async function openReadStore(parsed: ParsedArgs, io: CliIo): Promise<OpenedReadS
   }
 }
 
-function openExistingStore(parsed: ParsedArgs, io: CliIo): { layout: StoreLayout; storage: CCHistoryStorage } {
+async function openExistingStore(parsed: ParsedArgs, io: CliIo): Promise<{ layout: StoreLayout; storage: CCHistoryStorage }> {
   const layout = resolveStoreLayout({
     cwd: io.cwd,
     storeArg: getFlag(parsed, "store"),
@@ -962,8 +1109,41 @@ function openExistingStore(parsed: ParsedArgs, io: CliIo): { layout: StoreLayout
   });
   return {
     layout,
-    storage: openStorage(layout),
+    storage: await openStorage(layout),
   };
+}
+
+async function requireStoreDatabase(dbPath: string): Promise<void> {
+  try {
+    await access(dbPath);
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      throw new Error(`Store not found: ${dbPath}. Run \`cchistory sync\` or \`cchistory import\` first.`);
+    }
+    throw error;
+  }
+}
+
+function renderRawGcSummary(result: RawSnapshotGcResult): string {
+  return renderKeyValue([
+    ["Scanned Files", formatNumber(result.scanned_files)],
+    ["Referenced Files", formatNumber(result.referenced_files)],
+    ["Deleted Files", formatNumber(result.deleted_files)],
+    ["Deleted Bytes", formatBytes(result.deleted_bytes)],
+    ["Removed Dirs", formatNumber(result.removed_dirs)],
+  ]);
+}
+
+function formatBytes(value: number): string {
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = value;
+  let unitIndex = 0;
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024;
+    unitIndex += 1;
+  }
+  const decimals = unitIndex === 0 ? 0 : size >= 10 ? 1 : 2;
+  return `${size.toFixed(decimals)} ${units[unitIndex]}`;
 }
 
 async function syncSelectedSources(input: {
@@ -1034,6 +1214,19 @@ function applySourceSelection(sources: SourceDefinition[], selectedRefs: string[
   return sources.filter((source) => selectedRefs.includes(source.id) || selectedRefs.includes(source.slot_id));
 }
 
+function applySourceDiscoverySelection(entries: HostDiscoveryEntry[], selectedRefs: string[]): HostDiscoveryEntry[] {
+  if (selectedRefs.length === 0) {
+    return entries;
+  }
+  const sourceIdsBySlot = new Map(
+    getDefaultSourcesForHost({ includeMissing: true }).map((source) => [source.slot_id, source.id] as const),
+  );
+  return entries.filter((entry) => {
+    const sourceId = entry.slot_id ? sourceIdsBySlot.get(entry.slot_id) : undefined;
+    return selectedRefs.includes(entry.key) || (entry.slot_id ? selectedRefs.includes(entry.slot_id) : false) || (sourceId ? selectedRefs.includes(sourceId) : false);
+  });
+}
+
 function resolveReadMode(parsed: ParsedArgs): ReadMode {
   const wantsIndex = hasFlag(parsed, "index");
   const wantsFull = hasFlag(parsed, "full");
@@ -1051,6 +1244,14 @@ function normalizeCommand(command: string | undefined): string | undefined {
     return "sync";
   }
   return command;
+}
+
+function formatDiscoveryCapability(value: HostDiscoveryEntry["capability"]): string {
+  return value === "sync" ? "sync" : "discover-only";
+}
+
+function isMissingPathError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
 }
 
 function projectStatusLabel(project: ProjectIdentity): string {
@@ -1187,7 +1388,8 @@ function parseNumberFlag(parsed: ParsedArgs, key: string): number | undefined {
 function renderHelp(): string {
   return [
     "Usage:",
-    "  cchistory sync [--store <dir> | --db <file>] [--source <slot-or-id>] [--limit-files <n>]",
+    "  cchistory sync [--store <dir> | --db <file>] [--source <slot-or-id>] [--limit-files <n>] [--dry-run]",
+    "  cchistory discover [--showall]",
     "  cchistory ls projects|sessions|sources [--store <dir> | --db <file>] [--index | --full] [--showall]",
     "  cchistory tree projects [--store <dir> | --db <file>] [--index | --full] [--showall]",
     "  cchistory tree project <project-id-or-slug> [--store <dir> | --db <file>] [--index | --full]",
@@ -1197,14 +1399,16 @@ function renderHelp(): string {
     "  cchistory stats usage --by model|project|source|host|day|month [--store <dir> | --db <file>] [--index | --full]",
     "  cchistory export --out <bundle-dir> [--store <dir> | --db <file>] [--source <source>] [--no-raw]",
     "  cchistory import <bundle-dir> [--store <dir> | --db <file>] [--on-conflict error|skip|replace]",
+    "  cchistory gc [--store <dir> | --db <file>] [--dry-run]",
     "",
     "Global options:",
     "  --store <dir>   Use a store directory (db is <dir>/cchistory.sqlite)",
     "  --db <file>     Use an explicit sqlite file; sidecar data lives beside it",
     "  --index         Read from the existing store only (default for read commands)",
     "  --full          Re-scan default source roots into a temporary store before reading",
-    "  --showall       Include empty projects with 0 sessions and 0 turns in project listings",
+    "  --showall       Include empty projects in listings and missing candidates in discover output",
     "  --json          Print machine-readable JSON",
+    "  --dry-run       Preview sync or gc actions without writing",
     "  --verbose       Reserved for detailed diagnostics",
   ].join("\n");
 }

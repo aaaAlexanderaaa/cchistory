@@ -1,6 +1,6 @@
 # CLI Guide
 
-The CCHistory CLI (`apps/cli`) is the primary local operator tool. It reads from and writes to a local SQLite store at `.cchistory/cchistory.sqlite`.
+The CCHistory CLI (`apps/cli`) is the primary local operator tool. By default it reads from and writes to `./.cchistory/cchistory.sqlite` relative to the current working directory. Use `--store` or `--db` to pin an explicit store location.
 
 ## Global Options
 
@@ -13,7 +13,8 @@ Options:
   --index          Read from existing store only (default for reads)
   --full           Re-scan sources into a temporary in-memory store
   --json           Machine-readable JSON output
-  --showall        Include empty projects in listings
+  --dry-run        Preview `sync` or `gc` actions without writing
+  --showall        Include empty projects in listings and missing discovery candidates
 ```
 
 ## Commands
@@ -27,6 +28,7 @@ cchistory sync                          # Sync all default sources
 cchistory sync --source codex           # Sync only Codex
 cchistory sync --source antigravity     # Sync only Antigravity
 cchistory sync --limit-files 10         # Limit files per source (for testing)
+cchistory sync --dry-run                # Preview discovered sync roots without writing
 ```
 
 > Antigravity: CCHistory uses two complementary paths. The live trajectory API (requires the desktop app running) provides conversation content. Offline files (`workspaceStorage`, `History`, `brain`) are always scanned for project paths and workspace signals. Without the running app, only offline evidence is collected — no raw conversation content will be recovered.
@@ -48,6 +50,33 @@ Cursor (cursor)  host-e336320  2         1      healthy
 |------|-------------|
 | `--source <slot>` | Source slot or ID (repeatable). If omitted, syncs all default sources |
 | `--limit-files <n>` | Max files per source |
+| `--dry-run` | Show which supported sources are currently discoverable and which path each would sync from |
+
+### discover
+
+Inspect host-level source and tool discovery without touching the store.
+
+```bash
+cchistory discover                      # Show discovered tool/source paths on this host
+cchistory discover --showall            # Include missing default candidates too
+```
+
+`discover` is broader than `sync --dry-run`:
+
+- `sync --dry-run` only previews sync-supported source roots.
+- `discover` lists both sync-supported sources and discovery-only tools, such as Gemini CLI local state roots.
+
+**Example output:**
+
+```text
+Discovered 3 item(s) on this host
+
+Name        Kind    Capability     Platform  Path Type             Path                                  Exists  Selected
+----------  ------  -------------  --------  --------------------  ------------------------------------  ------  --------
+OpenClaw    source  sync           openclaw  default (default 1)   /Users/me/.openclaw/agents           yes     yes
+OpenCode    source  sync           opencode  default (default 1)   /Users/me/.local/share/opencode/...  yes     yes
+Gemini CLI  tool    discover-only  gemini    artifact (tmp root)   /Users/me/.gemini/tmp                yes
+```
 
 ### ls
 
@@ -103,6 +132,9 @@ cchistory stats usage --by month                # Monthly usage
 
 ```
 DB                  : .cchistory/cchistory.sqlite
+Schema Version      : 2026-03-20.1
+Schema Migrations   : 2
+Search Mode         : fallback
 Sources             : 7
 Projects            : 5
 Sessions            : 13
@@ -180,6 +212,58 @@ cchistory import ./my-backup --on-conflict replace              # Overwrite conf
 | Flag | Description |
 |------|-------------|
 | `--on-conflict <mode>` | Behavior on conflict: `error` (default), `skip`, `replace` |
+
+### Backup and restore
+
+For self-host operations, the canonical portable backup unit is an export bundle.
+
+```bash
+# Backup the full store, including raw blobs
+cchistory export --store ./.cchistory --out ./backup-2026-03-20
+
+# Restore into a clean store directory
+cchistory import ./backup-2026-03-20 --store ./restored-store
+
+# Verify the restored store
+cchistory stats --store ./restored-store
+cchistory ls sources --store ./restored-store
+```
+
+Backup notes:
+
+- The bundle always includes `manifest.json`, `checksums.json`, and canonical payloads.
+- Raw evidence snapshots are included by default; use `--no-raw` only when you explicitly want a lighter export.
+- Restore should target an empty or new store directory for the clearest verification path.
+
+### Upgrade safety
+
+Before upgrading CCHistory on a self-hosted machine:
+
+```bash
+# 1. Create a portable pre-upgrade backup
+cchistory export --store ./.cchistory --out ./pre-upgrade-backup
+
+# 2. Upgrade CCHistory and open the store normally
+cchistory stats --store ./.cchistory
+```
+
+Upgrade notes:
+
+- `cchistory stats` now shows the current `Schema Version`, `Schema Migrations`, and `Search Mode`.
+- Stores created before schema-ledger support will backfill migration records on first open under the newer build.
+- If the upgraded store does not look correct, restore into a clean directory from the pre-upgrade bundle and compare with `stats`, `ls sources`, and a targeted `search`.
+
+### gc
+
+Prune raw snapshot files under the store that are no longer referenced by the current SQLite index.
+
+```bash
+cchistory gc                                                 # Delete orphan raw snapshots
+cchistory gc --dry-run                                       # Preview only
+cchistory gc --store /tmp/history-store                      # Explicit store
+```
+
+`gc` only removes files under `<store>/raw/` that are not referenced by any current `captured_blobs.captured_path` row. It does not rewrite canonical rows in SQLite.
 
 ### merge
 
