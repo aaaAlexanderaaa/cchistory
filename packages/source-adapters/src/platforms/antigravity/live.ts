@@ -3,7 +3,8 @@ import { readdir } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { ExtractedSessionSeed } from "../../core/legacy.js";
+import { normalizeLocalPathIdentity } from "@cchistory/domain";
+import type { ExtractedSessionSeed } from "../../core/conversation-seeds.js";
 import { resolveAntigravityRoots } from "../antigravity.js";
 
 const execFileAsync = promisify(execFileCallback);
@@ -708,16 +709,11 @@ async function defaultListConversationPbIds(conversationDir: string): Promise<st
 }
 
 function normalizeLocalPath(value: string | undefined): string | undefined {
-  if (!value?.trim()) {
+  const normalized = normalizeLocalPathIdentity(value);
+  if (!normalized) {
     return undefined;
   }
-  const withoutScheme = value.startsWith("file://") ? value.slice("file://".length) : value;
-  const decoded = decodeURIComponent(withoutScheme);
-  const slashNormalized = decoded.replace(/\\/g, "/");
-  if (/^[A-Za-z]:/u.test(slashNormalized)) {
-    return slashNormalized;
-  }
-  return slashNormalized.startsWith("/") ? slashNormalized : undefined;
+  return normalized.startsWith("/") || /^[a-z]:/u.test(normalized) ? normalized : undefined;
 }
 
 function truncate(value: string, maxLength: number): string {

@@ -6,6 +6,7 @@ import type {
   SourceStatus,
   UserTurnProjection,
 } from "@cchistory/domain";
+import { normalizeLocalPathIdentity } from "@cchistory/domain";
 import { stableId, uniqueStrings } from "../internal/utils.js";
 
 const FALLBACK_LINKER_RULE_VERSION = "storage-linker-fallback@2026-03-13.1";
@@ -173,14 +174,5 @@ function deriveSourceNativeProjectRefFromOrigin(
 }
 
 function normalizePathKey(value: string | undefined): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-
-  const normalized = value.replace(/\\/g, "/");
-  const pathKey = path.posix.normalize(normalized);
-  if (pathKey.length > 1 && pathKey.endsWith("/")) {
-    return pathKey.slice(0, -1);
-  }
-  return pathKey;
+  return normalizeLocalPathIdentity(value);
 }

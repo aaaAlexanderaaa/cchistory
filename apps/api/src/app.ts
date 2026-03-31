@@ -17,9 +17,12 @@ import {
 } from "@cchistory/domain";
 import { getBuiltinMaskTemplates, getDefaultSources, getDefaultSourcesForHost, runSourceProbe } from "@cchistory/source-adapters";
 import { CCHistoryStorage } from "@cchistory/storage";
+import { resolveDefaultCchistoryDataDir } from "@cchistory/storage/store-layout";
 
 export interface ApiRuntimeOptions {
   dataDir?: string;
+  cwd?: string;
+  homeDir?: string;
   probeRunner?: typeof runSourceProbe;
   sources?: readonly SourceDefinition[];
   storage?: CCHistoryStorage;
@@ -77,7 +80,7 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   const hostName = os.hostname();
   const hostId = deriveHostId(hostName);
   const dataDir =
-    options.dataDir ?? path.resolve(process.cwd(), "..", "..", ".cchistory");
+    options.dataDir ?? resolveDefaultCchistoryDataDir({ cwd: options.cwd ?? process.cwd(), homeDir: options.homeDir });
   const rawStoreDir = path.join(dataDir, "raw");
   const sourceConfigPath = path.join(dataDir, "source-overrides.json");
   const probeRunner = options.probeRunner ?? runSourceProbe;

@@ -44,9 +44,11 @@ CCHistory ingests, parses, and projects your AI coding assistant conversations i
 | Antigravity | **Stable** | Platform user-data `User/` + `~/.gemini/antigravity/{conversations,brain}` |
 | OpenClaw | Experimental | `~/.openclaw/agents/` |
 | OpenCode | Experimental | `~/.local/share/opencode/{project,storage/session}` |
+| Gemini CLI | Experimental | `~/.gemini/` |
 | LobeChat | Experimental | `~/.config/lobehub-storage/` |
 
 > `Stable` means real-world validated for the self-host v1 support bar. `Experimental` means the adapter is registered in code but is not yet validated enough for self-host v1 support claims.
+> Run `pnpm run verify:support-status` to verify these documentation claims against the adapter registry.
 
 > Antigravity note: CCHistory uses two complementary paths for Antigravity. The running desktop app's local language-server trajectory API provides actual conversation content (user inputs, assistant replies, tool calls). Offline files (`workspaceStorage`, `History`, `brain`) are always scanned for project paths and workspace signals. If the desktop app is not running, only the offline path executes, which means no raw conversation content will be recovered — only project metadata and evidence artifacts.
 
@@ -86,10 +88,13 @@ CCHistory ingests, parses, and projects your AI coding assistant conversations i
 
 ### Prerequisites
 
-- **Node.js >= 22** (uses built-in `node:sqlite`; no external database needed)
-- **pnpm 10.x** (enforced via `packageManager` field)
+- **Node.js >= 22** (machine-readable via the root `engines.node` field; uses built-in `node:sqlite`)
+- **pnpm 10.x** (pinned via `packageManager`, with supported range declared in `engines.pnpm`)
 
 ### Install & Build
+
+This is the canonical clean-machine install path for the repository. It installs
+both lockfiles and performs the first non-web workspace build.
 
 ```bash
 # Clone and install
@@ -100,9 +105,57 @@ pnpm install
 # Install web app dependencies (separate lockfile)
 cd apps/web && pnpm install && cd ../..
 
-# Build all packages
+# First build (non-web workspace)
 pnpm run build
 ```
+
+The `apps/web` production build is validated separately from this install path.
+When you need it, run:
+
+```bash
+NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build
+```
+
+To verify the clean-machine install contract in a temporary copy without
+touching your working tree, run:
+
+```bash
+pnpm run verify:clean-install
+```
+
+### Use the standalone CLI artifact
+
+The repository now also supports a CLI-only artifact channel for cases where the
+receiving machine should not need a full source checkout.
+
+Generate the artifact from a repository clone:
+
+```bash
+pnpm run cli:artifact
+```
+
+This writes a versioned extracted directory plus a `.tgz` artifact under
+`dist/cli-artifacts/`.
+
+On another machine, unpack the generated tarball and run:
+
+```bash
+# POSIX shells
+./bin/cchistory --help
+
+# Windows CMD
+bin\cchistory.cmd --help
+```
+
+Upgrade by replacing the extracted artifact directory with a newer generated
+artifact version. To verify the artifact channel locally, run:
+
+```bash
+pnpm run verify:cli-artifact
+```
+
+This verifies first install plus replacement-style upgrade by unpacking two
+versioned artifacts and executing the installed `cchistory templates` command.
 
 ### Install the CLI globally
 
@@ -200,6 +253,7 @@ For detailed guides, see the `docs/guide/` directory:
 - **[CLI Guide](docs/guide/cli.md)** — All commands, flags, and output examples
 - **[API Guide](docs/guide/api.md)** — REST endpoints, configuration, and request/response schemas
 - **[Web UI Guide](docs/guide/web.md)** — Features, navigation, views, and configuration
+- **[Inspection Guide](docs/guide/inspection.md)** — When to use `probe:*` and `inspect:*` evidence/debugging helpers
 - **[Source Notes](docs/sources/README.md)** — Technical notes for validated source storage layouts and ingestion paths
 - **[Self-Host V1 Release Gate](docs/design/SELF_HOST_V1_RELEASE_GATE.md)** — Minimum release bar for a single-user self-hosted v1
 - **[Roadmap](docs/ROADMAP.md)** — Current milestone-oriented development plan

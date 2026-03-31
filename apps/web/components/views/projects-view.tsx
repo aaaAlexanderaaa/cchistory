@@ -11,6 +11,7 @@ import {
 import { cn, formatAbsoluteDateTime, formatRelativeTime } from '@/lib/utils'
 import { formatSourcePlatform, SessionBadge } from '@/components/session-badge'
 import { SessionMap } from '@/components/session-map'
+import { ProjectTreeView } from '@/components/views/project-tree-view'
 import { TurnDetailPanel } from '@/components/turn-detail-panel'
 import { ResponsiveSidePanel } from '@/components/responsive-side-panel'
 import type { ProjectIdentity, Session, UserTurn } from '@/lib/types'
@@ -41,7 +42,7 @@ type ProjectViewMode = 'list' | 'detail'
 type TurnTab = 'committed' | 'candidates'
 type DetailContentMode = 'turns' | 'sessions'
 type ProjectTurnLayout = 'rows' | 'cards' | 'waterfall'
-type OverviewMode = 'grid' | 'sessions'
+type OverviewMode = 'grid' | 'sessions' | 'tree'
 type ProjectSort = 'activity' | 'name' | 'turns'
 type ProjectTurnSort = 'newest' | 'oldest'
 
@@ -163,7 +164,7 @@ export function ProjectsView() {
 
   return (
     <div className="flex flex-1 overflow-hidden">
-      <div className={cn('flex min-w-0 flex-1 flex-col overflow-hidden', selectedTurn && overviewMode === 'sessions' && 'lg:border-r lg:border-border')}>
+      <div className={cn('flex min-w-0 flex-1 flex-col overflow-hidden', selectedTurn && overviewMode !== 'grid' && 'lg:border-r lg:border-border')}>
         <header className="border-b border-border bg-card">
           <div className="flex flex-col gap-3 px-4 py-3 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
             <div className="space-y-1">
@@ -177,7 +178,7 @@ export function ProjectsView() {
             </div>
 
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              {overviewMode === 'grid' && (
+              {overviewMode !== 'sessions' && (
                 <select
                   value={projectSort}
                   onChange={(event) => setProjectSort(event.target.value as ProjectSort)}
@@ -198,6 +199,16 @@ export function ProjectsView() {
                   )}
                 >
                   Project Grid
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setOverviewMode('tree')}
+                  className={cn(
+                    'flex-1 px-3 py-1.5 text-sm transition-colors sm:flex-none',
+                    overviewMode === 'tree' ? 'bg-ink text-card' : 'text-muted hover:text-ink',
+                  )}
+                >
+                  Tree
                 </button>
                 <button
                   type="button"
@@ -231,6 +242,15 @@ export function ProjectsView() {
                 />
               ))}
             </div>
+          ) : overviewMode === 'tree' ? (
+            <ProjectTreeView
+              projects={sortedProjects}
+              turnsByProjectId={turnsByProjectId}
+              sessionRegistry={sessionRegistry}
+              selectedTurnId={selectedTurn?.id}
+              onSelectTurn={setSelectedTurnId}
+              onOpenProject={handleProjectClick}
+            />
           ) : (
             <SessionMap
               turns={linkedTurns}
@@ -245,7 +265,7 @@ export function ProjectsView() {
         </div>
       </div>
 
-      {selectedTurn && overviewMode === 'sessions' && (
+      {selectedTurn && overviewMode !== 'grid' && (
         <ResponsiveSidePanel onDismiss={() => setSelectedTurnId(null)} className="lg:w-[500px] lg:flex-shrink-0">
           <TurnDetailPanel
             turn={selectedTurn}

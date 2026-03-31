@@ -37,6 +37,7 @@ import {
   deriveHostId,
   deriveSourceInstanceId,
   deriveSourceSlotId,
+  normalizeLocalPathIdentity,
 } from "@cchistory/domain";
 import { applyMaskTemplates, getBuiltinMaskTemplates, LITERAL_PROMPT_MASK_TEMPLATE_IDS } from "../masks.js";
 import { parseAmpRecord as parseAmpRuntimeRecord } from "../platforms/amp/runtime.js";
@@ -45,13 +46,17 @@ import { extractAntigravityLiveSeeds } from "../platforms/antigravity/live.js";
 import {
   extractAntigravityBrainSeed,
   extractAntigravityHistorySeed,
-  extractAntigravityTrajectorySeeds,
-  isAntigravityTrajectoryKey,
 } from "../platforms/antigravity/runtime.js";
 import { parseClaudeRecord as parseClaudeRuntimeRecord } from "../platforms/claude-code/runtime.js";
 import { parseCodexRecord as parseCodexRuntimeRecord } from "../platforms/codex/runtime.js";
-import { buildCursorComposerSeed, buildCursorPromptHistorySeed } from "../platforms/cursor/runtime.js";
+import {
+  collectConversationSeedsFromValue as collectConversationSeedsFromValueRuntime,
+  normalizeMessageCandidate as normalizeMessageCandidateRuntime,
+} from "./conversation-seeds.js";
+import type { ConversationSeedOptions, ExtractedSessionSeed } from "./conversation-seeds.js";
+import { collectJsonlRecords, firstNonEmptyTrimmedLineFromBuffer } from "./jsonl-records.js";
 import { parseFactoryRecord as parseFactoryRuntimeRecord } from "../platforms/factory-droid/runtime.js";
+import { extractGeminiProjectKey, resolveGeminiRoot } from "../platforms/gemini.js";
 import {
   extractGenericContentItems as extractGenericContentItemsRuntime,
   extractGenericRole as extractGenericRoleRuntime,
@@ -148,19 +153,7 @@ interface AdapterBlobResult {
   loss_audits: LossAuditRecord[];
 }
 
-export interface ExtractedSessionSeed {
-  sessionId: string;
-  title?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  model?: string;
-  workingDirectory?: string;
-  records: Array<{
-    pointer: string;
-    observedAt?: string;
-    rawJson: string;
-  }>;
-}
+export type { ExtractedSessionSeed } from "./conversation-seeds.js";
 
 interface FragmentBuildContext {
   source: SourceDefinition;
@@ -206,12 +199,6 @@ export interface UnknownProtobufField {
   field_number: number;
   wire_type: 0 | 1 | 2 | 5;
   value: number | Buffer;
-}
-
-interface ConversationSeedOptions {
-  defaultSessionId?: string;
-  defaultTitle?: string;
-  defaultWorkingDirectory?: string;
 }
 
 interface CapturedBlobInput {
@@ -336,6 +323,14 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
       "Antigravity live trajectory steps from the local language server when available, with VS Code state.vscdb and brain artifacts retained as offline evidence rather than a guaranteed raw-conversation fallback.",
     capabilities: ["session_meta", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
+  gemini: {
+    id: "gemini:session-json:v1",
+    family: DEFAULT_SOURCE_FAMILY,
+    platform: "gemini",
+    parser_version: "gemini-parser@2026-03-27.1",
+    description: "Gemini CLI local session JSON under .gemini/tmp with project mapping sidecars from .project_root and projects.json.",
+    capabilities: ["session_meta", "title_signal", "workspace_signal", ...COMMON_PARSER_CAPABILITIES],
+  },
   openclaw: {
     id: "openclaw:jsonl:v1",
     family: DEFAULT_SOURCE_FAMILY,
@@ -400,6 +395,12 @@ const DEFAULT_SOURCE_SPECS: ReadonlyArray<
     family: DEFAULT_SOURCE_FAMILY,
     platform: "antigravity",
     display_name: "Antigravity",
+  },
+  {
+    slot_id: "gemini",
+    family: DEFAULT_SOURCE_FAMILY,
+    platform: "gemini",
+    display_name: "Gemini CLI",
   },
   {
     slot_id: "openclaw",
@@ -717,8 +718,11 @@ async function collectSourceInputs(
   startedAt: string,
 ): Promise<CollectionCoreResult> {
   const captureRunId = stableId("capture-run", source.id, startedAt);
+  const adapter = getPlatformAdapter(source.platform);
   const sessionsById = new Map<string, SessionBuildInput>();
   const orphanBlobs: CapturedBlob[] = [];
+  const companionFiles: string[] = [];
+  const capturedCompanionPaths = new Set<string>();
   const sourceLossAudits: LossAuditRecord[] = [];
   const fileProcessingErrors: string[] = [];
   const liveFiles: string[] = [];
@@ -776,6 +780,37 @@ async function collectSourceInputs(
       for (const adapterResult of adapterResults) {
         mergeAdapterBlobResult(sessionsById, adapterResult);
       }
+      if (adapter?.getCompanionEvidencePaths) {
+        for (const companionPath of adapter.getCompanionEvidencePaths(source.base_dir, filePath)) {
+          const normalizedCompanionPath = path.normalize(companionPath);
+          if (capturedCompanionPaths.has(normalizedCompanionPath) || !(await pathExists(normalizedCompanionPath))) {
+            continue;
+          }
+
+          capturedCompanionPaths.add(normalizedCompanionPath);
+          try {
+            orphanBlobs.push((await captureBlob(source, host.id, normalizedCompanionPath, captureRunId)).blob);
+            companionFiles.push(normalizedCompanionPath);
+          } catch (error) {
+            const blobRef = stableId("blob", source.id, normalizedCompanionPath, "capture-failed");
+            sourceLossAudits.push(
+              createLossAudit(
+                source.id,
+                blobRef,
+                "unknown_fragment",
+                `Failed to capture companion evidence file ${normalizedCompanionPath}: ${formatErrorMessage(error)}`,
+                {
+                  stageKind: "capture",
+                  diagnosticCode: "blob_capture_failed",
+                  severity: "warning",
+                  blobRef,
+                  sourceFormatProfileId: sourceFormatProfile.id,
+                },
+              ),
+            );
+          }
+        }
+      }
     } catch (error) {
       orphanBlobs.push(capturedBlob.blob);
       const detail = `Failed to process captured source file ${filePath}: ${formatErrorMessage(error)}`;
@@ -794,7 +829,7 @@ async function collectSourceInputs(
   }
 
   return {
-    files: [...liveFiles, ...files],
+    files: [...liveFiles, ...files, ...companionFiles],
     sessionsById,
     orphanBlobs,
     sourceLossAudits,
@@ -1178,12 +1213,6 @@ async function extractMultiSessionSeeds(
       extractRichTextText,
       collectConversationSeedsFromValue,
       firstDefinedNumber,
-      minIso,
-      maxIso,
-      buildCursorComposerSeed,
-      buildCursorPromptHistorySeed,
-      isAntigravityTrajectoryKey,
-      extractAntigravityTrajectorySeeds,
     });
   }
   if (source.platform === "antigravity" && path.basename(filePath) === "state.vscdb") {
@@ -1208,12 +1237,6 @@ async function extractMultiSessionSeeds(
       extractRichTextText,
       collectConversationSeedsFromValue,
       firstDefinedNumber,
-      minIso,
-      maxIso,
-      buildCursorComposerSeed,
-      buildCursorPromptHistorySeed,
-      isAntigravityTrajectoryKey,
-      extractAntigravityTrajectorySeeds,
     })) ?? [];
   }
   if (source.platform === "antigravity" && isAntigravityHistoryIndexFile(filePath)) {
@@ -1243,7 +1266,7 @@ async function extractMultiSessionSeeds(
   if (source.platform === "lobechat") {
     return extractConversationExportSeeds(source, filePath, fileBuffer, blobId);
   }
-  if (source.platform === "opencode") {
+  if (source.platform === "opencode" || source.platform === "gemini") {
     const exportSeeds = await extractConversationExportSeeds(source, filePath, fileBuffer, blobId);
     if (exportSeeds && exportSeeds.length > 0) {
       return exportSeeds;
@@ -1337,40 +1360,32 @@ async function extractRecords(
     return records;
   }
 
-  const observedAt = nowIso();
-  forEachNonEmptyTrimmedLine(text, (line, index) => {
-    records.push({
-      id: baseRecordId(index, `${index}`),
-      source_id: context.source.id,
-      blob_id: blobId,
-      session_ref: context.sessionId,
-      ordinal: index,
-      record_path_or_offset: `${index}`,
-      observed_at: observedAt,
-      parseable: true,
-      raw_json: line,
-    });
-  });
-
-  if (context.source.platform === "factory_droid") {
-    const settingsPath = context.filePath.replace(/\.jsonl?$/u, ".settings.json");
-    if (await pathExists(settingsPath)) {
-      const settingsText = await fs.readFile(settingsPath, "utf8");
-      records.push({
-        id: baseRecordId(records.length, "settings"),
-        source_id: context.source.id,
-        blob_id: blobId,
-        session_ref: context.sessionId,
-        ordinal: records.length,
-        record_path_or_offset: "settings",
-        observed_at: nowIso(),
-        parseable: true,
-        raw_json: settingsText,
-      });
-    }
-  }
-
-  return records;
+  return collectJsonlRecords(
+    text,
+    {
+      sourceId: context.source.id,
+      blobId,
+      sessionId: context.sessionId,
+    },
+    {
+      observedAt: nowIso(),
+      sidecars:
+        context.source.platform === "factory_droid"
+          ? [
+              {
+                filePath: context.filePath.replace(/\.jsonl?$/u, ".settings.json"),
+                pointer: "settings",
+              },
+            ]
+          : undefined,
+    },
+    {
+      createRecordId: baseRecordId,
+      pathExists,
+      readTextFile: (targetPath) => fs.readFile(targetPath, "utf8"),
+      nowIso,
+    },
+  );
 }
 
 function createRecordLossAudit(
@@ -1483,6 +1498,7 @@ function parseRecord(
   if (
     context.source.platform === "cursor" ||
     context.source.platform === "antigravity" ||
+    context.source.platform === "gemini" ||
     context.source.platform === "openclaw" ||
     context.source.platform === "opencode" ||
     context.source.platform === "lobechat"
@@ -1721,6 +1737,12 @@ async function extractConversationExportSeeds(
       return [opencodeSeed];
     }
   }
+  if (source.platform === "gemini") {
+    const geminiSeed = await extractGeminiSessionSeed(source.base_dir, filePath, fileBuffer);
+    if (geminiSeed) {
+      return [geminiSeed];
+    }
+  }
 
   const parsed = safeJsonParse(fileBuffer.toString("utf8"));
   const seeds = collectConversationSeedsFromValue(
@@ -1845,249 +1867,154 @@ function collectConversationSeedsFromValue(
   originHint: string,
   options: ConversationSeedOptions = {},
 ): ExtractedSessionSeed[] {
-  const seedsById = new Map<string, ExtractedSessionSeed>();
-  const seen = new Set<unknown>();
-
-  const visit = (candidate: unknown, pathHint: string, depth: number, root = false) => {
-    if (depth > 8 || candidate === null || candidate === undefined) {
-      return;
-    }
-    if (typeof candidate === "object") {
-      if (seen.has(candidate)) {
-        return;
-      }
-      seen.add(candidate);
-    }
-
-    const seed = buildSeedFromCandidateValue(platform, candidate, pathHint, {
-      defaultSessionId: root ? options.defaultSessionId : undefined,
-      defaultTitle: root ? options.defaultTitle : undefined,
-      defaultWorkingDirectory: options.defaultWorkingDirectory,
-    });
-    if (seed) {
-      upsertExtractedSeed(seedsById, seed);
-      return;
-    }
-
-    if (Array.isArray(candidate)) {
-      for (const [index, entry] of candidate.entries()) {
-        visit(entry, `${pathHint}[${index}]`, depth + 1);
-      }
-      return;
-    }
-
-    if (!isObject(candidate)) {
-      return;
-    }
-
-    for (const [key, entry] of Object.entries(candidate)) {
-      if (entry && typeof entry === "object") {
-        visit(entry, `${pathHint}.${key}`, depth + 1);
-      }
-    }
-  };
-
-  visit(value, originHint, 0, true);
-  return [...seedsById.values()];
-}
-
-function buildSeedFromCandidateValue(
-  platform: SourcePlatform,
-  candidate: unknown,
-  originHint: string,
-  options: ConversationSeedOptions,
-): ExtractedSessionSeed | undefined {
-  const messageEntries = extractCandidateMessageEntries(candidate);
-  if (!messageEntries || messageEntries.length === 0) {
-    return undefined;
-  }
-
-  const normalizedMessages = messageEntries
-    .map((entry) => normalizeMessageCandidate(entry, options.defaultWorkingDirectory))
-    .filter((entry): entry is { observedAt?: string; record: Record<string, unknown> } => entry !== undefined);
-  if (normalizedMessages.length === 0) {
-    return undefined;
-  }
-
-  const meta = isObject(candidate) ? extractGenericSessionMetadata(candidate) : {};
-  const sessionRefRaw =
-    options.defaultSessionId ??
-    (isObject(candidate)
-      ? asString(candidate.id) ??
-        asString(candidate.sessionId) ??
-        asString(candidate.session_id) ??
-        asString(candidate.conversationId) ??
-        asString(candidate.conversation_id) ??
-        asString(candidate.chatId) ??
-        asString(candidate.chat_id) ??
-        asString(candidate.composerId)
-      : undefined) ??
-    sha1(originHint);
-  const sessionId = options.defaultSessionId ?? `sess:${platform}:${sessionRefRaw}`;
-  const firstUserMessage = normalizedMessages.find((message) => asString(message.record.role) === "user");
-  const title =
-    options.defaultTitle ??
-    meta.title ??
-    (Array.isArray(firstUserMessage?.record.content)
-      ? truncate(stringifyToolContent(firstUserMessage.record.content), 72)
-      : undefined);
-  const workingDirectory = meta.workspacePath ?? options.defaultWorkingDirectory;
-  const model = meta.model ?? normalizedMessages.map((message) => asString(message.record.model)).find(Boolean);
-  const createdAt =
-    coerceIso(isObject(candidate) ? candidate.createdAt : undefined) ??
-    coerceIso(isObject(candidate) ? candidate.created_at : undefined) ??
-    epochMillisToIso(isObject(candidate) ? asNumber(candidate.createdAt) : undefined) ??
-    normalizedMessages[0]?.observedAt;
-  const updatedAt =
-    coerceIso(isObject(candidate) ? candidate.updatedAt : undefined) ??
-    coerceIso(isObject(candidate) ? candidate.updated_at : undefined) ??
-    epochMillisToIso(isObject(candidate) ? asNumber(candidate.updatedAt) : undefined) ??
-    normalizedMessages.at(-1)?.observedAt ??
-    createdAt;
-
-  const records: ExtractedSessionSeed["records"] = [];
-  if (title || model || workingDirectory || meta.parentUuid || meta.isSidechain) {
-    records.push({
-      pointer: "meta",
-      observedAt: createdAt ?? nowIso(),
-      rawJson: JSON.stringify({
-        id: sessionId,
-        title,
-        model,
-        cwd: workingDirectory,
-        parentUuid: meta.parentUuid,
-        isSidechain: meta.isSidechain,
-      }),
-    });
-  }
-
-  normalizedMessages
-    .sort((left, right) => (left.observedAt ?? "").localeCompare(right.observedAt ?? ""))
-    .forEach((message, index) => {
-      records.push({
-        pointer: `messages[${index}]`,
-        observedAt: message.observedAt ?? nowIso(),
-        rawJson: JSON.stringify(message.record),
-      });
-    });
-
-  const hasUserOrAssistant = normalizedMessages.some((message) => {
-    const role = asString(message.record.role);
-    return role === "user" || role === "assistant";
-  });
-  if (!hasUserOrAssistant) {
-    return undefined;
-  }
-
-  return {
-    sessionId,
-    title,
-    createdAt,
-    updatedAt,
-    model,
-    workingDirectory,
-    records,
-  };
-}
-
-function extractCandidateMessageEntries(candidate: unknown): unknown[] | undefined {
-  if (Array.isArray(candidate)) {
-    return candidate.some((entry) => normalizeMessageCandidate(entry)) ? candidate : undefined;
-  }
-  if (!isObject(candidate)) {
-    return undefined;
-  }
-
-  const directArrays = [
-    candidate.messages,
-    candidate.items,
-    candidate.turns,
-    candidate.history,
-    candidate.entries,
-    candidate.parts,
-  ];
-  for (const entry of directArrays) {
-    if (Array.isArray(entry) && entry.some((item) => normalizeMessageCandidate(item))) {
-      return entry;
-    }
-  }
-
-  for (const mapping of [candidate.messageMap, candidate.mapping]) {
-    if (!isObject(mapping)) {
-      continue;
-    }
-    const values = Object.values(mapping).map((value) => (isObject(value) && isObject(value.message) ? value.message : value));
-    if (values.some((value) => normalizeMessageCandidate(value))) {
-      return values;
-    }
-  }
-
-  return undefined;
+  return collectConversationSeedsFromValueRuntime(
+    platform,
+    value,
+    originHint,
+    {
+      asString,
+      asNumber,
+      asArray,
+      isObject,
+      coerceIso,
+      epochMillisToIso,
+      nowIso,
+      truncate,
+      sha1,
+      normalizeWorkspacePath,
+      extractGenericSessionMetadata,
+      extractGenericRole,
+      extractGenericContentItems,
+      extractTokenUsage,
+      normalizeStopReason,
+      extractRichTextText,
+      stringifyToolContent,
+    },
+    options,
+  );
 }
 
 function normalizeMessageCandidate(
   value: unknown,
   defaultWorkingDirectory?: string,
 ): { observedAt?: string; record: Record<string, unknown> } | undefined {
-  if (!isObject(value)) {
+  return normalizeMessageCandidateRuntime(
+    value,
+    {
+      asString,
+      asNumber,
+      asArray,
+      isObject,
+      coerceIso,
+      epochMillisToIso,
+      nowIso,
+      truncate,
+      sha1,
+      normalizeWorkspacePath,
+      extractGenericSessionMetadata,
+      extractGenericRole,
+      extractGenericContentItems,
+      extractTokenUsage,
+      normalizeStopReason,
+      extractRichTextText,
+      stringifyToolContent,
+    },
+    defaultWorkingDirectory,
+  );
+}
+
+async function extractGeminiSessionSeed(
+  baseDir: string,
+  filePath: string,
+  fileBuffer: Buffer,
+): Promise<ExtractedSessionSeed | undefined> {
+  const parsed = safeJsonParse(fileBuffer.toString("utf8"));
+  if (!isObject(parsed)) {
     return undefined;
   }
 
-  const info = isObject(value.info) ? value.info : undefined;
-  const message = isObject(value.message) ? value.message : undefined;
-  const base = message ?? info ?? value;
-  let content = extractGenericContentItems(base);
-  if (content.length === 0 && Array.isArray(value.parts)) {
-    content = extractGenericContentItems({ parts: value.parts });
+  const rawSessionId =
+    asString(parsed.sessionId) ??
+    asString(parsed.id) ??
+    path.basename(filePath, path.extname(filePath));
+  const sessionId = `sess:gemini:${rawSessionId}`;
+  const projectKey = extractGeminiProjectKey(filePath);
+  const geminiRoot = resolveGeminiRoot(baseDir, filePath);
+  const projectMetadata = geminiRoot && projectKey ? await resolveGeminiProjectMetadata(geminiRoot, projectKey) : {};
+  const title = projectMetadata.title ?? projectKey;
+  const workingDirectory = projectMetadata.workingDirectory;
+  const createdAt =
+    coerceIso(parsed.startTime) ??
+    coerceIso(parsed.createdAt) ??
+    coerceIso(parsed.created_at);
+  const updatedAt =
+    coerceIso(parsed.lastUpdated) ??
+    coerceIso(parsed.updatedAt) ??
+    coerceIso(parsed.updated_at) ??
+    createdAt;
+  const model = asString(parsed.model);
+
+  const seeds = collectConversationSeedsFromValue("gemini", parsed, rawSessionId, {
+    defaultSessionId: sessionId,
+    defaultTitle: title,
+    defaultWorkingDirectory: workingDirectory,
+  });
+  const seed = seeds[0];
+  if (!seed) {
+    return undefined;
   }
-  if (content.length === 0) {
-    const richText = asString(base.richText) ?? asString(value.richText);
-    const extractedText = richText ? extractRichTextText(richText) : undefined;
-    if (extractedText) {
-      content = [{ type: "text", text: extractedText }];
+
+  return {
+    sessionId: seed.sessionId,
+    title: seed.title ?? title,
+    createdAt: minIso(seed.createdAt, createdAt),
+    updatedAt: maxIso(seed.updatedAt, updatedAt),
+    model: seed.model ?? model,
+    workingDirectory: seed.workingDirectory ?? workingDirectory,
+    records: seed.records,
+  };
+}
+
+async function resolveGeminiProjectMetadata(
+  geminiRoot: string,
+  projectKey: string,
+): Promise<{ workingDirectory?: string; title?: string }> {
+  const tmpProjectRoot = await readOptionalTextFile(path.join(geminiRoot, "tmp", projectKey, ".project_root"));
+  const historyProjectRoot = await readOptionalTextFile(path.join(geminiRoot, "history", projectKey, ".project_root"));
+  const projectRootPath = tmpProjectRoot ?? historyProjectRoot;
+  let workingDirectory = projectRootPath ? normalizeWorkspacePath(projectRootPath) : undefined;
+
+  const projectsFile = await readOptionalJsonFile(path.join(geminiRoot, "projects.json"));
+  const projects = isObject(projectsFile?.projects) ? projectsFile.projects : undefined;
+  let title: string | undefined;
+
+  if (workingDirectory && projects) {
+    title = asString(projects[workingDirectory]);
+  }
+  if (!workingDirectory && projects) {
+    for (const [workspacePath, label] of Object.entries(projects)) {
+      if (asString(label) === projectKey) {
+        workingDirectory = normalizeWorkspacePath(workspacePath);
+        title = projectKey;
+        break;
+      }
     }
   }
 
-  const role = extractGenericRole(base) ?? extractGenericRole(value) ?? extractGenericRole(info ?? {});
-  if (!role && content.length === 0) {
+  return {
+    workingDirectory,
+    title: title ?? projectKey,
+  };
+}
+
+async function readOptionalTextFile(targetPath: string): Promise<string | undefined> {
+  try {
+    const raw = await fs.readFile(targetPath, "utf8");
+    const trimmed = raw.trim();
+    return trimmed || undefined;
+  } catch {
     return undefined;
   }
-
-  const observedAt =
-    coerceIso(base.timestamp) ??
-    coerceIso(base.createdAt) ??
-    coerceIso(base.updatedAt) ??
-    coerceIso(value.timestamp) ??
-    coerceIso(info?.createdAt) ??
-    epochMillisToIso(asNumber(base.timestamp)) ??
-    epochMillisToIso(asNumber(base.createdAt)) ??
-    epochMillisToIso(asNumber(base.created)) ??
-    epochMillisToIso(asNumber(info?.createdAt)) ??
-    epochMillisToIso(asNumber(info?.created)) ??
-    epochMillisToIso(asNumber(value.createdAt));
-  const meta = extractGenericSessionMetadata(value);
-  const usage = extractTokenUsage(value) ?? extractTokenUsage(info) ?? extractTokenUsage(base);
-  const stopReason =
-    normalizeStopReason(base.stop_reason) ??
-    normalizeStopReason(base.stopReason) ??
-    normalizeStopReason(info?.stopReason) ??
-    normalizeStopReason(value.stopReason);
-
-  return {
-    observedAt,
-    record: {
-      id: asString(base.id) ?? asString(value.id),
-      role: role ?? "assistant",
-      content,
-      usage,
-      stopReason,
-      model:
-        asString(base.model) ??
-        asString(info?.model) ??
-        asString(value.model),
-      cwd: meta.workspacePath ?? defaultWorkingDirectory,
-    },
-  };
 }
 
 async function extractOpenCodeSessionSeed(
@@ -2202,28 +2129,6 @@ function extractRichTextText(value: string): string | undefined {
   visit(parsed);
   const text = parts.join("").trim();
   return text || undefined;
-}
-
-function upsertExtractedSeed(
-  target: Map<string, ExtractedSessionSeed>,
-  seed: ExtractedSessionSeed,
-): void {
-  const existing = target.get(seed.sessionId);
-  if (!existing) {
-    target.set(seed.sessionId, seed);
-    return;
-  }
-  target.set(seed.sessionId, {
-    sessionId: seed.sessionId,
-    title: existing.title ?? seed.title,
-    createdAt: minIso(existing.createdAt, seed.createdAt),
-    updatedAt: maxIso(existing.updatedAt, seed.updatedAt),
-    model: existing.model ?? seed.model,
-    workingDirectory: existing.workingDirectory ?? seed.workingDirectory,
-    records: [...existing.records, ...seed.records].sort((left, right) =>
-      (left.observedAt ?? "").localeCompare(right.observedAt ?? ""),
-    ),
-  });
 }
 
 function firstDefinedNumber(...values: Array<number | undefined>): number | undefined {
@@ -3647,68 +3552,13 @@ function dedupeById<T extends { id: string }>(items: readonly T[]): T[] {
   return unique;
 }
 
-function forEachNonEmptyTrimmedLine(
-  value: string,
-  visitor: (line: string, ordinal: number) => void,
-): void {
-  let start = 0;
-  let ordinal = 0;
-
-  for (let index = 0; index <= value.length; index += 1) {
-    const isEnd = index === value.length;
-    const charCode = isEnd ? -1 : value.charCodeAt(index);
-    if (!isEnd && charCode !== 10 && charCode !== 13) {
-      continue;
-    }
-
-    const line = value.slice(start, index).trim();
-    if (line) {
-      visitor(line, ordinal);
-      ordinal += 1;
-    }
-
-    if (charCode === 13 && index + 1 < value.length && value.charCodeAt(index + 1) === 10) {
-      index += 1;
-    }
-    start = index + 1;
-  }
-}
-
-function firstNonEmptyLineFromBuffer(fileBuffer: Buffer): string | undefined {
-  let start = 0;
-
-  for (let index = 0; index <= fileBuffer.length; index += 1) {
-    const isEnd = index === fileBuffer.length;
-    const byte = isEnd ? -1 : fileBuffer[index] ?? -1;
-    if (!isEnd && byte !== 10 && byte !== 13) {
-      continue;
-    }
-
-    let lineBuffer = fileBuffer.subarray(start, index);
-    if (lineBuffer.length > 0 && lineBuffer[lineBuffer.length - 1] === 13) {
-      lineBuffer = lineBuffer.subarray(0, lineBuffer.length - 1);
-    }
-    const line = lineBuffer.toString("utf8").trim();
-    if (line) {
-      return line;
-    }
-
-    if (byte === 13 && index + 1 < fileBuffer.length && fileBuffer[index + 1] === 10) {
-      index += 1;
-    }
-    start = index + 1;
-  }
-
-  return undefined;
-}
-
 async function listSourceFiles(
   platform: SourcePlatform,
   baseDir: string,
   limit?: number,
 ): Promise<string[]> {
   const adapter = getPlatformAdapter(platform);
-  const roots = [baseDir, ...(adapter?.getSupplementalSourceRoots?.(baseDir) ?? [])];
+  const roots = [...(adapter?.getSourceRoots?.(baseDir) ?? [baseDir]), ...(adapter?.getSupplementalSourceRoots?.(baseDir) ?? [])];
   const fileSet = new Set<string>();
 
   for (const rootDir of roots) {
@@ -3764,8 +3614,20 @@ function deriveSessionId(platform: SourcePlatform, filePath: string, fileBuffer:
     return `sess:${platform}:${path.basename(filePath, path.extname(filePath))}`;
   }
 
+  if (platform === "gemini") {
+    try {
+      const parsed = JSON.parse(fileBuffer.toString("utf8")) as Record<string, unknown>;
+      const id = asString(parsed.sessionId) ?? asString(parsed.id);
+      if (id) {
+        return `sess:${platform}:${id}`;
+      }
+    } catch {
+      return `sess:${platform}:${path.basename(filePath, path.extname(filePath))}`;
+    }
+  }
+
   if (platform === "codex") {
-    const firstLine = firstNonEmptyLineFromBuffer(fileBuffer);
+    const firstLine = firstNonEmptyTrimmedLineFromBuffer(fileBuffer);
     if (firstLine) {
       try {
         const parsed = JSON.parse(firstLine) as Record<string, unknown>;
@@ -3935,45 +3797,11 @@ function isClaudeInterruptionMarker(text: string): boolean {
 }
 
 function normalizeFileUri(value: string): string {
-  if (value.startsWith("file://")) {
-    return value.replace("file://", "");
-  }
-  return value;
+  return normalizeLocalPathIdentity(value) ?? value.trim();
 }
 
 function normalizeWorkspacePath(value: string): string | undefined {
-  const raw = decodeUriPath(normalizeFileUri(value).trim());
-  if (!raw) {
-    return undefined;
-  }
-
-  const slashNormalized = raw.replace(/\\/g, "/");
-  if (/^[A-Za-z]:/u.test(slashNormalized)) {
-    const drive = slashNormalized.slice(0, 2).toLowerCase();
-    const rest = slashNormalized.slice(2);
-    const normalizedRest = path.posix.normalize(rest.startsWith("/") ? rest : `/${rest}`);
-    return `${drive}${trimTrailingSlash(normalizedRest)}`;
-  }
-
-  return trimTrailingSlash(path.posix.normalize(slashNormalized));
-}
-
-function decodeUriPath(value: string): string {
-  if (!/%[0-9a-f]{2}/iu.test(value)) {
-    return value;
-  }
-  try {
-    return decodeURI(value);
-  } catch {
-    return value;
-  }
-}
-
-function trimTrailingSlash(value: string): string {
-  if (value === "/" || /^[a-z]:\/$/u.test(value)) {
-    return value;
-  }
-  return value.replace(/\/+$/u, "");
+  return normalizeLocalPathIdentity(value);
 }
 
 function safeJsonParse(value: string | undefined): unknown {

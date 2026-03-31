@@ -6,15 +6,18 @@ import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
-import type {
-  SourcePlatform,
-  ProjectIdentity,
-  SourceDefinition,
-  SourceSyncPayload,
-  SourceStatus,
-  TurnSearchResult,
-  UsageStatsDimension,
-  UserTurnProjection,
+import {
+  getLocalPathBasename,
+  normalizeLocalPathIdentity,
+  type SourcePlatform,
+  type ProjectIdentity,
+  type SourceDefinition,
+  type SourceSyncPayload,
+  type SessionProjection,
+  type SourceStatus,
+  type TurnSearchResult,
+  type UsageStatsDimension,
+  type UserTurnProjection,
 } from "@cchistory/domain";
 import {
   discoverDefaultSourcesForHost,
@@ -30,6 +33,7 @@ import {
   computePayloadChecksum,
   exportBundle,
   importBundleIntoStore,
+  planBundleImport,
   snapshotPayloadRawBlobs,
 } from "./bundle.js";
 import {
@@ -116,6 +120,8 @@ async function dispatchCommand(command: string, parsed: ParsedArgs, io: CliIo): 
       return handleSync(parsed, io);
     case "discover":
       return handleDiscover(parsed);
+    case "health":
+      return handleHealth(parsed, io);
     case "ls":
       return handleLs(parsed, io);
     case "tree":
@@ -128,6 +134,10 @@ async function dispatchCommand(command: string, parsed: ParsedArgs, io: CliIo): 
       return handleStats(parsed, io);
     case "export":
       return handleExport(parsed, io);
+    case "backup":
+      return handleBackup(parsed, io);
+    case "restore-check":
+      return handleRestoreCheck(parsed, io);
     case "import":
       return handleImport(parsed, io);
     case "merge":
@@ -264,6 +274,241 @@ async function handleDiscover(parsed: ParsedArgs): Promise<CommandOutput> {
   };
 }
 
+async function handleHealth(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
+  const sourceRefs = getFlagValues(parsed, "source");
+  const showAll = hasFlag(parsed, "showall");
+  const readMode = resolveReadMode(parsed);
+  const layout = resolveStoreLayout({
+    cwd: io.cwd,
+    storeArg: getFlag(parsed, "store"),
+    dbArg: getFlag(parsed, "db"),
+  });
+
+  const discoveryEntries = applySourceDiscoverySelection(discoverHostToolsForHost({ includeMissing: true }), sourceRefs);
+  const visibleDiscoveryEntries = showAll
+    ? discoveryEntries
+    : discoveryEntries.filter((entry) => entry.discovered_paths.length > 0);
+  const discoveryRows = visibleDiscoveryEntries.flatMap((entry) =>
+    entry.candidates
+      .filter((candidate) => showAll || candidate.exists)
+      .map((candidate) => [
+        entry.display_name,
+        entry.kind,
+        formatDiscoveryCapability(entry.capability),
+        entry.platform,
+        `${candidate.kind} (${candidate.label})`,
+        candidate.path,
+        candidate.exists ? "yes" : "no",
+        candidate.selected ? "yes" : "",
+      ]),
+  );
+  const discoveryOutput: CommandOutput = {
+    text:
+      discoveryRows.length > 0
+        ? [
+            `Discovered ${visibleDiscoveryEntries.length} item(s) on this host`,
+            "",
+            renderTable(["Name", "Kind", "Capability", "Platform", "Path Type", "Path", "Exists", "Selected"], discoveryRows),
+          ].join("\n")
+        : "(no discovered items)",
+    json: {
+      kind: "discover",
+      entries: visibleDiscoveryEntries,
+      tools: visibleDiscoveryEntries,
+    },
+  };
+
+  const syncPreviewOutput = await handleSyncDryRun(parsed);
+  const syncPreviewJson = syncPreviewOutput.json as {
+    kind: "sync-dry-run";
+    sources: Array<{ selected_exists: boolean }>;
+  };
+  const availableSyncSources = syncPreviewJson.sources.filter((entry) => entry.selected_exists).length;
+
+  const storeExists = await pathExists(layout.dbPath);
+  let storeSourcesOutput: CommandOutput | undefined;
+  let storeStatsOutput: CommandOutput | undefined;
+  let missingStoreNote: string | undefined;
+
+  if (readMode === "full" || storeExists) {
+    const readStore = await openReadStore(parsed, io);
+    try {
+      storeSourcesOutput = createSourcesListOutput(readStore.layout, readStore.storage);
+      storeStatsOutput = createStatsOverviewOutput(readStore.layout, readStore.storage, showAll);
+    } finally {
+      await readStore.close();
+    }
+  } else {
+    missingStoreNote = [
+      `No indexed store found at ${layout.dbPath}.`,
+      "Run `cchistory sync` or `cchistory import` first, or use `cchistory health --full` for a live read-only scan.",
+    ].join("\n");
+  }
+
+  const overviewText = renderKeyValue([
+    ["Store Path", layout.dbPath],
+    ["Read Mode", readMode],
+    ["Selected Sources", sourceRefs.length > 0 ? sourceRefs.join(", ") : "(all supported)"],
+    ["Discovered Items", String(visibleDiscoveryEntries.length)],
+    ["Sync-Ready Sources", `${availableSyncSources}/${syncPreviewJson.sources.length}`],
+    ["Store Summary", readMode === "full" ? "live full scan" : storeExists ? "indexed store available" : "indexed store missing"],
+  ]);
+
+  const sections = [
+    renderSection("Overview", overviewText),
+    renderSection("Host Discovery", discoveryOutput.text),
+    renderSection("Sync Preview", syncPreviewOutput.text),
+  ];
+
+  if (storeSourcesOutput && storeStatsOutput) {
+    sections.push(renderSection(readMode === "full" ? "Live Sources" : "Indexed Sources", storeSourcesOutput.text));
+    sections.push(renderSection(readMode === "full" ? "Live Store Overview" : "Store Overview", storeStatsOutput.text));
+  } else if (missingStoreNote) {
+    sections.push(renderSection("Indexed Store", missingStoreNote));
+  }
+
+  return {
+    text: sections.join("\n\n"),
+    json: {
+      kind: "health",
+      db_path: layout.dbPath,
+      read_mode: readMode,
+      selected_sources: sourceRefs,
+      discovery: discoveryOutput.json,
+      sync_preview: syncPreviewOutput.json,
+      store_summary:
+        storeSourcesOutput && storeStatsOutput
+          ? {
+              read_mode: readMode,
+              store_exists: storeExists,
+              sources: storeSourcesOutput.json,
+              stats: storeStatsOutput.json,
+            }
+          : {
+              read_mode: readMode,
+              store_exists: false,
+              note: missingStoreNote,
+            },
+    },
+  };
+}
+
+function createSourcesListOutput(layout: StoreLayout, storage: CCHistoryStorage): CommandOutput {
+  const sources = storage.listSources().sort((left, right) => (right.last_sync ?? "").localeCompare(left.last_sync ?? ""));
+  return {
+    text: renderTable(
+      ["Source", "Handle", "Platform", "Sessions", "Turns", "Last Sync", "Status"],
+      sources.map((source) => [
+        source.display_name,
+        formatSourceHandle(source),
+        source.platform,
+        String(source.total_sessions),
+        String(source.total_turns),
+        source.last_sync ?? "never",
+        source.sync_status,
+      ]),
+    ),
+    json: { kind: "sources", db_path: layout.dbPath, sources },
+  };
+}
+
+function createStatsOverviewOutput(layout: StoreLayout, storage: CCHistoryStorage, showAll: boolean): CommandOutput {
+  const usageFilters = { include_known_zero_token: showAll };
+  const overview = storage.getUsageOverview(usageFilters);
+  const schema = storage.getSchemaInfo();
+  const sources = storage.listSources();
+  const projects = storage.listProjects();
+  const sessions = storage.listResolvedSessions();
+  const turns = storage.listResolvedTurns();
+  const excludedNote = overview.excluded_zero_token_turns
+    ? `${overview.excluded_zero_token_turns} non-API turns excluded (slash commands, cancellations). Use --showall to include.`
+    : undefined;
+  return {
+    text: [
+      renderKeyValue([
+        ["DB", layout.dbPath],
+        ["Schema Version", schema.schema_version],
+        ["Schema Migrations", String(schema.migrations.length)],
+        ["Search Mode", storage.searchMode],
+        ["Sources", String(sources.length)],
+        ["Projects", String(projects.length)],
+        ["Sessions", String(sessions.length)],
+        ["Turns", String(turns.length)],
+        ["Turns With Tokens", `${overview.turns_with_token_usage}/${overview.total_turns}`],
+        ["Coverage", formatRatio(overview.turn_coverage_ratio)],
+        ["Input Tokens", formatNumber(overview.total_input_tokens)],
+        ["Cached Input Tokens", formatNumber(overview.total_cached_input_tokens)],
+        ["Output Tokens", formatNumber(overview.total_output_tokens)],
+        ["Reasoning Tokens", formatNumber(overview.total_reasoning_output_tokens)],
+        ["Total Tokens", formatNumber(overview.total_tokens)],
+      ]),
+      excludedNote,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join("\n\n"),
+    json: {
+      kind: "stats-overview",
+      db_path: layout.dbPath,
+      counts: {
+        sources: sources.length,
+        projects: projects.length,
+        sessions: sessions.length,
+        turns: turns.length,
+      },
+      schema,
+      search_mode: storage.searchMode,
+      overview,
+    },
+  };
+}
+
+function createStatsUsageOutput(
+  layout: StoreLayout,
+  storage: CCHistoryStorage,
+  dimension: UsageStatsDimension,
+  showAll: boolean,
+): CommandOutput {
+  if (!["model", "project", "source", "host", "day", "month"].includes(dimension)) {
+    throw new Error("`stats usage --by` must be one of model, project, source, host, day, or month.");
+  }
+
+  const usageFilters = { include_known_zero_token: showAll };
+  const rollup = storage.listUsageRollup(dimension, usageFilters);
+  const notesText = renderUsageNotes(rollup.rows, dimension);
+  const excludedNote = rollup.excluded_zero_token_turns
+    ? `${rollup.excluded_zero_token_turns} non-API turns excluded (slash commands, cancellations). Use --showall to include.`
+    : undefined;
+  const chartText = dimension === "day" || dimension === "month" ? renderUsageCharts(rollup.rows, dimension) : undefined;
+  return {
+    text: [
+      renderTable(
+        ["Label", "Turns", "Covered", "Coverage", "Total Tokens", "Input", "Output"],
+        rollup.rows.map((row) => [
+          formatUsageRollupLabel(dimension, row.label),
+          String(row.turn_count),
+          String(row.turns_with_token_usage),
+          formatRatio(row.turn_coverage_ratio),
+          formatNumber(row.total_tokens),
+          formatNumber(row.total_input_tokens),
+          formatNumber(row.total_output_tokens),
+        ]),
+      ),
+      chartText,
+      notesText,
+      excludedNote,
+    ]
+      .filter((value): value is string => Boolean(value))
+      .join("\n\n"),
+    json: {
+      kind: "stats-usage",
+      db_path: layout.dbPath,
+      dimension,
+      overview: storage.getUsageOverview(usageFilters),
+      rollup,
+    },
+  };
+}
+
 async function handleLs(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
   const [target] = parsed.positionals;
   if (!target || !["projects", "sessions", "sources"].includes(target)) {
@@ -296,9 +541,11 @@ async function handleLs(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
       const sessions = storage.listResolvedSessions();
       return {
         text: renderTable(
-          ["Session", "Project", "Source", "Host", "Model", "Updated"],
+          ["Session", "Title", "Workspace", "Project", "Source", "Host", "Model", "Updated"],
           sessions.map((session) => [
             session.id,
+            session.title ?? "",
+            session.working_directory ?? "",
             projectLabel(projectsById.get(session.primary_project_id ?? "")),
             session.source_id,
             shortId(session.host_id),
@@ -310,22 +557,7 @@ async function handleLs(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
       };
     }
 
-    const sources = storage.listSources().sort((left, right) => (right.last_sync ?? "").localeCompare(left.last_sync ?? ""));
-    return {
-      text: renderTable(
-        ["Source", "Handle", "Platform", "Sessions", "Turns", "Last Sync", "Status"],
-        sources.map((source) => [
-          source.display_name,
-          formatSourceHandle(source),
-          source.platform,
-          String(source.total_sessions),
-          String(source.total_turns),
-          source.last_sync ?? "never",
-          source.sync_status,
-        ]),
-      ),
-      json: { kind: "sources", db_path: layout.dbPath, sources },
-    };
+    return createSourcesListOutput(layout, storage);
   } finally {
     await readStore.close();
   }
@@ -449,16 +681,15 @@ async function handleShow(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput>
     }
 
     if (target === "session") {
-      const session = storage.getResolvedSession(ref) ?? storage.getSession(ref);
-      if (!session) {
-        throw new Error(`Unknown session: ${ref}`);
-      }
+      const session = resolveSessionRef(storage, ref);
       const turns = storage.listResolvedTurns().filter((turn) => turn.session_id === session.id);
       return {
         text: [
           renderSection(
             `Session ${session.id}`,
             renderKeyValue([
+              ["Title", session.title ?? "(untitled)"],
+              ["Workspace", session.working_directory ?? "unknown"],
               ["Project", session.primary_project_id ?? "Unassigned"],
               ["Source", session.source_id],
               ["Host", session.host_id],
@@ -480,10 +711,7 @@ async function handleShow(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput>
     }
 
     if (target === "turn") {
-      const turn = storage.getResolvedTurn(ref) ?? storage.getTurn(ref);
-      if (!turn) {
-        throw new Error(`Unknown turn: ${ref}`);
-      }
+      const turn = resolveTurnRef(storage, ref);
       const context = storage.getTurnContext(turn.id);
       return {
         text: [
@@ -579,6 +807,10 @@ async function handleSearch(parsed: ParsedArgs, io: CliIo): Promise<CommandOutpu
         );
       }
     }
+    if (lines.length > 0) {
+      lines.push("");
+      lines.push("Use `cchistory show turn <shown-id>` to inspect a full turn.");
+    }
     return {
       text: lines.length > 0 ? lines.join("\n") : "(no matches)",
       json: { kind: "search", db_path: layout.dbPath, query, results },
@@ -594,96 +826,13 @@ async function handleStats(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput
   try {
     const { layout, storage } = readStore;
     const showAll = hasFlag(parsed, "showall");
-    const usageFilters = { include_known_zero_token: showAll };
     if (!target) {
-      const overview = storage.getUsageOverview(usageFilters);
-      const schema = storage.getSchemaInfo();
-      const sources = storage.listSources();
-      const projects = storage.listProjects();
-      const sessions = storage.listResolvedSessions();
-      const turns = storage.listResolvedTurns();
-      const excludedNote = overview.excluded_zero_token_turns
-        ? `${overview.excluded_zero_token_turns} non-API turns excluded (slash commands, cancellations). Use --showall to include.`
-        : undefined;
-      return {
-        text: [
-          renderKeyValue([
-            ["DB", layout.dbPath],
-            ["Schema Version", schema.schema_version],
-            ["Schema Migrations", String(schema.migrations.length)],
-            ["Search Mode", storage.searchMode],
-            ["Sources", String(sources.length)],
-            ["Projects", String(projects.length)],
-            ["Sessions", String(sessions.length)],
-            ["Turns", String(turns.length)],
-            ["Turns With Tokens", `${overview.turns_with_token_usage}/${overview.total_turns}`],
-            ["Coverage", formatRatio(overview.turn_coverage_ratio)],
-            ["Input Tokens", formatNumber(overview.total_input_tokens)],
-            ["Cached Input Tokens", formatNumber(overview.total_cached_input_tokens)],
-            ["Output Tokens", formatNumber(overview.total_output_tokens)],
-            ["Reasoning Tokens", formatNumber(overview.total_reasoning_output_tokens)],
-            ["Total Tokens", formatNumber(overview.total_tokens)],
-          ]),
-          excludedNote,
-        ]
-          .filter((value): value is string => Boolean(value))
-          .join("\n\n"),
-        json: {
-          kind: "stats-overview",
-          db_path: layout.dbPath,
-          counts: {
-            sources: sources.length,
-            projects: projects.length,
-            sessions: sessions.length,
-            turns: turns.length,
-          },
-          schema,
-          search_mode: storage.searchMode,
-          overview,
-        },
-      };
+      return createStatsOverviewOutput(layout, storage, showAll);
     }
 
     if (target === "usage") {
       const dimension = (getFlag(parsed, "by") ?? "model") as UsageStatsDimension;
-      if (!["model", "project", "source", "host", "day", "month"].includes(dimension)) {
-        throw new Error("`stats usage --by` must be one of model, project, source, host, day, or month.");
-      }
-      const rollup = storage.listUsageRollup(dimension, usageFilters);
-      const notesText = renderUsageNotes(rollup.rows, dimension);
-      const excludedNote = rollup.excluded_zero_token_turns
-        ? `${rollup.excluded_zero_token_turns} non-API turns excluded (slash commands, cancellations). Use --showall to include.`
-        : undefined;
-      const chartText =
-        dimension === "day" || dimension === "month" ? renderUsageCharts(rollup.rows, dimension) : undefined;
-      return {
-        text: [
-          renderTable(
-            ["Label", "Turns", "Covered", "Coverage", "Total Tokens", "Input", "Output"],
-            rollup.rows.map((row) => [
-              formatUsageRollupLabel(dimension, row.label),
-              String(row.turn_count),
-              String(row.turns_with_token_usage),
-              formatRatio(row.turn_coverage_ratio),
-              formatNumber(row.total_tokens),
-              formatNumber(row.total_input_tokens),
-              formatNumber(row.total_output_tokens),
-            ]),
-          ),
-          chartText,
-          notesText,
-          excludedNote,
-        ]
-          .filter((value): value is string => Boolean(value))
-          .join("\n\n"),
-        json: {
-          kind: "stats-usage",
-          db_path: layout.dbPath,
-          dimension,
-          overview: storage.getUsageOverview(usageFilters),
-          rollup,
-        },
-      };
+      return createStatsUsageOutput(layout, storage, dimension, showAll);
     }
 
     throw new Error("Use `stats` or `stats usage --by <dimension>`.");
@@ -754,12 +903,139 @@ function renderUsageNotes(
 }
 
 async function handleExport(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
+  return executeExportCommand(parsed, io);
+}
+
+async function handleBackup(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
+  const dryRun = hasFlag(parsed, "dry-run");
+  const shouldWrite = hasFlag(parsed, "write") && !dryRun;
+  const mode = shouldWrite ? "write" : "preview";
+  const exportOutput = await executeExportCommand(parsed, io, {
+    dryRun: !shouldWrite,
+  });
+  return {
+    text: [
+      renderKeyValue([
+        ["Workflow", "backup"],
+        ["Mode", mode],
+      ]),
+      "",
+      exportOutput.text,
+    ].join("\n"),
+    json: {
+      kind: "backup",
+      mode,
+      export: exportOutput.json,
+    },
+  };
+}
+
+async function handleRestoreCheck(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
+  if (parsed.positionals.length > 0) {
+    throw new Error("`restore-check` does not take positional arguments.");
+  }
+  if (!hasFlag(parsed, "store") && !hasFlag(parsed, "db")) {
+    throw new Error("`restore-check` requires an explicit --store or --db target.");
+  }
+  if (hasFlag(parsed, "full")) {
+    throw new Error("`restore-check` does not support --full; it verifies the indexed restored store only.");
+  }
+  if (getFlagValues(parsed, "source").length > 0) {
+    throw new Error("`restore-check` does not support --source filters; it verifies all restored sources together.");
+  }
+
+  const layout = resolveStoreLayout({
+    cwd: io.cwd,
+    storeArg: getFlag(parsed, "store"),
+    dbArg: getFlag(parsed, "db"),
+  });
+  await requireStoreDatabase(layout.dbPath);
+  const storage = await openStorage(layout);
+
+  try {
+    const showAll = hasFlag(parsed, "showall");
+    const statsOutput = createStatsOverviewOutput(layout, storage, showAll);
+    const sourcesOutput = createSourcesListOutput(layout, storage);
+    return {
+      text: [
+        renderSection(
+          "Restore Check",
+          renderKeyValue([
+            ["Target", layout.dbPath],
+            ["Read Mode", "index"],
+          ]),
+        ),
+        "",
+        renderSection("Store Overview", statsOutput.text),
+        "",
+        renderSection("Source Presence", sourcesOutput.text),
+      ].join("\n"),
+      json: {
+        kind: "restore-check",
+        db_path: layout.dbPath,
+        read_mode: "index",
+        stats: statsOutput.json,
+        sources: sourcesOutput.json,
+      },
+    };
+  } finally {
+    storage.close();
+  }
+}
+
+async function executeExportCommand(
+  parsed: ParsedArgs,
+  io: CliIo,
+  options: {
+    dryRun?: boolean;
+  } = {},
+): Promise<CommandOutput> {
   const outDir = requireFlag(parsed, "out");
   const includeRawBlobs = !hasFlag(parsed, "no-raw");
   const sourceRefs = getFlagValues(parsed, "source");
+  const dryRun = options.dryRun ?? hasFlag(parsed, "dry-run");
   const { layout, storage } = await openExistingStore(parsed, io);
   try {
     const selectedSourceIds = sourceRefs.length > 0 ? sourceRefs.map((ref) => resolveSourceRef(storage, ref).id) : undefined;
+    const selectedPayloads = storage
+      .listSourcePayloads()
+      .filter((payload) => (selectedSourceIds && selectedSourceIds.length > 0 ? selectedSourceIds.includes(payload.source.id) : true));
+
+    if (dryRun) {
+      const counts = selectedPayloads.reduce(
+        (totals, payload) => ({
+          sources: totals.sources + 1,
+          sessions: totals.sessions + payload.sessions.length,
+          turns: totals.turns + payload.turns.length,
+          blobs: totals.blobs + payload.blobs.length,
+        }),
+        { sources: 0, sessions: 0, turns: 0, blobs: 0 },
+      );
+      return {
+        text: [
+          renderKeyValue([
+            ["DB", layout.dbPath],
+            ["Bundle", path.resolve(io.cwd, outDir)],
+            ["Sources", String(counts.sources)],
+            ["Sessions", String(counts.sessions)],
+            ["Turns", String(counts.turns)],
+            ["Blobs", String(counts.blobs)],
+            ["Includes Raw", String(includeRawBlobs)],
+          ]),
+          "",
+          renderExportPlanTable(selectedPayloads),
+        ].join("\n"),
+        json: {
+          kind: "export-dry-run",
+          db_path: layout.dbPath,
+          bundle_dir: path.resolve(io.cwd, outDir),
+          includes_raw_blobs: includeRawBlobs,
+          counts,
+          sources: selectedPayloads.map((payload) => payload.source),
+        },
+      };
+    }
+
     const result = await exportBundle({
       storage,
       bundleDir: path.resolve(io.cwd, outDir),
@@ -803,14 +1079,56 @@ async function handleImport(parsed: ParsedArgs, io: CliIo): Promise<CommandOutpu
     storeArg: getFlag(parsed, "store"),
     dbArg: getFlag(parsed, "db"),
   });
-  await mkdir(layout.assetDir, { recursive: true });
-  await mkdir(layout.rawDir, { recursive: true });
-  const storage = await openStorage(layout);
+  const resolvedBundleDir = path.resolve(io.cwd, bundleDir);
+  const dryRun = hasFlag(parsed, "dry-run");
+  const targetStoreExists = await pathExists(layout.dbPath);
+  let storage: CCHistoryStorage;
+  if (dryRun && !targetStoreExists) {
+    storage = await createStorage({ dbPath: ":memory:" });
+  } else {
+    if (!dryRun) {
+      await mkdir(layout.assetDir, { recursive: true });
+      await mkdir(layout.rawDir, { recursive: true });
+    }
+    storage = await openStorage(layout);
+  }
 
   try {
+    if (dryRun) {
+      const plan = await planBundleImport({
+        storage,
+        bundleDir: resolvedBundleDir,
+        onConflict: mode,
+      });
+      return {
+        text: [
+          renderKeyValue([
+            ["Target DB", layout.dbPath],
+            ["Target Exists", String(targetStoreExists)],
+            ["Bundle", resolvedBundleDir],
+            ["Bundle ID", plan.manifest.bundle_id],
+            ["Conflict Mode", mode],
+            ["Would Import", String(plan.imported_source_ids.length)],
+            ["Would Replace", String(plan.replaced_source_ids.length)],
+            ["Would Skip", String(plan.skipped_source_ids.length)],
+            ["Would Conflict", String(plan.conflicting_source_ids.length)],
+            ["Would Fail", String(plan.would_fail)],
+          ]),
+          "",
+          renderImportPlanTable(plan),
+        ].join("\n"),
+        json: {
+          kind: "import-dry-run",
+          db_path: layout.dbPath,
+          target_exists: targetStoreExists,
+          ...plan,
+        },
+      };
+    }
+
     const result = await importBundleIntoStore({
       storage,
-      bundleDir: path.resolve(io.cwd, bundleDir),
+      bundleDir: resolvedBundleDir,
       rawDir: layout.rawDir,
       onConflict: mode,
     });
@@ -957,11 +1275,12 @@ async function handleQueryAlias(parsed: ParsedArgs, io: CliIo): Promise<CommandO
         };
       }
       case "turn": {
-        const turnId = requireFlag(parsed, "id");
+        const turnRef = requireFlag(parsed, "id");
+        const turn = resolveTurnRef(storage, turnRef);
         const json = {
-          turn: storage.getResolvedTurn(turnId) ?? storage.getTurn(turnId),
-          context: storage.getTurnContext(turnId),
-          lineage: storage.getTurnLineage(turnId),
+          turn,
+          context: storage.getTurnContext(turn.id),
+          lineage: storage.getTurnLineage(turn.id),
         };
         return { text: JSON.stringify(json, null, 2), json };
       }
@@ -977,10 +1296,11 @@ async function handleQueryAlias(parsed: ParsedArgs, io: CliIo): Promise<CommandO
         return { text: JSON.stringify(json, null, 2), json };
       }
       case "session": {
-        const sessionId = requireFlag(parsed, "id");
+        const sessionRef = requireFlag(parsed, "id");
+        const session = resolveSessionRef(storage, sessionRef);
         const json = {
-          session: storage.getResolvedSession(sessionId) ?? storage.getSession(sessionId),
-          turns: storage.listResolvedTurns().filter((turn) => turn.session_id === sessionId),
+          session,
+          turns: storage.listResolvedTurns().filter((turn) => turn.session_id === session.id),
         };
         return { text: JSON.stringify(json, null, 2), json };
       }
@@ -1012,6 +1332,51 @@ async function handleTemplates(): Promise<CommandOutput> {
   };
 }
 
+function renderExportPlanTable(payloads: SourceSyncPayload[]): string {
+  if (payloads.length === 0) {
+    return "(no sources selected)";
+  }
+  return renderTable(
+    ["Source", "Handle", "Host", "Sessions", "Turns", "Blobs"],
+    payloads.map((payload) => [
+      payload.source.display_name,
+      payload.source.slot_id,
+      shortId(payload.source.host_id),
+      String(payload.sessions.length),
+      String(payload.turns.length),
+      String(payload.blobs.length),
+    ]),
+  );
+}
+
+function renderImportPlanTable(plan: {
+  source_plans: Array<{
+    display_name: string;
+    slot_id: string;
+    host_id: string;
+    counts: { sessions: number; turns: number; blobs: number };
+    action: string;
+    reason: string;
+  }>;
+}): string {
+  if (plan.source_plans.length === 0) {
+    return "(bundle has no sources)";
+  }
+  return renderTable(
+    ["Source", "Handle", "Host", "Sessions", "Turns", "Blobs", "Action", "Reason"],
+    plan.source_plans.map((entry) => [
+      entry.display_name,
+      entry.slot_id,
+      shortId(entry.host_id),
+      String(entry.counts.sessions),
+      String(entry.counts.turns),
+      String(entry.counts.blobs),
+      entry.action,
+      entry.reason,
+    ]),
+  );
+}
+
 function groupSearchResults(results: TurnSearchResult[]): Array<{ label: string; results: TurnSearchResult[] }> {
   const groups = new Map<string, TurnSearchResult[]>();
   for (const result of results) {
@@ -1039,6 +1404,154 @@ function resolveProjectRef(storage: CCHistoryStorage, ref: string): ProjectIdent
   throw new Error(`Unknown project reference: ${ref}`);
 }
 
+function resolveSessionRef(storage: CCHistoryStorage, ref: string): SessionProjection {
+  const direct = storage.getResolvedSession(ref) ?? storage.getSession(ref);
+  if (direct) {
+    return direct;
+  }
+
+  const sessions = storage.listResolvedSessions();
+  const normalizedRef = normalizeSessionRefToken(ref);
+
+  const prefixMatch = resolveUniqueSessionMatch(ref, sessions.filter((session) => session.id.startsWith(ref)), "ID prefix");
+  if (prefixMatch) {
+    return prefixMatch;
+  }
+
+  const titleMatch = resolveUniqueSessionMatch(
+    ref,
+    sessions.filter((session) => normalizeSessionRefToken(session.title) === normalizedRef),
+    "title",
+  );
+  if (titleMatch) {
+    return titleMatch;
+  }
+
+  const normalizedWorkspaceRef = normalizeSessionPathRefToken(ref);
+  const workspaceMatch = resolveUniqueSessionMatch(
+    ref,
+    sessions.filter((session) => {
+      if (!session.working_directory || !normalizedWorkspaceRef) {
+        return false;
+      }
+      const normalizedWorkspace = normalizeSessionPathRefToken(session.working_directory);
+      const normalizedBasename = normalizeSessionPathRefToken(getLocalPathBasename(session.working_directory));
+      return normalizedWorkspace === normalizedWorkspaceRef || normalizedBasename === normalizedWorkspaceRef;
+    }),
+    "workspace",
+  );
+  if (workspaceMatch) {
+    return workspaceMatch;
+  }
+
+  throw new Error(`Unknown session reference: ${ref}`);
+}
+
+function resolveTurnRef(storage: CCHistoryStorage, ref: string): UserTurnProjection {
+  const direct = storage.getResolvedTurn(ref) ?? storage.getTurn(ref);
+  if (direct) {
+    return direct;
+  }
+
+  const turns = storage.listResolvedTurns();
+
+  const exactAliasMatch = resolveUniqueTurnMatch(
+    ref,
+    turns.filter(
+      (turn) =>
+        turn.turn_id === ref ||
+        turn.revision_id === ref ||
+        turn.turn_revision_id === ref,
+    ),
+    "ID",
+  );
+  if (exactAliasMatch) {
+    return exactAliasMatch;
+  }
+
+  const prefixMatch = resolveUniqueTurnMatch(
+    ref,
+    turns.filter(
+      (turn) =>
+        turn.id.startsWith(ref) ||
+        turn.turn_id?.startsWith(ref) ||
+        turn.revision_id.startsWith(ref) ||
+        turn.turn_revision_id?.startsWith(ref),
+    ),
+    "ID prefix",
+  );
+  if (prefixMatch) {
+    return prefixMatch;
+  }
+
+  throw new Error(`Unknown turn reference: ${ref}`);
+}
+
+function resolveUniqueSessionMatch(
+  ref: string,
+  matches: SessionProjection[],
+  matchKind: string,
+): SessionProjection | undefined {
+  if (matches.length === 0) {
+    return undefined;
+  }
+  if (matches.length === 1) {
+    return matches[0]!;
+  }
+  const preview = matches.slice(0, 3).map(formatSessionRefPreview).join(", ");
+  const remainder = matches.length > 3 ? ` (+${matches.length - 3} more)` : "";
+  throw new Error(`Ambiguous session reference: ${ref}. Matched ${matchKind} ${preview}${remainder}`);
+}
+
+function resolveUniqueTurnMatch(
+  ref: string,
+  matches: UserTurnProjection[],
+  matchKind: string,
+): UserTurnProjection | undefined {
+  if (matches.length === 0) {
+    return undefined;
+  }
+  if (matches.length === 1) {
+    return matches[0]!;
+  }
+  const preview = matches.slice(0, 3).map(formatTurnRefPreview).join(", ");
+  const remainder = matches.length > 3 ? ` (+${matches.length - 3} more)` : "";
+  throw new Error(`Ambiguous turn reference: ${ref}. Matched ${matchKind} ${preview}${remainder}`);
+}
+
+function formatSessionRefPreview(session: SessionProjection): string {
+  const parts = [session.id];
+  if (session.title) {
+    parts.push(`title=${JSON.stringify(session.title)}`);
+  }
+  if (session.working_directory) {
+    parts.push(`workspace=${JSON.stringify(session.working_directory)}`);
+  }
+  return parts.join(" ");
+}
+
+function formatTurnRefPreview(turn: UserTurnProjection): string {
+  return `${turn.id} submitted=${turn.submission_started_at} prompt=${JSON.stringify(truncateText(turn.canonical_text, 48))}`;
+}
+
+function normalizeSessionRefToken(value: string | undefined): string {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function normalizeSessionPathRefToken(value: string | undefined): string {
+  const normalizedPath = normalizeLocalPathIdentity(value);
+  return (normalizedPath ?? value)?.trim().toLowerCase() ?? "";
+}
+
+async function pathExists(targetPath: string): Promise<boolean> {
+  try {
+    await access(targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function resolveSourceRef(storage: CCHistoryStorage, ref: string): SourceStatus {
   const sources = storage.listSources();
   const direct = sources.find((source) => source.id === ref);
@@ -1056,7 +1569,23 @@ function resolveSourceRef(storage: CCHistoryStorage, ref: string): SourceStatus 
   throw new Error(`Unknown source reference: ${ref}`);
 }
 
+type ReadStoreFactory = (parsed: ParsedArgs, io: CliIo) => Promise<OpenedReadStore>;
+
+let readStoreFactory: ReadStoreFactory = openReadStoreDefault;
+
+export function interceptReadStoreFactoryForTests(wrapper: (next: ReadStoreFactory) => ReadStoreFactory): () => void {
+  const previousFactory = readStoreFactory;
+  readStoreFactory = wrapper(previousFactory);
+  return () => {
+    readStoreFactory = previousFactory;
+  };
+}
+
 async function openReadStore(parsed: ParsedArgs, io: CliIo): Promise<OpenedReadStore> {
+  return readStoreFactory(parsed, io);
+}
+
+async function openReadStoreDefault(parsed: ParsedArgs, io: CliIo): Promise<OpenedReadStore> {
   const baseLayout = resolveStoreLayout({
     cwd: io.cwd,
     storeArg: getFlag(parsed, "store"),
@@ -1390,15 +1919,19 @@ function renderHelp(): string {
     "Usage:",
     "  cchistory sync [--store <dir> | --db <file>] [--source <slot-or-id>] [--limit-files <n>] [--dry-run]",
     "  cchistory discover [--showall]",
+    "  cchistory health [--store <dir> | --db <file>] [--source <slot-or-id>] [--index | --full] [--limit-files <n>] [--showall]",
     "  cchistory ls projects|sessions|sources [--store <dir> | --db <file>] [--index | --full] [--showall]",
     "  cchistory tree projects [--store <dir> | --db <file>] [--index | --full] [--showall]",
     "  cchistory tree project <project-id-or-slug> [--store <dir> | --db <file>] [--index | --full]",
     "  cchistory show project|session|turn|source <ref> [--store <dir> | --db <file>] [--index | --full]",
+    "    turn refs accept full IDs or unique shown prefixes",
     "  cchistory search <query> [--store <dir> | --db <file>] [--index | --full] [--project <project>] [--source <source>] [--limit <n>]",
     "  cchistory stats [--store <dir> | --db <file>] [--index | --full]",
     "  cchistory stats usage --by model|project|source|host|day|month [--store <dir> | --db <file>] [--index | --full]",
-    "  cchistory export --out <bundle-dir> [--store <dir> | --db <file>] [--source <source>] [--no-raw]",
-    "  cchistory import <bundle-dir> [--store <dir> | --db <file>] [--on-conflict error|skip|replace]",
+    "  cchistory export --out <bundle-dir> [--store <dir> | --db <file>] [--source <source>] [--no-raw] [--dry-run]",
+    "  cchistory backup --out <bundle-dir> [--store <dir> | --db <file>] [--source <source>] [--no-raw] [--dry-run] [--write]",
+    "  cchistory restore-check (--store <dir> | --db <file>) [--showall]",
+    "  cchistory import <bundle-dir> [--store <dir> | --db <file>] [--on-conflict error|skip|replace] [--dry-run]",
     "  cchistory gc [--store <dir> | --db <file>] [--dry-run]",
     "",
     "Global options:",
@@ -1408,8 +1941,12 @@ function renderHelp(): string {
     "  --full          Re-scan default source roots into a temporary store before reading",
     "  --showall       Include empty projects in listings and missing candidates in discover output",
     "  --json          Print machine-readable JSON",
-    "  --dry-run       Preview sync or gc actions without writing",
+    "  --dry-run       Preview sync, import, gc, or backup actions without writing",
+    "  --write         Execute the write step for preview-first workflows like backup",
     "  --verbose       Reserved for detailed diagnostics",
+    "",
+    "Default store resolution:",
+    "  nearest existing .cchistory/ in the current or ancestor directories; otherwise ~/.cchistory",
   ].join("\n");
 }
 

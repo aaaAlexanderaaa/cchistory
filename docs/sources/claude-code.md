@@ -4,7 +4,7 @@ CCHistory 通过扫描 `~/.claude/projects` 下的 JSONL 会话文件接入 Clau
 
 > 默认根目录：`~/.claude/projects`
 >
-> Windows 下当前实现同样按用户 home 目录解析，也就是 `%USERPROFILE%\\.claude\\projects`。
+> Windows 下当前代码仍会按用户 home 目录探测 `%USERPROFILE%\.claude\projects`，但这一路径尚未在真实 Windows 主机上完成验证；运维上应在 `Sources` 中确认或覆盖 `base_dir`。
 
 # 获取方式
 

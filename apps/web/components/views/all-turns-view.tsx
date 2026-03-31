@@ -5,6 +5,7 @@ import { useMemo, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { TurnListVirtual } from '@/components/turn-list-virtual'
 import { ResponsiveSidePanel } from '@/components/responsive-side-panel'
+import { SummaryPill } from '@/components/summary-pill'
 import type { ProjectIdentity, UserTurn, LinkState, ValueAxis } from '@/lib/types'
 import {
   createProjectStub,
@@ -150,11 +151,32 @@ export function AllTurnsView() {
   }
 
   const stats = useMemo(() => {
-    const committed = turns.filter((turn) => turn.link_state === 'committed').length
-    const candidate = turns.filter((turn) => turn.link_state === 'candidate').length
-    const unlinked = turns.filter((turn) => turn.link_state === 'unlinked').length
-    return { committed, candidate, unlinked, total: turns.length }
-  }, [turns])
+    const committed = filteredTurns.filter((turn) => turn.link_state === 'committed').length
+    const candidate = filteredTurns.filter((turn) => turn.link_state === 'candidate').length
+    const unlinked = filteredTurns.filter((turn) => turn.link_state === 'unlinked').length
+    const visibleProjects = new Set(filteredTurns.map((turn) => turn.project_id).filter(Boolean)).size
+    return { committed, candidate, unlinked, total: turns.length, visible: filteredTurns.length, visibleProjects }
+  }, [filteredTurns, turns.length])
+
+  const linkStateCounts = useMemo(() => {
+    let nextTurns = [...turns]
+
+    if (filters.projectId) {
+      nextTurns = nextTurns.filter((turn) => turn.project_id === filters.projectId)
+    }
+
+    if (filters.valueAxes.length > 0) {
+      nextTurns = nextTurns.filter((turn) => filters.valueAxes.includes(turn.value_axis))
+    }
+
+    // Keep these counts aligned with the non-link-state filters so the chips show
+    // how many turns each link-state filter would reveal if toggled on.
+    return {
+      committed: nextTurns.filter((turn) => turn.link_state === 'committed').length,
+      candidate: nextTurns.filter((turn) => turn.link_state === 'candidate').length,
+      unlinked: nextTurns.filter((turn) => turn.link_state === 'unlinked').length,
+    }
+  }, [filters.projectId, filters.valueAxes, turns])
 
   if (error) {
     return (
@@ -177,8 +199,8 @@ export function AllTurnsView() {
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      <header className="flex-shrink-0 border-b border-border bg-card px-4 py-3 sm:px-6">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between lg:gap-3">
+      <header className="flex-shrink-0 border-b border-border bg-card">
+        <div className="flex flex-col gap-3 px-4 py-3 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:gap-3">
           <div className="space-y-1">
             <div className="flex items-center gap-3">
               <h1 className="text-lg font-bold font-display text-ink">All Turns</h1>
@@ -189,7 +211,7 @@ export function AllTurnsView() {
                     Loading…
                   </span>
                 ) : (
-                  `${filteredTurns.length} / ${stats.total}`
+                  `${stats.visible} / ${stats.total}`
                 )}
               </span>
             </div>
@@ -237,70 +259,81 @@ export function AllTurnsView() {
             )}
           </div>
         </div>
+
+        <div className="border-t border-border bg-paper px-4 py-3 sm:px-6">
+          <div className="mb-2 text-[10px] stamp-text text-muted">OVERVIEW</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <SummaryPill label="Visible" value={String(stats.visible)} />
+            <SummaryPill label="Projects" value={String(stats.visibleProjects)} />
+            <SummaryPill label="Committed" value={String(stats.committed)} tone="success" />
+            <SummaryPill label="Candidates" value={String(stats.candidate)} tone="candidate" />
+            <SummaryPill label="Unlinked" value={String(stats.unlinked)} tone={stats.unlinked > 0 ? 'warning' : 'normal'} />
+          </div>
+        </div>
       </header>
 
-      <div className="flex-shrink-0 flex flex-wrap items-center gap-4 border-b border-border bg-paper px-4 py-2 sm:px-6">
-        <Filter className="h-4 w-4 text-muted" />
+      <div className="flex-shrink-0 border-b border-border bg-paper px-4 py-3 sm:px-6">
+        <div className="mb-2 text-[10px] stamp-text text-muted">FILTERS</div>
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-2">
+            <Filter className="h-4 w-4 text-muted" />
+            <select
+              value={filters.projectId || ''}
+              onChange={(event) =>
+                setFilters((previous) => ({ ...previous, projectId: event.target.value || undefined }))
+              }
+              className="min-w-[11rem] max-w-full flex-1 border border-border bg-transparent px-2 py-1 text-xs text-text focus:border-ink focus:outline-none sm:flex-none"
+            >
+              <option value="">All Projects</option>
+              {projectOptions.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </div>
 
-        <select
-          value={filters.projectId || ''}
-          onChange={(event) =>
-            setFilters((previous) => ({ ...previous, projectId: event.target.value || undefined }))
-          }
-          className="min-w-[11rem] max-w-full flex-1 border border-border bg-transparent px-2 py-1 text-xs text-text focus:border-ink focus:outline-none sm:flex-none"
-        >
-          <option value="">All Projects</option>
-          {projectOptions.map((project) => (
-            <option key={project.id} value={project.id}>
-              {project.name}
-            </option>
-          ))}
-        </select>
+          <div className="flex flex-wrap items-center gap-1">
+            <FilterChip
+              label="Committed"
+              count={isLoading ? undefined : linkStateCounts.committed}
+              active={filters.linkStates.includes('committed')}
+              color="success"
+              title="Turns confidently linked to a project"
+              onClick={() => toggleLinkState('committed')}
+            />
+            <FilterChip
+              label="Candidate"
+              count={isLoading ? undefined : linkStateCounts.candidate}
+              active={filters.linkStates.includes('candidate')}
+              color="candidate"
+              title="Turns with a possible project match — review in Inbox"
+              onClick={() => toggleLinkState('candidate')}
+            />
+            <FilterChip
+              label="Unlinked"
+              count={isLoading ? undefined : linkStateCounts.unlinked}
+              active={filters.linkStates.includes('unlinked')}
+              color="muted"
+              title="Turns not yet associated with any project"
+              onClick={() => toggleLinkState('unlinked')}
+            />
+          </div>
 
-        <span className="hidden text-border sm:block">|</span>
-
-        <div className="flex flex-wrap items-center gap-1">
-          <FilterChip
-            label="Committed"
-            count={isLoading ? undefined : stats.committed}
-            active={filters.linkStates.includes('committed')}
-            color="success"
-            title="Turns confidently linked to a project"
-            onClick={() => toggleLinkState('committed')}
-          />
-          <FilterChip
-            label="Candidate"
-            count={isLoading ? undefined : stats.candidate}
-            active={filters.linkStates.includes('candidate')}
-            color="candidate"
-            title="Turns with a possible project match — review in Inbox"
-            onClick={() => toggleLinkState('candidate')}
-          />
-          <FilterChip
-            label="Unlinked"
-            count={isLoading ? undefined : stats.unlinked}
-            active={filters.linkStates.includes('unlinked')}
-            color="muted"
-            title="Turns not yet associated with any project"
-            onClick={() => toggleLinkState('unlinked')}
-          />
-        </div>
-
-        <span className="hidden text-border sm:block">|</span>
-
-        <div className="flex flex-wrap items-center gap-1">
-          <FilterChip
-            label="Active"
-            active={filters.valueAxes.includes('active')}
-            title="Current, relevant turns"
-            onClick={() => toggleValueAxis('active')}
-          />
-          <FilterChip
-            label="Archived"
-            active={filters.valueAxes.includes('archived')}
-            title="Older turns you've archived"
-            onClick={() => toggleValueAxis('archived')}
-          />
+          <div className="flex flex-wrap items-center gap-1">
+            <FilterChip
+              label="Active"
+              active={filters.valueAxes.includes('active')}
+              title="Current, relevant turns"
+              onClick={() => toggleValueAxis('active')}
+            />
+            <FilterChip
+              label="Archived"
+              active={filters.valueAxes.includes('archived')}
+              title="Older turns you've archived"
+              onClick={() => toggleValueAxis('archived')}
+            />
+          </div>
         </div>
       </div>
 

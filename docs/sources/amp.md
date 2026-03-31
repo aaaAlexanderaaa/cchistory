@@ -2,7 +2,7 @@
 
 > 默认根目录：`~/.local/share/amp/threads`
 >
-> Windows 下当前实现没有单独的 `%APPDATA%` 规则，仍按 home 目录拼接等价路径。
+> Windows 下当前代码仍会按 home 目录探测 `%USERPROFILE%\.local\share\amp\threads`，但还没有真实 Windows 主机验证；运维上应在 `Sources` 中确认或覆盖 `base_dir`。
 
 AMP 通过读取 `~/.local/share/amp/threads` 下的整线程 JSON 文件接入。与前几个 JSONL 源不同，AMP 将整段线程存储在单个 JSON 文件中。
 

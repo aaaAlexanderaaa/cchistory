@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 import { useMemo, useState } from 'react'
 import { useSWRConfig } from 'swr'
 import { cn, formatAbsoluteDateTime, formatRelativeTime } from '@/lib/utils'
+import { SummaryPill } from '@/components/summary-pill'
 import { useDriftQuery, useSourcesQuery } from '@/lib/api'
 import {
   Activity,
@@ -199,30 +200,6 @@ export function DriftView() {
         </div>
       </div>
     </div>
-  )
-}
-
-function SummaryPill({
-  label,
-  value,
-  tone = 'normal',
-}: {
-  label: string
-  value: string
-  tone?: 'normal' | 'success' | 'warning'
-}) {
-  return (
-    <span
-      className={cn(
-        'inline-flex items-center gap-2 border px-2.5 py-1.5 text-xs',
-        tone === 'success' && 'border-success/30 bg-success/10 text-success',
-        tone === 'warning' && 'border-warning/30 bg-warning/10 text-warning',
-        tone === 'normal' && 'border-border bg-card text-muted',
-      )}
-    >
-      <span className="text-[10px] stamp-text">{label}</span>
-      <span className="font-medium text-ink">{value}</span>
-    </span>
   )
 }
 

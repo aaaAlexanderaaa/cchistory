@@ -27,6 +27,8 @@ Call a release `self-host v1` only when all six conditions below are true.
 - A clean machine can complete install and first build by following the docs
   only.
 - Supported Node and pnpm versions are explicit.
+- The verification command must stay scoped to install plus the first non-web
+  build. Web production build validation remains Gate 4.
 
 ### 2. Upgrades do not damage an existing store
 
@@ -45,17 +47,22 @@ Call a release `self-host v1` only when all six conditions below are true.
 - The canonical `apps/web` production build succeeds without fetching external
   fonts or other web assets at build time.
 - CI and restricted-network operators can produce the same build artifact.
+- The gate should be verifiable through a repository command that blocks
+  external network access while preserving required loopback worker traffic.
 
 ### 5. Stable adapters use real-world validated samples and regression tests
 
 - `stable` means the adapter has been validated against real-world source data
   and is covered by regression tests.
+- The repository records that proof in `mock_data/stable-adapter-validation.json`,
+  and `pnpm --filter @cchistory/source-adapters test` must keep that proof green.
 - Registered adapters that only have fixtures, parser scaffolding, or
   speculative path assumptions must stay `experimental`.
 
 ### 6. README, runtime surface, and registry agree on support status
 
 - User-facing support claims must match code-level support tier metadata.
+- `pnpm run verify:support-status` validates the support-tier claims in `README.md`, `README_CN.md`, `docs/design/CURRENT_RUNTIME_SURFACE.md`, `docs/design/SELF_HOST_V1_RELEASE_GATE.md`, and `docs/sources/README.md` against the adapter registry.
 - `registered` and `supported` must not be used interchangeably.
 
 ## Support Tiers
@@ -65,7 +72,7 @@ Current self-host v1 support tiers:
 | Tier | Platforms | Meaning |
 | --- | --- | --- |
 | `stable` | `codex`, `claude_code`, `factory_droid`, `amp`, `cursor`, `antigravity` | real-world validated and expected to be covered by regression tests |
-| `experimental` | `openclaw`, `opencode`, `lobechat` | registered in code, but not yet validated enough for self-host v1 support claims |
+| `experimental` | `gemini`, `openclaw`, `opencode`, `lobechat` | registered in code, but not yet validated enough for self-host v1 support claims |
 
 ## Out Of Scope For Self-Host V1
 
@@ -81,7 +88,11 @@ The following are intentionally excluded from this gate:
 
 Use the smallest targeted command that proves the changed layer:
 
+- `pnpm run verify:clean-install`
+- `pnpm run verify:web-build-offline`
+- `pnpm run verify:support-status`
 - `pnpm --filter @cchistory/source-adapters test`
+- `pnpm run mock-data:validate`
 - `pnpm --filter @cchistory/storage test`
 - `pnpm --filter @cchistory/api test`
 - `cd apps/web && pnpm lint`

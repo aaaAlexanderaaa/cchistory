@@ -16,8 +16,8 @@ import {
   X,
 } from 'lucide-react'
 
-interface NavItem {
-  id: string
+interface NavItem<TId extends string = string> {
+  id: TId
   label: string
   icon: ReactNode
   badge?: number
@@ -34,17 +34,40 @@ interface AppShellProps {
   driftScore?: number
 }
 
-const historyNavItems: NavItem[] = [
+const historyNavItems: NavItem<HistoryView>[] = [
   { id: 'all_turns', label: 'All Turns', icon: <Layers className="h-4 w-4" /> },
   { id: 'projects', label: 'Projects', icon: <FolderOpen className="h-4 w-4" /> },
 ]
 
-const adminNavItems: NavItem[] = [
+const historyViewLabels: Record<HistoryView, string> = {
+  all_turns: 'All Turns',
+  projects: 'Projects',
+  inbox: 'Inbox',
+  search: 'Search',
+  session_detail: 'Session Detail',
+}
+
+const adminViewLabels: Record<AdminView, string> = {
+  sources: 'Sources',
+  linking: 'Linking',
+  masks: 'Masks',
+  drift: 'Data Health',
+}
+
+const adminNavItems: NavItem<AdminView>[] = [
   { id: 'sources', label: 'Sources', icon: <Database className="h-4 w-4" /> },
   { id: 'linking', label: 'Linking', icon: <Link2 className="h-4 w-4" /> },
   { id: 'masks', label: 'Masks', icon: <Shield className="h-4 w-4" /> },
   { id: 'drift', label: 'Data Health', icon: <Activity className="h-4 w-4" /> },
 ]
+
+function isHistoryView(view: HistoryView | AdminView): view is HistoryView {
+  return Object.hasOwn(historyViewLabels, view)
+}
+
+function isAdminView(view: HistoryView | AdminView): view is AdminView {
+  return Object.hasOwn(adminViewLabels, view)
+}
 
 export function AppShell({
   children,
@@ -57,6 +80,14 @@ export function AppShell({
   driftScore,
 }: AppShellProps) {
   const [navOpen, setNavOpen] = useState(false)
+  const searchActive = currentArea === 'history' && currentView === 'search'
+  const currentViewLabel = currentArea === 'history'
+    ? isHistoryView(currentView)
+      ? historyViewLabels[currentView]
+      : historyViewLabels.all_turns
+    : isAdminView(currentView)
+      ? adminViewLabels[currentView]
+      : adminViewLabels.sources
 
   const handleSearchClick = useCallback(() => {
     setNavOpen(false)
@@ -114,15 +145,21 @@ export function AppShell({
           </div>
           <div className="min-w-0">
             <div className="text-sm font-bold font-display text-ink">CCHistory</div>
-            <div className="mono-text text-[10px] text-muted">v1.0</div>
+            <div className="mono-text text-[10px] text-muted">{currentArea === 'history' ? 'History' : 'Admin'} / {currentViewLabel}</div>
           </div>
         </div>
 
         <button
           type="button"
           onClick={handleSearchClick}
-          className="flex h-9 w-9 items-center justify-center border border-border bg-paper text-muted transition-colors hover:border-ink hover:text-ink"
+          className={cn(
+            'flex h-9 w-9 items-center justify-center border transition-colors',
+            searchActive
+              ? 'border-ink bg-ink text-card shadow-hard'
+              : 'border-border bg-paper text-muted hover:border-ink hover:text-ink',
+          )}
           aria-label="Open search"
+          aria-current={searchActive ? 'page' : undefined}
         >
           <Search className="h-4 w-4" />
         </button>
@@ -166,7 +203,7 @@ export function AppShell({
         {children}
       </main>
 
-      <nav className="fixed inset-x-0 bottom-0 z-30 grid h-[calc(4rem+env(safe-area-inset-bottom))] grid-cols-4 border-t border-border bg-card pb-[env(safe-area-inset-bottom)] lg:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-30 grid h-[calc(4rem+env(safe-area-inset-bottom))] grid-cols-5 border-t border-border bg-card pb-[env(safe-area-inset-bottom)] lg:hidden">
         <MobileNavButton
           icon={<Layers className="h-4 w-4" />}
           label="Turns"
@@ -185,6 +222,12 @@ export function AppShell({
           active={currentArea === 'history' && currentView === 'inbox'}
           badge={inboxCount > 0 ? inboxCount : undefined}
           onClick={() => openView('inbox', 'history')}
+        />
+        <MobileNavButton
+          icon={<Search className="h-4 w-4" />}
+          label="Search"
+          active={searchActive}
+          onClick={handleSearchClick}
         />
         <MobileNavButton
           icon={<Database className="h-4 w-4" />}
@@ -223,6 +266,8 @@ function SidebarContent({
   mobile = false,
   onClose,
 }: SidebarContentProps) {
+  const searchActive = currentArea === 'history' && currentView === 'search'
+
   return (
     <aside className={cn('w-60 flex-col border-r border-border bg-card', className)}>
       <div className="flex h-14 items-center border-b border-border px-4">
@@ -252,11 +297,24 @@ function SidebarContent({
         <button
           type="button"
           onClick={onSearchClick}
-          className="flex h-9 w-full items-center gap-2 border border-border bg-paper px-3 text-sm text-muted transition-colors hover:border-ink"
+          className={cn(
+            'flex h-9 w-full items-center gap-2 border px-3 text-sm transition-colors',
+            searchActive
+              ? 'border-ink bg-ink text-card shadow-hard'
+              : 'border-border bg-paper text-muted hover:border-ink hover:text-ink',
+          )}
+          aria-current={searchActive ? 'page' : undefined}
         >
           <Search className="h-4 w-4" />
-          <span>Search turns...</span>
-          <kbd className="mono-text ml-auto border border-border bg-card px-1.5 py-0.5 text-[10px]">/</kbd>
+          <span>{searchActive ? 'Search' : 'Search turns...'}</span>
+          <kbd
+            className={cn(
+              'mono-text ml-auto border px-1.5 py-0.5 text-[10px]',
+              searchActive ? 'border-card/30 bg-card/10 text-card' : 'border-border bg-card text-muted',
+            )}
+          >
+            /
+          </kbd>
         </button>
       </div>
 
@@ -272,7 +330,7 @@ function SidebarContent({
               key={item.id}
               item={item}
               active={currentArea === 'history' && currentView === item.id}
-              onClick={() => onViewChange(item.id as HistoryView, 'history')}
+              onClick={() => onViewChange(item.id, 'history')}
             />
           ))}
           <NavButton
@@ -304,7 +362,7 @@ function SidebarContent({
                     : item.badge,
               }}
               active={currentArea === 'admin' && currentView === item.id}
-              onClick={() => onViewChange(item.id as AdminView, 'admin')}
+              onClick={() => onViewChange(item.id, 'admin')}
             />
           ))}
         </NavSection>
@@ -367,6 +425,7 @@ function NavButton({
         'flex w-full items-center gap-2 px-2 py-2 text-sm transition-all',
         active ? 'bg-ink text-card shadow-hard' : 'text-text hover:bg-surface-hover',
       )}
+      aria-current={active ? 'page' : undefined}
     >
       {item.icon}
       <span>{item.label}</span>
@@ -400,6 +459,7 @@ function MobileNavButton({
         'relative flex flex-col items-center justify-center gap-1 text-[10px] stamp-text transition-colors',
         active ? 'bg-ink text-card' : 'text-muted hover:text-ink',
       )}
+      aria-current={active ? 'page' : undefined}
     >
       {icon}
       <span>{label}</span>

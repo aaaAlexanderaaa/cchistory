@@ -1,6 +1,7 @@
 import type { SourcePlatform } from "@cchistory/domain";
 import { ampAdapter } from "./amp.js";
 import { antigravityAdapter } from "./antigravity.js";
+import { geminiAdapter } from "./gemini.js";
 import { claudeCodeAdapter } from "./claude-code.js";
 import { codexAdapter } from "./codex.js";
 import { cursorAdapter } from "./cursor.js";
@@ -18,6 +19,7 @@ const adapters = [
   ampAdapter,
   cursorAdapter,
   antigravityAdapter,
+  geminiAdapter,
   openclawAdapter,
   opencodeAdapter,
   lobechatAdapter,

@@ -11,6 +11,7 @@ import type {
   SourcePlatform,
   UserTurnProjection,
 } from "@cchistory/domain";
+import { normalizeLocalPathIdentity } from "@cchistory/domain";
 
 export interface LinkedProjectObservation extends ProjectObservation {
   host_id: string;
@@ -865,14 +866,7 @@ function roundConfidence(value: number): number {
 }
 
 function normalizePathKey(value: string | undefined): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-  const normalized = decodeUriPath(value).replace(/\\/g, "/").replace(/\/+/g, "/");
-  if (normalized.length > 1 && normalized.endsWith("/")) {
-    return normalized.slice(0, -1);
-  }
-  return normalized;
+  return normalizeLocalPathIdentity(value);
 }
 
 function decodeUriPath(value: string): string {

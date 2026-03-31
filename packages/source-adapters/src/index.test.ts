@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, realpath, rm, writeFile, utimes } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, realpath, rm, writeFile, utimes } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -11,6 +11,7 @@ import type { FragmentKind, SourceDefinition, SourceSyncPayload } from "@cchisto
 import { discoverDefaultSourcesForHost, discoverHostToolsForHost, getDefaultSourcesForHost, getSourceFormatProfiles, runSourceProbe } from "./index.js";
 import { buildAntigravityLiveSessionSeed, extractAntigravityLiveSeeds } from "./platforms/antigravity/live.js";
 import { extractGenericSessionMetadata } from "./platforms/generic/runtime.js";
+import { listGeminiSourceRoots } from "./platforms/gemini.js";
 import { listPlatformAdapters, listPlatformAdaptersBySupportTier } from "./platforms/registry.js";
 
 test("platform adapter registry provides exactly one adapter per supported platform", () => {
@@ -24,6 +25,7 @@ test("platform adapter registry provides exactly one adapter per supported platf
     "codex",
     "cursor",
     "factory_droid",
+    "gemini",
     "lobechat",
     "openclaw",
     "opencode",
@@ -47,10 +49,69 @@ test("platform adapter registry distinguishes stable and experimental support ti
     "cursor",
     "factory_droid",
   ]);
-  assert.deepEqual(experimentalPlatforms, ["lobechat", "openclaw", "opencode"]);
+  assert.deepEqual(experimentalPlatforms, ["gemini", "lobechat", "openclaw", "opencode"]);
+});
+
+test("stable support tier is backed by documented real-world validation assets", async () => {
+  const mockDataRoot = getRepoMockDataRoot();
+  const manifest = await readStableAdapterValidationManifest();
+  const scenarios = await readJsonFixture<MockDataScenarioFixture[]>(path.join(mockDataRoot, "scenarios.json"));
+  const scenarioIds = new Set(scenarios.map((scenario) => scenario.id));
+  const manifestPlatforms = manifest.stable_adapters.map((entry) => entry.platform).sort();
+  const stablePlatforms = listPlatformAdaptersBySupportTier("stable")
+    .map((adapter) => adapter.platform)
+    .sort();
+  const experimentalPlatforms = listPlatformAdaptersBySupportTier("experimental")
+    .map((adapter) => adapter.platform)
+    .sort();
+
+  assert.equal(manifest.schema_version, 1);
+  assert.match(manifest.last_reviewed, /^\d{4}-\d{2}-\d{2}$/u);
+  assert.deepEqual(manifestPlatforms, stablePlatforms);
+
+  for (const platform of experimentalPlatforms) {
+    assert.equal(manifestPlatforms.includes(platform), false, `did not expect experimental ${platform} in stable manifest`);
+  }
+
+  for (const entry of manifest.stable_adapters) {
+    assert.ok(entry.scenario_ids.length >= 1, `expected scenario coverage for ${entry.platform}`);
+    assert.ok(entry.validation_basis.length >= 1, `expected validation basis for ${entry.platform}`);
+    await access(path.join(mockDataRoot, entry.probe_base_dir));
+
+    for (const scenarioId of entry.scenario_ids) {
+      assert.ok(scenarioIds.has(scenarioId), `expected scenario ${scenarioId} for ${entry.platform}`);
+    }
+
+    for (const fixturePath of entry.runtime_fixture_paths ?? []) {
+      await access(path.join(mockDataRoot, fixturePath));
+    }
+  }
 });
 
 const execFileAsync = promisify(execFile);
+
+interface MockDataScenarioFixture {
+  id: string;
+  apps: string[];
+  visible_roots: string[];
+  paths: string[];
+}
+
+interface StableAdapterValidationEntry {
+  platform: SourceDefinition["platform"];
+  source_id: string;
+  family: SourceDefinition["family"];
+  probe_base_dir: string;
+  scenario_ids: string[];
+  validation_basis: string[];
+  runtime_fixture_paths?: string[];
+}
+
+interface StableAdapterValidationManifest {
+  schema_version: number;
+  last_reviewed: string;
+  stable_adapters: StableAdapterValidationEntry[];
+}
 
 test("runSourceProbe projects one turn per supported local source family", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
@@ -372,6 +433,27 @@ test("runSourceProbe keeps Claude interruption markers as source metadata instea
   }
 });
 
+test("runSourceProbe normalizes Windows file-URI workspace evidence across source families", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const sources = await seedWindowsNormalizedWorkspaceFixtures(tempRoot);
+    const result = await runSourceProbe({ limit_files_per_source: 1 }, sources);
+
+    for (const payload of result.sources) {
+      const projectObservation = payload.candidates.find((candidate) => candidate.candidate_kind === "project_observation");
+      assert.ok(projectObservation, `expected project observation for ${payload.source.platform}`);
+      assert.equal(
+        projectObservation.evidence.workspace_path_normalized,
+        "c:/Users/dev/workspace/normalized-project",
+        `expected normalized Windows workspace path for ${payload.source.platform}`,
+      );
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("runSourceProbe normalizes workspace-path evidence across source families", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
 
@@ -597,7 +679,7 @@ test("runSourceProbe uses cumulative token deltas when one visible reply spans m
   }
 });
 
-test("runSourceProbe supports cursor antigravity openclaw opencode and lobechat fixtures", async () => {
+test("runSourceProbe supports cursor antigravity gemini openclaw opencode and lobechat fixtures", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
 
   try {
@@ -605,7 +687,7 @@ test("runSourceProbe supports cursor antigravity openclaw opencode and lobechat 
     const result = await runSourceProbe({ limit_files_per_source: 1 }, sources);
     const payloadsByPlatform = new Map(result.sources.map((payload) => [payload.source.platform, payload]));
 
-    for (const platform of ["cursor", "openclaw", "opencode", "lobechat"] as const) {
+    for (const platform of ["cursor", "gemini", "openclaw", "opencode", "lobechat"] as const) {
       const payload = payloadsByPlatform.get(platform);
       assert.ok(payload, `expected payload for ${platform}`);
       assert.equal(payload.source.sync_status, "healthy");
@@ -627,6 +709,9 @@ test("runSourceProbe supports cursor antigravity openclaw opencode and lobechat 
 
     assert.equal(payloadsByPlatform.get("cursor")?.sessions[0]?.working_directory, "/workspace/cursor");
     assert.equal(payloadsByPlatform.get("antigravity")?.sessions[0]?.working_directory, "/workspace/antigravity");
+    assert.equal(payloadsByPlatform.get("gemini")?.sessions[0]?.working_directory, "/workspace/gemini-fixture");
+    assert.equal(payloadsByPlatform.get("gemini")?.sessions[0]?.title, "gemini-fixture");
+    assert.ok(payloadsByPlatform.get("gemini")?.turns[0]?.canonical_text.includes("Inspect Gemini CLI history."));
     assert.equal(payloadsByPlatform.get("opencode")?.sessions[0]?.title, "OpenCode fixture");
     assert.equal(payloadsByPlatform.get("lobechat")?.source.family, "conversational_export");
   } finally {
@@ -634,29 +719,70 @@ test("runSourceProbe supports cursor antigravity openclaw opencode and lobechat 
   }
 });
 
-test("runSourceProbe preserves real mock_data coverage across codex claude factory amp cursor and antigravity roots", async () => {
+test("[gemini] companion project files are captured as evidence blobs without creating extra sessions", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const sources = await seedExpandedSourceFixtures(tempRoot);
+    const geminiSource = sources.find((source) => source.platform === "gemini");
+    assert.ok(geminiSource);
+
+    const [payload] = (await runSourceProbe({ limit_files_per_source: 1 }, [geminiSource])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.source.sync_status, "healthy");
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.turns.length, 1);
+    assert.deepEqual(
+      payload.blobs.map((blob) => blob.origin_path).sort(),
+      [
+        path.join(geminiSource.base_dir, "projects.json"),
+        path.join(geminiSource.base_dir, "history", "gemini-fixture", ".project_root"),
+        path.join(geminiSource.base_dir, "tmp", "gemini-fixture", ".project_root"),
+        path.join(geminiSource.base_dir, "tmp", "gemini-fixture", "chats", "session-2026-03-10T07-00-gemini-fixture.json"),
+      ].sort(),
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("[gemini] projects.json restores the workspace path when .project_root sidecars are missing", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const sources = await seedExpandedSourceFixtures(tempRoot);
+    const geminiSource = sources.find((source) => source.platform === "gemini");
+    assert.ok(geminiSource);
+
+    await rm(path.join(geminiSource.base_dir, "tmp", "gemini-fixture", ".project_root"));
+    await rm(path.join(geminiSource.base_dir, "history", "gemini-fixture", ".project_root"));
+
+    const [payload] = (await runSourceProbe({ limit_files_per_source: 1 }, [geminiSource])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.sessions[0]?.working_directory, "/workspace/gemini-fixture");
+    assert.equal(payload.sessions[0]?.title, "gemini-fixture");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe preserves real mock_data coverage across all stable adapter roots", async () => {
   const mockDataRoot = getRepoMockDataRoot();
-  const result = await runSourceProbe({}, [
-    createSourceDefinition("src-codex-mock-data", "codex", path.join(mockDataRoot, ".codex", "sessions")),
-    createSourceDefinition("src-claude-mock-data", "claude_code", path.join(mockDataRoot, ".claude", "projects")),
-    createSourceDefinition("src-factory-mock-data", "factory_droid", path.join(mockDataRoot, ".factory", "sessions")),
-    createSourceDefinition("src-amp-mock-data", "amp", path.join(mockDataRoot, ".local", "share", "amp", "threads")),
-    createSourceDefinition(
-      "src-cursor-mock-data",
-      "cursor",
-      path.join(mockDataRoot, "Library", "Application Support", "Cursor", "User"),
+  const manifest = await readStableAdapterValidationManifest();
+  const result = await runSourceProbe(
+    {},
+    manifest.stable_adapters.map((entry) =>
+      createSourceDefinition(entry.source_id, entry.platform, path.join(mockDataRoot, entry.probe_base_dir), entry.family),
     ),
-    createSourceDefinition(
-      "src-antigravity-mock-data",
-      "antigravity",
-      path.join(mockDataRoot, "Library", "Application Support", "antigravity", "User"),
-    ),
-  ]);
+  );
   const payloadsByPlatform = new Map<SourceDefinition["platform"], SourceSyncPayload>(
     result.sources.map((payload) => [payload.source.platform, payload]),
   );
 
-  assert.equal(result.sources.length, 6);
+  assert.equal(result.sources.length, manifest.stable_adapters.length);
 
   const codexPayload = payloadsByPlatform.get("codex");
   assert.ok(codexPayload);
@@ -752,6 +878,28 @@ test("getDefaultSourcesForHost prefers official macOS Cursor and Antigravity use
   assert.equal(sources.some((source) => source.platform === "opencode"), false);
 });
 
+test("getDefaultSourcesForHost prefers official Windows Cursor and Antigravity user-data roots", () => {
+  const homeDir = "C:/Users/tester";
+  const appDataDir = "C:/Users/tester/AppData/Roaming";
+  const sources = getDefaultSourcesForHost({
+    homeDir,
+    appDataDir,
+    platform: "win32",
+    pathExists(targetPath) {
+      return (
+        targetPath === path.join(appDataDir, "Cursor", "User") ||
+        targetPath === path.join(appDataDir, "Antigravity", "User")
+      );
+    },
+  });
+
+  const cursorSource = sources.find((source) => source.platform === "cursor");
+  const antigravitySource = sources.find((source) => source.platform === "antigravity");
+
+  assert.equal(cursorSource?.base_dir, path.join(appDataDir, "Cursor", "User"));
+  assert.equal(antigravitySource?.base_dir, path.join(appDataDir, "Antigravity", "User"));
+});
+
 test("getDefaultSourcesForHost keeps Cursor project transcripts but prefers official Antigravity user roots over brain artifacts", () => {
   const homeDir = "/Users/tester";
   const sources = getDefaultSourcesForHost({
@@ -774,6 +922,27 @@ test("getDefaultSourcesForHost keeps Cursor project transcripts but prefers offi
     antigravitySource?.base_dir,
     path.join(homeDir, "Library", "Application Support", "Antigravity", "User"),
   );
+});
+
+test("getDefaultSourcesForHost includes Gemini CLI sync roots when .gemini exists", () => {
+  const homeDir = "/Users/tester";
+  const sources = getDefaultSourcesForHost({
+    homeDir,
+    platform: "darwin",
+    pathExists(targetPath) {
+      return targetPath === path.join(homeDir, ".gemini");
+    },
+  });
+
+  const geminiSource = sources.find((source) => source.platform === "gemini");
+  assert.ok(geminiSource);
+  assert.equal(geminiSource?.base_dir, path.join(homeDir, ".gemini"));
+});
+
+test("[gemini] source enumeration narrows ~/.gemini roots to tmp chat data", () => {
+  const geminiRoot = path.join("/Users/tester", ".gemini");
+  assert.deepEqual(listGeminiSourceRoots(geminiRoot), [path.join(geminiRoot, "tmp")]);
+  assert.deepEqual(listGeminiSourceRoots(path.join(geminiRoot, "tmp")), [path.join(geminiRoot, "tmp")]);
 });
 
 test("discoverDefaultSourcesForHost exposes candidate roots and selected official paths", () => {
@@ -1266,6 +1435,64 @@ test("runSourceProbe keeps short Antigravity history titles as metadata only whe
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test("buildAntigravityLiveSessionSeed normalizes Windows file URIs from live summaries", () => {
+  const seed = buildAntigravityLiveSessionSeed({
+    cascadeId: "windows-live-session",
+    summary: {
+      summary: "Windows Live Session",
+      createdTime: "2026-03-12T01:11:10.214459Z",
+      workspaces: [
+        {
+          workspaceFolderAbsoluteUri: "file://localhost/C:/Users/dev/workspace/history-lab/",
+        },
+      ],
+    },
+    steps: [
+      {
+        type: "CORTEX_STEP_TYPE_USER_INPUT",
+        metadata: {
+          createdAt: "2026-03-12T01:11:10.214459Z",
+        },
+        userInput: {
+          userResponse: "Continue on Windows",
+        },
+      },
+    ],
+  });
+
+  assert.ok(seed);
+  assert.equal(seed.workingDirectory, "c:/Users/dev/workspace/history-lab");
+});
+
+test("buildAntigravityLiveSessionSeed decodes percent-encoded separators in file URIs", () => {
+  const seed = buildAntigravityLiveSessionSeed({
+    cascadeId: "encoded-live-session",
+    summary: {
+      summary: "Encoded Live Session",
+      createdTime: "2026-03-12T01:11:10.214459Z",
+      workspaces: [
+        {
+          workspaceFolderAbsoluteUri: "file://localhost/C:/Users/dev/workspace/history%2Flab%3Afeature/",
+        },
+      ],
+    },
+    steps: [
+      {
+        type: "CORTEX_STEP_TYPE_USER_INPUT",
+        metadata: {
+          createdAt: "2026-03-12T01:11:10.214459Z",
+        },
+        userInput: {
+          userResponse: "Continue on encoded Windows workspace",
+        },
+      },
+    ],
+  });
+
+  assert.ok(seed);
+  assert.equal(seed.workingDirectory, "c:/Users/dev/workspace/history/lab:feature");
 });
 
 test("buildAntigravityLiveSessionSeed prefers userResponse text and skips artifact-only user inputs", () => {
@@ -2689,6 +2916,116 @@ async function seedClaudeInterruptedFixture(tempRoot: string): Promise<SourceDef
   return createSourceDefinition("src-claude-interrupted", "claude_code", claudeDir);
 }
 
+async function seedWindowsNormalizedWorkspaceFixtures(tempRoot: string): Promise<SourceDefinition[]> {
+  const codexDir = path.join(tempRoot, "codex-win-normalized");
+  const claudeDir = path.join(tempRoot, "claude-win-normalized");
+  const factoryDir = path.join(tempRoot, "factory-win-normalized");
+  const ampDir = path.join(tempRoot, "amp-win-normalized");
+
+  await mkdir(codexDir, { recursive: true });
+  await mkdir(claudeDir, { recursive: true });
+  await mkdir(factoryDir, { recursive: true });
+  await mkdir(ampDir, { recursive: true });
+
+  await writeFile(
+    path.join(codexDir, "session.jsonl"),
+    [
+      {
+        timestamp: "2026-03-09T10:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-win-normalized-session",
+          cwd: "C:\\Users\\dev\\workspace\\normalized-project\\",
+          model: "gpt-5",
+        },
+      },
+      {
+        timestamp: "2026-03-09T10:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Normalize Windows codex paths." }],
+        },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n"),
+    "utf8",
+  );
+
+  await writeFile(
+    path.join(claudeDir, "conversation.jsonl"),
+    [
+      {
+        timestamp: "2026-03-09T10:10:00.000Z",
+        type: "user",
+        cwd: "file:///C:/Users/dev/workspace/normalized-project/./",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Normalize Windows claude paths." }],
+        },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n"),
+    "utf8",
+  );
+
+  await writeFile(
+    path.join(factoryDir, "session.jsonl"),
+    [
+      {
+        timestamp: "2026-03-09T10:20:00.000Z",
+        type: "session_start",
+        sessionTitle: "Factory Windows normalized",
+        cwd: "file://localhost/C:/Users/dev/workspace/normalized-project/subdir/..",
+      },
+      {
+        timestamp: "2026-03-09T10:20:01.000Z",
+        type: "message",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Normalize Windows factory paths." }],
+        },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n"),
+    "utf8",
+  );
+  await writeFile(path.join(factoryDir, "session.settings.json"), JSON.stringify({ model: "sonnet-4" }), "utf8");
+
+  await writeFile(
+    path.join(ampDir, "thread.json"),
+    JSON.stringify({
+      id: "amp-win-normalized-thread",
+      created: 1741492800000,
+      title: "AMP Windows normalized",
+      env: {
+        initial: {
+          trees: [{ uri: "file:///C:/Users/dev/workspace/normalized-project/", displayName: "normalized" }],
+        },
+      },
+      messages: [
+        {
+          timestamp: "2026-03-09T10:30:01.000Z",
+          role: "user",
+          content: [{ type: "text", text: "Normalize Windows amp paths." }],
+        },
+      ],
+    }),
+    "utf8",
+  );
+
+  return [
+    createSourceDefinition("src-codex-win-normalized", "codex", codexDir),
+    createSourceDefinition("src-claude-win-normalized", "claude_code", claudeDir),
+    createSourceDefinition("src-factory-win-normalized", "factory_droid", factoryDir),
+    createSourceDefinition("src-amp-win-normalized", "amp", ampDir),
+  ];
+}
+
 async function seedNormalizedWorkspaceFixtures(tempRoot: string): Promise<SourceDefinition[]> {
   const codexDir = path.join(tempRoot, "codex-normalized");
   const claudeDir = path.join(tempRoot, "claude-normalized");
@@ -3544,6 +3881,9 @@ async function seedExpandedSourceFixtures(tempRoot: string): Promise<SourceDefin
   const opencodeSessionDir = path.join(opencodeRoot, "session");
   const opencodeMessageDir = path.join(opencodeRoot, "message", "opencode-fixture");
   const lobechatDir = path.join(tempRoot, "lobechat");
+  const geminiRoot = path.join(tempRoot, ".gemini");
+  const geminiChatDir = path.join(geminiRoot, "tmp", "gemini-fixture", "chats");
+  const geminiHistoryDir = path.join(geminiRoot, "history", "gemini-fixture");
 
   await mkdir(cursorDir, { recursive: true });
   await mkdir(antigravityGlobalDir, { recursive: true });
@@ -3551,6 +3891,8 @@ async function seedExpandedSourceFixtures(tempRoot: string): Promise<SourceDefin
   await mkdir(opencodeSessionDir, { recursive: true });
   await mkdir(opencodeMessageDir, { recursive: true });
   await mkdir(lobechatDir, { recursive: true });
+  await mkdir(geminiChatDir, { recursive: true });
+  await mkdir(geminiHistoryDir, { recursive: true });
 
   seedCursorStyleStateDb(path.join(cursorDir, "state.vscdb"), {
     workspacePath: "/workspace/cursor",
@@ -3637,6 +3979,42 @@ async function seedExpandedSourceFixtures(tempRoot: string): Promise<SourceDefin
   );
 
   await writeFile(
+    path.join(geminiRoot, "projects.json"),
+    JSON.stringify({
+      projects: {
+        "/workspace/gemini-fixture": "gemini-fixture",
+      },
+    }),
+    "utf8",
+  );
+  await writeFile(path.join(geminiRoot, "tmp", "gemini-fixture", ".project_root"), "/workspace/gemini-fixture\n", "utf8");
+  await writeFile(path.join(geminiHistoryDir, ".project_root"), "/workspace/gemini-fixture\n", "utf8");
+  await writeFile(
+    path.join(geminiChatDir, "session-2026-03-10T07-00-gemini-fixture.json"),
+    JSON.stringify({
+      sessionId: "gemini-fixture",
+      projectHash: "abc123",
+      startTime: "2026-03-10T07:00:00.000Z",
+      lastUpdated: "2026-03-10T07:00:01.000Z",
+      messages: [
+        {
+          id: "gemini-user-1",
+          timestamp: "2026-03-10T07:00:00.000Z",
+          type: "user",
+          content: [{ text: "Inspect Gemini CLI history." }],
+        },
+        {
+          id: "gemini-assistant-1",
+          timestamp: "2026-03-10T07:00:01.000Z",
+          type: "assistant",
+          content: [{ text: "Gemini CLI history loaded." }],
+        },
+      ],
+    }),
+    "utf8",
+  );
+
+  await writeFile(
     path.join(lobechatDir, "lobechat-export.json"),
     JSON.stringify({
       id: "lobechat-fixture",
@@ -3669,6 +4047,7 @@ async function seedExpandedSourceFixtures(tempRoot: string): Promise<SourceDefin
   return [
     createSourceDefinition("src-cursor-fixture", "cursor", path.join(tempRoot, "cursor")),
     createSourceDefinition("src-antigravity-fixture", "antigravity", antigravityDir),
+    createSourceDefinition("src-gemini-fixture", "gemini", geminiRoot),
     createSourceDefinition("src-openclaw-fixture", "openclaw", path.join(tempRoot, "openclaw")),
     createSourceDefinition("src-opencode-fixture", "opencode", opencodeSessionDir),
     createSourceDefinition("src-lobechat-fixture", "lobechat", lobechatDir, "conversational_export"),
@@ -3926,6 +4305,12 @@ function createSourceDefinition(
 
 function getRepoMockDataRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../mock_data");
+}
+
+async function readStableAdapterValidationManifest(): Promise<StableAdapterValidationManifest> {
+  return readJsonFixture<StableAdapterValidationManifest>(
+    path.join(getRepoMockDataRoot(), "stable-adapter-validation.json"),
+  );
 }
 
 async function readJsonFixture<T>(filePath: string): Promise<T> {

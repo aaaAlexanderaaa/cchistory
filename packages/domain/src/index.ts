@@ -1,3 +1,5 @@
+import path from "node:path";
+
 export type SourceFamily = "local_coding_agent" | "conversational_export";
 
 export type SourcePlatform =
@@ -751,6 +753,88 @@ export function normalizeSourceBaseDir(baseDir: string): string {
     return `${normalized.slice(0, 1).toLowerCase()}${normalized.slice(1)}`;
   }
   return normalized;
+}
+
+
+export function normalizeLocalPathIdentity(value: string | undefined): string | undefined {
+  if (!value?.trim()) {
+    return undefined;
+  }
+
+  let raw = decodeUriPath(value.trim());
+  if (/^file:\/\/localhost\//iu.test(raw)) {
+    raw = raw.slice("file://localhost".length);
+  } else if (/^file:\/\//iu.test(raw)) {
+    const fileUriMatch = raw.match(/^file:\/\/([^/]*)(\/.*)?$/iu);
+    if (fileUriMatch) {
+      const authority = fileUriMatch[1] ?? "";
+      const pathname = fileUriMatch[2] ?? "";
+      if (/^[A-Za-z]:$/u.test(authority)) {
+        raw = `${authority}${pathname}`;
+      } else if (authority) {
+        raw = `//${authority}${pathname}`;
+      } else {
+        raw = pathname;
+      }
+    } else {
+      raw = raw.slice("file://".length);
+    }
+  }
+
+  raw = raw.replace(/\\/g, "/");
+
+  if (/^\/[A-Za-z]:/u.test(raw)) {
+    raw = raw.slice(1);
+  }
+
+  const isUncPath = raw.startsWith("//") && !/^\/\/[A-Za-z]:/u.test(raw);
+  if (isUncPath) {
+    const normalizedUnc = path.posix.normalize(`/${raw.slice(2)}`);
+    return `/${trimTrailingSlash(normalizedUnc)}`;
+  }
+
+  const collapsed = raw.replace(/\/+/g, "/");
+  if (/^[A-Za-z]:/u.test(collapsed)) {
+    const drive = collapsed.slice(0, 1).toLowerCase();
+    const rest = collapsed.slice(2);
+    const normalizedRest = path.posix.normalize(rest.startsWith("/") ? rest : `/${rest}`);
+    return `${drive}:${trimTrailingSlash(normalizedRest)}`;
+  }
+
+  return trimTrailingSlash(path.posix.normalize(collapsed));
+}
+
+export function getLocalPathBasename(value: string | undefined): string | undefined {
+  const normalized = normalizeLocalPathIdentity(value);
+  if (!normalized) {
+    return undefined;
+  }
+  const basename = path.posix.basename(normalized);
+  return basename || undefined;
+}
+
+export function localPathIdentitiesMatch(left: string | undefined, right: string | undefined): boolean {
+  const normalizedLeft = normalizeLocalPathIdentity(left);
+  const normalizedRight = normalizeLocalPathIdentity(right);
+  return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
+}
+
+function decodeUriPath(value: string): string {
+  if (!/%[0-9a-f]{2}/iu.test(value)) {
+    return value;
+  }
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function trimTrailingSlash(value: string): string {
+  if (value === "/" || value === "//" || /^[a-z]:\/$/u.test(value)) {
+    return value;
+  }
+  return value.replace(/\/+$/u, "");
 }
 
 export function deriveHostId(hostname: string): string {

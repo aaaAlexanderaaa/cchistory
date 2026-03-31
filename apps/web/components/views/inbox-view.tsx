@@ -7,6 +7,7 @@ import { SessionMap } from '@/components/session-map'
 import { TurnCard } from '@/components/turn-card'
 import { TurnDetailPanel } from '@/components/turn-detail-panel'
 import { ResponsiveSidePanel } from '@/components/responsive-side-panel'
+import { SummaryPill } from '@/components/summary-pill'
 import type { ProjectIdentity } from '@/lib/types'
 import {
   createProjectStub,
@@ -133,11 +134,6 @@ export function InboxView() {
               <div className="text-xs text-muted">
                 Review and link turns to projects. Unlinked turns need your attention.
               </div>
-              <div className="flex flex-wrap items-center gap-2 text-[10px] stamp-text text-muted">
-                <span className="border border-border bg-paper px-2 py-1">PENDING {unlinkedTurns.length + candidateTurns.length}</span>
-                <span className="border border-border bg-paper px-2 py-1">UNLINKED {unlinkedTurns.length}</span>
-                <span className="border border-border bg-paper px-2 py-1">CANDIDATES {candidateTurns.length}</span>
-              </div>
             </div>
 
             <button
@@ -150,112 +146,137 @@ export function InboxView() {
             </button>
           </div>
 
-          <div className="flex flex-col gap-3 border-t border-border bg-paper px-4 py-3 sm:px-6 xl:flex-row xl:items-center xl:justify-between">
-            <div className="flex flex-wrap items-center gap-4 sm:gap-6">
-              <button
-                type="button"
-                onClick={() => setActiveTab('unlinked')}
-                disabled={unlinkedTurns.length === 0}
-                className={cn(
-                  'flex items-center gap-2 border-b-2 py-2 text-sm transition-colors',
-                  effectiveTab === 'unlinked'
-                    ? 'border-warning text-ink font-medium'
-                    : 'border-transparent text-muted hover:text-ink disabled:cursor-default disabled:text-muted/50',
-                )}
-              >
-                Unlinked
-                <span
+          <div className="border-t border-border bg-paper px-4 py-3 sm:px-6">
+            <div className="mb-2 text-[10px] stamp-text text-muted">QUEUE OVERVIEW</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <SummaryPill label="In View" value={String(sortedTurns.length)} />
+              <SummaryPill
+                label="Pending"
+                value={String(unlinkedTurns.length + candidateTurns.length)}
+                tone={unlinkedTurns.length + candidateTurns.length > 0 ? 'warning' : 'normal'}
+              />
+              <SummaryPill label="Unlinked" value={String(unlinkedTurns.length)} tone={unlinkedTurns.length > 0 ? 'warning' : 'normal'} />
+              <SummaryPill
+                label="Candidates"
+                value={String(candidateTurns.length)}
+                tone={candidateTurns.length > 0 ? 'candidate' : 'normal'}
+              />
+              <SummaryPill label="Archived" value={String(archivedTurns.length)} />
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3 border-t border-border bg-paper px-4 py-3 sm:px-6 xl:flex-row xl:items-start xl:justify-between">
+            <div className="space-y-2">
+              <div className="text-[10px] stamp-text text-muted">QUEUE</div>
+              <div className="flex flex-wrap items-center gap-4 sm:gap-6">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('unlinked')}
+                  disabled={unlinkedTurns.length === 0}
                   className={cn(
-                    'px-1.5 py-0.5 text-[10px] mono-text',
-                    effectiveTab === 'unlinked' ? 'bg-warning text-white' : 'bg-surface-hover',
+                    'flex items-center gap-2 border-b-2 py-2 text-sm transition-colors',
+                    effectiveTab === 'unlinked'
+                      ? 'border-warning text-ink font-medium'
+                      : 'border-transparent text-muted hover:text-ink disabled:cursor-default disabled:text-muted/50',
                   )}
                 >
-                  {unlinkedTurns.length}
-                </span>
-              </button>
+                  Unlinked
+                  <span
+                    className={cn(
+                      'px-1.5 py-0.5 text-[10px] mono-text',
+                      effectiveTab === 'unlinked' ? 'bg-warning text-white' : 'bg-surface-hover',
+                    )}
+                  >
+                    {unlinkedTurns.length}
+                  </span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setActiveTab('candidates')}
-                className={cn(
-                  'flex items-center gap-2 border-b-2 py-2 text-sm transition-colors',
-                  effectiveTab === 'candidates'
-                    ? 'border-warning text-ink font-medium'
-                    : 'border-transparent text-muted hover:text-ink',
-                )}
-              >
-                Candidates
-                <span
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('candidates')}
                   className={cn(
-                    'px-1.5 py-0.5 text-[10px] mono-text',
-                    effectiveTab === 'candidates' ? 'bg-candidate text-white' : 'bg-surface-hover',
+                    'flex items-center gap-2 border-b-2 py-2 text-sm transition-colors',
+                    effectiveTab === 'candidates'
+                      ? 'border-warning text-ink font-medium'
+                      : 'border-transparent text-muted hover:text-ink',
                   )}
                 >
-                  {candidateTurns.length}
-                </span>
-              </button>
+                  Candidates
+                  <span
+                    className={cn(
+                      'px-1.5 py-0.5 text-[10px] mono-text',
+                      effectiveTab === 'candidates' ? 'bg-candidate text-white' : 'bg-surface-hover',
+                    )}
+                  >
+                    {candidateTurns.length}
+                  </span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setActiveTab('archive')}
-                className={cn(
-                  'border-b-2 py-2 text-sm transition-colors',
-                  effectiveTab === 'archive'
-                    ? 'border-warning text-ink font-medium'
-                    : 'border-transparent text-muted hover:text-ink',
-                )}
-              >
-                Archive
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('archive')}
+                  className={cn(
+                    'border-b-2 py-2 text-sm transition-colors',
+                    effectiveTab === 'archive'
+                      ? 'border-warning text-ink font-medium'
+                      : 'border-transparent text-muted hover:text-ink',
+                  )}
+                >
+                  Archive
+                </button>
+              </div>
             </div>
 
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-              {viewMode !== 'sessions' && (
-                <div className="flex items-center gap-2">
-                  <ArrowUpDown className="h-4 w-4 text-muted" />
-                  <select
-                    value={sortMode}
-                    onChange={(event) => setSortMode(event.target.value as SortMode)}
-                    className="min-w-0 flex-1 border border-border bg-transparent px-2 py-1 text-sm text-text focus:border-ink focus:outline-none sm:flex-none"
-                  >
-                    <option value="newest">Newest</option>
-                    <option value="oldest">Oldest</option>
-                  </select>
-                </div>
-              )}
+            <div className="space-y-2 xl:text-right">
+              <div className="text-[10px] stamp-text text-muted">VIEW</div>
+              <div className="flex flex-col gap-2 sm:flex-row sm:items-center xl:justify-end">
+                {viewMode !== 'sessions' && (
+                  <div className="flex items-center gap-2">
+                    <ArrowUpDown className="h-4 w-4 text-muted" />
+                    <select
+                      value={sortMode}
+                      onChange={(event) => setSortMode(event.target.value as SortMode)}
+                      className="min-w-0 flex-1 border border-border bg-transparent px-2 py-1 text-sm text-text focus:border-ink focus:outline-none sm:flex-none"
+                    >
+                      <option value="newest">Newest</option>
+                      <option value="oldest">Oldest</option>
+                    </select>
+                  </div>
+                )}
 
-              <div className="ml-auto flex items-center border border-border sm:ml-0">
-                <button
-                  type="button"
-                  onClick={() => setViewMode('grid')}
-                  className={cn(
-                    'p-1.5 transition-colors',
-                    viewMode === 'grid' ? 'bg-ink text-card' : 'text-muted hover:text-ink',
-                  )}
-                >
-                  <Grid className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode('list')}
-                  className={cn(
-                    'p-1.5 transition-colors',
-                    viewMode === 'list' ? 'bg-ink text-card' : 'text-muted hover:text-ink',
-                  )}
-                >
-                  <List className="h-4 w-4" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setViewMode('sessions')}
-                  className={cn(
-                    'p-1.5 transition-colors',
-                    viewMode === 'sessions' ? 'bg-ink text-card' : 'text-muted hover:text-ink',
-                  )}
-                  title="Session Map"
-                >
-                  <GitBranch className="h-4 w-4" />
-                </button>
+                <div className="ml-auto flex items-center border border-border sm:ml-0">
+                  <button
+                    type="button"
+                    onClick={() => setViewMode('grid')}
+                    className={cn(
+                      'p-1.5 transition-colors',
+                      viewMode === 'grid' ? 'bg-ink text-card' : 'text-muted hover:text-ink',
+                    )}
+                  >
+                    <Grid className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode('list')}
+                    className={cn(
+                      'p-1.5 transition-colors',
+                      viewMode === 'list' ? 'bg-ink text-card' : 'text-muted hover:text-ink',
+                    )}
+                  >
+                    <List className="h-4 w-4" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setViewMode('sessions')}
+                    className={cn(
+                      'p-1.5 transition-colors',
+                      viewMode === 'sessions' ? 'bg-ink text-card' : 'text-muted hover:text-ink',
+                    )}
+                    title="Session Map"
+                  >
+                    <GitBranch className="h-4 w-4" />
+                  </button>
+                </div>
               </div>
             </div>
           </div>

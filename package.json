@@ -2,11 +2,16 @@
   "name": "cchistory",
   "license": "MIT",
   "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": ">=22",
+    "pnpm": ">=10 <11"
+  },
   "scripts": {
     "build": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/storage build && pnpm --filter @cchistory/api-client build && pnpm --filter @cchistory/presentation build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/api build",
     "build:all:safe": "pnpm run build && NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build",
     "cli": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=${CLI_NODE_MEMORY_MB:-768}\" node apps/cli/dist/index.js",
     "cli:link": "pnpm --filter @cchistory/cli build && cd apps/cli && npm link",
+    "cli:artifact": "node scripts/build-cli-artifact.mjs",
     "restart:api": "bash scripts/restart-api-dev.sh",
     "restart:web": "bash scripts/restart-web-dev.sh",
     "services:start": "bash scripts/dev-services.sh start all",
@@ -17,8 +22,13 @@
     "services:run:api": "bash scripts/dev-services.sh run api",
     "restart:web:preview": "bash scripts/restart-web-preview.sh",
     "mock-data:validate": "python3 scripts/validate_mock_data.py",
+    "verify:clean-install": "node scripts/verify-clean-install.mjs",
+    "verify:cli-artifact": "node scripts/verify-cli-artifact.mjs",
+    "verify:web-build-offline": "node scripts/verify-web-build-offline.mjs",
+    "verify:support-status": "node scripts/verify-support-status.mjs",
     "probe:smoke": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && node scripts/probe-smoke.mjs",
-    "probe:antigravity-live": "node scripts/antigravity-live-dump.mjs",
+    "inspect:antigravity-live": "node scripts/antigravity-live-dump.mjs",
+    "inspect:collect-source-samples": "node scripts/inspect/collect-source-samples.mjs",
     "validate:core": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/api build",
     "test": "pnpm --filter @cchistory/source-adapters test"
   },

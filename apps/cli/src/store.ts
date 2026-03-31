@@ -1,6 +1,7 @@
 import path from "node:path";
 import process from "node:process";
 import type { CCHistoryStorage, RawSnapshotGcResult } from "@cchistory/storage";
+import { resolveDefaultCchistoryDataDir } from "@cchistory/storage/store-layout";
 
 export interface StoreLayout {
   dbPath: string;
@@ -18,6 +19,7 @@ export function resolveStoreLayout(input: {
   cwd: string;
   storeArg?: string;
   dbArg?: string;
+  homeDir?: string;
 }): StoreLayout {
   if (input.storeArg && input.dbArg) {
     throw new Error("Use either --store or --db, not both.");
@@ -43,7 +45,7 @@ export function resolveStoreLayout(input: {
     };
   }
 
-  const assetDir = path.resolve(input.cwd, ".cchistory");
+  const assetDir = resolveDefaultCchistoryDataDir({ cwd: input.cwd, homeDir: input.homeDir });
   return {
     dbPath: path.join(assetDir, "cchistory.sqlite"),
     assetDir,

@@ -943,7 +943,6 @@ export class CCHistoryStorage {
 
     const projectsById = this.getProjectsById();
     const sessionsById = this.getSessionsById();
-    const loweredQuery = query.toLowerCase();
     const results: TurnSearchResult[] = [];
 
     for (const turnId of candidateTurnIds) {
@@ -964,7 +963,7 @@ export class CCHistoryStorage {
         continue;
       }
 
-      const highlights = query.length > 0 ? findHighlights(turn.canonical_text, loweredQuery) : [];
+      const highlights = query.length > 0 ? findHighlights(turn.canonical_text, query) : [];
       results.push({
         turn,
         session: sessionsById.get(turn.session_id),

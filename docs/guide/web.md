@@ -16,12 +16,13 @@ The web server listens on port **8085** and expects the API to be available at p
 
 ## Navigation
 
-The sidebar provides access to all views:
+The shell navigation provides access to all views, with Search available as a first-class history destination and quick-action entry point:
 
 **History**
 - **All Turns** — Browse every turn across all coding sessions
 - **Projects** — View and manage project identities
 - **Inbox** — Triage unlinked and candidate turns
+- **Search** — Search canonical turn text across projects and sessions
 
 **Admin**
 - **Sources** — Configure and monitor ingestion sources
@@ -38,6 +39,8 @@ Browse every turn across all coding sessions. Two display modes:
 - **Turn Stream** — Virtualized list of turn cards, sorted by newest/oldest/project
 - **Session Map** — Timeline visualization of sessions and turns
 
+**Overview:** compact summary pills surface visible turns, linked-state mix, and project count for the current view.
+
 **Filters:** project, link state (committed / candidate / unlinked), value axis (active / archived)
 
 Click any turn card to open a detail panel showing the full user input, assistant replies, tool calls, token usage, session metadata, and pipeline lineage.
@@ -53,7 +56,9 @@ View project cards organized by workspace identity. Each card displays:
 - Session count and active time
 - Workspace path
 
-Two display modes: **Project Grid** and **Session Map**.
+Three display modes: **Project Grid**, **Tree**, and **Session Map**.
+
+**Tree** exposes direct project → session → turn navigation while preserving the existing project detail and turn detail flows.
 
 ![Projects — Grid view with project cards](../screenshots/web-projects.webp)
 
@@ -67,6 +72,8 @@ Triage interface for turns needing attention. Three tabs:
 
 Actions: link to existing project, create new project, dismiss. Grid and list views available.
 
+The header separates **Queue Overview**, **Queue**, and **View** controls so pending work is easier to scan before triage actions.
+
 ![Inbox — Triage unlinked turns](../screenshots/web-inbox.webp)
 
 ### Sources
@@ -74,11 +81,14 @@ Actions: link to existing project, create new project, dismiss. Grid and list vi
 Configure and monitor ingestion sources:
 
 - View sync status, session/turn counts, directory paths
+- Scan the current filtered set through overview pills for health, manual sources, and overrides
 - Add manual sources (select platform + path)
 - Override directories or reset to defaults
 - Save & Rescan individual sources
 
-Supported platforms for manual addition: Codex, Claude Code, Factory Droid, AMP, Cursor, Antigravity.
+Supported platforms for manual addition: Codex, Claude Code, Factory Droid, AMP, Cursor, Antigravity, Gemini CLI, OpenClaw, OpenCode, LobeChat.
+
+Windows note (2026-03-27): verified default-root auto-discovery currently exists for `Cursor` and `Antigravity`. For `Codex`, `Claude Code`, `Factory Droid`, `AMP`, and all experimental adapters, use the `Sources` view to confirm or override `base_dir` explicitly on Windows.
 
 ![Sources — Admin configuration](../screenshots/web-sources.webp)
 

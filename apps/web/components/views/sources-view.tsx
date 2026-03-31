@@ -3,6 +3,7 @@
 import { useMemo, useState } from 'react'
 import { useSWRConfig } from 'swr'
 import { cn, formatAbsoluteDateTime, formatRelativeTime } from '@/lib/utils'
+import { SummaryPill } from '@/components/summary-pill'
 import { createSourceConfig, resetSourceConfig, updateSourceConfig, useSourcesQuery } from '@/lib/api'
 import type { SourceStatus, SourcePlatform } from '@/lib/types'
 import {
@@ -28,6 +29,7 @@ const MANUAL_SOURCE_OPTIONS: Array<{ platform: SourcePlatform; label: string }> 
   { platform: 'amp', label: 'AMP' },
   { platform: 'cursor', label: 'Cursor' },
   { platform: 'antigravity', label: 'Antigravity' },
+  { platform: 'gemini', label: 'Gemini CLI' },
   { platform: 'openclaw', label: 'OpenClaw' },
   { platform: 'opencode', label: 'OpenCode' },
   { platform: 'lobechat', label: 'LobeChat' },
@@ -79,6 +81,15 @@ export function SourcesView() {
     })
     return items
   }, [filteredSources, sortBy])
+
+  const sourceStats = useMemo(() => {
+    const healthy = filteredSources.filter((source) => source.sync_status === 'healthy').length
+    const stale = filteredSources.filter((source) => source.sync_status === 'stale').length
+    const error = filteredSources.filter((source) => source.sync_status === 'error').length
+    const manual = filteredSources.filter((source) => !source.is_default_source && !source.is_overridden).length
+    const overrides = filteredSources.filter((source) => source.is_overridden).length
+    return { healthy, stale, error, manual, overrides }
+  }, [filteredSources])
 
   async function refreshSourceDerivedQueries() {
     await mutate((key) => isSourceDerivedQueryKey(key), undefined, { revalidate: true })
@@ -178,60 +189,83 @@ export function SourcesView() {
 
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
-      <header className="flex h-14 items-center justify-between border-b border-border bg-card px-4 sm:px-6">
-        <div className="flex items-center gap-3">
-          <Database className="h-5 w-5 text-ink" />
-          <h1 className="text-lg font-bold font-display text-ink">Sources</h1>
-          <span className="text-sm text-muted">{filteredSources.length} visible</span>
+      <header className="border-b border-border bg-card">
+        <div className="flex flex-col gap-3 px-4 py-3 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
+          <div className="space-y-1">
+            <div className="flex items-center gap-3">
+              <Database className="h-5 w-5 text-ink" />
+              <h1 className="text-lg font-bold font-display text-ink">Sources</h1>
+              <span className="text-sm text-muted">{filteredSources.length} visible</span>
+            </div>
+            <div className="text-xs text-muted">
+              Manage discovered and manual source roots, sync health, and local path overrides.
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void mutate('/api/sources')}
+            className="flex items-center gap-2 border border-border px-3 py-1.5 text-sm transition-colors hover:border-ink"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Refresh
+          </button>
         </div>
 
-        <button
-          type="button"
-          onClick={() => void mutate('/api/sources')}
-          className="flex items-center gap-2 border border-border px-3 py-1.5 text-sm transition-colors hover:border-ink"
-        >
-          <RefreshCw className="h-4 w-4" />
-          Refresh
-        </button>
+        <div className="border-t border-border bg-paper px-4 py-3 sm:px-6">
+          <div className="mb-2 text-[10px] stamp-text text-muted">OVERVIEW</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <SummaryPill label="Visible" value={String(filteredSources.length)} />
+            <SummaryPill label="Healthy" value={String(sourceStats.healthy)} tone="success" />
+            <SummaryPill label="Stale" value={String(sourceStats.stale)} tone={sourceStats.stale > 0 ? 'candidate' : 'normal'} />
+            <SummaryPill label="Errors" value={String(sourceStats.error)} tone={sourceStats.error > 0 ? 'warning' : 'normal'} />
+            <SummaryPill label="Manual" value={String(sourceStats.manual)} />
+            <SummaryPill label="Overrides" value={String(sourceStats.overrides)} />
+          </div>
+        </div>
       </header>
 
-      <div className="flex flex-col gap-3 border-b border-border bg-paper px-4 py-3 sm:px-6 lg:flex-row lg:items-center">
-        <div className="flex flex-1 items-center gap-2">
-          <Search className="h-4 w-4 text-muted" />
-          <input
-            type="text"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Filter sources by name, platform, or path..."
-            className="flex-1 border border-border bg-card px-3 py-1.5 text-sm focus:border-ink focus:outline-none"
-          />
+      <div className="border-b border-border bg-paper px-4 py-3 sm:px-6">
+        <div className="mb-2 text-[10px] stamp-text text-muted">FILTERS</div>
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center">
+          <div className="flex flex-1 items-center gap-2">
+            <Search className="h-4 w-4 text-muted" />
+            <input
+              type="text"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Filter sources by name, platform, or path..."
+              className="flex-1 border border-border bg-card px-3 py-1.5 text-sm focus:border-ink focus:outline-none"
+            />
+          </div>
+
+          <select
+            value={statusFilter}
+            onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}
+            className="border border-border bg-card px-2 py-1.5 text-sm focus:border-ink focus:outline-none"
+          >
+            <option value="all">All status</option>
+            <option value="healthy">Healthy</option>
+            <option value="stale">Stale</option>
+            <option value="error">Error</option>
+          </select>
+
+          <select
+            value={sortBy}
+            onChange={(event) => setSortBy(event.target.value as typeof sortBy)}
+            className="border border-border bg-card px-2 py-1.5 text-sm focus:border-ink focus:outline-none"
+          >
+            <option value="last_sync">Recent Sync</option>
+            <option value="turns">Most Turns</option>
+            <option value="sessions">Most Sessions</option>
+            <option value="status">Status</option>
+            <option value="name">Name</option>
+          </select>
         </div>
-
-        <select
-          value={statusFilter}
-          onChange={(event) => setStatusFilter(event.target.value as typeof statusFilter)}
-          className="border border-border bg-card px-2 py-1.5 text-sm focus:border-ink focus:outline-none"
-        >
-          <option value="all">All status</option>
-          <option value="healthy">Healthy</option>
-          <option value="stale">Stale</option>
-          <option value="error">Error</option>
-        </select>
-
-        <select
-          value={sortBy}
-          onChange={(event) => setSortBy(event.target.value as typeof sortBy)}
-          className="border border-border bg-card px-2 py-1.5 text-sm focus:border-ink focus:outline-none"
-        >
-          <option value="last_sync">Recent Sync</option>
-          <option value="turns">Most Turns</option>
-          <option value="sessions">Most Sessions</option>
-          <option value="status">Status</option>
-          <option value="name">Name</option>
-        </select>
       </div>
 
       <div className="border-b border-border bg-card px-4 py-3 sm:px-6">
+        <div className="mb-2 text-[10px] stamp-text text-muted">ADD MANUAL SOURCE</div>
         <div className="text-sm text-muted">
           Automatic discovery only includes source types whose default host path exists. Add manual instances when the
           same source type lives in another directory.

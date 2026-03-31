@@ -1,6 +1,6 @@
 # CLI Guide
 
-The CCHistory CLI (`apps/cli`) is the primary local operator tool. By default it reads from and writes to `./.cchistory/cchistory.sqlite` relative to the current working directory. Use `--store` or `--db` to pin an explicit store location.
+The CCHistory CLI (`apps/cli`) is the primary local operator tool. By default it reuses the nearest existing `.cchistory/cchistory.sqlite` in the current directory or its ancestors; if none exists, it falls back to `~/.cchistory/cchistory.sqlite`. Use `--store` or `--db` to pin an explicit store location. If you want a repo-local store regardless of where you invoke the CLI, pass `--store ./.cchistory`.
 
 ## Global Options
 
@@ -8,7 +8,7 @@ The CCHistory CLI (`apps/cli`) is the primary local operator tool. By default it
 Usage: cchistory <command> [options]
 
 Options:
-  --store <dir>    Store directory (DB at <dir>/cchistory.sqlite)
+  --store <dir>    Override the default store resolution with <dir>/cchistory.sqlite
   --db <file>      Explicit SQLite file path
   --index          Read from existing store only (default for reads)
   --full           Re-scan sources into a temporary in-memory store
@@ -36,7 +36,7 @@ cchistory sync --dry-run                # Preview discovered sync roots without 
 **Example output:**
 
 ```
-Synced 7 source(s) into /workspace/.cchistory/cchistory.sqlite
+Synced 7 source(s) into /Users/me/.cchistory/cchistory.sqlite
 
 Source           Host          Sessions  Turns  Status
 ---------------  ------------  --------  -----  -------
@@ -52,6 +52,8 @@ Cursor (cursor)  host-e336320  2         1      healthy
 | `--limit-files <n>` | Max files per source |
 | `--dry-run` | Show which supported sources are currently discoverable and which path each would sync from |
 
+> Windows note (2026-03-27): `sync --dry-run` and `discover` only prove that a candidate path is being probed. On Windows, `Cursor` and `Antigravity` have verified default roots; for `Codex`, `Claude Code`, `Factory Droid`, `AMP`, and all experimental adapters, confirm or override `base_dir` through the web `Sources` view or `/api/admin/source-config` before treating the path as authoritative.
+
 ### discover
 
 Inspect host-level source and tool discovery without touching the store.
@@ -64,7 +66,7 @@ cchistory discover --showall            # Include missing default candidates too
 `discover` is broader than `sync --dry-run`:
 
 - `sync --dry-run` only previews sync-supported source roots.
-- `discover` lists both sync-supported sources and discovery-only tools, such as Gemini CLI local state roots.
+- `discover` lists sync-supported source roots first, and may also show discovery-only auxiliary tool artifacts when a platform exposes them.
 
 **Example output:**
 
@@ -75,8 +77,26 @@ Name        Kind    Capability     Platform  Path Type             Path         
 ----------  ------  -------------  --------  --------------------  ------------------------------------  ------  --------
 OpenClaw    source  sync           openclaw  default (default 1)   /Users/me/.openclaw/agents           yes     yes
 OpenCode    source  sync           opencode  default (default 1)   /Users/me/.local/share/opencode/...  yes     yes
-Gemini CLI  tool    discover-only  gemini    artifact (tmp root)   /Users/me/.gemini/tmp                yes
+Gemini CLI  source  sync           gemini    default (default 1)   /Users/me/.gemini                    yes     yes
 ```
+
+### health
+
+Read-only operator overview that combines host discovery, sync preview, and
+store summary into one command.
+
+```bash
+cchistory health                                 # Discovery + sync preview + indexed summary
+cchistory health --source codex                  # Scope to one source
+cchistory health --full                          # One live read-only scan instead of the indexed store
+cchistory health --store ./.cchistory --full     # Use a pinned local store path
+```
+
+Behavior notes:
+
+- `health` defaults to `--index`, so it reads an existing store without mutating it.
+- If no indexed store exists, `health` reports that explicitly instead of silently creating one.
+- `health --full` performs one live in-memory scan and does not create `cchistory.sqlite`.
 
 ### ls
 
@@ -84,7 +104,7 @@ Browse projects, sessions, and sources.
 
 ```bash
 cchistory ls projects                   # List projects (hides empty by default)
-cchistory ls sessions                   # List all sessions
+cchistory ls sessions                   # List all sessions with title/workspace hints
 cchistory ls sources                    # List configured sources
 cchistory ls projects --showall         # Include empty projects
 ```
@@ -102,7 +122,9 @@ shared-product-lab     tentative  1      1         1      2026-03-16T16:41:50.98
 
 ### search
 
-Full-text search across all turns.
+Full-text search across all turns. Queries now support partial multi-token
+matching, so you do not need to type one exact phrase. The text output prints a
+turn ID prefix that you can pass directly to `cchistory show turn <shown-id>`.
 
 ```bash
 cchistory search "data security"                        # Global search
@@ -131,7 +153,7 @@ cchistory stats usage --by month                # Monthly usage
 **Example output:**
 
 ```
-DB                  : .cchistory/cchistory.sqlite
+DB                  : /Users/me/.cchistory/cchistory.sqlite
 Schema Version      : 2026-03-20.1
 Schema Migrations   : 2
 Search Mode         : fallback
@@ -178,10 +200,15 @@ Detailed view of a single entity.
 
 ```bash
 cchistory show project chat-ui-kit          # Project details + usage + recent turns
-cchistory show session <session-id>         # Session details with turns
-cchistory show turn <turn-id>               # Full turn with prompt, context, lineage
+cchistory show session <ref>                # Session details with turns
+cchistory show turn <turn-id-or-prefix>     # Full turn with prompt, context, lineage
 cchistory show source codex                 # Source details + resolved sessions
 ```
+
+For `show session <ref>`, `<ref>` may be a full session ID, a unique session ID
+prefix, a unique session title, or a unique workspace path / workspace basename.
+If multiple sessions match the same human-friendly reference, the CLI fails
+explicitly instead of guessing.
 
 ### export
 
@@ -189,6 +216,7 @@ Export the store to a portable bundle.
 
 ```bash
 cchistory export --out ./my-backup                              # Export everything
+cchistory export --out ./my-backup --dry-run                    # Preview bundle contents first
 cchistory export --out ./my-backup --source codex               # Specific source
 cchistory export --out ./my-backup --source codex --no-raw      # Without raw blobs
 ```
@@ -198,6 +226,33 @@ cchistory export --out ./my-backup --source codex --no-raw      # Without raw bl
 | `--out <dir>` | Output bundle directory (required) |
 | `--source <id>` | Limit to sources (repeatable) |
 | `--no-raw` | Omit raw blobs from bundle |
+| `--dry-run` | Preview bundle counts and selected sources without writing files |
+
+### backup
+
+Preview-first portable backup shortcut built on the canonical export-bundle
+workflow.
+
+```bash
+cchistory backup --out ./my-backup                            # Preview the backup plan (default)
+cchistory backup --out ./my-backup --write                    # Write the bundle after preview/confirmation
+cchistory backup --out ./my-backup --source codex --write     # Scope to one source
+cchistory backup --out ./my-backup --source codex --no-raw --write
+```
+
+| Flag | Description |
+|------|-------------|
+| `--out <dir>` | Output bundle directory (required) |
+| `--source <id>` | Limit to sources (repeatable) |
+| `--no-raw` | Omit raw blobs from the written bundle |
+| `--write` | Execute the write step; without this flag `backup` stays preview-only |
+| `--dry-run` | Explicit preview alias; `backup` already previews by default |
+
+Behavior notes:
+
+- `backup` is an operator shortcut; `export` remains the canonical primitive.
+- `backup --out <dir>` shows the same plan as `export --dry-run`.
+- `backup --write` produces the same bundle as `export` with the same scope flags.
 
 ### import
 
@@ -205,6 +260,7 @@ Import a bundle into the current store.
 
 ```bash
 cchistory import ./my-backup                                    # Import bundle
+cchistory import ./my-backup --dry-run                          # Preview source actions first
 cchistory import ./my-backup --on-conflict skip                 # Skip conflicts
 cchistory import ./my-backup --on-conflict replace              # Overwrite conflicts
 ```
@@ -212,21 +268,46 @@ cchistory import ./my-backup --on-conflict replace              # Overwrite conf
 | Flag | Description |
 |------|-------------|
 | `--on-conflict <mode>` | Behavior on conflict: `error` (default), `skip`, `replace` |
+| `--dry-run` | Validate the bundle and preview source-level actions without writing |
+
+### restore-check
+
+Read-only post-restore verification shortcut built on the canonical indexed
+`stats` and `ls sources` views.
+
+```bash
+cchistory restore-check --store ./restored-store                # Verify a restored store directory
+cchistory restore-check --db ./restored-store/cchistory.sqlite  # Verify via explicit sqlite path
+```
+
+| Flag | Description |
+|------|-------------|
+| `--store <dir>` | Restored store directory to inspect (required unless `--db` is used) |
+| `--db <file>` | Explicit restored sqlite file to inspect |
+| `--showall` | Include zero-token turns in the embedded stats overview |
+
+Behavior notes:
+
+- `restore-check` is verification-only; it never imports or mutates a store.
+- `restore-check` requires an explicit `--store` or `--db` target.
+- `restore-check` stays indexed-only and does not support `--full`.
 
 ### Backup and restore
 
 For self-host operations, the canonical portable backup unit is an export bundle.
 
 ```bash
-# Backup the full store, including raw blobs
-cchistory export --store ./.cchistory --out ./backup-2026-03-20
+# Preview the backup first
+cchistory backup --store ./.cchistory --out ./backup-2026-03-20
+
+# Write the full store backup, including raw blobs
+cchistory backup --store ./.cchistory --out ./backup-2026-03-20 --write
 
 # Restore into a clean store directory
 cchistory import ./backup-2026-03-20 --store ./restored-store
 
 # Verify the restored store
-cchistory stats --store ./restored-store
-cchistory ls sources --store ./restored-store
+cchistory restore-check --store ./restored-store
 ```
 
 Backup notes:
@@ -240,8 +321,9 @@ Backup notes:
 Before upgrading CCHistory on a self-hosted machine:
 
 ```bash
-# 1. Create a portable pre-upgrade backup
-cchistory export --store ./.cchistory --out ./pre-upgrade-backup
+# 1. Preview then create a portable pre-upgrade backup
+cchistory backup --store ./.cchistory --out ./pre-upgrade-backup
+cchistory backup --store ./.cchistory --out ./pre-upgrade-backup --write
 
 # 2. Upgrade CCHistory and open the store normally
 cchistory stats --store ./.cchistory
@@ -251,7 +333,7 @@ Upgrade notes:
 
 - `cchistory stats` now shows the current `Schema Version`, `Schema Migrations`, and `Search Mode`.
 - Stores created before schema-ledger support will backfill migration records on first open under the newer build.
-- If the upgraded store does not look correct, restore into a clean directory from the pre-upgrade bundle and compare with `stats`, `ls sources`, and a targeted `search`.
+- If the upgraded store does not look correct, restore into a clean directory from the pre-upgrade bundle and compare with `restore-check` plus a targeted `search`.
 
 ### gc
 
@@ -287,7 +369,7 @@ Structured JSON output for programmatic consumption (always outputs JSON).
 
 ```bash
 cchistory query turns --search "refactor" --limit 5
-cchistory query turn --id <turn-id>
+cchistory query turn --id <turn-id-or-prefix>
 cchistory query sessions --project <project-id>
 cchistory query session --id <session-id>
 cchistory query projects

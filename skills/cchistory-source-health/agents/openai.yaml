@@ -1,0 +1,4 @@
+interface:
+  display_name: "CCHistory Source Health"
+  short_description: "Inspect source discovery and sync readiness"
+  default_prompt: "Use $cchistory-source-health to inspect source discovery and dry-run sync readiness."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "CCHistory Turn Context"
+  short_description: "Read one turn or session drill-down JSON"
+  default_prompt: "Use $cchistory-turn-context to inspect one turn or session with canonical context JSON."

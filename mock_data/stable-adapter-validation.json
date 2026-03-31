@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "last_reviewed": "2026-03-27",
+  "stable_adapters": [
+    {
+      "platform": "codex",
+      "source_id": "src-codex-mock-data",
+      "family": "local_coding_agent",
+      "probe_base_dir": ".codex/sessions",
+      "scenario_ids": [
+        "codex-long-instructions",
+        "codex-missing-structured-cwd",
+        "codex-cross-host-same-project",
+        "codex-same-repo-name-different-paths"
+      ],
+      "validation_basis": [
+        "sanitized_local_disk"
+      ]
+    },
+    {
+      "platform": "claude_code",
+      "source_id": "src-claude-mock-data",
+      "family": "local_coding_agent",
+      "probe_base_dir": ".claude/projects",
+      "scenario_ids": [
+        "claude-workspace-path",
+        "claude-sidechain-subagent",
+        "claude-local-command-meta-noise"
+      ],
+      "validation_basis": [
+        "sanitized_local_disk"
+      ]
+    },
+    {
+      "platform": "factory_droid",
+      "source_id": "src-factory-mock-data",
+      "family": "local_coding_agent",
+      "probe_base_dir": ".factory/sessions",
+      "scenario_ids": [
+        "factory-droid-sidecar-settings"
+      ],
+      "validation_basis": [
+        "sanitized_local_disk"
+      ]
+    },
+    {
+      "platform": "amp",
+      "source_id": "src-amp-mock-data",
+      "family": "local_coding_agent",
+      "probe_base_dir": ".local/share/amp/threads",
+      "scenario_ids": [
+        "amp-root-env-thread"
+      ],
+      "validation_basis": [
+        "sanitized_local_disk"
+      ]
+    },
+    {
+      "platform": "cursor",
+      "source_id": "src-cursor-mock-data",
+      "family": "local_coding_agent",
+      "probe_base_dir": "Library/Application Support/Cursor/User",
+      "scenario_ids": [
+        "cursor-shared-path",
+        "cursor-opaque-settings-only-dirs"
+      ],
+      "validation_basis": [
+        "sanitized_local_disk"
+      ]
+    },
+    {
+      "platform": "antigravity",
+      "source_id": "src-antigravity-mock-data",
+      "family": "local_coding_agent",
+      "probe_base_dir": "Library/Application Support/antigravity/User",
+      "scenario_ids": [
+        "antigravity-shared-path",
+        "antigravity-noisy-sidecars",
+        "antigravity-same-name-different-paths",
+        "antigravity-same-path-different-storage-ids",
+        "antigravity-current-backup-divergent",
+        "antigravity-brain-artifacts",
+        "antigravity-live-trajectory-responses"
+      ],
+      "validation_basis": [
+        "sanitized_local_disk",
+        "sanitized_local_runtime_fixture"
+      ],
+      "runtime_fixture_paths": [
+        "fixtures/antigravity-live/trajectory-summaries.json",
+        "fixtures/antigravity-live/steps/035b86d5-8ae6-4dfd-bdf0-3a28e9f1df5e.json",
+        "fixtures/antigravity-live/steps/f016bbd7-ad8f-4b3b-bab0-a73e197f391a.json"
+      ]
+    }
+  ]
+}

@@ -1,12 +1,15 @@
 # Repository Guidelines
 
+## Execution Pipeline And Backlog
+`PIPELINE.md` defines the operational workflow for executing work: how to discover what to do next, how to decompose objectives into tasks, how to evaluate completion, and how to handle design decisions. `BACKLOG.md` is the living work surface where objectives, KRs, and tasks are tracked. An agent starting a session without a specific user instruction must read `BACKLOG.md` first and follow the decision tree in `PIPELINE.md`.
+
 ## Source Of Truth
 `HIGH_LEVEL_DESIGN_FREEZE.md` is the authoritative definition of product scope and architecture. Read it before changing docs, code, or data models. Contributions must preserve the frozen invariants there: project-first history, `UserTurn` as the primary object, evidence-preserving ingestion, and UI/API as projections of one canonical model.
 
 ## Repository Scope
 This repository currently contains seven different classes of material.
 
-- Root docs plus `docs/`: the current project definition, implementation status, and decision surface. `HIGH_LEVEL_DESIGN_FREEZE.md` remains authoritative; `docs/design/CURRENT_RUNTIME_SURFACE.md` is the current repository-visible runtime inventory; `docs/design/IMPLEMENTATION_PLAN.md` is the delivered baseline for the 2026-03 local-source slice and may lag newer runtime work; `docs/guide/` contains user-facing guides for CLI, API, and Web; `tasks.csv` is a historical KR ledger, not a complete current backlog.
+- Root docs plus `docs/`: the current project definition, implementation status, and decision surface. `HIGH_LEVEL_DESIGN_FREEZE.md` remains authoritative; `PIPELINE.md` defines the agent execution workflow; `BACKLOG.md` is the living work surface for current objectives and tasks; `docs/design/CURRENT_RUNTIME_SURFACE.md` is the current repository-visible runtime inventory; `docs/design/IMPLEMENTATION_PLAN.md` is the delivered baseline for the 2026-03 local-source slice and may lag newer runtime work; `docs/guide/` contains user-facing guides for CLI, API, and Web; `tasks.csv` is a historical KR ledger, not a complete current backlog.
 - `apps/`: canonical product entrypoints. `apps/api` is the managed API, `apps/web` is the canonical frontend, and `apps/cli` is the canonical local operator CLI.
 - `packages/`: canonical shared implementation for domain contracts, source adapters, storage, API DTOs, and presentation mapping.
 - `.cchistory/`: local runtime state and persisted evidence-derived data for this workspace. Inspect it when needed, but do not delete, reset, or regenerate it casually.
@@ -18,7 +21,9 @@ This repository currently contains seven different classes of material.
 - `HIGH_LEVEL_DESIGN_FREEZE.md` freezes product semantics and invariants. It is not a complete inventory of every currently implemented adapter, CLI verb, or UI interaction.
 - `docs/design/CURRENT_RUNTIME_SURFACE.md` is the canonical inventory of the current repository-visible entrypoints, adapter roster, and user-facing runtime surfaces.
 - `docs/design/IMPLEMENTATION_PLAN.md` should be read as a delivered slice baseline plus status snapshot for the 2026-03 local-source push, not as the live roadmap or exhaustive feature inventory.
-- `tasks.csv` records work that was explicitly tracked in this repository on this host. Missing rows are not evidence that a capability is absent or unimplemented elsewhere.
+- `PIPELINE.md` defines the seven-phase execution workflow and task decomposition standards. It is the operational counterpart to the design freeze.
+- `BACKLOG.md` is the living work surface. It replaces `tasks.csv` as the active backlog. Agents must read it at session start.
+- `tasks.csv` records work that was explicitly tracked in this repository on this host. It is a historical ledger for the 2026-03 local-source slice, not the active backlog. Missing rows are not evidence that a capability is absent or unimplemented elsewhere.
 - When docs and runtime surface disagree, preserve the freeze invariants first, then verify current behavior against `apps/*`, `packages/*`, and targeted tests before editing.
 - The currently registered source adapters live in `packages/source-adapters/src/platforms/registry.ts`. The implemented adapter set presently includes `codex`, `claude_code`, `factory_droid`, `amp`, `cursor`, `antigravity`, `openclaw`, `opencode`, and `lobechat`.
 - Broader platform enums in `packages/domain` or `packages/api-client` are not proof that a live adapter already exists for every value.

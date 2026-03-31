@@ -9,6 +9,7 @@ export type SupportedSourcePlatform =
   | "amp"
   | "cursor"
   | "antigravity"
+  | "gemini"
   | "openclaw"
   | "opencode"
   | "lobechat";
@@ -26,9 +27,11 @@ export interface PlatformAdapter {
   platform: SupportedSourcePlatform;
   supportTier: AdapterSupportTier;
   getDefaultBaseDirCandidates(options: DefaultSourceResolutionOptions): string[];
+  getSourceRoots?(baseDir: string): string[];
   matchesSourceFile(filePath: string): boolean;
   getSourceFilePriority?(filePath: string): number;
   getSupplementalSourceRoots?(baseDir: string): string[];
+  getCompanionEvidencePaths?(baseDir: string, filePath: string): string[];
 }
 
 export function isSupportedSourcePlatform(platform: SourcePlatform): platform is SupportedSourcePlatform {
@@ -39,6 +42,7 @@ export function isSupportedSourcePlatform(platform: SourcePlatform): platform is
     platform === "amp" ||
     platform === "cursor" ||
     platform === "antigravity" ||
+    platform === "gemini" ||
     platform === "openclaw" ||
     platform === "opencode" ||
     platform === "lobechat"

@@ -1,0 +1,18 @@
+{
+  "sessionId": "11111111-2222-4333-8444-555555555555",
+  "projectHash": "1111111111111111111111111111111111111111111111111111111111111111",
+  "startTime": "2026-03-04T01:48:39.202Z",
+  "lastUpdated": "2026-03-04T01:48:39.202Z",
+  "messages": [
+    {
+      "id": "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      "timestamp": "2026-03-04T01:48:39.202Z",
+      "type": "user",
+      "content": [
+        {
+          "text": "[Assistant Rules - You MUST follow these instructions]\\n[User Request]\\nSummarize noteworthy AI agent frameworks and products."
+        }
+      ]
+    }
+  ]
+}

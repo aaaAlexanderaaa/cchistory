@@ -7,6 +7,7 @@ import type {
   CapturedBlob,
   ImportBundleManifest,
   ImportedBundleRecord,
+  SourcePlatform,
   SourceSyncPayload,
 } from "@cchistory/domain";
 import type { CCHistoryStorage } from "@cchistory/storage";
@@ -55,12 +56,29 @@ export interface BundleExportResult {
   payloads: SourceSyncPayload[];
 }
 
-export interface BundleImportResult {
+export interface BundleImportPlanEntry {
+  source_id: string;
+  slot_id: string;
+  display_name: string;
+  platform: SourcePlatform;
+  host_id: string;
+  counts: BundleObjectCounts;
+  action: "import" | "replace" | "skip" | "conflict";
+  reason: "new_source" | "identical_payload" | "conflict_skip" | "conflict_replace" | "conflict_error";
+}
+
+export interface BundleImportPlanResult {
   manifest: ImportBundleManifest;
   checksums: BundleChecksums;
+  source_plans: BundleImportPlanEntry[];
   imported_source_ids: string[];
   replaced_source_ids: string[];
   skipped_source_ids: string[];
+  conflicting_source_ids: string[];
+  would_fail: boolean;
+}
+
+export interface BundleImportResult extends BundleImportPlanResult {
   project_count_before: number;
   project_count_after: number;
 }
@@ -79,7 +97,9 @@ export async function exportBundle(options: {
   const bundleDir = path.resolve(options.bundleDir);
   await ensureEmptyDirectory(bundleDir);
   await mkdir(path.join(bundleDir, "payloads"), { recursive: true });
-  await mkdir(path.join(bundleDir, "raw"), { recursive: true });
+  if (options.includeRawBlobs) {
+    await mkdir(path.join(bundleDir, "raw"), { recursive: true });
+  }
 
   const payloadChecksums: Record<string, string> = {};
   const rawChecksums: Record<string, string> = {};
@@ -136,6 +156,95 @@ export async function exportBundle(options: {
   };
 }
 
+export async function planBundleImport(options: {
+  storage: CCHistoryStorage;
+  bundleDir: string;
+  onConflict: ConflictMode;
+}): Promise<BundleImportPlanResult> {
+  const bundle = await readBundle(options.bundleDir);
+  return planBundleImportFromBundle({
+    storage: options.storage,
+    bundle,
+    onConflict: options.onConflict,
+  });
+}
+
+function planBundleImportFromBundle(options: {
+  storage: CCHistoryStorage;
+  bundle: BundleReadResult;
+  onConflict: ConflictMode;
+}): BundleImportPlanResult {
+  const { bundle } = options;
+  const importedBundle = options.storage.getImportedBundle(bundle.manifest.bundle_id);
+  if (importedBundle && stableStringify(importedBundle.checksums) !== stableStringify(bundle.checksums)) {
+    throw new Error(`Bundle id ${bundle.manifest.bundle_id} already exists with different checksums.`);
+  }
+
+  const importedSourceIds: string[] = [];
+  const replacedSourceIds: string[] = [];
+  const skippedSourceIds: string[] = [];
+  const conflictingSourceIds: string[] = [];
+  const sourcePlans: BundleImportPlanEntry[] = [];
+
+  for (const payload of bundle.payloads) {
+    const existingPayload = options.storage.getSourcePayload(payload.source.id);
+    const incomingChecksum = bundle.checksums.payload_sha256_by_source_id[payload.source.id];
+    if (!incomingChecksum) {
+      throw new Error(`Missing checksum for source ${payload.source.id}`);
+    }
+
+    let action: BundleImportPlanEntry["action"];
+    let reason: BundleImportPlanEntry["reason"];
+
+    if (!existingPayload) {
+      action = "import";
+      reason = "new_source";
+      importedSourceIds.push(payload.source.id);
+    } else {
+      const existingChecksum = computePayloadChecksum(existingPayload);
+      if (existingChecksum === incomingChecksum) {
+        action = "skip";
+        reason = "identical_payload";
+        skippedSourceIds.push(payload.source.id);
+      } else if (options.onConflict === "skip") {
+        action = "skip";
+        reason = "conflict_skip";
+        skippedSourceIds.push(payload.source.id);
+      } else if (options.onConflict === "replace") {
+        action = "replace";
+        reason = "conflict_replace";
+        replacedSourceIds.push(payload.source.id);
+      } else {
+        action = "conflict";
+        reason = "conflict_error";
+        conflictingSourceIds.push(payload.source.id);
+      }
+    }
+
+    sourcePlans.push({
+      source_id: payload.source.id,
+      slot_id: payload.source.slot_id,
+      display_name: payload.source.display_name,
+      platform: payload.source.platform,
+      host_id: payload.source.host_id,
+      counts: computeBundleCounts([payload]),
+      action,
+      reason,
+    });
+  }
+
+  return {
+    manifest: bundle.manifest,
+    checksums: bundle.checksums,
+    source_plans: sourcePlans,
+    imported_source_ids: importedSourceIds,
+    replaced_source_ids: replacedSourceIds,
+    skipped_source_ids: skippedSourceIds,
+    conflicting_source_ids: conflictingSourceIds,
+    would_fail: conflictingSourceIds.length > 0,
+  };
+}
+
 export async function readBundle(bundleDir: string): Promise<BundleReadResult> {
   const resolvedBundleDir = path.resolve(bundleDir);
   const manifestPath = path.join(resolvedBundleDir, "manifest.json");
@@ -177,40 +286,21 @@ export async function importBundleIntoStore(options: {
   onConflict: ConflictMode;
 }): Promise<BundleImportResult> {
   const bundle = await readBundle(options.bundleDir);
-  const importedBundle = options.storage.getImportedBundle(bundle.manifest.bundle_id);
-  if (importedBundle && stableStringify(importedBundle.checksums) !== stableStringify(bundle.checksums)) {
-    throw new Error(`Bundle id ${bundle.manifest.bundle_id} already exists with different checksums.`);
+  const plan = planBundleImportFromBundle({
+    storage: options.storage,
+    bundle,
+    onConflict: options.onConflict,
+  });
+  if (plan.would_fail) {
+    throw new Error(`Source conflict detected for ${plan.conflicting_source_ids[0]}`);
   }
-  const importedSourceIds: string[] = [];
-  const replacedSourceIds: string[] = [];
-  const skippedSourceIds: string[] = [];
+
   const preparedPayloads: SourceSyncPayload[] = [];
-
   for (const payload of bundle.payloads) {
-    const existingPayload = options.storage.getSourcePayload(payload.source.id);
-    const incomingChecksum = bundle.checksums.payload_sha256_by_source_id[payload.source.id];
-    if (!incomingChecksum) {
-      throw new Error(`Missing checksum for source ${payload.source.id}`);
+    const sourcePlan = plan.source_plans.find((entry) => entry.source_id === payload.source.id);
+    if (!sourcePlan || sourcePlan.action === "skip" || sourcePlan.action === "conflict") {
+      continue;
     }
-
-    if (existingPayload) {
-      const existingChecksum = computePayloadChecksum(existingPayload);
-      if (existingChecksum === incomingChecksum) {
-        skippedSourceIds.push(payload.source.id);
-        continue;
-      }
-      if (options.onConflict === "skip") {
-        skippedSourceIds.push(payload.source.id);
-        continue;
-      }
-      if (options.onConflict === "error") {
-        throw new Error(`Source conflict detected for ${payload.source.id}`);
-      }
-      replacedSourceIds.push(payload.source.id);
-    } else {
-      importedSourceIds.push(payload.source.id);
-    }
-
     preparedPayloads.push(await materializePayloadRawBlobs(payload, bundle, options.rawDir));
   }
 
@@ -230,11 +320,7 @@ export async function importBundleIntoStore(options: {
   options.storage.upsertImportedBundle(importedRecord);
 
   return {
-    manifest: bundle.manifest,
-    checksums: bundle.checksums,
-    imported_source_ids: importedSourceIds,
-    replaced_source_ids: replacedSourceIds,
-    skipped_source_ids: skippedSourceIds,
+    ...plan,
     project_count_before: projectCountBefore,
     project_count_after: options.storage.listProjects().length,
   };

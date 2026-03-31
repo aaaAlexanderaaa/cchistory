@@ -14,6 +14,7 @@ MOCK_ROOT = REPO_ROOT / "mock_data"
 ALLOWED_FILE_PATTERNS = [
     re.compile(r"README\.md"),
     re.compile(r"scenarios\.json"),
+    re.compile(r"stable-adapter-validation\.json"),
     re.compile(r"fixtures/antigravity-live/trajectory-summaries\.json"),
     re.compile(r"fixtures/antigravity-live/steps/[0-9a-f-]+\.json"),
     re.compile(r"\.codex/sessions/\d{4}/\d{2}/\d{2}/rollout-[^/]+\.jsonl"),
@@ -40,6 +41,10 @@ ALLOWED_FILE_PATTERNS = [
         r"SOTA_Agents_Context_Engineering_Research|Conversation_[^/]+_History)\.md\.metadata\.json"
     ),
     re.compile(r"\.gemini/antigravity/brain/[0-9a-f-]+/browser/scratchpad_[^/]+\.md"),
+    re.compile(r"\.gemini/projects\.json"),
+    re.compile(r"\.gemini/history/[^/]+/\.project_root"),
+    re.compile(r"\.gemini/tmp/[^/]+/\.project_root"),
+    re.compile(r"\.gemini/tmp/[^/]+/chats/session-[^/]+\.json"),
 ]
 
 FORBIDDEN_CONTENT_PATTERNS = [

@@ -44,9 +44,11 @@ CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对
 | Antigravity | **Stable** | 平台用户数据 `User/` + `~/.gemini/antigravity/{conversations,brain}` |
 | OpenClaw | Experimental | `~/.openclaw/agents/` |
 | OpenCode | Experimental | `~/.local/share/opencode/{project,storage/session}` |
+| Gemini CLI | Experimental | `~/.gemini/` |
 | LobeChat | Experimental | `~/.config/lobehub-storage/` |
 
 > `Stable` 表示已经达到 self-host v1 的真实世界验证门槛。`Experimental` 表示 adapter 已经注册到代码里，但还没有足够的真实样本验证，不能作为 self-host v1 的正式支持承诺。
+> 可运行 `pnpm run verify:support-status`，把这些文档声明与 adapter registry 做一致性校验。
 
 > Antigravity 说明：CCHistory 对 Antigravity 采用两条互补的采集链路。运行中的桌面应用通过本地 language server trajectory API 提供实际对话内容（用户输入、助手回复、工具调用）。离线文件（`workspaceStorage`、`History`、`brain`）始终会被扫描，用于获取项目路径和 workspace 信号。如果桌面应用未运行，则只有离线链路会执行，此时不会恢复原始对话内容，只能获取项目元数据和证据工件。
 
@@ -86,10 +88,12 @@ CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对
 
 ### 环境要求
 
-- **Node.js >= 22**（使用内置 `node:sqlite`，无需外部数据库）
-- **pnpm 10.x**（通过 `packageManager` 字段强制指定）
+- **Node.js >= 22**（根目录 `engines.node` 字段中有机器可读声明，使用内置 `node:sqlite`，无需外部数据库）
+- **pnpm 10.x**（通过 `packageManager` 固定版本，并在 `engines.pnpm` 中声明支持范围）
 
 ### 安装与构建
+
+这是仓库在全新机器上的规范安装路径：先安装两个 lockfile 对应的依赖，再完成第一次非 Web 工作区构建。
 
 ```bash
 # 克隆并安装
@@ -100,9 +104,55 @@ pnpm install
 # 安装 Web 应用依赖（独立的 lockfile）
 cd apps/web && pnpm install && cd ../..
 
-# 构建所有包
+# 第一次构建（非 Web 工作区）
 pnpm run build
 ```
+
+`apps/web` 的生产构建验证独立于这里的安装路径；需要时可单独运行：
+
+```bash
+NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build
+```
+
+如果要在临时副本中验证“全新机器安装路径”而不碰当前工作区，可运行：
+
+```bash
+pnpm run verify:clean-install
+```
+
+### 使用独立 CLI 制品
+
+仓库现在还支持一个仅面向 CLI 的制品通道，适用于目标机器不想依赖完整
+源码 checkout 的场景。
+
+在仓库克隆副本中生成该制品：
+
+```bash
+pnpm run cli:artifact
+```
+
+该命令会在 `dist/cli-artifacts/` 下生成一个带版本号的展开目录，以及对应的
+`.tgz` 制品。
+
+在另一台机器上，解压生成的 tarball 后可直接运行：
+
+```bash
+# POSIX shell
+./bin/cchistory --help
+
+# Windows CMD
+bin\cchistory.cmd --help
+```
+
+升级方式是用更新版本的制品目录替换当前展开目录。如果要在本地验证这个
+制品通道，可运行：
+
+```bash
+pnpm run verify:cli-artifact
+```
+
+该验证会解压两个不同版本号的制品，并通过执行已安装的
+`cchistory templates` 来确认首次安装与替换式升级都可用。
 
 ### 全局安装 CLI
 
@@ -200,6 +250,7 @@ cchistory stats
 - **[CLI 指南](docs/guide/cli.md)** — 所有命令、参数和输出示例
 - **[API 指南](docs/guide/api.md)** — REST 接口、配置和请求/响应模式
 - **[Web 界面指南](docs/guide/web.md)** — 功能、导航、视图和配置
+- **[Inspection Guide](docs/guide/inspection.md)** — 说明何时使用 `probe:*` 与 `inspect:*` 这类证据/诊断辅助命令
 - **[数据源技术说明](docs/sources/README.md)** — 已验证数据源的存储布局与采集路径
 - **[Self-Host V1 发布门槛](docs/design/SELF_HOST_V1_RELEASE_GATE.md)** — 单用户 self-host v1 的最小发布标准
 - **[开发路线图](docs/ROADMAP.md)** — 当前里程碑式开发计划

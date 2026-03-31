@@ -1,0 +1,130 @@
+name: Bug report
+description: Report a reproducible product bug using the canonical evidence-preserving contract.
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for reproducible product bugs.
+
+        Before submitting, review `docs/guide/bug-reporting.md` and prefer the
+        smallest command, payload, or screenshot that proves the issue.
+
+        Preserve raw evidence. Do not delete or rewrite `.cchistory/`, source
+        captures, or snapshots to make the symptom disappear.
+  - type: input
+    id: summary
+    attributes:
+      label: Summary
+      description: One sentence describing the problem.
+      placeholder: Search results omit turns after sync for one project.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Surface
+      description: Pick the main affected product surface.
+      options:
+        - CLI
+        - API
+        - Web
+        - source-adapter
+        - storage/linking
+        - docs/process
+    validations:
+      required: true
+  - type: input
+    id: platform_source
+    attributes:
+      label: Platform or source
+      description: Name the affected source/platform if relevant.
+      placeholder: codex
+  - type: input
+    id: source_id
+    attributes:
+      label: Source id
+      placeholder: src-codex
+  - type: input
+    id: session_id
+    attributes:
+      label: Session id
+      placeholder: sess_...
+  - type: input
+    id: turn_id
+    attributes:
+      label: Turn id
+      placeholder: turn_...
+  - type: input
+    id: project_id
+    attributes:
+      label: Project id
+      placeholder: proj_...
+  - type: input
+    id: store_path
+    attributes:
+      label: Store path
+      description: Include when the bug depends on a specific local store.
+      placeholder: /path/to/.cchistory
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Provide the minimum sequence needed to trigger the problem.
+      placeholder: |
+        1. Run ...
+        2. Open ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: The linked session should appear under one project.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: The same workspace appears as two different projects.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Paste the smallest proving command output, request/response, ids, paths, or screenshot notes.
+      placeholder: |
+        Command: cchistory ls projects --store ...
+        Output: ...
+        Relevant ids: ...
+    validations:
+      required: true
+  - type: dropdown
+    id: scope_check
+    attributes:
+      label: Scope check
+      description: State whether the problem looks isolated or repeated.
+      options:
+        - looks isolated
+        - possibly class-wide
+        - unknown
+    validations:
+      required: true
+  - type: checkboxes
+    id: evidence_preservation
+    attributes:
+      label: Evidence-preservation checklist
+      options:
+        - label: I did not delete or rewrite raw evidence to make the symptom disappear.
+          required: true
+        - label: I included the smallest proving command, payload, or screenshot.
+          required: true
+        - label: I included expected vs actual behavior.
+          required: true
+        - label: I included source/platform context if relevant.
+          required: true

@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./store-layout": {
+      "types": "./dist/store-layout.d.ts",
+      "default": "./dist/store-layout.js"
     }
   },
   "scripts": {

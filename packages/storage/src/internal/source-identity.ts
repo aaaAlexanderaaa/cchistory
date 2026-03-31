@@ -16,6 +16,7 @@ import {
   deriveSourceInstanceId,
   deriveSourceSlotId,
   isLegacySourceInstanceId,
+  normalizeLocalPathIdentity,
   normalizeSourceBaseDir,
 } from "@cchistory/domain";
 
@@ -48,13 +49,6 @@ export function normalizeSourcePayload(payload: SourceSyncPayload): SourceSyncPa
   const source = normalizeSourceStatus(payload.source);
   const sourceId = source.id;
 
-  if (sourceId === payload.source.id && source.slot_id === payload.source.slot_id) {
-    return {
-      ...payload,
-      source,
-    };
-  }
-
   return {
     source,
     stage_runs: payload.stage_runs.map((stageRun) => updateSourceScopedEntry(stageRun, sourceId)),
@@ -64,10 +58,40 @@ export function normalizeSourcePayload(payload: SourceSyncPayload): SourceSyncPa
     fragments: payload.fragments.map((fragment) => updateSourceScopedEntry(fragment, sourceId)),
     atoms: payload.atoms.map((atom) => updateSourceScopedEntry(atom, sourceId)),
     edges: payload.edges.map((edge) => updateSourceScopedEntry(edge, sourceId)),
-    candidates: payload.candidates.map((candidate) => updateSourceScopedEntry(candidate, sourceId)),
-    sessions: payload.sessions.map((session) => updateSourceScopedEntry(session, sourceId)),
+    candidates: payload.candidates.map((candidate) => normalizeDerivedCandidate(updateSourceScopedEntry(candidate, sourceId))),
+    sessions: payload.sessions.map((session) => normalizeSessionProjection(updateSourceScopedEntry(session, sourceId))),
     turns: payload.turns.map((turn) => updateSourceScopedEntry(turn, sourceId)),
     contexts: payload.contexts,
+  };
+}
+
+function normalizeSessionProjection(session: SessionProjection): SessionProjection {
+  const workingDirectory = normalizeComparablePath(session.working_directory) ?? session.working_directory;
+  return {
+    ...session,
+    working_directory: workingDirectory,
+  };
+}
+
+function normalizeDerivedCandidate(candidate: DerivedCandidate): DerivedCandidate {
+  if (candidate.candidate_kind !== "project_observation") {
+    return candidate;
+  }
+
+  const evidence = candidate.evidence as Record<string, unknown>;
+  const workspacePath = normalizeComparablePath(asOptionalString(evidence.workspace_path)) ?? asOptionalString(evidence.workspace_path);
+  const workspacePathNormalized =
+    normalizeComparablePath(asOptionalString(evidence.workspace_path_normalized)) ?? normalizeComparablePath(workspacePath);
+  const repoRoot = normalizeComparablePath(asOptionalString(evidence.repo_root)) ?? asOptionalString(evidence.repo_root);
+
+  return {
+    ...candidate,
+    evidence: {
+      ...evidence,
+      workspace_path: workspacePath,
+      workspace_path_normalized: workspacePathNormalized,
+      repo_root: repoRoot,
+    },
   };
 }
 
@@ -121,4 +145,12 @@ function updateSourceScopedEntry<T extends { source_id: string }>(entry: T, sour
     ...entry,
     source_id: sourceId,
   };
+}
+
+function normalizeComparablePath(value: string | undefined): string | undefined {
+  return normalizeLocalPathIdentity(value);
+}
+
+function asOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
 }

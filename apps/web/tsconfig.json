@@ -28,6 +28,9 @@
       ],
       "@cchistory/presentation": [
         "../../packages/presentation/src/index.ts"
+      ],
+      "@cchistory/domain": [
+        "../../packages/domain/src/index.ts"
       ]
     }
   },

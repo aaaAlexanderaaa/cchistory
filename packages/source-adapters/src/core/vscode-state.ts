@@ -6,7 +6,9 @@ import type {
   SourceDefinition,
   SourcePlatform,
 } from "@cchistory/domain";
-import type { ExtractedSessionSeed } from "./legacy.js";
+import { extractAntigravityTrajectorySeeds, isAntigravityTrajectoryKey } from "../platforms/antigravity/runtime.js";
+import { buildCursorComposerSeed, buildCursorPromptHistorySeed } from "../platforms/cursor/runtime.js";
+import type { ConversationSeedOptions, ExtractedSessionSeed } from "./conversation-seeds.js";
 
 interface GenericSessionMetadataLike {
   workspacePath?: string;
@@ -27,11 +29,6 @@ interface TokenUsageLike {
   model?: string;
 }
 
-interface ConversationSeedOptions {
-  defaultSessionId?: string;
-  defaultTitle?: string;
-  defaultWorkingDirectory?: string;
-}
 
 interface VscodeStateHelpers {
   safeJsonParse(value: string | undefined): unknown;
@@ -58,80 +55,6 @@ interface VscodeStateHelpers {
     options?: ConversationSeedOptions,
   ): ExtractedSessionSeed[];
   firstDefinedNumber(...values: Array<number | undefined>): number | undefined;
-  minIso(left: string | undefined, right: string | undefined): string | undefined;
-  maxIso(left: string | undefined, right: string | undefined): string | undefined;
-  buildCursorComposerSeed(
-    platform: SourcePlatform,
-    storageKey: string,
-    composer: Record<string, unknown>,
-    rowMap: Map<string, string>,
-    defaultWorkingDirectory: string | undefined,
-    helpers: {
-      asString(value: unknown): string | undefined;
-      asNumber(value: unknown): number | undefined;
-      asArray(value: unknown): unknown[];
-      isObject(value: unknown): value is Record<string, any>;
-      safeJsonParse(value: string | undefined): unknown;
-      coerceIso(value: unknown): string | undefined;
-      epochMillisToIso(value: number | undefined): string | undefined;
-      nowIso(): string;
-      truncate(value: string, length: number): string;
-      sha1(value: string | Buffer): string;
-      normalizeWorkspacePath(value: string): string | undefined;
-      extractGenericSessionMetadata(parsed: Record<string, unknown>): GenericSessionMetadataLike;
-      extractGenericRole(message: Record<string, unknown>): string | undefined;
-      extractGenericContentItems(message: Record<string, unknown>): Record<string, unknown>[];
-      extractTokenUsage(value: unknown): TokenUsageLike | undefined;
-      normalizeStopReason(value: unknown): string | undefined;
-      extractRichTextText(value: string): string | undefined;
-      collectConversationSeedsFromValue(
-        platform: SourcePlatform,
-        value: unknown,
-        originHint: string,
-        options?: ConversationSeedOptions,
-      ): ExtractedSessionSeed[];
-      firstDefinedNumber(...values: Array<number | undefined>): number | undefined;
-    },
-  ): ExtractedSessionSeed | undefined;
-  buildCursorPromptHistorySeed(
-    platform: SourcePlatform,
-    filePath: string,
-    rowMap: Map<string, string>,
-    defaultWorkingDirectory: string | undefined,
-    fallbackObservedAtBase: string,
-    helpers: {
-      asString(value: unknown): string | undefined;
-      asNumber(value: unknown): number | undefined;
-      asArray(value: unknown): unknown[];
-      isObject(value: unknown): value is Record<string, any>;
-      safeJsonParse(value: string | undefined): unknown;
-      coerceIso(value: unknown): string | undefined;
-      epochMillisToIso(value: number | undefined): string | undefined;
-      nowIso(): string;
-      truncate(value: string, length: number): string;
-      sha1(value: string | Buffer): string;
-      normalizeWorkspacePath(value: string): string | undefined;
-      extractGenericSessionMetadata(parsed: Record<string, unknown>): GenericSessionMetadataLike;
-      extractGenericRole(message: Record<string, unknown>): string | undefined;
-      extractGenericContentItems(message: Record<string, unknown>): Record<string, unknown>[];
-      extractTokenUsage(value: unknown): TokenUsageLike | undefined;
-      normalizeStopReason(value: unknown): string | undefined;
-      extractRichTextText(value: string): string | undefined;
-      collectConversationSeedsFromValue(
-        platform: SourcePlatform,
-        value: unknown,
-        originHint: string,
-        options?: ConversationSeedOptions,
-      ): ExtractedSessionSeed[];
-      firstDefinedNumber(...values: Array<number | undefined>): number | undefined;
-    },
-  ): ExtractedSessionSeed | undefined;
-  isAntigravityTrajectoryKey(storageKey: string): boolean;
-  extractAntigravityTrajectorySeeds(
-    storageKey: string,
-    encodedValue: string,
-    helpers: Pick<VscodeStateHelpers, "nowIso" | "normalizeWorkspacePath">,
-  ): ExtractedSessionSeed[];
 }
 
 export async function extractVscodeStateSeeds(
@@ -171,7 +94,7 @@ export async function extractVscodeStateSeeds(
     };
 
     for (const row of rows) {
-      if (source.platform === "antigravity" && helpers.isAntigravityTrajectoryKey(row.storage_key)) {
+      if (source.platform === "antigravity" && isAntigravityTrajectoryKey(row.storage_key)) {
         antigravityTrajectoryRows.set(row.storage_key, row.storage_value);
         continue;
       }
@@ -186,7 +109,7 @@ export async function extractVscodeStateSeeds(
         if (!helpers.isObject(parsed)) {
           continue;
         }
-        const seed = helpers.buildCursorComposerSeed(
+        const seed = buildCursorComposerSeed(
           source.platform,
           row.storage_key,
           parsed,
@@ -195,7 +118,7 @@ export async function extractVscodeStateSeeds(
           cursorRuntimeHelpers,
         );
         if (seed) {
-          upsertExtractedSeed(seedsById, seed, helpers);
+          upsertExtractedSeed(seedsById, seed);
         }
         continue;
       }
@@ -207,7 +130,7 @@ export async function extractVscodeStateSeeds(
             if (!helpers.isObject(composer)) {
               continue;
             }
-            const seed = helpers.buildCursorComposerSeed(
+            const seed = buildCursorComposerSeed(
               source.platform,
               row.storage_key,
               composer,
@@ -216,7 +139,7 @@ export async function extractVscodeStateSeeds(
               cursorRuntimeHelpers,
             );
             if (seed) {
-              upsertExtractedSeed(seedsById, seed, helpers);
+              upsertExtractedSeed(seedsById, seed);
             }
           }
         }
@@ -231,13 +154,13 @@ export async function extractVscodeStateSeeds(
           { defaultWorkingDirectory: workspacePath },
         );
         for (const seed of seeds) {
-          upsertExtractedSeed(seedsById, seed, helpers);
+          upsertExtractedSeed(seedsById, seed);
         }
       }
     }
 
     if (source.platform === "cursor" && seedsById.size === 0) {
-      const promptHistorySeed = helpers.buildCursorPromptHistorySeed(
+      const promptHistorySeed = buildCursorPromptHistorySeed(
         source.platform,
         filePath,
         rowMap,
@@ -246,17 +169,17 @@ export async function extractVscodeStateSeeds(
         cursorRuntimeHelpers,
       );
       if (promptHistorySeed) {
-        upsertExtractedSeed(seedsById, promptHistorySeed, helpers);
+        upsertExtractedSeed(seedsById, promptHistorySeed);
       }
     }
 
     if (source.platform === "antigravity") {
       for (const [storageKey, storageValue] of antigravityTrajectoryRows) {
-        for (const seed of helpers.extractAntigravityTrajectorySeeds(storageKey, storageValue, {
+        for (const seed of extractAntigravityTrajectorySeeds(storageKey, storageValue, {
           nowIso: helpers.nowIso,
           normalizeWorkspacePath: helpers.normalizeWorkspacePath,
         })) {
-          upsertExtractedSeed(seedsById, seed, helpers);
+          upsertExtractedSeed(seedsById, seed);
         }
       }
 
@@ -269,14 +192,14 @@ export async function extractVscodeStateSeeds(
       }
       if (mergedAntigravityHistoryEntries.length > 0) {
         for (const seed of await extractAntigravityHistorySeeds(mergedAntigravityHistoryEntries, workspacePath, helpers)) {
-          upsertExtractedSeed(seedsById, seed, helpers);
+          upsertExtractedSeed(seedsById, seed);
         }
       }
     }
 
     if (seedsById.size === 0) {
       for (const row of rows) {
-        if (source.platform === "antigravity" && helpers.isAntigravityTrajectoryKey(row.storage_key)) {
+        if (source.platform === "antigravity" && isAntigravityTrajectoryKey(row.storage_key)) {
           continue;
         }
         const parsed = helpers.safeJsonParse(row.storage_value);
@@ -287,7 +210,7 @@ export async function extractVscodeStateSeeds(
           { defaultWorkingDirectory: workspacePath },
         );
         for (const seed of seeds) {
-          upsertExtractedSeed(seedsById, seed, helpers);
+          upsertExtractedSeed(seedsById, seed);
         }
       }
     }
@@ -344,7 +267,6 @@ async function extractWorkspacePathFromWorkspaceState(
 function upsertExtractedSeed(
   target: Map<string, ExtractedSessionSeed>,
   seed: ExtractedSessionSeed,
-  helpers: Pick<VscodeStateHelpers, "minIso" | "maxIso">,
 ): void {
   const existing = target.get(seed.sessionId);
   if (!existing) {
@@ -354,14 +276,34 @@ function upsertExtractedSeed(
   target.set(seed.sessionId, {
     sessionId: seed.sessionId,
     title: existing.title ?? seed.title,
-    createdAt: helpers.minIso(existing.createdAt, seed.createdAt),
-    updatedAt: helpers.maxIso(existing.updatedAt, seed.updatedAt),
+    createdAt: minIso(existing.createdAt, seed.createdAt),
+    updatedAt: maxIso(existing.updatedAt, seed.updatedAt),
     model: existing.model ?? seed.model,
     workingDirectory: existing.workingDirectory ?? seed.workingDirectory,
     records: [...existing.records, ...seed.records].sort((left, right) =>
       (left.observedAt ?? "").localeCompare(right.observedAt ?? ""),
     ),
   });
+}
+
+function minIso(left: string | undefined, right: string | undefined): string | undefined {
+  if (!left) {
+    return right;
+  }
+  if (!right) {
+    return left;
+  }
+  return left <= right ? left : right;
+}
+
+function maxIso(left: string | undefined, right: string | undefined): string | undefined {
+  if (!left) {
+    return right;
+  }
+  if (!right) {
+    return left;
+  }
+  return left >= right ? left : right;
 }
 
 function coerceDbText(value: unknown): string | undefined {

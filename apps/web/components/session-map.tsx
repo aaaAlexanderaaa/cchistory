@@ -20,6 +20,7 @@ import {
   summarizeTurnsTokenUsage,
 } from '@/lib/token-usage'
 import { cn } from '@/lib/utils'
+import { localPathIdentitiesMatch } from '@cchistory/domain'
 import type { ProjectIdentity, Session, TokenUsageSummary, UserTurn } from '@/lib/types'
 import { formatSourcePlatform, SessionBadge } from './session-badge'
 
@@ -1194,12 +1195,5 @@ function countUniqueSessions(turns: UserTurn[]) {
 }
 
 function pathsMatch(left: string | undefined, right: string | undefined) {
-  if (!left || !right) {
-    return false
-  }
-  return normalizePath(left) === normalizePath(right)
-}
-
-function normalizePath(value: string) {
-  return value.trim().replace(/\/+$/g, '')
+  return localPathIdentitiesMatch(left, right)
 }

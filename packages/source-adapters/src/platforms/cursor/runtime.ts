@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { SourcePlatform } from "@cchistory/domain";
-import type { ExtractedSessionSeed } from "../../core/legacy.js";
+import type { ExtractedSessionSeed } from "../../core/conversation-seeds.js";
 
 interface GenericSessionMetadataLike {
   workspacePath?: string;

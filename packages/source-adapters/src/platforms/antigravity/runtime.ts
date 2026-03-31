@@ -1,6 +1,6 @@
 import path from "node:path";
 import { promises as fs } from "node:fs";
-import type { ExtractedSessionSeed } from "../../core/legacy.js";
+import type { ExtractedSessionSeed } from "../../core/conversation-seeds.js";
 
 interface UnknownProtobufField {
   field_number: number;

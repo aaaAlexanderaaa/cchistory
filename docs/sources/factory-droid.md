@@ -4,7 +4,7 @@ Factory Droid 通过读取 `~/.factory/sessions` 下的会话 JSONL 和同名 `.
 
 > 默认根目录：`~/.factory/sessions`
 >
-> Windows 下当前实现同样按用户 home 目录解析，也就是 `%USERPROFILE%\\.factory\\sessions`。
+> Windows 下当前代码仍会按用户 home 目录探测 `%USERPROFILE%\.factory\sessions`，但这一路径尚未在真实 Windows 主机上完成验证；运维上应在 `Sources` 中确认或覆盖 `base_dir`。
 
 # 获取方式
 

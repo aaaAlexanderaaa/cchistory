@@ -14,6 +14,51 @@ import { getDefaultSourcesForHost, runSourceProbe } from "@cchistory/source-adap
 import { CCHistoryStorage } from "@cchistory/storage";
 import { createApiRuntime } from "./app.js";
 
+test("runtime defaults to the nearest existing .cchistory directory under the provided cwd", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+
+  try {
+    const homeDir = path.join(tempRoot, "home");
+    const projectRoot = path.join(tempRoot, "project-root");
+    const apiCwd = path.join(projectRoot, "apps", "api");
+    await mkdir(homeDir, { recursive: true });
+    await mkdir(path.join(projectRoot, ".cchistory"), { recursive: true });
+    await mkdir(apiCwd, { recursive: true });
+
+    const runtime = await createApiRuntime({ cwd: apiCwd, homeDir, sources: [] });
+    try {
+      assert.equal(runtime.dataDir, path.join(projectRoot, ".cchistory"));
+    } finally {
+      await runtime.app.close();
+      runtime.storage.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runtime falls back to the home .cchistory directory when no ancestor store exists", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+
+  try {
+    const homeDir = path.join(tempRoot, "home");
+    const apiCwd = path.join(tempRoot, "workspace", "apps", "api");
+    await mkdir(homeDir, { recursive: true });
+    await mkdir(apiCwd, { recursive: true });
+
+    const runtime = await createApiRuntime({ cwd: apiCwd, homeDir, sources: [] });
+    try {
+      assert.equal(runtime.dataDir, path.join(homeDir, ".cchistory"));
+      assert.equal(existsSync(runtime.rawStoreDir), true);
+    } finally {
+      await runtime.app.close();
+      runtime.storage.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("runtime bootstraps exactly once when storage is empty and GET routes stay read-only afterwards", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
 

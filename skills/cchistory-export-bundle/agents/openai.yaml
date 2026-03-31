@@ -1,0 +1,4 @@
+interface:
+  display_name: "CCHistory Export Bundle"
+  short_description: "Preview and create export bundles"
+  default_prompt: "Use $cchistory-export-bundle to preview and create a canonical export bundle."

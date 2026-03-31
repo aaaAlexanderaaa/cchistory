@@ -4,9 +4,10 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { deriveSourceInstanceId, type SourceSyncPayload } from "@cchistory/domain";
+import { deriveSourceInstanceId, type SourceSyncPayload, type UserTurnProjection } from "@cchistory/domain";
 import { CCHistoryStorage } from "./index.js";
 import { STORAGE_SCHEMA_VERSION } from "./db/schema.js";
+import { querySearchIndex } from "./queries/search.js";
 
 test("replaceSourcePayload persists pipeline layers and lineage drill-down", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
@@ -268,6 +269,59 @@ test("legacy stores backfill schema metadata on first open after versioned schem
   }
 });
 
+test("opening a legacy store preserves turn session and project readability after upgrade", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-legacy-readable-upgrade-"));
+
+  try {
+    const dbPath = path.join(dataDir, "cchistory.sqlite");
+    const seedStorage = new CCHistoryStorage(dataDir);
+    try {
+      seedStorage.replaceSourcePayload(
+        createFixturePayload("src-storage-legacy-readable", "Legacy readable turn", "stage-run-legacy-readable", {
+          turnId: "turn-legacy-readable",
+          sessionId: "session-legacy-readable",
+          workingDirectory: "/workspace/legacy-readable",
+          projectObservation: {
+            workspacePath: "/workspace/legacy-readable",
+            confidence: 0.95,
+          },
+        }),
+      );
+    } finally {
+      seedStorage.close();
+    }
+
+    rewriteAtomEdgesAsLegacyTable(dbPath);
+    dropSchemaMetadataTables(dbPath);
+
+    const storage = new CCHistoryStorage(dataDir);
+    try {
+      const schema = storage.getSchemaInfo();
+      assert.equal(schema.schema_version, STORAGE_SCHEMA_VERSION);
+      assert.equal(schema.migrations.length, 2);
+
+      const turn = storage.getResolvedTurn("turn-legacy-readable");
+      assert.equal(turn?.canonical_text, "Legacy readable turn");
+
+      const session = storage.listResolvedSessions().find((entry) => entry.id === "session-legacy-readable");
+      assert.ok(session);
+      assert.equal(session?.turn_count, 1);
+
+      const project = storage.listProjects().find((entry) => entry.primary_workspace_path === "/workspace/legacy-readable");
+      assert.ok(project);
+      assert.equal(turn?.project_id, project?.project_id);
+
+      const searchResults = storage.searchTurns({ query: "Legacy readable turn" });
+      assert.equal(searchResults.length, 1);
+      assert.equal(searchResults[0]?.turn.id, "turn-legacy-readable");
+    } finally {
+      storage.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("listSourcePayloads reconstructs persisted source payloads for export or merge", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
 
@@ -283,6 +337,83 @@ test("listSourcePayloads reconstructs persisted source payloads for export or me
     assert.equal(payloads[0]?.turns[0]?.canonical_text, "Export A");
     assert.equal(payloads[1]?.turns[0]?.canonical_text, "Export B");
     assert.equal(storage.getSourcePayload(payloads[1]!.source.id)?.sessions[0]?.id, "session-2");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("[gemini] companion evidence blobs survive source payload reconstruction", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const geminiRoot = "/tmp/storage-fixture/.gemini";
+    const payload = createFixturePayload(
+      deriveSourceInstanceId({ host_id: "host-1", slot_id: "gemini", base_dir: geminiRoot }),
+      "Gemini exportable evidence",
+      "stage-run-gemini",
+      {
+        platform: "gemini",
+        baseDir: geminiRoot,
+      },
+    );
+
+    payload.blobs[0] = {
+      ...payload.blobs[0]!,
+      origin_path: path.join(geminiRoot, "tmp", "gemini-fixture", "chats", "session-2026-03-10T07-00-gemini-fixture.json"),
+      captured_path: path.join(geminiRoot, ".cache", "session-2026-03-10T07-00-gemini-fixture.json"),
+    };
+    payload.blobs.push(
+      {
+        id: "turn-1-blob-projects",
+        source_id: payload.source.id,
+        host_id: payload.source.host_id,
+        origin_path: path.join(geminiRoot, "projects.json"),
+        captured_path: path.join(geminiRoot, ".cache", "projects.json"),
+        checksum: "checksum-projects",
+        size_bytes: 64,
+        captured_at: "2026-03-09T09:00:00.000Z",
+        capture_run_id: "capture-run-gemini",
+      },
+      {
+        id: "turn-1-blob-tmp-project-root",
+        source_id: payload.source.id,
+        host_id: payload.source.host_id,
+        origin_path: path.join(geminiRoot, "tmp", "gemini-fixture", ".project_root"),
+        captured_path: path.join(geminiRoot, ".cache", "tmp-gemini-fixture.project_root"),
+        checksum: "checksum-tmp-project-root",
+        size_bytes: 28,
+        captured_at: "2026-03-09T09:00:00.000Z",
+        capture_run_id: "capture-run-gemini",
+      },
+      {
+        id: "turn-1-blob-history-project-root",
+        source_id: payload.source.id,
+        host_id: payload.source.host_id,
+        origin_path: path.join(geminiRoot, "history", "gemini-fixture", ".project_root"),
+        captured_path: path.join(geminiRoot, ".cache", "history-gemini-fixture.project_root"),
+        checksum: "checksum-history-project-root",
+        size_bytes: 28,
+        captured_at: "2026-03-09T09:00:00.000Z",
+        capture_run_id: "capture-run-gemini",
+      },
+    );
+    payload.source.total_blobs = payload.blobs.length;
+
+    storage.replaceSourcePayload(payload);
+
+    const reconstructed = storage.getSourcePayload(payload.source.id);
+    assert.ok(reconstructed);
+    assert.equal(reconstructed?.source.platform, "gemini");
+    assert.deepEqual(
+      reconstructed?.blobs.map((blob) => blob.origin_path).sort(),
+      [
+        path.join(geminiRoot, "projects.json"),
+        path.join(geminiRoot, "history", "gemini-fixture", ".project_root"),
+        path.join(geminiRoot, "tmp", "gemini-fixture", ".project_root"),
+        path.join(geminiRoot, "tmp", "gemini-fixture", "chats", "session-2026-03-10T07-00-gemini-fixture.json"),
+      ].sort(),
+    );
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -506,6 +637,101 @@ test("derived project linker commits repo continuity and preserves workspace-onl
 
     const lineage = storage.getTurnLineage("turn-committed-a");
     assert.equal(lineage?.turn.link_state, "committed");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("same-host repeated UNC workspace continuity commits one project across raw and file-URI variants", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(
+      createFixturePayload("src-storage-unc-workspace-a", "UNC workspace turn A", "stage-run-unc-workspace-a", {
+        sessionId: "session-unc-workspace-a",
+        turnId: "turn-unc-workspace-a",
+        hostId: "host-unc",
+        platform: "codex",
+        workingDirectory: String.raw`\\server\share\history-lab`,
+        projectObservation: {
+          workspacePath: String.raw`\\server\share\history-lab`,
+        },
+      }),
+    );
+    storage.replaceSourcePayload(
+      createFixturePayload("src-storage-unc-workspace-b", "UNC workspace turn B", "stage-run-unc-workspace-b", {
+        sessionId: "session-unc-workspace-b",
+        turnId: "turn-unc-workspace-b",
+        hostId: "host-unc",
+        platform: "claude_code",
+        workingDirectory: "file://server/share/history-lab/",
+        projectObservation: {
+          workspacePath: "file://server/share/history-lab/",
+        },
+      }),
+    );
+
+    const projects = storage.listProjects();
+    assert.equal(projects.length, 1);
+
+    const committedProject = projects[0]!;
+    assert.equal(committedProject.linkage_state, "committed");
+    assert.equal(committedProject.link_reason, "workspace_path_continuity");
+    assert.equal(committedProject.session_count, 2);
+    assert.equal(committedProject.committed_turn_count, 2);
+
+    const resolvedTurns = storage.listResolvedTurns();
+    assert.equal(resolvedTurns.length, 2);
+    assert.ok(resolvedTurns.every((turn) => turn.link_state === "committed"));
+    assert.equal(resolvedTurns[0]?.project_id, resolvedTurns[1]?.project_id);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("same-host repeated Windows workspace continuity commits one project across path variants", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(
+      createFixturePayload("src-storage-win-workspace-a", "Windows workspace turn A", "stage-run-win-workspace-a", {
+        sessionId: "session-win-workspace-a",
+        turnId: "turn-win-workspace-a",
+        hostId: "host-win",
+        platform: "codex",
+        workingDirectory: "C:\\Users\\dev\\workspace\\history-lab",
+        projectObservation: {
+          workspacePath: "C:\\Users\\dev\\workspace\\history-lab",
+        },
+      }),
+    );
+    storage.replaceSourcePayload(
+      createFixturePayload("src-storage-win-workspace-b", "Windows workspace turn B", "stage-run-win-workspace-b", {
+        sessionId: "session-win-workspace-b",
+        turnId: "turn-win-workspace-b",
+        hostId: "host-win",
+        platform: "claude_code",
+        workingDirectory: "C:\\Users\\dev\\workspace\\history-lab",
+        projectObservation: {
+          workspacePath: "c:/Users/dev/workspace/history-lab/",
+        },
+      }),
+    );
+
+    const projects = storage.listProjects();
+    assert.equal(projects.length, 1);
+
+    const committedProject = projects[0]!;
+    assert.equal(committedProject.linkage_state, "committed");
+    assert.equal(committedProject.link_reason, "workspace_path_continuity");
+    assert.equal(committedProject.session_count, 2);
+    assert.equal(committedProject.committed_turn_count, 2);
+
+    const resolvedTurns = storage.listResolvedTurns();
+    assert.equal(resolvedTurns.length, 2);
+    assert.ok(resolvedTurns.every((turn) => turn.link_state === "committed"));
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -1949,6 +2175,42 @@ test("replaceSourcePayload with Windows-style backslash paths normalizes correct
   }
 });
 
+
+test("replaceSourcePayload treats equivalent Windows source roots as one source identity", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-winpath-eq-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const firstBaseDir = "C:\\Users\\dev\\.codex\\sessions";
+    const secondBaseDir = "c:/Users\dev/.codex\sessions/";
+    const canonicalSourceId = deriveSourceInstanceId({
+      host_id: "host-win",
+      slot_id: "codex",
+      base_dir: firstBaseDir,
+    });
+
+    const firstPayload = createFixturePayload(canonicalSourceId, "Windows identity first", "sr-win-eq-1", {
+      baseDir: firstBaseDir,
+      hostId: "host-win",
+    });
+    const secondPayload = createFixturePayload(canonicalSourceId, "Windows identity second", "sr-win-eq-2", {
+      baseDir: secondBaseDir,
+      hostId: "host-win",
+    });
+
+    storage.replaceSourcePayload(firstPayload);
+    storage.replaceSourcePayload(secondPayload);
+
+    const sources = storage.listSources();
+    assert.equal(sources.length, 1);
+    assert.equal(sources[0]?.id, canonicalSourceId);
+    assert.equal(storage.listResolvedSessions().length, 1);
+    assert.equal(storage.listTurns().length, 1);
+    assert.equal(storage.getTurn("turn-1")?.canonical_text, "Windows identity second");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Edge-case tests: getTurnLineage edge cases
 // ---------------------------------------------------------------------------
@@ -2288,6 +2550,95 @@ test("searchTurns with case-insensitive matching", async () => {
   }
 });
 
+test("searchTurns matches partial multi-token queries without requiring an exact phrase", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-partial-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(
+      createFixturePayload("src-partial", "Fix TypeScript error in module loader", "sr-partial"),
+    );
+    const results = storage.searchTurns({ query: "modu typescr" });
+    assert.equal(results.length, 1, "Partial token search should match without exact phrase order");
+    assert.ok(results[0]!.highlights.length >= 2, "Partial token search should highlight the matched token fragments");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("searchTurns keeps punctuation-bearing programming queries literal", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-punctuation-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(
+      createFixturePayload("src-cpp", "Explain C++ ownership rules", "sr-cpp", {
+        turnId: "turn-cpp",
+        sessionId: "session-cpp",
+      }),
+    );
+    storage.replaceSourcePayload(
+      createFixturePayload("src-csharp", "Review C# nullable flow", "sr-csharp", {
+        turnId: "turn-csharp",
+        sessionId: "session-csharp",
+      }),
+    );
+    storage.replaceSourcePayload(
+      createFixturePayload("src-letter", "Collect codex changelog notes", "sr-letter", {
+        turnId: "turn-letter",
+        sessionId: "session-letter",
+      }),
+    );
+
+    const cppResults = storage.searchTurns({ query: "C++" });
+    assert.deepEqual(cppResults.map((result) => result.turn.id), ["turn-cpp"]);
+
+    const csharpResults = storage.searchTurns({ query: "C#" });
+    assert.deepEqual(csharpResults.map((result) => result.turn.id), ["turn-csharp"]);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("querySearchIndex preserves indexed punctuation matches while filtering them literally", () => {
+  const turns = [
+    {
+      id: "turn-csharp-raw",
+      canonical_text: "Review nullable flow",
+      raw_text: "Assistant note: C# nullable flow only appears in context.",
+    },
+    {
+      id: "turn-cpp-false-positive",
+      canonical_text: "Review ownership flow",
+      raw_text: "Assistant note: C++ ownership rules.",
+    },
+  ] as UserTurnProjection[];
+
+  let indexedSearchUsed = false;
+  const db = {
+    prepare(sql: string) {
+      assert.match(sql, /search_index MATCH/);
+      return {
+        all(ftsQuery: string, limit: number) {
+          indexedSearchUsed = true;
+          assert.equal(ftsQuery, "\"c#\"");
+          assert.equal(limit, 10);
+          return [{ turn_id: "turn-cpp-false-positive" }, { turn_id: "turn-csharp-raw" }];
+        },
+      };
+    },
+  } as unknown as DatabaseSync;
+
+  const results = querySearchIndex({
+    db,
+    searchIndexReady: true,
+    query: "C#",
+    limit: 10,
+    listResolvedTurns: () => turns,
+  });
+
+  assert.equal(indexedSearchUsed, true);
+  assert.deepEqual(results, ["turn-csharp-raw"]);
+});
+
 test("searchTurns with query longer than text returns no highlights", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-long-"));
   try {
@@ -2308,7 +2659,7 @@ interface FixturePayloadOptions {
   sessionId?: string;
   turnId?: string;
   hostId?: string;
-  platform?: "codex" | "claude_code" | "factory_droid" | "amp" | "cursor" | "antigravity";
+  platform?: "codex" | "claude_code" | "factory_droid" | "amp" | "cursor" | "antigravity" | "gemini";
   baseDir?: string;
   workingDirectory?: string;
   includeProjectObservation?: boolean;
@@ -2809,6 +3160,17 @@ function rewriteAtomEdgesAsLegacyTable(dbPath: string): void {
     `);
     db.exec("DROP TABLE atom_edges");
     db.exec("ALTER TABLE atom_edges_legacy RENAME TO atom_edges");
+  } finally {
+    db.close();
+  }
+}
+
+function dropSchemaMetadataTables(dbPath: string): void {
+  const db = new DatabaseSync(dbPath);
+
+  try {
+    db.exec("DROP TABLE schema_migrations;");
+    db.exec("DROP TABLE schema_meta;");
   } finally {
     db.close();
   }
