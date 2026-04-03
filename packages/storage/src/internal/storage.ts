@@ -138,15 +138,31 @@ export class CCHistoryStorage {
     options: {
       allow_host_rekey?: boolean;
     } = {},
-  ): void {
+  ): {
+    sessions: number;
+    turns: number;
+    records: number;
+    fragments: number;
+    atoms: number;
+    blobs: number;
+  } {
+    let result: {
+      sessions: number;
+      turns: number;
+      records: number;
+      fragments: number;
+      atoms: number;
+      blobs: number;
+    };
     if (options.allow_host_rekey) {
-      replacePersistedSourcePayloadWithOptions(this.db, payload, { allow_host_rekey: true });
+      result = replacePersistedSourcePayloadWithOptions(this.db, payload, { allow_host_rekey: true });
     } else {
-      replacePersistedSourcePayload(this.db, payload);
+      result = replacePersistedSourcePayload(this.db, payload);
     }
 
     this.invalidateProjectLinkSnapshot();
     this.refreshDerivedState();
+    return result;
   }
 
   upsertProjectOverride(input: {

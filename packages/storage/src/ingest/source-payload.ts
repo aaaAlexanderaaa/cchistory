@@ -8,15 +8,29 @@ import {
 } from "../internal/source-identity.js";
 import { dedupeByKey, fromJson, toJson } from "../internal/utils.js";
 
-export function replaceSourcePayload(db: DatabaseSync, payload: SourceSyncPayload): void {
-  replaceSourcePayloadWithOptions(db, payload, { allow_host_rekey: false });
+export function replaceSourcePayload(db: DatabaseSync, payload: SourceSyncPayload): {
+  sessions: number;
+  turns: number;
+  records: number;
+  fragments: number;
+  atoms: number;
+  blobs: number;
+} {
+  return replaceSourcePayloadWithOptions(db, payload, { allow_host_rekey: false });
 }
 
 export function replaceSourcePayloadWithOptions(
   db: DatabaseSync,
   payload: SourceSyncPayload,
   options: { allow_host_rekey: boolean },
-): void {
+): {
+  sessions: number;
+  turns: number;
+  records: number;
+  fragments: number;
+  atoms: number;
+  blobs: number;
+} {
   const normalizedPayload = normalizeSourcePayload(payload);
   db.exec("BEGIN IMMEDIATE;");
   try {
@@ -109,6 +123,15 @@ export function replaceSourcePayloadWithOptions(
     }
 
     db.exec("COMMIT;");
+
+    return {
+      sessions: normalizedPayload.sessions.length,
+      turns: normalizedPayload.turns.length,
+      records: normalizedPayload.records.length,
+      fragments: normalizedPayload.fragments.length,
+      atoms: normalizedPayload.atoms.length,
+      blobs: normalizedPayload.blobs.length,
+    };
   } catch (error) {
     db.exec("ROLLBACK;");
     throw error;

@@ -61,3 +61,7 @@ apps/api/.dev/
 .vite-root-cache/
 coverage/
 *.tsbuildinfo
+
+# Review / analysis artifacts
+.review/
+.pnpm-store/

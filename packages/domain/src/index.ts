@@ -1,6 +1,6 @@
 import path from "node:path";
 
-export type SourceFamily = "local_coding_agent" | "conversational_export";
+export type SourceFamily = "local_coding_agent" | "conversational_export" | "local_runtime_sessions" | "manual_export_bundles";
 
 export type SourcePlatform =
   | "codex"
@@ -163,6 +163,7 @@ export type CandidateKind =
   | "submission_group"
   | "turn"
   | "context_span"
+  | "turn_context"
   | "project_observation";
 
 export interface SourceDefinition {

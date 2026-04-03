@@ -64,6 +64,9 @@ importers:
 
   apps/tui:
     dependencies:
+      '@cchistory/source-adapters':
+        specifier: workspace:*
+        version: link:../../packages/source-adapters
       '@cchistory/storage':
         specifier: workspace:*
         version: link:../../packages/storage
