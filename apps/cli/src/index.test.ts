@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { access, cp, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,7 +8,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { normalizeLocalPathIdentity, type SourceSyncPayload } from "@cchistory/domain";
 import { CCHistoryStorage } from "@cchistory/storage";
-import { interceptReadStoreFactoryForTests, runCli } from "./index.js";
+import { interceptReadStoreFactoryForTests, runCli } from "./main.js";
 
 test("sync, ls, search, and stats usage render human-readable output for real source shapes", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
@@ -27,6 +28,16 @@ test("sync, ls, search, and stats usage render human-readable output for real so
     assert.match(listResult.stdout, /Source/);
     assert.match(listResult.stdout, /Codex/);
     assert.match(listResult.stdout, /Claude Code/);
+
+    const longProjectsResult = await runCliCapture(["ls", "projects", "--store", storeDir, "--long"], tempRoot);
+    assert.equal(longProjectsResult.exitCode, 0, longProjectsResult.stderr);
+    assert.match(longProjectsResult.stdout, /Source Mix/);
+    assert.match(longProjectsResult.stdout, /Related Work/);
+    assert.match(longProjectsResult.stdout, /codex|claude_code/);
+
+    const projectsTreeLongResult = await runCliCapture(["tree", "projects", "--store", storeDir, "--long"], tempRoot);
+    assert.equal(projectsTreeLongResult.exitCode, 0, projectsTreeLongResult.stderr);
+    assert.match(projectsTreeLongResult.stdout, /source_mix=/);
 
     const searchResult = await runCliCapture(["search", "probe", "--store", storeDir], tempRoot);
     assert.equal(searchResult.exitCode, 0);
@@ -402,9 +413,28 @@ test("search output exposes a shown turn prefix that drills down through show tu
     const searchResult = await runCliCapture(["search", "Factory", "--store", storeDir], tempRoot);
     assert.equal(searchResult.exitCode, 0, searchResult.stderr);
     assert.match(searchResult.stdout, /Use `cchistory show turn <shown-id>` to inspect a full turn\./);
+    assert.match(searchResult.stdout, /Use `cchistory tree session <session-ref> --long` when you want nearby turns and related work together\./);
+    assert.match(searchResult.stdout, /pivots: show turn/);
+    assert.match(searchResult.stdout, /show session/);
+    assert.match(searchResult.stdout, /tree session .* --long/);
+
+    const markupSearch = await runCliCapture(["search", "expert code reviewer", "--store", storeDir], tempRoot);
+    assert.equal(markupSearch.exitCode, 0, markupSearch.stderr);
+    assert.match(markupSearch.stdout, /expert code reviewer/i);
+    assert.match(markupSearch.stdout, /source=Claude Code \(claude_code\)/);
+    assert.match(markupSearch.stdout, /\/clear \/review|\/review You are an expert code reviewer/i);
+    assert.doesNotMatch(markupSearch.stdout, /<command-name>|<command-message>|<local-command-caveat>/);
+    assert.doesNotMatch(markupSearch.stdout, /\/clear clear|review \/review/);
 
     const shownId = searchResult.stdout.match(/\b[a-f0-9]{12}\b/)?.[0];
     assert.ok(shownId, "expected a shown turn prefix in search output");
+
+    const turnText = await runCliCapture(["show", "turn", shownId!, "--store", storeDir], tempRoot);
+    assert.equal(turnText.exitCode, 0, turnText.stderr);
+    assert.match(turnText.stdout, /Project\s+: history-lab \[ready\]/);
+    assert.match(turnText.stdout, /Project ID\s+: project-/);
+    assert.match(turnText.stdout, /Source\s+: Factory Droid \(factory_droid\)/);
+    assert.match(turnText.stdout, /Source ID\s+: srcinst-/);
 
     const turnDetail = await runCliJson<{
       turn: {
@@ -435,6 +465,81 @@ test("search output exposes a shown turn prefix that drills down through show tu
     assert.equal(sessionDetail.session.id, turnDetail.turn.session_id);
     assert.equal(sessionDetail.session.primary_project_id, turnDetail.turn.project_id);
     assert.ok(sessionDetail.turns.some((turn) => turn.id === turnDetail.turn.id));
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+
+test("search parameter pivots keep skeptical browse flows truthful", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliMockDataHome(tempRoot);
+    process.env.HOME = tempRoot;
+
+    const storeDir = path.join(tempRoot, "store");
+    const syncResult = await runCliCapture(["sync", "--store", storeDir], tempRoot);
+    assert.equal(syncResult.exitCode, 0, syncResult.stderr);
+
+    const baseline = await runCliJson<{
+      kind: string;
+      results: Array<{
+        turn: {
+          id: string;
+          project_id?: string;
+        };
+        session: {
+          id: string;
+          source_platform: string;
+        };
+      }>;
+    }>(["search", "expert code reviewer", "--store", storeDir], tempRoot);
+    assert.equal(baseline.kind, "search");
+
+    const chosenHit = baseline.results.find((result) => result.session.source_platform === "claude_code");
+    assert.ok(chosenHit, "expected a Claude Code skeptical search hit");
+    assert.ok(chosenHit.turn.project_id, "expected skeptical search hit to belong to a project");
+
+    const projectScoped = await runCliJson<typeof baseline>(
+      ["search", "expert code reviewer", "--store", storeDir, "--project", chosenHit.turn.project_id!],
+      tempRoot,
+    );
+    assert.ok(projectScoped.results.length >= 1);
+    assert.ok(projectScoped.results.every((result) => result.turn.project_id === chosenHit.turn.project_id));
+    assert.ok(projectScoped.results.some((result) => result.turn.id === chosenHit.turn.id));
+
+    const sourceScoped = await runCliJson<typeof baseline>(
+      ["search", "expert code reviewer", "--store", storeDir, "--source", "claude_code"],
+      tempRoot,
+    );
+    assert.ok(sourceScoped.results.length >= 1);
+    assert.ok(sourceScoped.results.every((result) => result.session.source_platform === "claude_code"));
+
+    const limited = await runCliJson<typeof baseline>(
+      ["search", "expert code reviewer", "--store", storeDir, "--source", "claude_code", "--limit", "1"],
+      tempRoot,
+    );
+    assert.equal(limited.results.length, 1);
+    assert.equal(limited.results[0]?.session.source_platform, "claude_code");
+
+    const projectTree = await runCliCapture(["tree", "project", chosenHit.turn.project_id!, "--store", storeDir, "--long"], tempRoot);
+    assert.equal(projectTree.exitCode, 0, projectTree.stderr);
+    assert.match(projectTree.stdout, /chat-ui-kit \[ready\]/);
+    assert.match(projectTree.stdout, /related=\d+ delegated/);
+    assert.ok(projectTree.stdout.includes(chosenHit.session.id));
+    assert.match(projectTree.stdout, /Claude Code \(claude_code\)/);
+    assert.match(projectTree.stdout, /\/clear \/review|\/review You are an expert code reviewer/i);
+    assert.doesNotMatch(projectTree.stdout, /<command-name>|<command-message>|<local-command-caveat>/);
+
+    const sessionTree = await runCliCapture(["tree", "session", chosenHit.session.id, "--store", storeDir, "--long"], tempRoot);
+    assert.equal(sessionTree.exitCode, 0, sessionTree.stderr);
+    assert.match(sessionTree.stdout, /Related Work/);
+    assert.match(sessionTree.stdout, /Claude Code \(claude_code\)/);
+    assert.match(sessionTree.stdout, /\/clear \/review|\/review You are an expert code reviewer/i);
+    assert.doesNotMatch(sessionTree.stdout, /<command-name>|<command-message>|<local-command-caveat>/);
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });
@@ -672,6 +777,101 @@ test("show session and query session accept human-friendly session references", 
     }>(["show", "session", "opencode", "--store", storeDir], tempRoot);
     assert.equal(byWorkspace.session.id, "sess:opencode:opencode-fixture");
     assert.equal(byWorkspace.session.working_directory, "/workspace/opencode");
+
+    const storage = new CCHistoryStorage(storeDir);
+    try {
+      const sessionId = byWorkspace.session.id;
+      const session = storage.getSession(sessionId);
+      assert.ok(session);
+      const payload = storage.getSourcePayload(session!.source_id);
+      assert.ok(payload);
+      if (payload) {
+        const lastFragment = payload.fragments[payload.fragments.length - 1] ?? payload.fragments[0];
+        const relatedFragment = payload.fragments.find((fragment) => fragment.session_ref === sessionId && fragment.fragment_kind === 'session_relation');
+        const nextFragment = relatedFragment
+          ? {
+              ...relatedFragment,
+              payload: {
+                ...relatedFragment.payload,
+                parent_uuid: 'parent-session-1',
+                is_sidechain: true,
+              },
+            }
+          : {
+              id: 'fragment-cli-opencode-related',
+              source_id: payload.source.id,
+              session_ref: sessionId,
+              record_id: lastFragment?.record_id ?? 'record-cli-opencode-related',
+              seq_no: (lastFragment?.seq_no ?? 0) + 1,
+              fragment_kind: 'session_relation' as const,
+              actor_kind: 'system' as const,
+              origin_kind: 'source_meta' as const,
+              time_key: session!.updated_at,
+              payload: {
+                parent_uuid: 'parent-session-1',
+                is_sidechain: true,
+              },
+              raw_refs: [],
+              source_format_profile_id: lastFragment?.source_format_profile_id ?? 'opencode:sqlite:v1',
+            };
+        const duplicateFragment = {
+          ...nextFragment,
+          id: `${nextFragment.id}-duplicate`,
+          seq_no: nextFragment.seq_no + 1,
+          time_key: '2026-03-09T09:00:05.000Z',
+        };
+        payload.fragments = relatedFragment
+          ? [
+              ...payload.fragments.map((fragment) => (fragment.id === relatedFragment.id ? nextFragment : fragment)),
+              duplicateFragment,
+            ]
+          : [...payload.fragments, nextFragment, duplicateFragment];
+        storage.replaceSourcePayload(payload);
+      }
+    } finally {
+      storage.close();
+    }
+
+    const longSessionList = await runCliCapture(["ls", "sessions", "--store", storeDir, "--long"], tempRoot);
+    assert.equal(longSessionList.exitCode, 0, longSessionList.stderr);
+    assert.doesNotMatch(longSessionList.stdout, /Platform/);
+    assert.doesNotMatch(longSessionList.stdout, /\bHost\b/);
+    assert.match(longSessionList.stdout, /Turns/);
+    assert.match(longSessionList.stdout, /Related Work/);
+    assert.match(longSessionList.stdout, /opencode@host-/);
+    assert.match(longSessionList.stdout, /1 delegated/);
+
+    const sessionTree = await runCliCapture(["tree", "session", "OpenCode fixture", "--store", storeDir, "--long"], tempRoot);
+    assert.equal(sessionTree.exitCode, 0, sessionTree.stderr);
+    assert.match(sessionTree.stdout, /Turns/);
+    assert.match(sessionTree.stdout, /Related Work/);
+    assert.match(sessionTree.stdout, /delegated session parent-session-1/);
+    assert.match(sessionTree.stdout, /transcript-primary/);
+    assert.equal((sessionTree.stdout.match(/delegated session parent-session-1/g) ?? []).length, 1);
+
+    const relatedSearch = await runCliCapture(["search", "OpenCode fixture", "--store", storeDir], tempRoot);
+    assert.equal(relatedSearch.exitCode, 0, relatedSearch.stderr);
+    assert.match(relatedSearch.stdout, /related=1 delegated/);
+    assert.match(relatedSearch.stdout, /show session sess:opencode:opencode-fixture/);
+    assert.match(relatedSearch.stdout, /tree session sess:opencode:opencode-fixture --long/);
+
+    const sessionText = await runCliCapture(["show", "session", "OpenCode fixture", "--store", storeDir], tempRoot);
+    assert.equal(sessionText.exitCode, 0, sessionText.stderr);
+    assert.match(sessionText.stdout, /Project\s+: opencode \[tentative\]/);
+    assert.match(sessionText.stdout, /Project ID\s+: project-/);
+    assert.match(sessionText.stdout, /Source\s+: OpenCode \(opencode\)/);
+    assert.match(sessionText.stdout, /Source ID\s+: srcinst-opencode/);
+    assert.match(sessionText.stdout, /Related Work/);
+    assert.match(sessionText.stdout, /delegated_session/);
+    assert.match(sessionText.stdout, /transcript-primary/);
+    assert.equal((sessionText.stdout.match(/delegated_session session parent-session-1 transcript-primary/g) ?? []).length, 1);
+
+    const sessionJson = await runCliJson<{
+      related_work: Array<{ relation_kind: string; transcript_primary: boolean }>
+    }>(["query", "session", "--id", "OpenCode fixture", "--store", storeDir], tempRoot);
+    assert.equal(sessionJson.related_work.length, 1);
+    assert.equal(sessionJson.related_work[0]?.relation_kind, 'delegated_session');
+    assert.equal(sessionJson.related_work[0]?.transcript_primary, true);
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });
@@ -686,28 +886,67 @@ test("show session accepts Windows-style workspace references on non-Windows hos
     await seedCliOpenSourceFixtures(tempRoot);
     process.env.HOME = tempRoot;
 
-    const opencodeSessionPath = path.join(
-      tempRoot,
-      ".local",
-      "share",
-      "opencode",
-      "storage",
-      "session",
-      "opencode-fixture.json",
-    );
+    const opencodeStorageRoot = path.join(tempRoot, ".local", "share", "opencode", "storage");
+    const opencodeSessionPath = path.join(opencodeStorageRoot, "session", "global", "opencode-fixture.json");
+    const opencodeMessageDir = path.join(opencodeStorageRoot, "message", "opencode-fixture");
     await writeFile(
       opencodeSessionPath,
       JSON.stringify({
         id: "opencode-fixture",
         title: "OpenCode fixture",
-        cwd: "C:\\Users\\dev\\workspace\\opencode",
-        model: "sonnet-4",
-        createdAt: "2026-03-10T05:00:00.000Z",
-        updatedAt: "2026-03-10T05:00:02.000Z",
+        directory: String.raw`C:\Users\dev\workspace\opencode`,
+        version: "1.0.114",
+        time: {
+          created: 1771000000000,
+          updated: 1771000002000,
+        },
       }),
       "utf8",
     );
-
+    await writeFile(
+      path.join(opencodeMessageDir, "0001.json"),
+      JSON.stringify({
+        id: "opencode-user-1",
+        sessionID: "opencode-fixture",
+        role: "user",
+        time: {
+          created: 1771000001000,
+        },
+        path: {
+          cwd: String.raw`C:\Users\dev\workspace\opencode`,
+          root: "C:/",
+        },
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(opencodeMessageDir, "0002.json"),
+      JSON.stringify({
+        id: "opencode-assistant-1",
+        sessionID: "opencode-fixture",
+        role: "assistant",
+        time: {
+          created: 1771000002000,
+          completed: 1771000003000,
+        },
+        modelID: "sonnet-4",
+        path: {
+          cwd: String.raw`C:\Users\dev\workspace\opencode`,
+          root: "C:/",
+        },
+        finish: "tool-calls",
+        tokens: {
+          input: 8,
+          output: 4,
+          reasoning: 0,
+          cache: {
+            read: 2,
+            write: 0,
+          },
+        },
+      }),
+      "utf8",
+    );
     const storeDir = path.join(tempRoot, "store");
     const syncResult = await runCliCapture(["sync", "--store", storeDir, "--source", "opencode"], tempRoot);
     assert.equal(syncResult.exitCode, 0, syncResult.stderr);
@@ -758,7 +997,7 @@ test("show session accepts UNC raw paths and UNC file-URI references", async () 
     process.env.HOME = tempRoot;
 
     const opencodeRoot = path.join(tempRoot, ".local", "share", "opencode");
-    const opencodeSessionDir = path.join(opencodeRoot, "storage", "session");
+    const opencodeSessionDir = path.join(opencodeRoot, "storage", "session", "global");
     await mkdir(opencodeSessionDir, { recursive: true });
 
     await writeFile(
@@ -766,10 +1005,12 @@ test("show session accepts UNC raw paths and UNC file-URI references", async () 
       JSON.stringify({
         id: "opencode-unc-fixture",
         title: "OpenCode UNC fixture",
-        cwd: String.raw`\\server\share\opencode`,
-        model: "sonnet-4",
-        createdAt: "2026-03-10T05:00:00.000Z",
-        updatedAt: "2026-03-10T05:00:02.000Z",
+        directory: String.raw`\\server\share\opencode`,
+        version: "1.0.114",
+        time: {
+          created: 1771000000000,
+          updated: 1771000002000,
+        },
       }),
       "utf8",
     );
@@ -807,19 +1048,26 @@ test("show session fails explicitly when a human-friendly reference is ambiguous
     await seedCliOpenSourceFixtures(tempRoot);
     process.env.HOME = tempRoot;
 
-    const opencodeSessionDir = path.join(tempRoot, ".local", "share", "opencode", "storage", "session");
-    const secondMessageDir = path.join(tempRoot, ".local", "share", "opencode", "storage", "message", "opencode-fixture-2");
+    const opencodeStorageRoot = path.join(tempRoot, ".local", "share", "opencode", "storage");
+    const opencodeSessionDir = path.join(opencodeStorageRoot, "session", "global");
+    const secondMessageDir = path.join(opencodeStorageRoot, "message", "opencode-fixture-2");
+    const secondUserPartDir = path.join(opencodeStorageRoot, "part", "opencode-user-2");
+    const secondAssistantPartDir = path.join(opencodeStorageRoot, "part", "opencode-assistant-2");
     await mkdir(secondMessageDir, { recursive: true });
+    await mkdir(secondUserPartDir, { recursive: true });
+    await mkdir(secondAssistantPartDir, { recursive: true });
 
     await writeFile(
       path.join(opencodeSessionDir, "opencode-fixture.json"),
       JSON.stringify({
         id: "opencode-fixture",
         title: "Shared session",
-        cwd: "/workspace/opencode",
-        model: "sonnet-4",
-        createdAt: "2026-03-10T05:00:00.000Z",
-        updatedAt: "2026-03-10T05:00:02.000Z",
+        directory: "/workspace/opencode",
+        version: "1.0.114",
+        time: {
+          created: 1771000000000,
+          updated: 1771000002000,
+        },
       }),
       "utf8",
     );
@@ -829,40 +1077,74 @@ test("show session fails explicitly when a human-friendly reference is ambiguous
       JSON.stringify({
         id: "opencode-fixture-2",
         title: "Shared session",
-        cwd: "/workspace/opencode-two",
-        model: "sonnet-4",
-        createdAt: "2026-03-10T05:10:00.000Z",
-        updatedAt: "2026-03-10T05:10:02.000Z",
+        directory: "/workspace/opencode-two",
+        version: "1.0.114",
+        time: {
+          created: 1771000600000,
+          updated: 1771000602000,
+        },
       }),
       "utf8",
     );
     await writeFile(
       path.join(secondMessageDir, "0001.json"),
       JSON.stringify({
-        info: {
-          id: "opencode-user-2",
-          role: "user",
-          createdAt: "2026-03-10T05:10:01.000Z",
+        id: "opencode-user-2",
+        sessionID: "opencode-fixture-2",
+        role: "user",
+        time: {
+          created: 1771000601000,
         },
-        parts: [{ type: "text", text: "Inspect the second OpenCode history." }],
+        path: {
+          cwd: "/workspace/opencode-two",
+          root: "/",
+        },
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(secondUserPartDir, "0001.json"),
+      JSON.stringify({
+        id: "opencode-user-2-part-1",
+        sessionID: "opencode-fixture-2",
+        messageID: "opencode-user-2",
+        type: "text",
+        text: "Inspect the second OpenCode history.",
       }),
       "utf8",
     );
     await writeFile(
       path.join(secondMessageDir, "0002.json"),
       JSON.stringify({
-        info: {
-          id: "opencode-assistant-2",
-          role: "assistant",
-          createdAt: "2026-03-10T05:10:02.000Z",
-          stopReason: "end_turn",
+        id: "opencode-assistant-2",
+        sessionID: "opencode-fixture-2",
+        role: "assistant",
+        time: {
+          created: 1771000602000,
+          completed: 1771000603000,
         },
-        usage: {
-          inputTokens: 9,
-          outputTokens: 4,
-          totalTokens: 13,
+        modelID: "sonnet-4",
+        path: {
+          cwd: "/workspace/opencode-two",
+          root: "/",
         },
-        parts: [{ type: "text", text: "Second OpenCode history loaded." }],
+        finish: "stop",
+        tokens: {
+          input: 9,
+          output: 4,
+          reasoning: 0,
+        },
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(secondAssistantPartDir, "0001.json"),
+      JSON.stringify({
+        id: "opencode-assistant-2-part-1",
+        sessionID: "opencode-fixture-2",
+        messageID: "opencode-assistant-2",
+        type: "text",
+        text: "Second OpenCode history loaded.",
       }),
       "utf8",
     );
@@ -906,6 +1188,10 @@ test("sync picks up openclaw and opencode default roots in the CLI", async () =>
     assert.equal(statsResult.exitCode, 0);
     assert.match(statsResult.stdout, /sonnet-4/);
 
+    const searchResult = await runCliCapture(["search", "part-backed", "--store", storeDir], tempRoot);
+    assert.equal(searchResult.exitCode, 0, searchResult.stderr);
+    assert.match(searchResult.stdout, /Review the OpenCode part-backed history\./);
+
     const storage = new CCHistoryStorage(storeDir);
     try {
       const platforms = storage
@@ -941,7 +1227,7 @@ test("sync --dry-run previews selected source roots without creating a store", a
     assert.match(dryRunResult.stdout, new RegExp(escapeRegExp(path.join(tempRoot, ".openclaw", "agents"))));
     assert.match(
       dryRunResult.stdout,
-      new RegExp(escapeRegExp(path.join(tempRoot, ".local", "share", "opencode", "storage", "session"))),
+      new RegExp(escapeRegExp(path.join(tempRoot, ".local", "share", "opencode", "storage"))),
     );
 
     await assert.rejects(access(path.join(storeDir, "cchistory.sqlite")));
@@ -1073,6 +1359,50 @@ test("health combines discovery, sync preview, and indexed store summary in one 
   }
 });
 
+test("health --store-only focuses on the selected store without host discovery noise", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+
+    const storeDir = path.join(tempRoot, "store");
+    const syncResult = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(syncResult.exitCode, 0, syncResult.stderr);
+
+    const result = await runCliCapture(["health", "--store-only", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(result.stdout, /Scope\s+: selected store only/);
+    assert.match(result.stdout, /Indexed Sources/);
+    assert.match(result.stdout, /Store Overview/);
+    assert.doesNotMatch(result.stdout, /Host Discovery/);
+    assert.doesNotMatch(result.stdout, /Sync Preview/);
+
+    const json = await runCliJson<{
+      kind: string;
+      scope: string;
+      discovery: null;
+      sync_preview: null;
+      store_summary: {
+        store_exists: boolean;
+        sources: { kind: string };
+        stats: { kind: string };
+      };
+    }>(["health", "--store-only", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(json.kind, "health");
+    assert.equal(json.scope, "store-only");
+    assert.equal(json.discovery, null);
+    assert.equal(json.sync_preview, null);
+    assert.equal(json.store_summary.store_exists, true);
+    assert.equal(json.store_summary.sources.kind, "sources");
+    assert.equal(json.store_summary.stats.kind, "stats-overview");
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("health explains when the indexed store is missing instead of silently creating one", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
@@ -1094,6 +1424,37 @@ test("health explains when the indexed store is missing instead of silently crea
     assert.equal(json.kind, "health");
     assert.equal(json.store_summary.store_exists, false);
     assert.match(json.store_summary.note, /No indexed store found/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("health source filters also narrow indexed store summaries", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+
+    const storeDir = path.join(tempRoot, "store");
+    assert.equal((await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--source", "claude_code"], tempRoot)).exitCode, 0);
+
+    const result = await runCliCapture(["health", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(result.stdout, /Selected Sources\s+: codex/);
+    assert.match(result.stdout, /Indexed Sources/);
+    assert.match(result.stdout, /Codex/);
+    assert.doesNotMatch(result.stdout, /Claude Code/);
+    assert.match(result.stdout, /Sources\s+: 1/);
+
+    const storeOnly = await runCliCapture(["health", "--store", storeDir, "--store-only", "--source", "codex"], tempRoot);
+    assert.equal(storeOnly.exitCode, 0, storeOnly.stderr);
+    assert.match(storeOnly.stdout, /Selected Sources\s+: codex/);
+    assert.match(storeOnly.stdout, /Codex/);
+    assert.doesNotMatch(storeOnly.stdout, /Claude Code/);
+    assert.match(storeOnly.stdout, /Sources\s+: 1/);
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });
@@ -1153,7 +1514,7 @@ test("health --full reuses one live snapshot for both sources and stats", async 
   }
 });
 
-test("sync keeps legacy OpenCode sessions when the official project root also exists", async () => {
+test("sync keeps OpenCode sessions discoverable when project candidates also exist", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
 
@@ -1221,6 +1582,123 @@ test("read commands support --full to rescan sources without mutating the indexe
       tempRoot,
     );
     assert.equal(fullAfter.sessions.length, 2);
+
+    const storage = new CCHistoryStorage(storeDir);
+    try {
+      assert.equal(storage.listResolvedSessions().length, 1);
+      assert.equal(storage.listResolvedTurns().length, 1);
+    } finally {
+      storage.close();
+    }
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+
+test("full read drilldown and summaries stay live-only without mutating indexed state", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+
+    const storeDir = path.join(tempRoot, "store");
+    assert.equal((await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot)).exitCode, 0);
+
+    await writeCodexSessionFixture(tempRoot, "session-2.jsonl", {
+      sessionId: "codex-session-2",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Count the newly scanned session.",
+      reply: "The extra session is present.",
+      startAt: "2026-03-09T02:00:00.000Z",
+    });
+
+    const indexedSearch = await runCliJson<{ kind: string; results: Array<unknown> }>(
+      ["search", "Count the newly scanned session.", "--store", storeDir, "--index"],
+      tempRoot,
+    );
+    assert.equal(indexedSearch.kind, "search");
+    assert.equal(indexedSearch.results.length, 0);
+
+    const fullSearch = await runCliJson<{
+      kind: string;
+      results: Array<{
+        turn?: { id?: string; canonical_text?: string };
+        session?: { id?: string };
+        project?: { project_id?: string };
+      }>;
+    }>(["search", "Count the newly scanned session.", "--store", storeDir, "--full", "--source", "codex"], tempRoot);
+    assert.equal(fullSearch.kind, "search");
+    assert.equal(fullSearch.results.length, 1);
+    const liveTurnId = fullSearch.results[0]?.turn?.id;
+    const liveSessionId = fullSearch.results[0]?.session?.id;
+    const liveProjectId = fullSearch.results[0]?.project?.project_id;
+    assert.equal(typeof liveTurnId, "string");
+    assert.equal(typeof liveSessionId, "string");
+    assert.equal(typeof liveProjectId, "string");
+    assert.match(fullSearch.results[0]?.turn?.canonical_text ?? "", /Count the newly scanned session\./);
+
+    const indexedShowTurn = await runCliCapture(["show", "turn", liveTurnId!, "--store", storeDir], tempRoot);
+    assert.equal(indexedShowTurn.exitCode, 1);
+    assert.match(indexedShowTurn.stderr, /Unknown turn reference/);
+
+    const fullShowTurn = await runCliCapture(["show", "turn", liveTurnId!, "--store", storeDir, "--full", "--source", "codex"], tempRoot);
+    assert.equal(fullShowTurn.exitCode, 0, fullShowTurn.stderr);
+    assert.match(fullShowTurn.stdout, /Project\s+: cchistory \[ready\]/);
+    assert.match(fullShowTurn.stdout, /Count the newly scanned session\./);
+
+    const indexedShowSession = await runCliCapture(["show", "session", liveSessionId!, "--store", storeDir], tempRoot);
+    assert.equal(indexedShowSession.exitCode, 1);
+    assert.match(indexedShowSession.stderr, /Unknown session reference/);
+
+    const fullShowSession = await runCliCapture(["show", "session", liveSessionId!, "--store", storeDir, "--full", "--source", "codex"], tempRoot);
+    assert.equal(fullShowSession.exitCode, 0, fullShowSession.stderr);
+    assert.match(fullShowSession.stdout, /Title\s+: Count the newly scanned session\./);
+    assert.match(fullShowSession.stdout, /Project\s+: cchistory \[ready\]/);
+
+    const indexedTreeSession = await runCliCapture(["tree", "session", liveSessionId!, "--store", storeDir, "--long"], tempRoot);
+    assert.equal(indexedTreeSession.exitCode, 1);
+    assert.match(indexedTreeSession.stderr, /Unknown session reference/);
+
+    const fullTreeSession = await runCliCapture(["tree", "session", liveSessionId!, "--store", storeDir, "--full", "--source", "codex", "--long"], tempRoot);
+    assert.equal(fullTreeSession.exitCode, 0, fullTreeSession.stderr);
+    assert.match(fullTreeSession.stdout, /source=Codex \(codex\)/);
+    assert.match(fullTreeSession.stdout, /Count the newly scanned session\./);
+
+    const indexedShowProject = await runCliCapture(["show", "project", liveProjectId!, "--store", storeDir], tempRoot);
+    assert.equal(indexedShowProject.exitCode, 0, indexedShowProject.stderr);
+    assert.match(indexedShowProject.stdout, /Status\s+: tentative/);
+    assert.match(indexedShowProject.stdout, /Sessions\s+: 1/);
+    assert.doesNotMatch(indexedShowProject.stdout, /Count the newly scanned session\./);
+
+    const fullShowProject = await runCliCapture(["show", "project", liveProjectId!, "--store", storeDir, "--full", "--source", "codex"], tempRoot);
+    assert.equal(fullShowProject.exitCode, 0, fullShowProject.stderr);
+    assert.match(fullShowProject.stdout, /Status\s+: ready/);
+    assert.match(fullShowProject.stdout, /Sessions\s+: 2/);
+    assert.match(fullShowProject.stdout, /Turns\s+: 2/);
+    assert.match(fullShowProject.stdout, /Count the newly scanned session\./);
+
+    const fullTreeProject = await runCliCapture(["tree", "project", liveProjectId!, "--store", storeDir, "--full", "--source", "codex", "--long"], tempRoot);
+    assert.equal(fullTreeProject.exitCode, 0, fullTreeProject.stderr);
+    assert.match(fullTreeProject.stdout, /cchistory \[ready\]/);
+    assert.match(fullTreeProject.stdout, /sessions=2 turns=2/);
+    assert.match(fullTreeProject.stdout, /Count the newly scanned session\./);
+
+    const indexedStats = await runCliCapture(["stats", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(indexedStats.exitCode, 0, indexedStats.stderr);
+    assert.match(indexedStats.stdout, /Sessions\s+: 1/);
+    assert.match(indexedStats.stdout, /Turns\s+: 1/);
+    assert.doesNotMatch(indexedStats.stdout, /full scan in memory/);
+
+    const fullStats = await runCliCapture(["stats", "--store", storeDir, "--full", "--source", "codex"], tempRoot);
+    assert.equal(fullStats.exitCode, 0, fullStats.stderr);
+    assert.match(fullStats.stdout, /full scan in memory/);
+    assert.match(fullStats.stdout, /Sessions\s+: 2/);
+    assert.match(fullStats.stdout, /Turns\s+: 2/);
 
     const storage = new CCHistoryStorage(storeDir);
     try {
@@ -1679,6 +2157,45 @@ test("restore-check requires an explicit target and never invents a store", asyn
   }
 });
 
+test("built CLI keeps routine stderr quiet for successful and expected-failure workflows", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+
+    const storeDir = path.join(tempRoot, "store");
+    const bundleDir = path.join(tempRoot, "bundle.cchistory-bundle");
+    const childEnv = { ...process.env, HOME: tempRoot };
+
+    const syncResult = await runBuiltCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot, childEnv);
+    assert.equal(syncResult.exitCode, 0, syncResult.stderr);
+    assert.match(syncResult.stdout, /Synced 1 source\(s\)/);
+    assert.equal(syncResult.stderr.trim(), "");
+
+    const backupResult = await runBuiltCliCapture(["backup", "--store", storeDir, "--out", bundleDir], tempRoot, childEnv);
+    assert.equal(backupResult.exitCode, 0, backupResult.stderr);
+    assert.match(backupResult.stdout, /Workflow\s*:\s*backup/);
+    assert.equal(backupResult.stderr.trim(), "");
+
+    const restoreCheckResult = await runBuiltCliCapture(["restore-check", "--store", storeDir], tempRoot, childEnv);
+    assert.equal(restoreCheckResult.exitCode, 0, restoreCheckResult.stderr);
+    assert.match(restoreCheckResult.stdout, /Restore Check/);
+    assert.equal(restoreCheckResult.stderr.trim(), "");
+
+    const missingStoreDir = path.join(tempRoot, "missing-store");
+    const missingStoreResult = await runBuiltCliCapture(["restore-check", "--store", missingStoreDir], tempRoot, childEnv);
+    assert.equal(missingStoreResult.exitCode, 1);
+    assert.match(missingStoreResult.stderr, /Store not found/);
+    assert.doesNotMatch(missingStoreResult.stderr, /ExperimentalWarning/);
+    assert.doesNotMatch(missingStoreResult.stderr, /FTS5 unavailable/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("import is idempotent for an already imported bundle", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   const originalHome = process.env.HOME;
@@ -1726,6 +2243,10 @@ test("import detects payload conflicts and supports skip and replace", async () 
     const conflictImport = await runCliCapture(["import", bundleBDir, "--store", targetStoreDir], tempRoot);
     assert.equal(conflictImport.exitCode, 1);
     assert.match(conflictImport.stderr, /Source conflict detected/);
+    assert.match(conflictImport.stderr, /Next steps:/);
+    assert.match(conflictImport.stderr, /--dry-run/);
+    assert.match(conflictImport.stderr, /--on-conflict skip/);
+    assert.match(conflictImport.stderr, /--on-conflict replace/);
 
     const skipImport = await runCliCapture(["import", bundleBDir, "--store", targetStoreDir, "--on-conflict", "skip"], tempRoot);
     assert.equal(skipImport.exitCode, 0);
@@ -1919,6 +2440,292 @@ test("sync leaves orphan raw snapshots in place until gc is run explicitly", asy
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("agent pair stores state and agent upload sends only dirty source payloads", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+  const originalHome = process.env.HOME;
+  const originalFetch = globalThis.fetch;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+    const statePath = path.join(tempRoot, "agent-state.json");
+    const uploadBodies: Array<Record<string, unknown>> = [];
+
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/api/agent/pair")) {
+        return new Response(JSON.stringify({
+          agent_id: "agent-test-1",
+          agent_token: "agent-token-1",
+          paired_at: "2026-04-02T00:00:00.000Z",
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/api/agent/uploads")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        uploadBodies.push(body);
+        const bundle = body.bundle as { manifest?: { bundle_id?: string }; payloads?: unknown[] };
+        const manifest = body.source_manifest as unknown[];
+        return new Response(JSON.stringify({
+          bundle_id: bundle.manifest?.bundle_id ?? `bundle-${uploadBodies.length}`,
+          imported_source_ids: (bundle.payloads?.length ?? 0) > 0 && uploadBodies.length === 1 ? [((manifest?.[0] as { source_id?: string } | undefined)?.source_id ?? "src-1")] : [],
+          replaced_source_ids: [],
+          skipped_source_ids: [],
+          source_manifest_count: manifest?.length ?? 0,
+        }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ error: `Unhandled URL: ${url}` }), { status: 500, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    const pairResult = await runCliCapture([
+      "agent",
+      "pair",
+      "--server",
+      "https://remote.example",
+      "--pair-token",
+      "pair-secret",
+      "--state-file",
+      statePath,
+    ], tempRoot);
+    assert.equal(pairResult.exitCode, 0, pairResult.stderr);
+    assert.equal(await fileExists(statePath), true);
+
+    const firstUpload = await runCliCapture(["agent", "upload", "--state-file", statePath, "--source", "codex"], tempRoot);
+    assert.equal(firstUpload.exitCode, 0, firstUpload.stderr);
+    assert.equal(uploadBodies.length, 1);
+    const firstBundle = uploadBodies[0]?.bundle as { payloads?: unknown[] };
+    assert.equal(firstBundle.payloads?.length, 1);
+
+    const secondUpload = await runCliCapture(["agent", "upload", "--state-file", statePath, "--source", "codex"], tempRoot);
+    assert.equal(secondUpload.exitCode, 0, secondUpload.stderr);
+    assert.equal(uploadBodies.length, 2);
+    const secondBundle = uploadBodies[1]?.bundle as { payloads?: unknown[] };
+    assert.equal(secondBundle.payloads?.length, 0);
+
+    const persistedState = JSON.parse(await readFile(statePath, "utf8")) as {
+      last_uploaded_generation_by_source_id: Record<string, number>;
+      last_uploaded_checksum_by_source_id: Record<string, string>;
+    };
+    const uploadedSourceIds = Object.keys(persistedState.last_uploaded_generation_by_source_id);
+    assert.equal(uploadedSourceIds.length, 1);
+    const uploadedSourceId = uploadedSourceIds[0]!;
+    const uploadedGeneration = persistedState.last_uploaded_generation_by_source_id[uploadedSourceId];
+    const uploadedChecksum = persistedState.last_uploaded_checksum_by_source_id[uploadedSourceId];
+    assert.equal(typeof uploadedGeneration, "number");
+    assert.equal((uploadedGeneration ?? 0) > 0, true);
+    assert.equal(typeof uploadedChecksum, "string");
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+
+test("agent schedule retries failed uploads and runs the requested number of local cycles", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+  const originalHome = process.env.HOME;
+  const originalFetch = globalThis.fetch;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+    const statePath = path.join(tempRoot, "agent-schedule-state.json");
+    let uploadAttempt = 0;
+
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/api/agent/pair")) {
+        return new Response(JSON.stringify({
+          agent_id: "agent-test-schedule",
+          agent_token: "agent-token-schedule",
+          paired_at: "2026-04-02T00:00:00.000Z",
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.endsWith("/api/agent/uploads")) {
+        uploadAttempt += 1;
+        if (uploadAttempt === 1) {
+          return new Response(JSON.stringify({ error: "temporary upstream failure" }), { status: 503, headers: { "content-type": "application/json" } });
+        }
+        const body = JSON.parse(String(init?.body ?? "{}")) as { bundle?: { manifest?: { bundle_id?: string } } };
+        return new Response(JSON.stringify({
+          bundle_id: body.bundle?.manifest?.bundle_id ?? `bundle-${uploadAttempt}`,
+          imported_source_ids: [],
+          replaced_source_ids: [],
+          skipped_source_ids: [],
+          source_manifest_count: 1,
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ error: `Unhandled URL: ${url}` }), { status: 500, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    assert.equal((await runCliCapture([
+      "agent",
+      "pair",
+      "--server",
+      "https://remote.example",
+      "--pair-token",
+      "pair-secret",
+      "--state-file",
+      statePath,
+    ], tempRoot)).exitCode, 0);
+
+    const scheduleResult = await runCliCapture([
+      "agent",
+      "schedule",
+      "--state-file",
+      statePath,
+      "--source",
+      "codex",
+      "--interval-seconds",
+      "0",
+      "--iterations",
+      "2",
+      "--retry-attempts",
+      "1",
+      "--retry-delay-ms",
+      "0",
+    ], tempRoot);
+    assert.equal(scheduleResult.exitCode, 0, scheduleResult.stderr);
+    assert.match(scheduleResult.stdout, /Completed 2 scheduled remote-agent cycle\(s\)/);
+    assert.match(scheduleResult.stdout, /attempts=2/);
+    assert.equal(uploadAttempt, 3);
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+
+test("agent pull leases one job, uploads a filtered bundle, and reports completion", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
+  const originalHome = process.env.HOME;
+  const originalFetch = globalThis.fetch;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+    const statePath = path.join(tempRoot, "agent-pull-state.json");
+    const uploadBodies: Array<Record<string, unknown>> = [];
+    const completionBodies: Array<Record<string, unknown>> = [];
+    let leaseCalls = 0;
+
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.endsWith("/api/agent/pair")) {
+        return new Response(JSON.stringify({
+          agent_id: "agent-test-pull",
+          agent_token: "agent-token-pull",
+          paired_at: "2026-04-02T00:00:00.000Z",
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.endsWith("/api/agent/jobs/lease")) {
+        leaseCalls += 1;
+        return new Response(JSON.stringify({
+          agent_id: "agent-test-pull",
+          job: leaseCalls === 1 ? {
+            job_id: "job-test-pull",
+            trigger_kind: "server_requested",
+            selector: { kind: "all" },
+            source_slots: ["codex"],
+            sync_mode: "dirty_snapshot",
+            created_at: "2026-04-02T00:01:00.000Z",
+            leased_at: "2026-04-02T00:02:00.000Z",
+            lease_expires_at: "2026-04-02T00:07:00.000Z",
+          } : undefined,
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.endsWith("/api/agent/uploads")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        uploadBodies.push(body);
+        const bundle = body.bundle as { manifest?: { bundle_id?: string }; payloads?: unknown[] };
+        const manifest = body.source_manifest as Array<{ source_id?: string }> | undefined;
+        return new Response(JSON.stringify({
+          bundle_id: bundle.manifest?.bundle_id ?? "bundle-pull-1",
+          imported_source_ids: (bundle.payloads?.length ?? 0) > 0 ? [manifest?.[0]?.source_id ?? "src-1"] : [],
+          replaced_source_ids: [],
+          skipped_source_ids: [],
+          source_manifest_count: manifest?.length ?? 0,
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      if (url.includes("/api/agent/jobs/") && url.endsWith("/complete")) {
+        const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        completionBodies.push(body);
+        return new Response(JSON.stringify({
+          job_id: "job-test-pull",
+          agent_id: "agent-test-pull",
+          status: body.status,
+          completed_at: "2026-04-02T00:03:00.000Z",
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ error: `Unhandled URL: ${url}` }), { status: 500, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+
+    assert.equal((await runCliCapture([
+      "agent",
+      "pair",
+      "--server",
+      "https://remote.example",
+      "--pair-token",
+      "pair-secret",
+      "--state-file",
+      statePath,
+    ], tempRoot)).exitCode, 0);
+
+    const pullResult = await runCliCapture([
+      "agent",
+      "pull",
+      "--state-file",
+      statePath,
+      "--retry-attempts",
+      "1",
+      "--retry-delay-ms",
+      "0",
+    ], tempRoot);
+    assert.equal(pullResult.exitCode, 0, pullResult.stderr);
+    assert.match(pullResult.stdout, /Completed leased remote-agent job job-test-pull/);
+    assert.equal(uploadBodies.length, 1);
+    assert.equal(uploadBodies[0]?.job_id, "job-test-pull");
+    const firstBundle = uploadBodies[0]?.bundle as { payloads?: unknown[] };
+    assert.equal(firstBundle.payloads?.length, 1);
+    assert.equal(completionBodies.length, 1);
+    assert.equal(completionBodies[0]?.status, "succeeded");
+    assert.equal(typeof completionBodies[0]?.bundle_id, "string");
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+
+async function runBuiltCliCapture(
+  argv: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  const cliEntry = fileURLToPath(new URL("./index.js", import.meta.url));
+  return await new Promise((resolve, reject) => {
+    execFile(process.execPath, [cliEntry, ...argv], { cwd, env }, (error, stdout, stderr) => {
+      if (error && typeof (error as { code?: unknown }).code !== "number") {
+        reject(error);
+        return;
+      }
+      resolve({
+        exitCode: typeof (error as { code?: unknown } | null)?.code === "number" ? Number((error as { code: number }).code) : 0,
+        stdout,
+        stderr,
+      });
+    });
+  });
+}
 
 async function runCliCapture(argv: string[], cwd: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   let stdout = "";
@@ -2289,31 +3096,91 @@ async function seedCliFixtures(
 
 async function seedCliOpenSourceFixtures(tempRoot: string): Promise<void> {
   const openclawDir = path.join(tempRoot, ".openclaw", "agents", "agent-a", "sessions");
-  const opencodeSessionDir = path.join(tempRoot, ".local", "share", "opencode", "storage", "session");
-  const opencodeMessageDir = path.join(tempRoot, ".local", "share", "opencode", "storage", "message", "opencode-fixture");
+  const opencodeStorageRoot = path.join(tempRoot, ".local", "share", "opencode", "storage");
+  const opencodeSessionDir = path.join(opencodeStorageRoot, "session", "global");
+  const opencodeMessageDir = path.join(opencodeStorageRoot, "message", "opencode-fixture");
+  const opencodeUserPartDir = path.join(opencodeStorageRoot, "part", "opencode-user-1");
+  const opencodeAssistantPartDir = path.join(opencodeStorageRoot, "part", "opencode-assistant-1");
+  const opencodeTodoDir = path.join(opencodeStorageRoot, "todo");
+  const opencodeSessionDiffDir = path.join(opencodeStorageRoot, "session_diff");
 
   await mkdir(openclawDir, { recursive: true });
   await mkdir(opencodeSessionDir, { recursive: true });
   await mkdir(opencodeMessageDir, { recursive: true });
+  await mkdir(opencodeUserPartDir, { recursive: true });
+  await mkdir(opencodeAssistantPartDir, { recursive: true });
+  await mkdir(opencodeTodoDir, { recursive: true });
+  await mkdir(opencodeSessionDiffDir, { recursive: true });
 
   await writeFile(
     path.join(openclawDir, "openclaw-fixture.jsonl"),
     [
       {
+        type: "session",
+        version: 3,
+        id: "openclaw-fixture",
         timestamp: "2026-03-10T04:00:00.000Z",
-        role: "user",
-        content: "Inspect OpenClaw history.",
+        cwd: "/workspace/openclaw",
       },
       {
-        timestamp: "2026-03-10T04:00:01.000Z",
-        role: "assistant",
-        usage: {
-          input_tokens: 7,
-          output_tokens: 3,
-          total_tokens: 10,
+        type: "model_change",
+        id: "openclaw-model-1",
+        parentId: null,
+        timestamp: "2026-03-10T04:00:00.001Z",
+        provider: "zai",
+        modelId: "glm-5-turbo",
+      },
+      {
+        type: "message",
+        id: "openclaw-user-1",
+        parentId: "openclaw-model-1",
+        timestamp: "2026-03-10T04:00:00.010Z",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Inspect OpenClaw history." }],
         },
-        stopReason: "end_turn",
-        content: [{ type: "text", text: "OpenClaw history loaded." }],
+      },
+      {
+        type: "message",
+        id: "openclaw-assistant-1",
+        parentId: "openclaw-user-1",
+        timestamp: "2026-03-10T04:00:01.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Review the queued history before replying.", thinkingSignature: "mock-openclaw-thinking" },
+            { type: "text", text: "I will inspect the queued history first." },
+            { type: "toolCall", id: "call-openclaw-read-1", name: "read", arguments: { path: "/workspace/openclaw/notes.md" } },
+          ],
+          model: "glm-5-turbo",
+          usage: { input: 7, output: 3, totalTokens: 10 },
+          stopReason: "tool_use",
+        },
+      },
+      {
+        type: "message",
+        id: "openclaw-tool-result-1",
+        parentId: "openclaw-assistant-1",
+        timestamp: "2026-03-10T04:00:01.200Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "call-openclaw-read-1",
+          toolName: "read",
+          content: [{ type: "text", text: "OpenClaw history loaded." }],
+        },
+      },
+      {
+        type: "message",
+        id: "openclaw-assistant-2",
+        parentId: "openclaw-tool-result-1",
+        timestamp: "2026-03-10T04:00:01.400Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "OpenClaw history loaded." }],
+          model: "glm-5-turbo",
+          usage: { input: 3, output: 3, totalTokens: 6 },
+          stopReason: "end_turn",
+        },
       },
     ]
       .map((line) => JSON.stringify(line))
@@ -2326,41 +3193,105 @@ async function seedCliOpenSourceFixtures(tempRoot: string): Promise<void> {
     JSON.stringify({
       id: "opencode-fixture",
       title: "OpenCode fixture",
-      cwd: "/workspace/opencode",
-      model: "sonnet-4",
-      createdAt: "2026-03-10T05:00:00.000Z",
-      updatedAt: "2026-03-10T05:00:02.000Z",
+      directory: "/workspace/opencode",
+      version: "1.0.114",
+      time: {
+        created: 1771000000000,
+        updated: 1771000002000,
+      },
     }),
     "utf8",
   );
   await writeFile(
     path.join(opencodeMessageDir, "0001.json"),
     JSON.stringify({
-      info: {
-        id: "opencode-user-1",
-        role: "user",
-        createdAt: "2026-03-10T05:00:01.000Z",
+      id: "opencode-user-1",
+      sessionID: "opencode-fixture",
+      role: "user",
+      time: {
+        created: 1771000001000,
       },
-      parts: [{ type: "text", text: "Inspect OpenCode history." }],
+      path: {
+        cwd: "/workspace/opencode",
+        root: "/",
+      },
+    }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(opencodeUserPartDir, "0001.json"),
+    JSON.stringify({
+      id: "opencode-user-1-part-1",
+      sessionID: "opencode-fixture",
+      messageID: "opencode-user-1",
+      type: "text",
+      text: "Review the OpenCode part-backed history.",
     }),
     "utf8",
   );
   await writeFile(
     path.join(opencodeMessageDir, "0002.json"),
     JSON.stringify({
-      info: {
-        id: "opencode-assistant-1",
-        role: "assistant",
-        createdAt: "2026-03-10T05:00:02.000Z",
-        stopReason: "end_turn",
+      id: "opencode-assistant-1",
+      sessionID: "opencode-fixture",
+      role: "assistant",
+      time: {
+        created: 1771000002000,
+        completed: 1771000003000,
       },
-      usage: {
-        inputTokens: 8,
-        outputTokens: 4,
-        totalTokens: 12,
+      modelID: "sonnet-4",
+      path: {
+        cwd: "/workspace/opencode",
+        root: "/",
       },
-      parts: [{ type: "text", text: "OpenCode history loaded." }],
+      finish: "tool-calls",
+      tokens: {
+        input: 8,
+        output: 4,
+        reasoning: 0,
+        cache: {
+          read: 2,
+          write: 0,
+        },
+      },
     }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(opencodeAssistantPartDir, "0001.json"),
+    JSON.stringify({
+      id: "opencode-assistant-1-part-1",
+      sessionID: "opencode-fixture",
+      messageID: "opencode-assistant-1",
+      type: "tool",
+      callID: "call-opencode-read-1",
+      tool: "read",
+      state: {
+        status: "completed",
+        input: {
+          filePath: "/workspace/opencode/notes.md",
+          limit: 20,
+        },
+        output: "<file>\n00001| OpenCode part-backed history loaded.\n</file>",
+      },
+    }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(opencodeAssistantPartDir, "0002.json"),
+    JSON.stringify({
+      id: "opencode-assistant-1-part-2",
+      sessionID: "opencode-fixture",
+      messageID: "opencode-assistant-1",
+      type: "text",
+      text: "OpenCode part-backed history loaded.",
+    }),
+    "utf8",
+  );
+  await writeFile(path.join(opencodeSessionDiffDir, "opencode-fixture.json"), "[]\n", "utf8");
+  await writeFile(
+    path.join(opencodeTodoDir, "opencode-fixture.json"),
+    JSON.stringify([{ id: "todo-1", content: "Capture supporting checklist", status: "pending" }]),
     "utf8",
   );
 }
@@ -2368,52 +3299,55 @@ async function seedCliOpenSourceFixtures(tempRoot: string): Promise<void> {
 async function seedCliDiscoveryFixtures(tempRoot: string): Promise<void> {
   await seedCliOpenSourceFixtures(tempRoot);
 
-  const officialOpencodeSessionDir = path.join(
-    tempRoot,
-    ".local",
-    "share",
-    "opencode",
-    "project",
-    "workspace-demo",
-    "storage",
-    "session",
-  );
-  const officialOpencodeMessageDir = path.join(
-    tempRoot,
-    ".local",
-    "share",
-    "opencode",
-    "project",
-    "workspace-demo",
-    "storage",
-    "message",
-    "opencode-official",
-  );
+  const opencodeStorageRoot = path.join(tempRoot, ".local", "share", "opencode", "storage");
+  const officialProjectDir = path.join(tempRoot, ".local", "share", "opencode", "project", "workspace-demo");
+  const officialOpencodeSessionDir = path.join(opencodeStorageRoot, "session", "global");
+  const officialOpencodeMessageDir = path.join(opencodeStorageRoot, "message", "opencode-official");
+  const officialOpencodeUserPartDir = path.join(opencodeStorageRoot, "part", "opencode-official-user-1");
 
+  await mkdir(officialProjectDir, { recursive: true });
   await mkdir(officialOpencodeSessionDir, { recursive: true });
   await mkdir(officialOpencodeMessageDir, { recursive: true });
+  await mkdir(officialOpencodeUserPartDir, { recursive: true });
 
   await writeFile(
     path.join(officialOpencodeSessionDir, "opencode-official.json"),
     JSON.stringify({
       id: "opencode-official",
       title: "OpenCode official fixture",
-      cwd: "/workspace/opencode-official",
-      model: "sonnet-4",
-      createdAt: "2026-03-10T05:10:00.000Z",
-      updatedAt: "2026-03-10T05:10:02.000Z",
+      directory: "/workspace/opencode-official",
+      version: "1.0.114",
+      time: {
+        created: 1771000100000,
+        updated: 1771000102000,
+      },
     }),
     "utf8",
   );
   await writeFile(
     path.join(officialOpencodeMessageDir, "0001.json"),
     JSON.stringify({
-      info: {
-        id: "opencode-official-user-1",
-        role: "user",
-        createdAt: "2026-03-10T05:10:01.000Z",
+      id: "opencode-official-user-1",
+      sessionID: "opencode-official",
+      role: "user",
+      time: {
+        created: 1771000101000,
       },
-      parts: [{ type: "text", text: "Inspect official OpenCode path." }],
+      path: {
+        cwd: "/workspace/opencode-official",
+        root: "/",
+      },
+    }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(officialOpencodeUserPartDir, "0001.json"),
+    JSON.stringify({
+      id: "opencode-official-user-1-part-1",
+      sessionID: "opencode-official",
+      messageID: "opencode-official-user-1",
+      type: "text",
+      text: "Inspect official OpenCode path.",
     }),
     "utf8",
   );

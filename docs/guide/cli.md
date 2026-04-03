@@ -12,6 +12,7 @@ Options:
   --db <file>      Explicit SQLite file path
   --index          Read from existing store only (default for reads)
   --full           Re-scan sources into a temporary in-memory store
+  --store-only     Suppress host discovery and sync preview; focus on the selected store
   --json           Machine-readable JSON output
   --dry-run        Preview `sync` or `gc` actions without writing
   --showall        Include empty projects in listings and missing discovery candidates
@@ -52,7 +53,7 @@ Cursor (cursor)  host-e336320  2         1      healthy
 | `--limit-files <n>` | Max files per source |
 | `--dry-run` | Show which supported sources are currently discoverable and which path each would sync from |
 
-> Windows note (2026-03-27): `sync --dry-run` and `discover` only prove that a candidate path is being probed. On Windows, `Cursor` and `Antigravity` have verified default roots; for `Codex`, `Claude Code`, `Factory Droid`, `AMP`, and all experimental adapters, confirm or override `base_dir` through the web `Sources` view or `/api/admin/source-config` before treating the path as authoritative.
+> Windows note (2026-03-27): `sync --dry-run` and `discover` only prove that a candidate path is being probed. On Windows, `Cursor` and `Antigravity` have verified default roots; for `Codex`, `Claude Code`, `Factory Droid`, `AMP`, `Gemini CLI`, `OpenClaw`, `OpenCode`, `CodeBuddy`, and `LobeChat`, confirm or override `base_dir` through the web `Sources` view or `/api/admin/source-config` before treating the path as authoritative. Several of these adapters are now `stable`, but their Windows default roots are still not host-verified.
 
 ### discover
 
@@ -90,6 +91,7 @@ cchistory health                                 # Discovery + sync preview + in
 cchistory health --source codex                  # Scope to one source
 cchistory health --full                          # One live read-only scan instead of the indexed store
 cchistory health --store ./.cchistory --full     # Use a pinned local store path
+cchistory health --store ./.cchistory --store-only  # Inspect only the selected indexed store
 ```
 
 Behavior notes:
@@ -97,6 +99,7 @@ Behavior notes:
 - `health` defaults to `--index`, so it reads an existing store without mutating it.
 - If no indexed store exists, `health` reports that explicitly instead of silently creating one.
 - `health --full` performs one live in-memory scan and does not create `cchistory.sqlite`.
+- `health --store-only` suppresses ambient host discovery and sync preview when you want store-scoped review of a seeded, restored, or pinned indexed store.
 
 ### ls
 
@@ -104,7 +107,9 @@ Browse projects, sessions, and sources.
 
 ```bash
 cchistory ls projects                   # List projects (hides empty by default)
+cchistory ls projects --long            # Add source-mix and related-work summaries
 cchistory ls sessions                   # List all sessions with title/workspace hints
+cchistory ls sessions --long            # Add platform, turn-count, and related-work columns
 cchistory ls sources                    # List configured sources
 cchistory ls projects --showall         # Include empty projects
 ```
@@ -124,7 +129,9 @@ shared-product-lab     tentative  1      1         1      2026-03-16T16:41:50.98
 
 Full-text search across all turns. Queries now support partial multi-token
 matching, so you do not need to type one exact phrase. The text output prints a
-turn ID prefix that you can pass directly to `cchistory show turn <shown-id>`.
+turn ID prefix that you can pass directly to `cchistory show turn <shown-id>`,
+and it also prints session / project / `tree session --long` pivots so you can
+expand one hit into nearby context without leaving the turn-first search model.
 
 ```bash
 cchistory search "data security"                        # Global search
@@ -175,11 +182,14 @@ Total Tokens        : 461,890
 
 ### tree
 
-Hierarchical view of the project-session-turn structure.
+Hierarchical view of the project-session-turn structure. Add `--long` when you want `ls -l`-style metadata expansion instead of the default compact tree.
 
 ```bash
 cchistory tree projects                             # All projects
 cchistory tree project chat-ui-kit                  # One project with turns
+cchistory tree project chat-ui-kit --long           # Add session metadata and related-work counts
+cchistory tree session <session-ref>                # Compact hierarchy for one session
+cchistory tree session <session-ref> --long         # Richer nearby-turn + related-work context
 ```
 
 **Example output:**
@@ -198,6 +208,13 @@ Unassigned sessions=4
 
 Detailed view of a single entity.
 
+**Recall output contract:**
+
+- `query` is the machine-readable path and always prints structured JSON so operators can script project / session / turn retrieval without extra flags.
+- `search` and `show` are operator-readable by default so manual drill-down stays compact in the terminal.
+- Add `--json` to `search` or `show` when you want one structured pipeline from discovery through drill-down.
+- A practical pattern is: use `search` for manual discovery, `show` for human-readable inspection, and `query` when you need stable structured payloads.
+
 ```bash
 cchistory show project chat-ui-kit          # Project details + usage + recent turns
 cchistory show session <ref>                # Session details with turns
@@ -207,6 +224,8 @@ cchistory show source codex                 # Source details + resolved sessions
 
 For `show session <ref>`, `<ref>` may be a full session ID, a unique session ID
 prefix, a unique session title, or a unique workspace path / workspace basename.
+When you want a hierarchy-first continuation with denser nearby-turn and
+related-work context, prefer `cchistory tree session <session-ref> --long`.
 If multiple sessions match the same human-friendly reference, the CLI fails
 explicitly instead of guessing.
 
@@ -367,6 +386,8 @@ cchistory merge --from /host-a/.cchistory --to /host-b/.cchistory --source codex
 
 Structured JSON output for programmatic consumption (always outputs JSON).
 
+`query` is intentionally different from `search` and `show`: it is the canonical machine-readable recall surface and always emits JSON, even without `--json`.
+
 ```bash
 cchistory query turns --search "refactor" --limit 5
 cchistory query turn --id <turn-id-or-prefix>
@@ -384,6 +405,32 @@ cchistory query project --id <project-id> --link-state committed
 | `--source <id>` | Source filter |
 | `--limit <n>` | Max items (default: 20) |
 | `--link-state <state>` | Filter: `all`, `committed`, `candidate`, `unlinked` |
+
+### agent
+
+Remote-agent workflows reuse the same canonical source probe + bundle import path, but run from a paired host instead of the local operator machine.
+
+```bash
+cchistory agent pair --server https://history.example --pair-token <token>
+cchistory agent upload --state-file ~/.cchistory-agent/agent-state.json --source codex
+cchistory agent schedule --state-file ~/.cchistory-agent/agent-state.json --interval-seconds 900 --iterations 4
+cchistory agent pull --state-file ~/.cchistory-agent/agent-state.json
+```
+
+Behavior notes:
+
+- `agent pair` exchanges a server-side pairing token for a persisted local agent identity and credentials.
+- `agent upload` runs one dirty-source collection cycle and uploads only changed source payloads unless `--force` is set.
+- `agent schedule` repeats the same upload cycle locally on a caller-provided interval; it does not create server-side jobs.
+- `agent pull` asks the server for one leased typed collection job, runs that collection scope locally, uploads through the same bundle path, and reports completion or failure.
+- `--retry-attempts` and `--retry-delay-ms` apply to upload/pull network retries; `--no-raw` keeps remote bundles lighter by omitting raw blobs.
+
+Validation note:
+
+- The current remote-agent validation contract lives in `docs/design/R29_REMOTE_AGENT_VALIDATION_CONTRACT.md`.
+- Package-scoped CLI/API tests already prove the mocked pair/upload/schedule/pull logic.
+- Server-backed remote-agent validation still requires a user-started API service and should be recorded as a manual operator review rather than treated as an agent-started runtime path.
+- That contract is not the completed diary: the actual recorded pair/upload/schedule and leased-pull server-backed reviews remain blocked manual work under `R35` until a user starts the API service and performs them.
 
 ### templates
 
