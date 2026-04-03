@@ -1,0 +1,23 @@
+[
+  {
+    "sessionId": "d2b60ca2-47a4-482c-b4b7-5e50f7cb8c71",
+    "messageId": 0,
+    "type": "user",
+    "message": "/init",
+    "timestamp": "2026-03-31T10:00:00.000Z"
+  },
+  {
+    "sessionId": "a3f9d2d1-8864-48fe-bc52-e90de9fc0f59",
+    "messageId": 0,
+    "type": "user",
+    "message": "/tools",
+    "timestamp": "2026-03-31T11:02:00.000Z"
+  },
+  {
+    "sessionId": "7f31c5cd-2508-4c73-b455-a9e0d5a5f466",
+    "messageId": 0,
+    "type": "user",
+    "message": "/memory show",
+    "timestamp": "2026-03-31T12:15:00.000Z"
+  }
+]

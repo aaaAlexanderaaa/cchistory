@@ -5,9 +5,37 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { deriveSourceInstanceId, type SourceSyncPayload, type UserTurnProjection } from "@cchistory/domain";
-import { CCHistoryStorage } from "./index.js";
+import { buildLocalReadOverview, CCHistoryStorage } from "./index.js";
 import { STORAGE_SCHEMA_VERSION } from "./db/schema.js";
 import { querySearchIndex } from "./queries/search.js";
+
+test("buildLocalReadOverview returns shared counts and recent projects", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-read-overview-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    try {
+      storage.replaceSourcePayload(
+        createFixturePayload("src-storage-overview", "Overview text", "stage-run-overview", {
+          includeProjectObservation: false,
+          workingDirectory: "/workspace/project-alpha",
+        }),
+      );
+      const overview = buildLocalReadOverview(storage);
+
+      assert.equal(overview.schema.schema_version, STORAGE_SCHEMA_VERSION);
+      assert.equal(overview.counts.sources, 1);
+      assert.equal(overview.counts.projects, 1);
+      assert.equal(overview.counts.sessions, 1);
+      assert.equal(overview.counts.turns, 1);
+      assert.equal(overview.recent_projects[0]?.display_name, "project-alpha");
+    } finally {
+      storage.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
 
 test("replaceSourcePayload persists pipeline layers and lineage drill-down", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-"));
@@ -40,6 +68,374 @@ test("replaceSourcePayload persists pipeline layers and lineage drill-down", asy
     assert.equal(lineage.fragments.length, 4);
     assert.equal(lineage.records.length, 1);
     assert.equal(lineage.blobs.length, 1);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("storage keeps delegated and automation evidence inspectable even when no canonical turns are emitted", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-secondary-evidence-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    try {
+      const openclawPayload = createFixturePayload(
+        "storinst-openclaw-secondary",
+        "[cron:mock-openclaw-hourly] Review the queued backlog.",
+        "stage-run-openclaw-secondary",
+        {
+          platform: "codex",
+          sessionId: "sess:openclaw:44444444-5555-4666-8777-888888888888",
+          turnId: "turn-openclaw-secondary",
+          workingDirectory: "/Users/mock_user/workspace/openclaw-automation",
+        },
+      );
+      openclawPayload.source.platform = "openclaw";
+      openclawPayload.source.slot_id = "openclaw";
+      openclawPayload.source.total_turns = 0;
+      openclawPayload.source.total_sessions = 1;
+      openclawPayload.sessions[0]!.source_platform = "openclaw";
+      openclawPayload.sessions[0]!.turn_count = 0;
+      openclawPayload.sessions[0]!.title = "cron:mock-openclaw-hourly";
+      openclawPayload.turns = [];
+      openclawPayload.contexts = [];
+      openclawPayload.candidates = [];
+      openclawPayload.fragments[0] = {
+        ...openclawPayload.fragments[0]!,
+        actor_kind: "system",
+        origin_kind: "source_meta",
+        payload: {
+          text: "Reviewed queued rule updates and refreshed the workspace plan.",
+          relation_kind: "automation_run",
+          job_id: "mock-openclaw-hourly",
+          status: "success",
+          session_key: "main:11111111-2222-4333-8444-555555555555",
+        },
+      };
+      openclawPayload.fragments[1] = {
+        ...openclawPayload.fragments[1]!,
+        fragment_kind: "session_relation",
+        actor_kind: "system",
+        origin_kind: "source_meta",
+        payload: {
+          parent_uuid: "11111111-2222-4333-8444-555555555555",
+          session_key: "main:11111111-2222-4333-8444-555555555555",
+          job_id: "mock-openclaw-hourly",
+          status: "success",
+          relation_kind: "automation_run",
+        },
+      };
+      openclawPayload.atoms[0] = {
+        ...openclawPayload.atoms[0]!,
+        actor_kind: "user",
+        origin_kind: "automation_trigger",
+        content_kind: "text",
+        payload: { text: "[cron:mock-openclaw-hourly] Review the queued backlog." },
+      };
+      openclawPayload.atoms[1] = {
+        ...openclawPayload.atoms[1]!,
+        actor_kind: "system",
+        origin_kind: "source_meta",
+        content_kind: "text",
+        payload: { text: "Reviewed queued rule updates and refreshed the workspace plan." },
+      };
+
+      const claudePayload = createFixturePayload(
+        "storinst-claude-secondary",
+        "Search the codebase for all timeout, keepalive, heartbeat, and poll-related constants.",
+        "stage-run-claude-secondary",
+        {
+          platform: "claude_code",
+          sessionId: "cc1df109-4282-4321-8248-8bbcd471da78",
+          turnId: "turn-claude-secondary",
+          workingDirectory: "/Users/mock_user/workspace/chat-ui-kit",
+        },
+      );
+      claudePayload.source.total_turns = 0;
+      claudePayload.sessions[0]!.turn_count = 0;
+      claudePayload.turns = [];
+      claudePayload.contexts = [];
+      claudePayload.candidates = [];
+      claudePayload.fragments[1] = {
+        ...claudePayload.fragments[1]!,
+        fragment_kind: "session_relation",
+        actor_kind: "system",
+        origin_kind: "source_meta",
+        payload: {
+          parent_uuid: null,
+          is_sidechain: true,
+        },
+      };
+      claudePayload.atoms[0] = {
+        ...claudePayload.atoms[0]!,
+        origin_kind: "delegated_instruction",
+      };
+
+      storage.replaceSourcePayload(openclawPayload);
+      storage.replaceSourcePayload(claudePayload);
+
+      assert.equal(storage.listTurns().length, 0);
+
+      const persistedOpenclaw = storage.getSourcePayload("storinst-openclaw-secondary");
+      assert.ok(persistedOpenclaw);
+      assert.equal(persistedOpenclaw?.turns.length, 0);
+      assert.ok(
+        persistedOpenclaw?.atoms.some(
+          (atom) =>
+            atom.origin_kind === "automation_trigger" &&
+            String(atom.payload.text ?? "").includes("[cron:mock-openclaw-hourly]"),
+        ),
+      );
+      assert.ok(
+        persistedOpenclaw?.fragments.some(
+          (fragment) =>
+            fragment.fragment_kind === "session_relation" &&
+            fragment.payload.relation_kind === "automation_run" &&
+            fragment.payload.parent_uuid === "11111111-2222-4333-8444-555555555555",
+        ),
+      );
+
+      const persistedClaude = storage.getSourcePayload("storinst-claude-secondary");
+      assert.ok(persistedClaude);
+      assert.equal(persistedClaude?.turns.length, 0);
+      assert.ok(
+        persistedClaude?.atoms.some(
+          (atom) =>
+            atom.origin_kind === "delegated_instruction" &&
+            String(atom.payload.text ?? "").includes("Search the codebase for all timeout"),
+        ),
+      );
+      assert.ok(
+        persistedClaude?.fragments.some(
+          (fragment) =>
+            fragment.fragment_kind === "session_relation" &&
+            fragment.payload.is_sidechain === true,
+        ),
+      );
+
+      const openclawRelatedWork = storage.getSessionRelatedWork("sess:openclaw:44444444-5555-4666-8777-888888888888");
+      assert.equal(openclawRelatedWork.length, 1);
+      assert.equal(openclawRelatedWork[0]?.relation_kind, "automation_run");
+      assert.equal(openclawRelatedWork[0]?.target_kind, "automation_run");
+      assert.equal(openclawRelatedWork[0]?.target_session_ref, "11111111-2222-4333-8444-555555555555");
+      assert.equal(openclawRelatedWork[0]?.automation_job_ref, "mock-openclaw-hourly");
+      assert.equal(openclawRelatedWork[0]?.automation_run_key, "main:11111111-2222-4333-8444-555555555555");
+      assert.equal(openclawRelatedWork[0]?.transcript_primary, false);
+
+      const claudeRelatedWork = storage.getSessionRelatedWork("cc1df109-4282-4321-8248-8bbcd471da78");
+      assert.equal(claudeRelatedWork.length, 1);
+      assert.equal(claudeRelatedWork[0]?.relation_kind, "delegated_session");
+      assert.equal(claudeRelatedWork[0]?.target_kind, "session");
+      assert.equal(claudeRelatedWork[0]?.target_session_ref, "cc1df109-4282-4321-8248-8bbcd471da78");
+      assert.equal(claudeRelatedWork[0]?.transcript_primary, true);
+      assert.equal(claudeRelatedWork[0]?.raw_detail.is_sidechain, true);
+    } finally {
+      storage.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("getSessionRelatedWork normalizes delegated factory relations from callingSessionId metadata", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-factory-related-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    try {
+      const payload = createFixturePayload(
+        "src-factory-related",
+        "Review delegated factory session",
+        "stage-run-factory-related",
+        {
+          platform: "factory_droid",
+          sessionId: "session-factory-related",
+          turnId: "turn-factory-related",
+          workingDirectory: "/workspace/factory-related",
+        },
+      );
+      const lastFragment = payload.fragments[payload.fragments.length - 1]!;
+      payload.fragments.push({
+        ...lastFragment,
+        id: "turn-factory-related-fragment-relation",
+        seq_no: lastFragment.seq_no + 1,
+        fragment_kind: "session_relation",
+        actor_kind: "system",
+        origin_kind: "source_meta",
+        time_key: "2026-03-09T09:00:04.000Z",
+        payload: {
+          callingSessionId: "factory-parent-1",
+          callingToolUseId: "factory-tool-parent-1",
+          agentId: "reviewer-agent",
+        },
+        raw_refs: [],
+      });
+
+      storage.replaceSourcePayload(payload);
+
+      const relatedWork = storage.getSessionRelatedWork("session-factory-related");
+      assert.equal(relatedWork.length, 1);
+      assert.equal(relatedWork[0]?.relation_kind, "delegated_session");
+      assert.equal(relatedWork[0]?.target_kind, "session");
+      assert.equal(relatedWork[0]?.target_session_ref, "factory-parent-1");
+      assert.equal(relatedWork[0]?.parent_tool_ref, "factory-tool-parent-1");
+      assert.equal(relatedWork[0]?.child_agent_key, "reviewer-agent");
+      assert.equal(relatedWork[0]?.transcript_primary, true);
+      assert.equal(relatedWork[0]?.raw_detail.callingSessionId, "factory-parent-1");
+    } finally {
+      storage.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("getSessionRelatedWork normalizes delegated opencode relations from parent session metadata", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-opencode-related-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    try {
+      const payload = createFixturePayload(
+        "src-opencode-related",
+        "Review delegated opencode session",
+        "stage-run-opencode-related",
+        {
+          platform: "codex",
+          sessionId: "sess:opencode:session-opencode-related",
+          turnId: "turn-opencode-related",
+          workingDirectory: "/workspace/opencode-related",
+        },
+      );
+      payload.source.platform = "opencode";
+      payload.source.slot_id = "opencode";
+      payload.sessions[0]!.source_platform = "opencode";
+      const lastFragment = payload.fragments[payload.fragments.length - 1]!;
+      payload.fragments.push({
+        ...lastFragment,
+        id: "turn-opencode-related-fragment-relation",
+        seq_no: lastFragment.seq_no + 1,
+        fragment_kind: "session_relation",
+        actor_kind: "system",
+        origin_kind: "source_meta",
+        time_key: "2026-03-09T09:00:04.000Z",
+        payload: {
+          parent_uuid: "sess:opencode:parent-session-1",
+          agent_id: "reviewer-agent",
+        },
+        raw_refs: [],
+      });
+
+      storage.replaceSourcePayload(payload);
+
+      const relatedWork = storage.getSessionRelatedWork("sess:opencode:session-opencode-related");
+      assert.equal(relatedWork.length, 1);
+      assert.equal(relatedWork[0]?.relation_kind, "delegated_session");
+      assert.equal(relatedWork[0]?.target_kind, "session");
+      assert.equal(relatedWork[0]?.target_session_ref, "sess:opencode:parent-session-1");
+      assert.equal(relatedWork[0]?.child_agent_key, "reviewer-agent");
+      assert.equal(relatedWork[0]?.transcript_primary, true);
+    } finally {
+      storage.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("getSessionRelatedWork merges duplicate delegated-session fragments for the same child session", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-duplicate-related-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    try {
+      const payload = createFixturePayload(
+        "src-duplicate-related",
+        "Inspect duplicate delegated relation",
+        "stage-run-duplicate-related",
+        {
+          platform: "claude_code",
+          sessionId: "session-duplicate-related",
+          turnId: "turn-duplicate-related",
+          workingDirectory: "/workspace/duplicate-related",
+        },
+      );
+      const lastFragment = payload.fragments[payload.fragments.length - 1]!;
+      payload.fragments.push({
+        ...lastFragment,
+        id: "turn-duplicate-related-fragment-relation-a",
+        seq_no: lastFragment.seq_no + 1,
+        fragment_kind: "session_relation",
+        actor_kind: "system",
+        origin_kind: "source_meta",
+        time_key: "2026-03-09T09:00:04.000Z",
+        payload: {
+          parent_uuid: "child-session-1",
+          is_sidechain: true,
+        },
+        raw_refs: [],
+      });
+      payload.fragments.push({
+        ...lastFragment,
+        id: "turn-duplicate-related-fragment-relation-b",
+        seq_no: lastFragment.seq_no + 2,
+        fragment_kind: "session_relation",
+        actor_kind: "system",
+        origin_kind: "source_meta",
+        time_key: "2026-03-09T09:00:05.000Z",
+        payload: {
+          parent_uuid: "child-session-1",
+          is_sidechain: true,
+        },
+        raw_refs: [],
+      });
+
+      storage.replaceSourcePayload(payload);
+
+      const relatedWork = storage.getSessionRelatedWork("session-duplicate-related");
+      assert.equal(relatedWork.length, 1);
+      assert.equal(relatedWork[0]?.relation_kind, "delegated_session");
+      assert.equal(relatedWork[0]?.target_session_ref, "child-session-1");
+      assert.equal(relatedWork[0]?.transcript_primary, true);
+      assert.equal(relatedWork[0]?.fragment_refs.length, 2);
+      assert.equal(relatedWork[0]?.created_at, "2026-03-09T09:00:04.000Z");
+      assert.equal(relatedWork[0]?.updated_at, "2026-03-09T09:00:05.000Z");
+    } finally {
+      storage.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("getSessionRelatedWork does not invent relations from Codex or AMP automation-like prompts", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-history-hints-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    try {
+      storage.replaceSourcePayload(
+        createFixturePayload("src-codex-history-hint", "continue", "stage-run-codex-history-hint", {
+          platform: "codex",
+          sessionId: "session-codex-history-hint",
+          turnId: "turn-codex-history-hint",
+          workingDirectory: "/workspace/chat-ui-kit",
+        }),
+      );
+      storage.replaceSourcePayload(
+        createFixturePayload("src-amp-history-hint", "continue", "stage-run-amp-history-hint", {
+          platform: "amp",
+          sessionId: "session-amp-history-hint",
+          turnId: "turn-amp-history-hint",
+          workingDirectory: "/workspace/chat-ui-kit",
+        }),
+      );
+
+      assert.deepEqual(storage.getSessionRelatedWork("session-codex-history-hint"), []);
+      assert.deepEqual(storage.getSessionRelatedWork("session-amp-history-hint"), []);
+    } finally {
+      storage.close();
+    }
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -1421,6 +1817,54 @@ test("searchTurns with unicode and emoji text matches correctly", async () => {
     const results = storage.searchTurns({ query: "Unicode" });
     assert.equal(results.length, 1, "Unicode text should be searchable");
     assert.ok(results[0]!.highlights.length > 0, "Should highlight Unicode match");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("searchTurns does not broaden session metadata matches on partial multi-term overlap", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-session-overlap-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(
+      createFixturePayload("src-search-session-target", "Alpha traceability target", "sr-session-target", {
+        turnId: "turn-session-target",
+        sessionId: "session-session-target",
+        workingDirectory: "/workspace/alpha-history",
+        projectObservation: {
+          workspacePath: "/workspace/alpha-history",
+          repoRoot: "/workspace/alpha-history",
+          repoFingerprint: "fp-session-alpha",
+        },
+      }),
+    );
+    storage.replaceSourcePayload(
+      createFixturePayload("src-search-session-nearby-a", "Alpha API parity review", "sr-session-nearby-a", {
+        turnId: "turn-session-nearby-a",
+        sessionId: "session-session-nearby-a",
+        workingDirectory: "/workspace/alpha-history",
+        projectObservation: {
+          workspacePath: "/workspace/alpha-history",
+          repoRoot: "/workspace/alpha-history",
+          repoFingerprint: "fp-session-alpha",
+        },
+      }),
+    );
+    storage.replaceSourcePayload(
+      createFixturePayload("src-search-session-nearby-b", "Alpha kickoff regression note", "sr-session-nearby-b", {
+        turnId: "turn-session-nearby-b",
+        sessionId: "session-session-nearby-b",
+        workingDirectory: "/workspace/alpha-history",
+        projectObservation: {
+          workspacePath: "/workspace/alpha-history",
+          repoRoot: "/workspace/alpha-history",
+          repoFingerprint: "fp-session-alpha",
+        },
+      }),
+    );
+
+    const results = storage.searchTurns({ query: "Alpha traceability target" });
+    assert.deepEqual(results.map((result) => result.turn.id), ["turn-session-target"]);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

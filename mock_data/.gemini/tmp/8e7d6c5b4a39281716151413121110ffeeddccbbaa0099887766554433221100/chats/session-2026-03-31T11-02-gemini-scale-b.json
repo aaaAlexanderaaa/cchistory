@@ -1,0 +1,29 @@
+{
+  "sessionId": "a3f9d2d1-8864-48fe-bc52-e90de9fc0f59",
+  "projectHash": "8e7d6c5b4a39281716151413121110ffeeddccbbaa0099887766554433221100",
+  "startTime": "2026-03-31T11:02:12.000Z",
+  "lastUpdated": "2026-03-31T11:02:57.000Z",
+  "messages": [
+    {
+      "id": "6bca0d9f-f875-4a1f-b8e3-9576fa0fbc5d",
+      "timestamp": "2026-03-31T11:02:12.000Z",
+      "type": "user",
+      "content": "List the current ready tasks and tell me which one is blocked."
+    },
+    {
+      "id": "355dbfc6-2a31-4454-8122-36ffc3447166",
+      "timestamp": "2026-03-31T11:02:57.000Z",
+      "type": "gemini",
+      "content": "Ready tasks include Gemini fixtures, Cursor CLI ownership, and TUI runtime-path review; OpenClaw remains blocked by missing real data.",
+      "model": "gemini-2.5-pro",
+      "tokens": {
+        "input": 1110,
+        "output": 39,
+        "cached": 160,
+        "thoughts": 88,
+        "tool": 0,
+        "total": 1149
+      }
+    }
+  ]
+}

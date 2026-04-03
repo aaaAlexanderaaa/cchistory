@@ -1,0 +1,29 @@
+{
+  "sessionId": "7f31c5cd-2508-4c73-b455-a9e0d5a5f466",
+  "projectHash": "8e7d6c5b4a39281716151413121110ffeeddccbbaa0099887766554433221100",
+  "startTime": "2026-03-31T12:15:14.000Z",
+  "lastUpdated": "2026-03-31T12:16:04.000Z",
+  "messages": [
+    {
+      "id": "7a523d48-0adb-4a88-89cc-22be7f4d9145",
+      "timestamp": "2026-03-31T12:15:14.000Z",
+      "type": "user",
+      "content": "Draft a short note explaining why missing companion metadata should not discard a Gemini session."
+    },
+    {
+      "id": "2c8d69d8-c927-42b8-b2d7-b3e6f6466a5b",
+      "timestamp": "2026-03-31T12:16:04.000Z",
+      "type": "gemini",
+      "content": "Treat the session as valid evidence, keep the project hash as the visible fallback title, and leave workspace linkage unresolved until better evidence appears.",
+      "model": "gemini-2.5-pro",
+      "tokens": {
+        "input": 1325,
+        "output": 44,
+        "cached": 190,
+        "thoughts": 101,
+        "tool": 0,
+        "total": 1369
+      }
+    }
+  ]
+}

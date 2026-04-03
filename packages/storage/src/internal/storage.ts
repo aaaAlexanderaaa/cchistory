@@ -17,6 +17,7 @@ import type {
   ProjectManualOverride,
   RawRecord,
   SessionProjection,
+  SessionRelatedWorkProjection,
   SourceFragment,
   SourceStatus,
   SourceSyncPayload,
@@ -276,6 +277,15 @@ export class CCHistoryStorage {
 
   getResolvedSession(sessionId: string): SessionProjection | undefined {
     return this.buildProjectLinkSnapshot().sessions.find((session) => session.id === sessionId);
+  }
+
+  getSessionRelatedWork(sessionId: string): SessionRelatedWorkProjection[] {
+    const session = this.getResolvedSession(sessionId) ?? this.getSession(sessionId);
+    if (!session) {
+      return [];
+    }
+    const fragments = this.selectPayloadsBySession<SourceFragment>("source_fragments", sessionId, "ORDER BY id ASC");
+    return buildSessionRelatedWork(session, fragments);
   }
 
   listProjects(): ProjectIdentity[] {
@@ -889,6 +899,24 @@ export class CCHistoryStorage {
     return this.selectPayloads<LossAuditRecord>("loss_audits", limit);
   }
 
+  private sessionMatchesSearchQuery(session: SessionProjection | undefined, query: string): boolean {
+    if (!session) {
+      return false;
+    }
+    const searchableText = [session.title, session.working_directory]
+      .filter((value): value is string => Boolean(value))
+      .join("\n");
+    if (!searchableText) {
+      return false;
+    }
+    const normalizedQuery = query.trim().toLowerCase();
+    if (!normalizedQuery) {
+      return true;
+    }
+    const loweredSearchableText = searchableText.toLowerCase();
+    return normalizedQuery.split(/\s+/u).every((segment) => loweredSearchableText.includes(segment));
+  }
+
   getTurnLineage(turnId: string): PipelineLineage | undefined {
     const turn = this.getResolvedTurn(turnId) ?? this.getTurn(turnId);
     if (!turn) {
@@ -943,6 +971,20 @@ export class CCHistoryStorage {
 
     const projectsById = this.getProjectsById();
     const sessionsById = this.getSessionsById();
+    if (query.length > 0) {
+      const candidateTurnIdSet = new Set(candidateTurnIds);
+      for (const turn of turnsById.values()) {
+        if (candidateTurnIdSet.has(turn.id)) {
+          continue;
+        }
+        const session = sessionsById.get(turn.session_id);
+        if (!this.sessionMatchesSearchQuery(session, query)) {
+          continue;
+        }
+        candidateTurnIds.push(turn.id);
+        candidateTurnIdSet.add(turn.id);
+      }
+    }
     const results: TurnSearchResult[] = [];
 
     for (const turnId of candidateTurnIds) {
@@ -1247,6 +1289,14 @@ export class CCHistoryStorage {
       .map((row) => fromJson<T>((row as { payload_json: string }).payload_json));
   }
 
+  private selectPayloadsBySession<T>(tableName: string, sessionId: string, orderBy = "ORDER BY id"): T[] {
+    assertTableName(tableName);
+    return this.db
+      .prepare(`SELECT payload_json FROM ${tableName} WHERE session_ref = ? ${orderBy}`)
+      .all(sessionId)
+      .map((row) => fromJson<T>((row as { payload_json: string }).payload_json));
+  }
+
   private listSessions(): SessionProjection[] {
     return this.db
       .prepare("SELECT payload_json FROM sessions ORDER BY updated_at DESC, created_at DESC")
@@ -1490,4 +1540,109 @@ function usageDimensionLabel(row: UsageAggregationRow, dimension: UsageStatsDime
     case "month":
       return row.month;
   }
+}
+
+
+function buildSessionRelatedWork(
+  session: SessionProjection,
+  fragments: SourceFragment[],
+): SessionRelatedWorkProjection[] {
+  const grouped = new Map<string, SessionRelatedWorkProjection>();
+  for (const fragment of fragments) {
+    if (fragment.fragment_kind !== "session_relation") {
+      continue;
+    }
+    const payload = fragment.payload;
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      continue;
+    }
+    const relationKind = normalizeRelatedWorkKind(payload);
+    if (!relationKind) {
+      continue;
+    }
+    const parentUuid =
+      asOptionalString(payload.parent_uuid) ??
+      asOptionalString(payload.callingSessionId) ??
+      asOptionalString(payload.calling_session_id) ??
+      asOptionalString(payload.parentId) ??
+      asOptionalString(payload.parent_id);
+    const parentToolRef =
+      asOptionalString(payload.parent_tool_ref) ??
+      asOptionalString(payload.callingToolUseId) ??
+      asOptionalString(payload.calling_tool_use_id);
+    const sessionKey = asOptionalString(payload.session_key);
+    const jobId = asOptionalString(payload.job_id);
+    const childAgentKey =
+      asOptionalString(payload.agent_id) ??
+      asOptionalString(payload.agentId) ??
+      asOptionalString(payload.child_agent_key);
+    const key =
+      relationKind === "automation_run"
+        ? `automation:${session.id}:${jobId ?? ""}:${sessionKey ?? ""}:${parentUuid ?? fragment.id}`
+        : `delegated:${session.id}:${parentUuid ?? session.id}:${childAgentKey ?? ""}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.created_at = existing.created_at <= fragment.time_key ? existing.created_at : fragment.time_key;
+      existing.updated_at = existing.updated_at >= fragment.time_key ? existing.updated_at : fragment.time_key;
+      existing.fragment_refs = uniqueStrings([...existing.fragment_refs, fragment.id]);
+      existing.parent_tool_ref = existing.parent_tool_ref ?? parentToolRef;
+      existing.child_agent_key = existing.child_agent_key ?? childAgentKey;
+      existing.status = asOptionalString(payload.status) ?? existing.status;
+      existing.raw_detail = { ...existing.raw_detail, ...payload };
+      continue;
+    }
+    grouped.set(key, {
+      id: stableId("session-related-work", session.id, key),
+      source_id: session.source_id,
+      source_platform: session.source_platform,
+      source_session_ref: session.id,
+      relation_kind: relationKind,
+      target_kind: relationKind === "automation_run" ? "automation_run" : "session",
+      target_session_ref: relationKind === "automation_run" ? parentUuid : parentUuid ?? session.id,
+      target_run_ref:
+        relationKind === "automation_run"
+          ? stableId("automation-run", session.source_id, session.id, jobId ?? "", sessionKey ?? fragment.id)
+          : undefined,
+      transcript_primary: relationKind === "delegated_session",
+      evidence_confidence: relationKind === "automation_run" ? 0.95 : asOptionalBoolean(payload.is_sidechain) ? 0.95 : 0.8,
+      parent_event_ref: relationKind === "delegated_session" ? parentUuid : undefined,
+      parent_tool_ref: parentToolRef,
+      child_agent_key: childAgentKey,
+      automation_job_ref: relationKind === "automation_run" ? jobId : undefined,
+      automation_run_key: relationKind === "automation_run" ? sessionKey : undefined,
+      title: session.title,
+      status: asOptionalString(payload.status),
+      created_at: fragment.time_key,
+      updated_at: fragment.time_key,
+      fragment_refs: [fragment.id],
+      raw_detail: { ...payload },
+    });
+  }
+  return [...grouped.values()].sort((left, right) => left.created_at.localeCompare(right.created_at));
+}
+
+function normalizeRelatedWorkKind(payload: Record<string, unknown>): SessionRelatedWorkProjection["relation_kind"] | undefined {
+  const relationKind = asOptionalString(payload.relation_kind);
+  if (relationKind === "automation_run") {
+    return "automation_run";
+  }
+  if (
+    asOptionalBoolean(payload.is_sidechain) ||
+    asOptionalString(payload.parent_uuid) ||
+    asOptionalString(payload.callingSessionId) ||
+    asOptionalString(payload.calling_session_id) ||
+    asOptionalString(payload.parentId) ||
+    asOptionalString(payload.parent_id)
+  ) {
+    return "delegated_session";
+  }
+  return undefined;
+}
+
+function asOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function asOptionalBoolean(value: unknown): boolean {
+  return value === true;
 }

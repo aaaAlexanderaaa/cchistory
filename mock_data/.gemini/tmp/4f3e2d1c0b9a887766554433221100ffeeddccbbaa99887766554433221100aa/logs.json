@@ -1,0 +1,16 @@
+[
+  {
+    "sessionId": "91d0d62b-8f12-4a77-8f4b-8a58d53f2c10",
+    "messageId": 0,
+    "type": "user",
+    "message": "/help",
+    "timestamp": "2026-03-31T08:58:00.000Z"
+  },
+  {
+    "sessionId": "91d0d62b-8f12-4a77-8f4b-8a58d53f2c10",
+    "messageId": 1,
+    "type": "user",
+    "message": "/memory show",
+    "timestamp": "2026-03-31T08:58:21.000Z"
+  }
+]

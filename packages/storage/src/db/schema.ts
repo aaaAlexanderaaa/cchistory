@@ -1,3 +1,4 @@
+import process from "node:process";
 import type { DatabaseSync } from "node:sqlite";
 
 export const STORAGE_SCHEMA_VERSION = "2026-03-20.1";
@@ -204,10 +205,12 @@ export function initializeStorageSchema(db: DatabaseSync): boolean {
     `);
     return true;
   } catch (error) {
-    console.warn(
-      "[cchistory/storage] FTS5 unavailable — using fallback substring search.",
-      error instanceof Error ? error.message : error,
-    );
+    if (process.env.CCHISTORY_SHOW_RUNTIME_WARNINGS === "1") {
+      console.warn(
+        "[cchistory/storage] FTS5 unavailable — using fallback substring search.",
+        error instanceof Error ? error.message : error,
+      );
+    }
     return false;
   }
 }
