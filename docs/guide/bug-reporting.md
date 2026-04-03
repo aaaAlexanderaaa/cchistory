@@ -50,6 +50,7 @@ cchistory discover --showall
 cchistory sync --dry-run
 cchistory ls sessions --store <store-dir>
 cchistory show session <session-ref> --store <store-dir>
+cchistory tree session <session-ref> --store <store-dir> --long
 cchistory search "<query>" --store <store-dir>
 cchistory stats --store <store-dir>
 ```
@@ -60,6 +61,7 @@ Include:
 - stdout/stderr
 - the store path if relevant
 - the ids or paths you expected to see
+- whether `tree session --long` shows the same bug in nearby turns or related-work context
 
 ### Source-adapter / parser bug
 
@@ -84,6 +86,7 @@ Include evidence showing identity or grouping drift, for example:
 ```bash
 cchistory ls projects --store <store-dir>
 cchistory show session <session-ref> --store <store-dir>
+cchistory tree session <session-ref> --store <store-dir> --long
 ```
 
 If possible include:

@@ -187,7 +187,7 @@ admin views:
 
 ### UX and implementation constraints
 
-- The next tree surface must support keyboard-accessible disclosure patterns and
+- The tree surface for this slice needed to support keyboard-accessible disclosure patterns and
   predictable tab order.
 - Dense navigation should avoid forcing users through excessive focus stops or
   rendering every turn node expanded by default.
@@ -195,7 +195,7 @@ admin views:
   current `projectRegistry`, `sessionRegistry`, and selected-turn drill-down
   patterns rather than invent a parallel data-fetch path.
 
-### Open design decisions requiring the next slice
+### Historical design decisions for the delivered tree slice
 
 - Whether tree view should be a new top-level history destination or a new mode
   within `Projects`.
@@ -204,11 +204,13 @@ admin views:
 - How much virtualization or incremental expansion is needed for large projects
   with many sessions and turns.
 
-### Next recommended step
+### Historical next step
 
-Run the Phase 3 design protocol for `R4-KR3` using the discovery above, then
-choose the smallest tree slice that can ship without changing canonical model
-semantics.
+At the time this discovery was recorded, the recommended next step was to run
+the Phase 3 design protocol for `R4-KR3` and choose the smallest tree slice
+that could ship without changing canonical model semantics. That tree slice is
+now delivered, so this section remains as historical design context rather than
+an open instruction.
 
 ## Phase 3C - Tree View Design Protocol
 

@@ -3,9 +3,8 @@
 ## Status
 
 - Objective source: `docs/ROADMAP.md`
-- Backlog status after this note: `active`
-- Phase reached: `R10-KR2` implemented and regression-covered on 2026-03-28;
-  `R10-KR3` contract decided on 2026-03-29 and implementation remains pending
+- Backlog status after this note: `done`
+- Phase reached: `R10-KR1` through `R10-KR3` completed on 2026-03-29, with Phase 7 evaluation passing the same day
 - Scope: package the most common operator journeys as dedicated CLI workflow
   commands that wrap existing canonical commands without inventing parallel
   semantics or requiring managed services
@@ -14,18 +13,18 @@
 
 ### Problem statement
 
-The roadmap calls for single-command operator workflows, but the current CLI is
-still shaped around granular building blocks. Those building blocks are useful
-and should remain available, yet common operator journeys still require the user
+At the original 2026-03-28 decomposition point, the roadmap called for single-command operator workflows, and the CLI was
+still shaped around granular building blocks. Those building blocks were useful
+and should remain available, yet common operator journeys still required the user
 or agent to remember and compose multiple commands.
 
-The clearest current examples are:
+The clearest examples at that point were:
 
-1. source health review, which currently means combining `discover`,
+1. source health review, which then meant combining `discover`,
    `sync --dry-run`, `ls sources`, and `stats`
-2. portable backup creation, which currently means remembering the export dry-run
+2. portable backup creation, which then meant remembering the export dry-run
    step plus the write step and the most useful scoping flags
-3. post-restore verification, which currently means manually combining `stats`
+3. post-restore verification, which then meant manually combining `stats`
    and `ls sources` after an import
 
 The user-facing goal is not to replace the granular commands. It is to package
@@ -57,24 +56,24 @@ The repository already exposes the low-level pieces needed for this objective:
 - The current granular commands must remain available. Workflow commands are an
   operator simplification layer, not a replacement transport.
 
-### Gaps found
+### Gaps found at decomposition time
 
-#### 1. No dedicated source-health workflow command exists
+#### 1. No dedicated source-health workflow command existed yet
 
-The highest-frequency operator diagnostic path currently requires multiple
-commands and manual interpretation. That makes both human use and agent use more
+At that point, the highest-frequency operator diagnostic path required multiple
+commands and manual interpretation. That made both human use and agent use more
 error-prone than necessary.
 
-#### 2. Bundle workflows are still expressed as low-level command sequences
+#### 2. Bundle workflows were still expressed as low-level command sequences
 
-`export` and `import` are canonical and should stay that way, but the most
-common operator journeys around backup creation and post-restore verification are
+`export` and `import` were canonical and should stay that way, but the most
+common operator journeys around backup creation and post-restore verification were
 still documented as stitched sequences rather than named workflows.
 
-#### 3. Existing skills know the workflow, but the CLI does not expose it directly
+#### 3. Existing skills already knew the workflow, but the CLI did not yet expose it directly
 
-The repo-owned operator skills already encode dry-run-first source health and
-bundle export. That is useful evidence that the CLI can expose the same journeys
+The repo-owned operator skills already encoded dry-run-first source health and
+bundle export. That was useful evidence that the CLI could expose the same journeys
 more directly without changing product semantics.
 
 ### Assumptions

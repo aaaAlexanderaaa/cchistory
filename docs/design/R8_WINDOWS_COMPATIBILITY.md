@@ -3,9 +3,7 @@
 ## Status
 
 - Objective source: `docs/ROADMAP.md`
-- Current phase: `R8-KR1` through `R8-KR3` were implemented on 2026-03-27, but
-  a follow-up review found that UNC file-URI authorities are still not preserved
-  by the shared path helper
+- Current phase: `R8-KR1` through `R8-KR3` were implemented on 2026-03-27, and the UNC corrective follow-up landed on 2026-03-28; the objective is now closed in `BACKLOG.md`
 - Scope: path parsing, default source roots, URI/separator normalization, and
   local file/runtime differences on Windows hosts
 
@@ -156,9 +154,10 @@ model reliably, not about redefining that model.
 - It is still unknown whether any adapter emits Windows UNC paths, percent-
   encoded drive URIs, or mixed-separator paths in the wild.
 
-## Recommended next step
+## Historical next step
 
-Proceed to Phase 2 and Phase 3 for a Windows-compatibility slice that:
+At the time this decomposition note was written, the recommended next step was
+to proceed to Phase 2 and Phase 3 for a Windows-compatibility slice that:
 
 1. defines one canonical path-normalization policy reused across layers,
 2. enumerates verified Windows default-root candidates per adapter,
@@ -168,6 +167,9 @@ Proceed to Phase 2 and Phase 3 for a Windows-compatibility slice that:
    and web path comparison), and
 5. defers any adapter-specific Windows support claims until real roots are
    verified.
+
+That slice is now delivered under `R8-KR1` through `R8-KR3`, so this section
+remains as historical planning context rather than an open instruction.
 
 ## Phase 2 - Test Data Preparation
 
@@ -523,6 +525,7 @@ recorded objective evaluation for this host.
 
 The original 2026-03-27 Phase 7 pass record is preserved above as historical
 execution evidence, but it is superseded for the current repository-visible
-state by the post-completion correction note. Treat `R8` as requiring
-corrective follow-up until UNC file-URI authorities are preserved by the shared
-path-identity helper and covered by executable regressions.
+state by the 2026-03-28 corrective closure note. UNC file-URI authorities are
+now preserved by the shared path-identity helper and covered by executable
+regressions, so `R8` remains closed unless future real Windows evidence reveals
+a new gap.

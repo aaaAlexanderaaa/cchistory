@@ -17,6 +17,8 @@ const platformLabelToId = new Map([
   ['OpenClaw', 'openclaw'],
   ['OpenCode', 'opencode'],
   ['LobeChat', 'lobechat'],
+  ['CodeBuddy', 'codebuddy'],
+  ['codebuddy', 'codebuddy'],
   ['codex', 'codex'],
   ['claude_code', 'claude_code'],
   ['cursor', 'cursor'],

@@ -7,6 +7,12 @@ It is intentionally narrower than a hosted multi-user SaaS bar. It does not add
 requirements for RBAC, tenant isolation, horizontal scaling, or cluster
 operations.
 
+It is also narrower than the repository's broader manual-review program: passing
+this minimum self-host v1 gate does not by itself mean the still-blocked
+user-started managed-runtime web/API diaries under `R31` or the server-backed
+remote-agent diaries under `R35` have already been recorded. Those remain
+separate manual review work rather than implied gate completion.
+
 ## Scope
 
 This gate applies only when all of the following are true:
@@ -71,8 +77,8 @@ Current self-host v1 support tiers:
 
 | Tier | Platforms | Meaning |
 | --- | --- | --- |
-| `stable` | `codex`, `claude_code`, `factory_droid`, `amp`, `cursor`, `antigravity` | real-world validated and expected to be covered by regression tests |
-| `experimental` | `gemini`, `openclaw`, `opencode`, `lobechat` | registered in code, but not yet validated enough for self-host v1 support claims |
+| `stable` | `codex`, `claude_code`, `factory_droid`, `amp`, `cursor`, `antigravity`, `gemini`, `openclaw`, `opencode`, `codebuddy` | real-world validated and expected to be covered by regression tests |
+| `experimental` | `lobechat` | registered in code, but not yet validated enough for self-host v1 support claims |
 
 ## Out Of Scope For Self-Host V1
 
@@ -93,6 +99,9 @@ Use the smallest targeted command that proves the changed layer:
 - `pnpm run verify:support-status`
 - `pnpm --filter @cchistory/source-adapters test`
 - `pnpm run mock-data:validate`
+
+`pnpm run verify:local-full-read-bundle` is intentionally **not** part of the minimum self-host release gate. It is a local confidence helper for skeptical full-read operator workflows, not a required release-blocking verifier.
+
 - `pnpm --filter @cchistory/storage test`
 - `pnpm --filter @cchistory/api test`
 - `cd apps/web && pnpm lint`

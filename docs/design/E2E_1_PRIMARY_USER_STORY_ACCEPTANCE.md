@@ -63,7 +63,9 @@ turn.
 3. Use CLI JSON output to search for a known Factory Droid turn under that
    project and verify the result points back to the committed project.
 4. Use `show turn` and `show session` to confirm the user can inspect the turn's
-   assistant/tool context and the parent session.
+   assistant/tool context and the parent session; the current CLI surface also
+   offers `tree session <session-ref> --long` when the operator wants nearby-
+   turn and related-work context in one continuation.
 
 ### Trade-offs and rejected alternatives
 
@@ -92,7 +94,9 @@ turn.
   the `history-lab` project across AMP, Antigravity, and Factory Droid.
 - The test verifies project recall, project tree membership, project-scoped
   search for a known Factory Droid ask, and session/turn context drill-down via
-  CLI JSON output.
+  CLI JSON output through the recorded `show turn` / `show session` baseline;
+  the current CLI browse surface now also supports `tree session --long` as the
+  richer nearby-turn and related-work continuation for the same recovered turn.
 
 ## Phase 7 Evaluation Report
 

@@ -2,9 +2,9 @@
 
 本 roadmap 记录 CCHistory 接下来的主要工作方向，分为以下五个部分。各部分之间没有严格的先后依赖，可以并行推进。
 
-> 截至 2026-03-20，当前 registry 已注册 `codex`、`claude_code`、`factory_droid`、`amp`、`cursor`、`antigravity`、`openclaw`、`opencode`、`lobechat`。
+> 截至 2026-04-02，当前 registry 已注册 `codex`、`claude_code`、`factory_droid`、`amp`、`cursor`、`antigravity`、`gemini`、`openclaw`、`opencode`、`lobechat`、`codebuddy`。
 >
-> 自 2026-03-20 起，self-host v1 的发布门槛以 [`docs/design/SELF_HOST_V1_RELEASE_GATE.md`](./design/SELF_HOST_V1_RELEASE_GATE.md) 为准。当前 `stable` adapter 为 `codex`、`claude_code`、`factory_droid`、`amp`、`cursor`、`antigravity`；`openclaw`、`opencode`、`lobechat` 保持 `experimental`，直到真实世界验证补齐。
+> 自 2026-03-20 起，self-host v1 的发布门槛以 [`docs/design/SELF_HOST_V1_RELEASE_GATE.md`](./design/SELF_HOST_V1_RELEASE_GATE.md) 为准。当前 `stable` adapter 为 `codex`、`claude_code`、`factory_droid`、`amp`、`cursor`、`antigravity`、`gemini`、`openclaw`、`opencode`、`codebuddy`；`lobechat` 保持 `experimental`，直到真实世界验证补齐。
 >
 > 本文档作为 `docs/design/IMPLEMENTATION_PLAN.md` 的补充，但不替代设计冻结。
 
@@ -23,31 +23,37 @@
 
 欢迎用户直接提 issue，优先处理可复现问题。
 
-- 建立 issue 驱动的 bug intake 节奏。
-- 完成 Windows 适配专项梳理，重点覆盖路径解析、默认 source 根目录、URI/分隔符规范化、SQLite/本地文件访问差异。
+- issue 驱动的 bug intake 基线已建立；后续重点是把真实用户反馈持续收敛到现有模板、triage 和 backlog 节奏。
+- Windows 兼容性首轮专项已完成；后续仅在新的真实 Windows 样本暴露额外路径、默认根目录或 URI 边界时继续收口。
 
 # 基础功能增强
 
-- `cli search` 增加模糊搜索能力，降低对完整关键词的依赖。
-- CLI 增加更直接的单会话 / session 读取能力，补齐"拿到一个 session 就能快速查看"的入口，简化现有 `show` / `query` 的心智成本。
-- 优化导出 / 导入链路，减少大 bundle、冲突处理和跨机迁移时的摩擦。
-- 为高频操作封装单一命令入口，减少需要组合多个命令才能完成常见任务的情况。
-- 扩展安装渠道，降低首次使用和升级成本。
+- `cli search` 的模糊搜索基线已交付；后续按真实检索反馈继续优化召回质量与结果可读性。
+- CLI 更直接的单会话 / session 读取入口已交付；后续只在新的 operator workflow 证明 `show` / `query` 仍有明显心智成本时再扩展。
+- 导出 / 导入链路的当前基线已覆盖大 bundle、冲突处理与跨机迁移的首轮可用性；后续按真实使用摩擦继续迭代。
+- 高频操作的首批单一命令入口已交付；后续只在新的 operator workflow 证明仍有明显组合成本时再扩展。
+- 安装渠道扩展的第一条 repo-distributed baseline 已落地；后续再按分发需求决定是否增加新的官方渠道。
+- 自动化 / `cron` / subagent 的次级证据语义成为新方向：要把真实 `UserTurn`、委派任务、定时触发和辅助元数据分层存储，并保持可追溯的父任务关系。
 
 # 用户体验优化
 
 - 持续优化整体 UI/UX，优先处理信息层级、可读性、检索路径和管理操作的连贯性。
-- 开发 tree 视图，让 project / session / turn 的层级关系更直观。
+- tree 视图首个 canonical slice 已交付；后续继续按真实使用反馈优化层级可读性和导航效率。
+- 针对 `cron`、`/loop` 等高重复自动化 turn 的 recall / search 去稀释成为下一轮重点，目标是证据保留但默认投影不被循环流量淹没。
+- CLI / TUI / API 的下一轮改进以 operator-experience-led、test-first 的 e2e walkthrough 为牵引：agent 需要按真实用户路径跑通流程，并把摩擦系统性回流到 backlog。
 
 # 适配更多的源
 
 `antigravity` 已完成适配。接下来的重点：
 
-- 继续补强 `opencode` 和 `openclaw`，把真实磁盘结构、异常样本、token usage 和 project 信号补到足够稳定。
-- 新增 `gemini cli` 适配。
-- 抽象并实现通用解析器，将"消息数组 / JSONL 行记录 / VS Code 状态库 / export bundle"等常见形态统一到少数几条可复用解析路径上。
+- `openclaw` 已完成当前 stable promotion slice；后续仅在新的真实样本暴露额外边界、Windows 默认根目录得到独立验证、或 evidence-preserving 规则需要扩展时再追加收口。
+- `gemini` 已完成当前 stable promotion slice；后续仅在新的真实样本暴露额外消息形态、Windows 默认根目录得到独立验证、或 companion/evidence 规则需要扩展时再追加收口。
+- `codebuddy` 已完成当前 stable promotion slice；后续仅在新的真实样本暴露额外 `providerData` 语义、Windows 默认根目录得到独立验证、或零字节 sibling / companion 规则需要扩展时再追加收口。
+- 通用解析器的首轮抽象已完成；后续仅在新的 source family 暴露出未覆盖形态时继续扩展复用边界。
+- `lobechat` 暂时继续保持 `experimental`；在新的真实样本补齐前不作为当前阻塞项，优先级暂时让位给 automation/subagent 语义和 recall quality 工作。
 
 # AI 友好适配
 
-- 封装适合 agent 调用的 skill，把常见工作流收敛成少量稳定接口（如检索项目历史、读取单个 turn 上下文、导出可分享 bundle、source 健康检查等）。
-- skill 输出尽量与当前 canonical model 对齐，避免再造一套旁路语义。
+- 面向 agent 的首批 repo-owned skill 已落地；后续重点是根据真实调用反馈扩展覆盖面，而不是再造并行语义层。
+- skill 输出继续与 canonical model 对齐，新增能力也应复用现有语义而不是分叉旁路接口。
+- 多 agent / subagent 的 session/task 关系需要回收到 canonical model，而不是继续把 delegated prompts 平铺成普通 `UserTurn`。

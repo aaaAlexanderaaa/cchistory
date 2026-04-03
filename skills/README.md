@@ -17,6 +17,8 @@ Current inventory:
 - `cchistory-turn-context`
 - `cchistory-export-bundle`
 - `cchistory-source-health`
+- `cchistory-backup-workflow`
+- `cchistory-restore-check`
 
 ## Layout
 

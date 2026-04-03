@@ -42,12 +42,14 @@ CCHistory ingests, parses, and projects your AI coding assistant conversations i
 | AMP | **Stable** | `~/.local/share/amp/threads/` |
 | Factory Droid | **Stable** | `~/.factory/sessions/` |
 | Antigravity | **Stable** | Platform user-data `User/` + `~/.gemini/antigravity/{conversations,brain}` |
-| OpenClaw | Experimental | `~/.openclaw/agents/` |
-| OpenCode | Experimental | `~/.local/share/opencode/{project,storage/session}` |
-| Gemini CLI | Experimental | `~/.gemini/` |
+| OpenClaw | **Stable** | `~/.openclaw/agents/` |
+| OpenCode | **Stable** | `~/.local/share/opencode/{project,storage}` |
+| Gemini CLI | **Stable** | `~/.gemini/` |
 | LobeChat | Experimental | `~/.config/lobehub-storage/` |
+| CodeBuddy | **Stable** | `~/.codebuddy/` |
 
 > `Stable` means real-world validated for the self-host v1 support bar. `Experimental` means the adapter is registered in code but is not yet validated enough for self-host v1 support claims.
+> For `lobechat`, the listed `~/.config/lobehub-storage/` path is still the current root candidate from the experimental slice, not a real-sample-verified canonical location; that review remains blocked under `R17`.
 > Run `pnpm run verify:support-status` to verify these documentation claims against the adapter registry.
 
 > Antigravity note: CCHistory uses two complementary paths for Antigravity. The running desktop app's local language-server trajectory API provides actual conversation content (user inputs, assistant replies, tool calls). Offline files (`workspaceStorage`, `History`, `brain`) are always scanned for project paths and workspace signals. If the desktop app is not running, only the offline path executes, which means no raw conversation content will be recovered — only project metadata and evidence artifacts.
@@ -75,13 +77,14 @@ CCHistory ingests, parses, and projects your AI coding assistant conversations i
 └──────────┬──────────────────────┬───────────────────┬────────────────┘
            │                      │                   │
            ▼                      ▼                   ▼
-┌──────────────────┐  ┌───────────────────┐  ┌─────────────────────┐
-│  CLI (apps/cli)  │  │  API (apps/api)   │  │   Web (apps/web)    │
-│  Local operator  │  │  Fastify REST     │  │   Next.js 16        │
-│  tool: sync,     │  │  server on :8040  │  │   React 19 on :8085 │
-│  search, stats,  │  │  CORS, auth,      │  │   SWR, Tailwind,    │
-│  export/import   │  │  probe, replay    │  │   Recharts           │
-└──────────────────┘  └───────────────────┘  └─────────────────────┘
+┌──────────────────┐  ┌───────────────────┐  ┌─────────────────────┐  ┌──────────────────┐
+│  CLI (apps/cli)  │  │  API (apps/api)   │  │   Web (apps/web)    │  │  TUI (apps/tui)  │
+│  Local operator  │  │  Fastify REST     │  │   Next.js 16        │  │  Ink local       │
+│  tool: sync,     │  │  server on :8040  │  │   React 19 on :8085 │  │  browser for     │
+│  search, stats,  │  │  CORS, auth,      │  │   SWR, Tailwind,    │  │  browse/search   │
+│  export/import   │  │  probe, replay    │  │   Recharts           │  │  and source      │
+│                  │  │                   │  │                     │  │  health summary  │
+└──────────────────┘  └───────────────────┘  └─────────────────────┘  └──────────────────┘
 ```
 
 ## Quick Start
@@ -123,6 +126,38 @@ touching your working tree, run:
 pnpm run verify:clean-install
 ```
 
+For the broader current verification surface, these repository commands are the
+main shortcuts:
+
+```bash
+# Release-gate and install/distribution verification
+pnpm run verify:clean-install
+pnpm run verify:cli-artifact
+pnpm run verify:web-build-offline
+pnpm run verify:support-status
+
+# Operator-style local read-path verification
+pnpm run verify:v1-seeded-acceptance
+pnpm run verify:read-only-admin
+pnpm run verify:fixture-sync-recall
+pnpm run verify:bundle-conflict-recovery
+pnpm run verify:real-layout-sync-recall
+pnpm run verify:related-work-recall
+pnpm run verify:local-full-read-bundle
+
+# User-started or archive-truthfulness review helpers
+pnpm run prepare:v1-seeded-web-review -- --store <dir>
+pnpm run verify:real-archive-probes
+```
+
+`docs/design/CURRENT_RUNTIME_SURFACE.md` remains the canonical current-state
+inventory for what each verifier proves.
+
+These local verifiers and review helpers do **not** mean every manual review gap
+is already closed: the user-started managed-runtime web/API diaries tracked under
+`R31` and the server-backed remote-agent diaries tracked under `R35` are still
+blocked manual review work until a user provides the required running services.
+
 ### Use the standalone CLI artifact
 
 The repository now also supports a CLI-only artifact channel for cases where the
@@ -154,8 +189,21 @@ artifact version. To verify the artifact channel locally, run:
 pnpm run verify:cli-artifact
 ```
 
+If you want one higher-level local full-read confidence pass that also covers the built TUI `--full` path, run:
+
+```bash
+pnpm run verify:local-full-read-bundle
+```
+
+This grouped alias runs the installed-artifact verifier and the skeptical built-TUI `--full` verifier in sequence.
+
 This verifies first install plus replacement-style upgrade by unpacking two
-versioned artifacts and executing the installed `cchistory templates` command.
+versioned artifacts, checking the installed `cchistory templates` command, and
+running skeptical installed-path workflows across restore/conflict,
+browse/search, store-scoped admin, and structured retrieval: `sync -> backup
+preview/write -> import -> restore-check -> search/show -> conflict
+dry-run/replace`, plus `health --store-only`, `ls sources`, `stats`, `query
+session --id`, and `query turn --id`.
 
 ### Install the CLI globally
 
@@ -180,6 +228,19 @@ pnpm cli -- ls projects
 # Or directly via node
 node apps/cli/dist/index.js sync
 ```
+
+### Start the TUI
+
+```bash
+# Build the TUI entrypoint
+pnpm --filter @cchistory/tui build
+
+# Show help or launch the local TUI
+node apps/tui/dist/index.js --help
+node apps/tui/dist/index.js
+```
+
+The TUI is a local read-side entrypoint and does not require the managed API service. In a non-interactive terminal it prints a snapshot instead of opening the full Ink UI.
 
 ### Start the Web UI & API
 
@@ -254,6 +315,8 @@ For detailed guides, see the `docs/guide/` directory:
 - **[API Guide](docs/guide/api.md)** — REST endpoints, configuration, and request/response schemas
 - **[Web UI Guide](docs/guide/web.md)** — Features, navigation, views, and configuration
 - **[Inspection Guide](docs/guide/inspection.md)** — When to use `probe:*` and `inspect:*` evidence/debugging helpers
+- **[Bug Reporting Guide](docs/guide/bug-reporting.md)** — The canonical evidence-preserving contract for reproducible bug reports
+- **[TUI Guide](docs/guide/tui.md)** — Launch modes, keyboard controls, pane behavior, and snapshot output for the local TUI
 - **[Source Notes](docs/sources/README.md)** — Technical notes for validated source storage layouts and ingestion paths
 - **[Self-Host V1 Release Gate](docs/design/SELF_HOST_V1_RELEASE_GATE.md)** — Minimum release bar for a single-user self-hosted v1
 - **[Roadmap](docs/ROADMAP.md)** — Current milestone-oriented development plan
@@ -267,6 +330,7 @@ cchistory/
 ├── apps/
 │   ├── api/                    # Fastify REST API server (:8040)
 │   ├── cli/                    # Command-line tool (cchistory)
+│   ├── tui/                    # Ink-based local TUI browser
 │   └── web/                    # Next.js 16 web frontend (:8085)
 ├── packages/
 │   ├── domain/                 # Core domain contracts and types
@@ -274,10 +338,14 @@ cchistory/
 │   ├── storage/                # SQLite persistence and linking
 │   ├── api-client/             # Shared API DTO contracts
 │   └── presentation/           # DTO → UI type mapping
-├── scripts/                    # Dev service lifecycle scripts
+├── scripts/                    # Dev-service, verification, and inspection helpers
 ├── mock_data/                  # Sanitized fixture corpus
+├── frontend_demo/              # Imported UI/UX reference app
+├── archive/                    # Historical MVP and reference material
 ├── docs/
-│   ├── guide/                  # User-facing guides (CLI, API, Web)
+│   ├── guide/                  # User-facing guides (CLI, API, Web, TUI, inspection, bug reporting)
+│   ├── sources/                # Technical notes for validated source layouts
+│   ├── templates/              # Reusable report/templates for operators and maintainers
 │   ├── design/                 # Internal design documents
 │   └── screenshots/            # Web UI screenshots
 └── LICENSE                     # MIT License
@@ -293,11 +361,13 @@ pnpm run build
 NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build
 
 # Run tests
-pnpm --filter @cchistory/source-adapters test    # 27 tests
-pnpm --filter @cchistory/storage test            # 59 tests
-pnpm --filter @cchistory/presentation test       # 5 tests
-pnpm --filter @cchistory/cli test                # 12 tests
-pnpm --filter @cchistory/api test                # 10 tests
+pnpm --filter @cchistory/source-adapters test    # 60 tests
+pnpm --filter @cchistory/storage test            # 75 tests
+pnpm --filter @cchistory/api-client test         # 9 tests
+pnpm --filter @cchistory/presentation test       # 12 tests
+pnpm --filter @cchistory/cli test                # 48 tests
+pnpm --filter @cchistory/tui test                # 11 tests
+pnpm --filter @cchistory/api test                # 15 tests
 
 # Lint
 cd apps/web && pnpm lint

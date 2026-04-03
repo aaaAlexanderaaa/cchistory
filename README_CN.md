@@ -42,12 +42,14 @@ CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对
 | AMP | **Stable** | `~/.local/share/amp/threads/` |
 | Factory Droid | **Stable** | `~/.factory/sessions/` |
 | Antigravity | **Stable** | 平台用户数据 `User/` + `~/.gemini/antigravity/{conversations,brain}` |
-| OpenClaw | Experimental | `~/.openclaw/agents/` |
-| OpenCode | Experimental | `~/.local/share/opencode/{project,storage/session}` |
-| Gemini CLI | Experimental | `~/.gemini/` |
+| OpenClaw | **Stable** | `~/.openclaw/agents/` |
+| OpenCode | **Stable** | `~/.local/share/opencode/{project,storage}` |
+| Gemini CLI | **Stable** | `~/.gemini/` |
 | LobeChat | Experimental | `~/.config/lobehub-storage/` |
+| CodeBuddy | **Stable** | `~/.codebuddy/` |
 
 > `Stable` 表示已经达到 self-host v1 的真实世界验证门槛。`Experimental` 表示 adapter 已经注册到代码里，但还没有足够的真实样本验证，不能作为 self-host v1 的正式支持承诺。
+> 对 `lobechat` 来说，表里列出的 `~/.config/lobehub-storage/` 仍只是当前 experimental slice 使用的 root candidate，不应视为已经由真实样本验证过的 canonical location；这项评审仍阻塞在 `R17`。
 > 可运行 `pnpm run verify:support-status`，把这些文档声明与 adapter registry 做一致性校验。
 
 > Antigravity 说明：CCHistory 对 Antigravity 采用两条互补的采集链路。运行中的桌面应用通过本地 language server trajectory API 提供实际对话内容（用户输入、助手回复、工具调用）。离线文件（`workspaceStorage`、`History`、`brain`）始终会被扫描，用于获取项目路径和 workspace 信号。如果桌面应用未运行，则只有离线链路会执行，此时不会恢复原始对话内容，只能获取项目元数据和证据工件。
@@ -75,13 +77,14 @@ CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对
 └──────────┬──────────────────────┬───────────────────┬────────────────┘
            │                      │                   │
            ▼                      ▼                   ▼
-┌──────────────────┐  ┌───────────────────┐  ┌─────────────────────┐
-│  CLI (apps/cli)  │  │  API (apps/api)   │  │   Web (apps/web)    │
-│  本地操作工具:    │  │  Fastify REST     │  │   Next.js 16        │
-│  同步、搜索、     │  │  服务 端口 :8040   │  │   React 19 端口     │
-│  统计、导出/导入  │  │  CORS, 认证,       │  │   :8085             │
-│                  │  │  探测, 回放        │  │   SWR, Tailwind     │
-└──────────────────┘  └───────────────────┘  └─────────────────────┘
+┌──────────────────┐  ┌───────────────────┐  ┌─────────────────────┐  ┌──────────────────┐
+│  CLI (apps/cli)  │  │  API (apps/api)   │  │   Web (apps/web)    │  │  TUI (apps/tui)  │
+│  本地操作工具:    │  │  Fastify REST     │  │   Next.js 16        │  │  Ink 本地浏览器   │
+│  同步、搜索、     │  │  服务 端口 :8040   │  │   React 19 端口     │  │  用于浏览、搜索   │
+│  统计、导出/导入  │  │  CORS, 认证,       │  │   :8085             │  │  与 source health │
+│                  │  │  探测, 回放        │  │   SWR, Tailwind     │  │  摘要查看         │
+│                  │  │                   │  │                     │  │                  │
+└──────────────────┘  └───────────────────┘  └─────────────────────┘  └──────────────────┘
 ```
 
 ## 快速开始
@@ -120,6 +123,36 @@ NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build
 pnpm run verify:clean-install
 ```
 
+如果要了解当前更完整的验证入口，可优先使用这些仓库命令：
+
+```bash
+# 发布门槛 / 安装分发验证
+pnpm run verify:clean-install
+pnpm run verify:cli-artifact
+pnpm run verify:web-build-offline
+pnpm run verify:support-status
+
+# 面向 operator workflow 的本地读路径验证
+pnpm run verify:v1-seeded-acceptance
+pnpm run verify:read-only-admin
+pnpm run verify:fixture-sync-recall
+pnpm run verify:bundle-conflict-recovery
+pnpm run verify:real-layout-sync-recall
+pnpm run verify:related-work-recall
+pnpm run verify:local-full-read-bundle
+
+# 用户启动服务或真实归档审查辅助
+pnpm run prepare:v1-seeded-web-review -- --store <dir>
+pnpm run verify:real-archive-probes
+```
+
+各 verifier 的当前语义边界以 `docs/design/CURRENT_RUNTIME_SURFACE.md` 为准。
+
+这些本地 verifier 与审查辅助并不表示所有手工审查缺口都已经关闭：`R31`
+中的用户启动 managed-runtime Web/API diary，以及 `R35` 中依赖服务端运行时
+的 remote-agent diary，仍然是需要用户先启动服务后才能完成的 blocked manual
+review work。
+
 ### 使用独立 CLI 制品
 
 仓库现在还支持一个仅面向 CLI 的制品通道，适用于目标机器不想依赖完整
@@ -151,8 +184,18 @@ bin\cchistory.cmd --help
 pnpm run verify:cli-artifact
 ```
 
+如果你想用一个更高层的本地 full-read 信心验证入口，同时覆盖 built TUI 的 `--full` 路径，可运行：
+
+```bash
+pnpm run verify:local-full-read-bundle
+```
+
+这个分组 alias 会顺序运行独立 CLI 制品 verifier 与 skeptical built-TUI `--full` verifier。
+
 该验证会解压两个不同版本号的制品，并通过执行已安装的
-`cchistory templates` 来确认首次安装与替换式升级都可用。
+`cchistory templates` 以及一组真实的本地 skeptical workflow，来确认首次安装、替换式升级与核心 CLI
+工作流都可用：既覆盖 `sync -> backup preview/write -> import -> restore-check -> search/show -> conflict dry-run/replace`，
+也覆盖多来源 browse/search、`health --store-only`、`ls sources`、`stats`、`query session --id` 与 `query turn --id`。
 
 ### 全局安装 CLI
 
@@ -177,6 +220,19 @@ pnpm cli -- ls projects
 # 或直接通过 node
 node apps/cli/dist/index.js sync
 ```
+
+### 启动 TUI
+
+```bash
+# 构建 TUI 入口
+pnpm --filter @cchistory/tui build
+
+# 查看帮助或启动本地 TUI
+node apps/tui/dist/index.js --help
+node apps/tui/dist/index.js
+```
+
+TUI 是本地只读入口，不依赖托管 API 服务。在非交互终端中它会输出快照，而不是启动完整的 Ink 界面。
 
 ### 启动 Web 界面和 API
 
@@ -251,6 +307,8 @@ cchistory stats
 - **[API 指南](docs/guide/api.md)** — REST 接口、配置和请求/响应模式
 - **[Web 界面指南](docs/guide/web.md)** — 功能、导航、视图和配置
 - **[Inspection Guide](docs/guide/inspection.md)** — 说明何时使用 `probe:*` 与 `inspect:*` 这类证据/诊断辅助命令
+- **[Bug Reporting Guide](docs/guide/bug-reporting.md)** — 说明可复现缺陷报告的标准字段与最小证据集
+- **[TUI Guide](docs/guide/tui.md)** — 说明本地 TUI 的启动方式、键盘操作、面板行为与快照输出
 - **[数据源技术说明](docs/sources/README.md)** — 已验证数据源的存储布局与采集路径
 - **[Self-Host V1 发布门槛](docs/design/SELF_HOST_V1_RELEASE_GATE.md)** — 单用户 self-host v1 的最小发布标准
 - **[开发路线图](docs/ROADMAP.md)** — 当前里程碑式开发计划
@@ -264,6 +322,7 @@ cchistory/
 ├── apps/
 │   ├── api/                    # Fastify REST API 服务器 (:8040)
 │   ├── cli/                    # 命令行工具 (cchistory)
+│   ├── tui/                    # 基于 Ink 的本地 TUI 浏览器
 │   └── web/                    # Next.js 16 Web 前端 (:8085)
 ├── packages/
 │   ├── domain/                 # 核心领域契约和类型
@@ -271,10 +330,14 @@ cchistory/
 │   ├── storage/                # SQLite 持久化和关联
 │   ├── api-client/             # 共享 API DTO 契约
 │   └── presentation/           # DTO → UI 类型映射
-├── scripts/                    # 开发服务生命周期脚本
+├── scripts/                    # 开发服务、验证与 inspection 辅助脚本
 ├── mock_data/                  # 脱敏的夹具数据集
+├── frontend_demo/              # 导入的 UI/UX 参考应用
+├── archive/                    # 历史 MVP 与参考资料
 ├── docs/
-│   ├── guide/                  # 用户指南（CLI、API、Web）
+│   ├── guide/                  # 用户指南（CLI、API、Web、TUI、inspection、缺陷报告）
+│   ├── sources/                # 已验证数据源的技术说明
+│   ├── templates/              # 面向运营者与维护者的复用模板
 │   ├── design/                 # 内部设计文档
 │   └── screenshots/            # Web 界面截图
 └── LICENSE                     # MIT 许可证
@@ -290,11 +353,13 @@ pnpm run build
 NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build
 
 # 运行测试
-pnpm --filter @cchistory/source-adapters test    # 27 个测试
-pnpm --filter @cchistory/storage test            # 59 个测试
-pnpm --filter @cchistory/presentation test       # 5 个测试
-pnpm --filter @cchistory/cli test                # 12 个测试
-pnpm --filter @cchistory/api test                # 10 个测试
+pnpm --filter @cchistory/source-adapters test    # 60 个测试
+pnpm --filter @cchistory/storage test            # 75 个测试
+pnpm --filter @cchistory/api-client test         # 9 个测试
+pnpm --filter @cchistory/presentation test       # 12 个测试
+pnpm --filter @cchistory/cli test                # 48 个测试
+pnpm --filter @cchistory/tui test                # 11 个测试
+pnpm --filter @cchistory/api test                # 15 个测试
 
 # 代码检查
 cd apps/web && pnpm lint

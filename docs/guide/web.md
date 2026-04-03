@@ -14,6 +14,46 @@ open http://localhost:8085
 
 The web server listens on port **8085** and expects the API to be available at port **8040**.
 
+## Seeded V1 Review
+
+Use this flow when you want to inspect the canonical seeded V1 acceptance journey through the web UI without mutating the repository's default `.cchistory/` store.
+
+The stable manual-review checklist now lives in `docs/design/R27_USER_STARTED_WEB_REVIEW_CHECKLIST.md`. Use this guide for the runtime steps, and use the checklist note for required observations, evidence capture, and friction logging.
+
+That checklist is the contract, not the completed diary: the actual recorded seeded web review remains blocked manual work under `R31-KR1` until a user starts the canonical services and performs the review.
+
+### Setup
+
+1. Materialize the seeded review store at an explicit path:
+
+```bash
+pnpm run prepare:v1-seeded-web-review -- --store /tmp/cchistory-v1-web-review
+```
+
+2. Start the canonical user-operated services while pointing the API at that seeded store:
+
+```bash
+CCHISTORY_API_DATA_DIR=/tmp/cchistory-v1-web-review pnpm services:start
+```
+
+3. Open `http://localhost:8085` in the browser.
+
+### Review Checks
+
+4. In `Projects`, confirm `alpha-history` appears as the primary committed project for the seeded review slice; opening it should show three turns from the seeded multi-source project journey.
+5. In `Search`, query `Alpha traceability target`; expect one match grouped under `alpha-history`. Open it and confirm the detail panel shows the seeded traceability turn with session `session-alpha-amp`, assistant content `Processing.`, and one tool call.
+6. In `Sources`, confirm four healthy sources are visible for the seeded slice: `amp`, `claude_code`, `codex`, and `factory_droid`, each with one turn.
+
+### Evidence Capture
+
+Record at least the seeded store path, the service-start command, which checks passed or failed, any screenshots or notes for confusing states, and any friction using the `Discoverability`, `Readability`, `Traceability`, `Guardrail truthfulness`, `Workflow overhead`, or `Parity drift` labels from `docs/design/R27_USER_STARTED_WEB_REVIEW_CHECKLIST.md`.
+
+### Shutdown
+
+7. When finished, stop the services manually with `pnpm services:stop`.
+
+This review path keeps the startup architecture unchanged: the user still starts the canonical services, and only the API data directory is overridden for that session.
+
 ## Navigation
 
 The shell navigation provides access to all views, with Search available as a first-class history destination and quick-action entry point:
@@ -86,9 +126,9 @@ Configure and monitor ingestion sources:
 - Override directories or reset to defaults
 - Save & Rescan individual sources
 
-Supported platforms for manual addition: Codex, Claude Code, Factory Droid, AMP, Cursor, Antigravity, Gemini CLI, OpenClaw, OpenCode, LobeChat.
+Supported platforms for manual addition: Codex, Claude Code, Factory Droid, AMP, Cursor, Antigravity, Gemini CLI, OpenClaw, OpenCode, LobeChat, CodeBuddy.
 
-Windows note (2026-03-27): verified default-root auto-discovery currently exists for `Cursor` and `Antigravity`. For `Codex`, `Claude Code`, `Factory Droid`, `AMP`, and all experimental adapters, use the `Sources` view to confirm or override `base_dir` explicitly on Windows.
+Windows note (2026-03-27): verified default-root auto-discovery currently exists for `Cursor` and `Antigravity`. For `Codex`, `Claude Code`, `Factory Droid`, `AMP`, `Gemini CLI`, `OpenClaw`, `OpenCode`, `CodeBuddy`, and `LobeChat`, use the `Sources` view to confirm or override `base_dir` explicitly on Windows before treating the path as authoritative. Several of these adapters are now `stable`, but their Windows default roots are still not host-verified.
 
 ![Sources — Admin configuration](../screenshots/web-sources.webp)
 
@@ -127,3 +167,4 @@ Monitor system integrity:
 | `CCHISTORY_INTERNAL_API_ORIGIN` | `http://127.0.0.1:8040` | Backend API URL (server-side proxy) |
 | `NEXT_PUBLIC_CCHISTORY_API_BASE_URL` | `/api/cchistory` | Client-side API base URL |
 | `CCHISTORY_API_TOKEN` | _(none)_ | Bearer token forwarded to API |
+| `CCHISTORY_API_DATA_DIR` | _(default store resolution)_ | Optional API-side override for the indexed store path; useful for seeded review stores without changing the canonical service flow |

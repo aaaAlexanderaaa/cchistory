@@ -3,11 +3,11 @@
 ## Status
 
 - Objective source: `docs/ROADMAP.md`
-- Backlog status after this note: corrective follow-up under `B1-KR1` closed on
-  2026-03-28
-- Phase reached: original KR1-KR3 completion was recorded on 2026-03-27, and a
-  2026-03-28 corrective follow-up closed the remaining evidence-preservation
-  gap in Gemini companion-file capture
+- Backlog status after this note: `done`
+- Phase reached: original KR1-KR3 completion was recorded on 2026-03-27, a
+  2026-03-28 corrective follow-up closed the companion-evidence gap, and a
+  2026-04-02 promotion review plus support-surface closure promoted Gemini to
+  `stable` on the current host review path
 - Scope: sync-supported Gemini CLI ingestion from local `~/.gemini` state,
   including source discovery, parsing, project/workspace mapping, docs, and
   regression coverage
@@ -16,31 +16,30 @@
 
 ### Problem statement
 
-The roadmap calls for a new Gemini CLI adapter, but the repository currently has
-only partial Gemini awareness:
+At the original 2026-03-27 decomposition point, the roadmap still called for a new Gemini CLI adapter, and the repository then had only partial Gemini awareness:
 
 - `packages/domain` allows `gemini` as a platform enum value
 - `apps/web` already treats `gemini` as a recognizable platform label/icon
 - `cchistory discover` exposes Gemini CLI local state as a `discover_only` tool
-- the live adapter registry does **not** yet include a sync-supported `gemini`
+- the live adapter registry did **not** yet include a sync-supported `gemini`
   adapter
 
-This means the product can tell an operator that Gemini CLI state exists on the
-host, but it cannot yet sync that state into canonical sessions, project
+At that point, the product could tell an operator that Gemini CLI state exists on the
+host, but it could not yet sync that state into canonical sessions, project
 observations, or `UserTurn` history.
 
-### What is already implemented
+### What was already implemented at that review point
 
-- `packages/source-adapters/src/core/legacy.ts` already exposes discovery-only
+- `packages/source-adapters/src/core/legacy.ts` already exposed discovery-only
   Gemini CLI artifacts under `~/.gemini`, specifically:
   - `settings.json`
   - `tmp`
   - `history`
-- `docs/guide/cli.md` already documents Gemini CLI as a discovery-only tool.
-- `packages/domain/src/index.ts` already includes `gemini` in the broader
+- `docs/guide/cli.md` still documented Gemini CLI as a discovery-only tool.
+- `packages/domain/src/index.ts` already included `gemini` in the broader
   platform enum, which means schema-level consumers are already prepared to
   label synced records with that platform.
-- This host contains real Gemini CLI local state under `/root/.gemini`, giving
+- This host already contained real Gemini CLI local state under `/root/.gemini`, giving
   Phase 1 access to real disk evidence instead of pure guesswork.
 
 ### Host findings on 2026-03-27
@@ -128,10 +127,10 @@ scenarios:
 5. missing optional files (`settings.json` absent, `history/` partially present)
 6. malformed or truncated session JSON for loss-audit coverage
 
-### Current fixture gap
+### Original fixture gap at decomposition time
 
-The repository has no Gemini CLI fixture corpus yet. Existing Gemini references
-only document discovery-only local roots and Antigravity companion artifacts
+At the original decomposition point, the repository had no Gemini CLI fixture corpus yet. Existing Gemini references
+only documented discovery-only local roots and Antigravity companion artifacts
 under `.gemini/antigravity`.
 
 ### Collection path prepared
@@ -296,8 +295,8 @@ The implementation chooses a narrow adapter boundary:
 
 Results:
 
-- Gemini CLI is now a registered sync-supported adapter with `experimental`
-  support tier
+- At the 2026-03-27 KR2 completion point, Gemini CLI entered as a registered
+  sync-supported adapter with `experimental` support tier.
 - session JSON is normalized into canonical sessions, turns, and context using
   the existing generic conversation runtime path
 - project/workspace signals are derived from `.project_root` and `projects.json`
@@ -341,8 +340,8 @@ surface and regression artifacts:
 
 Results:
 
-- the support-tier docs now describe Gemini CLI as `experimental` everywhere the
-  registry is compared against user-facing support claims
+- at the 2026-03-27 KR3 completion point, the support-tier docs described Gemini CLI as `experimental` everywhere the
+  registry was compared against user-facing support claims
 - sanitized Gemini CLI fixture coverage is documented and validated under
   `mock_data/`
 - CLI guidance now reflects Gemini CLI as a sync-supported source root instead
@@ -384,9 +383,9 @@ recorded objective evaluation for this host.
     artifact crawl.
   - No schema migration or global asymptotic cost increase was introduced.
 
-- **Compatibility assessment**: passes.
-  - Existing stable-adapter support claims remain unchanged.
-  - Gemini CLI is documented as `experimental`, so the new support surface does
+- **Compatibility assessment**: passes for the 2026-03-27 execution point.
+  - Existing stable-adapter support claims remained unchanged at that stage.
+  - Gemini CLI was documented as `experimental` at that point, so the new support surface did
     not overstate self-host v1 readiness.
 
 - **Security evaluation**: passes.
@@ -417,16 +416,34 @@ recorded objective evaluation for this host.
 
 ### Accepted known limitations
 
-- Gemini CLI remains `experimental` until more real-world samples validate the
-  broader message-shape surface.
+- Windows default-root behavior should still be treated as manual-confirmation
+  territory until real Windows host verification exists.
 - `discoverHostToolsForHost` still exposes auxiliary Gemini CLI artifact roots,
   but operator-facing docs now treat Gemini CLI primarily as a sync-supported
   source root.
 
+### 2026-04-02 promotion-readiness review
+
+The current repository-visible Gemini slice now includes:
+
+- the original local-host sample review from `/root/.gemini`
+- the 2026-03-31 real archive review for missing-companion and hashed-project
+  variants
+- sanitized fixtures covering transcript, companion, missing-companion, and
+  multi-session scale behavior
+- captured-evidence preservation for `projects.json` and `.project_root`
+  companions
+- source-adapter regressions for the validated Gemini layouts
+
+Inference from those repository-visible artifacts: on this host review path,
+Gemini now satisfies the same evidence/fixture/parser baseline that earlier
+stable promotions used. The 2026-04-02 support-surface closure therefore moves
+Gemini to `stable` for the currently validated local layouts.
+
 ### Conclusion
 
-The original 2026-03-27 Phase 7 pass record is preserved above as historical
-execution evidence, but it is superseded for the current repository-visible
-state by the post-completion correction note. Treat `R5` as requiring
-corrective follow-up until Gemini companion evidence enters the captured-
-evidence path.
+The original 2026-03-27 Phase 7 pass record and the 2026-03-28 corrective note
+are preserved above as historical execution evidence. For the current
+repository-visible state, Gemini is no longer waiting on parser-only corrective
+follow-up: the validated local `~/.gemini` slice is now part of the repository's `stable` support surface, with future follow-up limited to newly observed
+real-data drift or unvalidated platform variants.

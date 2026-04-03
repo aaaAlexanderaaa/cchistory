@@ -3,9 +3,8 @@
 ## Status
 
 - Objective source: `docs/ROADMAP.md`
-- Backlog status after this note: `active`
-- Phase reached: Phase 1-3 decomposition completed on 2026-03-27; the first
-  executable slice is the conversation-seed family extraction
+- Backlog status after this note: `done`
+- Phase reached: KR1-KR3 implemented on 2026-03-27, with Phase 7 evaluation passing the same day
 - Scope: reduce per-adapter parser duplication by converging common source file
   shapes into a small set of reusable extraction and normalization paths
 
@@ -13,7 +12,7 @@
 
 ### Problem statement
 
-The roadmap calls for generic parser abstraction across four recurring source
+At the original 2026-03-27 decomposition point, the roadmap called for generic parser abstraction across four recurring source
 shapes:
 
 - message arrays / session-tree JSON
@@ -21,13 +20,13 @@ shapes:
 - VS Code state databases
 - export-bundle style conversation payloads
 
-The repository already contains partial abstraction in these areas, but the
-implementation surface is still split between reusable helpers and a large
+The repository already contained partial abstraction in these areas, but the
+implementation surface was still split between reusable helpers and a large
 `packages/source-adapters/src/core/legacy.ts` orchestration file.
 
-### What is already implemented
+### What was already implemented at that review point
 
-The current source-adapter system already has the beginnings of parser-family
+At that decomposition point, the source-adapter system already had the beginnings of parser-family
 abstraction:
 
 - `packages/source-adapters/src/platforms/generic/runtime.ts` parses generic
@@ -40,12 +39,12 @@ abstraction:
   generic seed builder for AMP, OpenCode, Gemini CLI, LobeChat, Cursor
   fallbacks, and some VS Code state rows.
 
-### Duplication and gaps found
+### Duplication and gaps found at decomposition time
 
-#### 1. Conversation-seed family is reusable in behavior but not in placement
+#### 1. Conversation-seed family was reusable in behavior but not yet in placement
 
-The message-array / session-tree abstraction exists, but until this objective it
-lived inside `core/legacy.ts` even though it is consumed conceptually by:
+At that point, the message-array / session-tree abstraction existed, but until this objective it
+lived inside `core/legacy.ts` even though it was consumed conceptually by:
 
 - AMP whole-thread JSON
 - OpenCode session/message trees
@@ -57,24 +56,24 @@ lived inside `core/legacy.ts` even though it is consumed conceptually by:
 This makes the behavior reusable in practice but hard to evolve safely as a
 first-class parser family.
 
-#### 2. JSONL collection and sidecar injection remain monolithic
+#### 2. JSONL collection and sidecar injection remained monolithic
 
-Codex, Claude Code, Factory Droid, and OpenClaw still rely on file-shape logic
-that is coordinated in `legacy.ts` through ad hoc branches. Factory Droid’s
-sidecar settings merge is especially useful, but it is still expressed as a
+Codex, Claude Code, Factory Droid, and OpenClaw still relied on file-shape logic
+that was coordinated in `legacy.ts` through ad hoc branches. Factory Droid’s
+sidecar settings merge was especially useful, but it was still expressed as a
 source-specific conditional rather than a reusable JSONL+sidecar pattern.
 
-#### 3. VS Code state abstraction still depends on a broad helper contract
+#### 3. VS Code state abstraction still depended on a broad helper contract
 
-`core/vscode-state.ts` is already shared, but its helper contract is broad and
-still reaches into seed-building logic that historically lived in `legacy.ts`.
+`core/vscode-state.ts` was already shared, but its helper contract was broad and
+still reached into seed-building logic that historically lived in `legacy.ts`.
 The boundary is serviceable, but not yet minimal or clearly documented as one of
 only a few canonical parser families.
 
-#### 4. Source-format profiles describe families, but migration is incomplete
+#### 4. Source-format profiles described families, but migration was incomplete
 
-`SourceFormatProfile` already hints at parser families (`jsonl`, `thread-json`,
-`vscode-state-sqlite`, export JSON), but the codebase does not yet treat those
+`SourceFormatProfile` already hinted at parser families (`jsonl`, `thread-json`,
+`vscode-state-sqlite`, export JSON), but the codebase did not yet treat those
 families as explicit reusable modules with clear ownership and migration order.
 
 ### Why this matters to frozen semantics
@@ -209,9 +208,9 @@ and the repository documents the parser-family inventory and migration rules.
 - `packages/source-adapters/src/platforms/cursor/runtime.ts`
 - `packages/source-adapters/src/index.test.ts`
 
-### First executable slice
+### First executable slice at decomposition time
 
-Implement `R6-KR1` first by extracting the conversation-seed helpers currently
+The initial plan was to implement `R6-KR1` first by extracting the conversation-seed helpers then
 buried in `core/legacy.ts` into a dedicated module, then revalidate the existing
 source-adapter suite.
 
@@ -243,7 +242,7 @@ source-adapter suite.
 
 - Support-tier and runtime-surface claims remain unchanged; this KR is an
   internal parser-family extraction only.
-- The next slice is `R6-KR2`: extract JSONL line-record collection and sidecar
+- The subsequent delivered slice was `R6-KR2`: extract JSONL line-record collection and sidecar
   merge hooks from `core/legacy.ts` into a narrower reusable family.
 
 ## KR2 Execution Log
@@ -273,7 +272,7 @@ source-adapter suite.
 
 - This slice narrows record collection only; source-specific parse semantics
   remain in the platform runtime parsers.
-- The next slice is `R6-KR3`: narrow the VS Code state helper contract and add
+- The subsequent delivered slice was `R6-KR3`: narrow the VS Code state helper contract and add
   the parser-family inventory/migration rules to this document.
 
 ## KR3 Execution Log

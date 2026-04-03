@@ -9,8 +9,8 @@
 ## Repository Scope
 This repository currently contains seven different classes of material.
 
-- Root docs plus `docs/`: the current project definition, implementation status, and decision surface. `HIGH_LEVEL_DESIGN_FREEZE.md` remains authoritative; `PIPELINE.md` defines the agent execution workflow; `BACKLOG.md` is the living work surface for current objectives and tasks; `docs/design/CURRENT_RUNTIME_SURFACE.md` is the current repository-visible runtime inventory; `docs/design/IMPLEMENTATION_PLAN.md` is the delivered baseline for the 2026-03 local-source slice and may lag newer runtime work; `docs/guide/` contains user-facing guides for CLI, API, and Web; `tasks.csv` is a historical KR ledger, not a complete current backlog.
-- `apps/`: canonical product entrypoints. `apps/api` is the managed API, `apps/web` is the canonical frontend, and `apps/cli` is the canonical local operator CLI.
+- Root docs plus `docs/`: the current project definition, implementation status, and decision surface. `HIGH_LEVEL_DESIGN_FREEZE.md` remains authoritative; `PIPELINE.md` defines the agent execution workflow; `BACKLOG.md` is the living work surface for current objectives and tasks; `docs/design/CURRENT_RUNTIME_SURFACE.md` is the current repository-visible runtime inventory; `docs/design/IMPLEMENTATION_PLAN.md` is the delivered baseline for the 2026-03 local-source slice and may lag newer runtime work; `docs/guide/` contains user-facing guides for CLI, API, Web, TUI, inspection, and bug-reporting workflows; `docs/sources/` contains technical notes for validated source layouts; `docs/templates/` contains reusable issue/report templates; `docs/screenshots/` contains checked-in UI screenshot assets used by repository-facing documentation; `tasks.csv` is a historical KR ledger, not a complete current backlog.
+- `apps/`: canonical product entrypoints. `apps/api` is the managed API, `apps/web` is the canonical frontend, `apps/cli` is the canonical local operator CLI, and `apps/tui` is the canonical local TUI. The API runtime now also includes a remote-agent control-plane slice under `/api/agent/*` plus admin inventory and job routes under `/api/admin/agents*` and `/api/admin/agent-jobs`, distinct from the host-local admin probe/config routes.
 - `packages/`: canonical shared implementation for domain contracts, source adapters, storage, API DTOs, and presentation mapping.
 - `.cchistory/`: local runtime state and persisted evidence-derived data for this workspace. Inspect it when needed, but do not delete, reset, or regenerate it casually.
 - `mock_data/`: sanitized, source-shaped fixture corpus used for adapter and CLI validation. Preserve scenario coverage and validate it after edits.
@@ -25,9 +25,10 @@ This repository currently contains seven different classes of material.
 - `BACKLOG.md` is the living work surface. It replaces `tasks.csv` as the active backlog. Agents must read it at session start.
 - `tasks.csv` records work that was explicitly tracked in this repository on this host. It is a historical ledger for the 2026-03 local-source slice, not the active backlog. Missing rows are not evidence that a capability is absent or unimplemented elsewhere.
 - When docs and runtime surface disagree, preserve the freeze invariants first, then verify current behavior against `apps/*`, `packages/*`, and targeted tests before editing.
-- The currently registered source adapters live in `packages/source-adapters/src/platforms/registry.ts`. The implemented adapter set presently includes `codex`, `claude_code`, `factory_droid`, `amp`, `cursor`, `antigravity`, `openclaw`, `opencode`, and `lobechat`.
+- The currently registered source adapters live in `packages/source-adapters/src/platforms/registry.ts`. The implemented adapter set presently includes `codex`, `claude_code`, `factory_droid`, `amp`, `cursor`, `antigravity`, `gemini`, `openclaw`, `opencode`, `lobechat`, and `codebuddy`.
 - Broader platform enums in `packages/domain` or `packages/api-client` are not proof that a live adapter already exists for every value.
-- `apps/cli` is a canonical product entrypoint, not just a debug helper. Review `apps/cli/src/index.ts` before changing operator workflows, because the CLI surface now includes sync, list/tree/show inspection, search, stats, export/import, query, and template flows.
+- `apps/cli` is a canonical product entrypoint, not just a debug helper. Review `apps/cli/src/index.ts` before changing operator workflows, because the CLI surface now includes sync and discover flows, source/store health inspection, list/tree/show inspection, search, stats, bundle-management and restore flows, raw-snapshot GC, query, template workflows, and the remote-agent `agent pair` / `agent upload` / `agent schedule` / `agent pull` control-plane slice with bounded retry behavior and one-shot leased-job execution.
+- `apps/tui` is a canonical product entrypoint, not just a demo shell. Review `apps/tui/src/index.ts` before changing keyboard-first local browse/search workflows, because the TUI now ships project, turn, and detail panes plus global search drill-down, source-health summary behavior, and richer read-side detail cues such as project/session/turn breadcrumbs, related-work summaries, and trail lines.
 
 ## Build, Test, And Development Commands
 Repository-root aggregate scripts exist, but they are not the default validation path on this host. Prefer the smallest package-scoped command that answers the question.
@@ -38,14 +39,29 @@ Repository-root aggregate scripts exist, but they are not the default validation
 - `pnpm --filter @cchistory/storage build`: validate storage compilation.
 - `pnpm --filter @cchistory/storage test`: run storage persistence and lineage tests.
 - `pnpm --filter @cchistory/api-client build`: validate shared API DTO contracts.
+- `pnpm --filter @cchistory/api-client test`: run api-client managed-read contract tests against an in-process API runtime.
 - `pnpm --filter @cchistory/presentation build`: validate presentation mapping compilation.
 - `pnpm --filter @cchistory/presentation test`: run presentation mapping tests.
 - `pnpm --filter @cchistory/cli build`: validate CLI compilation.
 - `pnpm --filter @cchistory/cli test`: run CLI tests.
+- `pnpm --filter @cchistory/tui build`: validate TUI compilation.
+- `pnpm --filter @cchistory/tui test`: run TUI interaction and read-path tests.
 - `pnpm --filter @cchistory/api build`: validate API compilation.
 - `pnpm --filter @cchistory/api test`: run API tests.
 - `NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build`: validate the canonical web app alone.
 - `pnpm run validate:core`: low-memory validation for the core local-source slice.
+- `pnpm run verify:clean-install`: verify the documented clean-machine install plus first non-web build path.
+- `pnpm run verify:cli-artifact`: verify the standalone CLI artifact install/upgrade path.
+- `pnpm run verify:web-build-offline`: verify the canonical web build works without public-network fetches.
+- `pnpm run verify:support-status`: verify support-tier docs against the adapter registry.
+- `pnpm run verify:v1-seeded-acceptance`: verify one canonical seeded CLI/API/TUI acceptance journey plus restore readability.
+- `pnpm run verify:read-only-admin`: verify store-scoped CLI/TUI/API read-only admin and missing-store behavior on the seeded acceptance slice.
+- `pnpm run verify:fixture-sync-recall`: verify fixture-backed `sync` to canonical CLI/API/TUI recall on the repo `mock_data/` slice.
+- `pnpm run verify:bundle-conflict-recovery`: verify export/import conflict visibility, `skip`/`replace` resolution, `restore-check`, and canonical CLI/API readback on a populated target.
+- `pnpm run verify:real-layout-sync-recall`: verify the real-layout-backed fixture slice can sync into a clean store and remain readable through representative CLI/API/TUI project, session, and turn paths.
+- `pnpm run verify:related-work-recall`: verify project/session/turn browse-search traceability for delegated child sessions and automation runs through CLI/API/TUI on synced fixture data.
+- `pnpm run prepare:v1-seeded-web-review -- --store <dir>`: materialize the seeded acceptance store for user-started web review.
+- `pnpm run verify:real-archive-probes`: verify current experimental/real-archive assumptions against the reviewed `.realdata` bundle.
 - `pnpm run probe:smoke -- --source-id=src-codex --limit=1`: inspect one local source without starting managed dev services.
 - `pnpm run mock-data:validate`: validate the sanitized fixture corpus after editing `mock_data/`.
 - `pnpm run build`: aggregate non-web workspace build. It exists, but it is not a default verification step on this host.
@@ -143,14 +159,17 @@ Build commands and dependency order are documented in the "Build, Test, And Deve
 - **API** (Fastify): port 8040. Canonical start: `pnpm services:start` or `bash scripts/dev-services.sh start api`.
 - **Web** (Next.js 16 dev): port 8085. Canonical start: `bash scripts/dev-services.sh start web`. The supervisor readiness check may time out even though the service starts successfully; verify with `curl -s -o /dev/null -w '%{http_code}' http://localhost:8085/`.
 - **CLI**: `node apps/cli/dist/index.js <command>` (build first with `pnpm --filter @cchistory/cli build`).
+- **TUI**: `node apps/tui/dist/index.js [--store <dir> | --db <path>]` (build first with `pnpm --filter @cchistory/tui build`).
 
 ### Testing
 All test suites use Node.js built-in test runner (`node --test`). Key commands:
-- `pnpm --filter @cchistory/source-adapters test` (27 tests)
-- `pnpm --filter @cchistory/storage test` (59 tests)
-- `pnpm --filter @cchistory/presentation test` (5 tests)
-- `pnpm --filter @cchistory/cli test` (12 tests)
-- `pnpm --filter @cchistory/api test` (10 tests)
+- `pnpm --filter @cchistory/source-adapters test` (60 tests)
+- `pnpm --filter @cchistory/storage test` (75 tests)
+- `pnpm --filter @cchistory/api-client test` (9 tests)
+- `pnpm --filter @cchistory/presentation test` (12 tests)
+- `pnpm --filter @cchistory/cli test` (48 tests)
+- `pnpm --filter @cchistory/tui test` (11 tests)
+- `pnpm --filter @cchistory/api test` (15 tests)
 
 ### Lint
 - `cd apps/web && pnpm lint` runs ESLint with `--max-warnings=0`.

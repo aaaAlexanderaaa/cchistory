@@ -14,18 +14,18 @@
 
 ### Problem statement
 
-The roadmap calls for AI-friendly skills that let agents perform common
+At the original 2026-03-27 decomposition point, the roadmap called for AI-friendly skills that let agents perform common
 CCHistory workflows through stable, reusable interfaces. The target workflows
-already exist in the product, but they are currently exposed as a mix of CLI
+already existed in the product, but they were then exposed as a mix of CLI
 commands and API routes rather than packaged skills.
 
 The key constraint from the design freeze is that skills must not create a new
 semantic model. They must act as thin, reliable workflow packaging around the
 same canonical objects already used by the CLI, API, web UI, and storage layer.
 
-### What is already implemented
+### What was already implemented at that review point
 
-The repository already exposes the core runtime surfaces needed for a first
+At that decomposition point, the repository already exposed the core runtime surfaces needed for a first
 skill set:
 
 - `apps/cli/src/index.ts` already supports canonical JSON-producing read paths
@@ -48,24 +48,24 @@ skill set:
 - Skill outputs must align with canonical objects (`UserTurn`, turn context,
   project views, source diagnostics) rather than creating skill-specific DTOs.
 
-### Gaps found
+### Gaps found at decomposition time
 
-#### 1. No product-owned skill inventory exists yet
+#### 1. No product-owned skill inventory existed yet
 
-There is no canonical `skills/` directory in the live product tree. The only
-skill folders in the repository live under `archive/` as historical reference.
+At that point, there was no canonical `skills/` directory in the live product tree. The only
+skill folders in the repository lived under `archive/` as historical reference.
 
-#### 2. Existing runtime surfaces are richer than current agent packaging
+#### 2. Existing runtime surfaces were richer than the then-current agent packaging
 
-The CLI and API already expose most of the data needed for the roadmap skill
-examples, but there is no repo-owned packaging that tells an agent which
+The CLI and API already exposed most of the data needed for the roadmap skill
+examples, but there was not yet repo-owned packaging that told an agent which
 surface to call, how to keep outputs canonical, or when to prefer dry-run.
 
-#### 3. Read and operator workflows have different safety needs
+#### 3. Read and operator workflows had different safety needs
 
-Read workflows such as project history retrieval and turn-context drill-down can
+Read workflows such as project history retrieval and turn-context drill-down could
 be near-zero-risk wrappers around `query` and existing API reads. Operator
-workflows such as bundle export and source health checks need stronger guidance
+workflows such as bundle export and source health checks needed stronger guidance
 about preview/default behavior and service assumptions.
 
 ### Assumptions

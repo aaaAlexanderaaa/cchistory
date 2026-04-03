@@ -313,8 +313,11 @@ The repository now exposes these concrete installation-channel surfaces:
   both an extracted directory and `.tgz` archive under `dist/cli-artifacts/`
 - `pnpm run verify:cli-artifact`: builds two version-stamped standalone
   artifacts, unpacks them into a temp install root, runs the installed
-  `cchistory templates` command, and verifies replacement-style upgrade from
-  the first extracted artifact to the second
+  `cchistory` command through both command-surface and skeptical local
+  workflow checks (`templates`, install/upgrade, `sync`, `backup`, `import`,
+  `restore-check`, `search`, `show`, and conflict dry-run/replace and multi-source browse/search parity), and
+  verifies replacement-style upgrade from the first extracted artifact to the
+  second
 
 This means the first additional installation channel is no longer just a design
 choice; it is now a repository-owned generated artifact plus a repository-owned
@@ -335,5 +338,5 @@ The delivered slice passes the objective-level acceptance bar on 2026-03-29:
 
 - the repo-clone install path remains the canonical full-product contract
 - the repository now generates a standalone bundled CLI artifact via `pnpm run cli:artifact`
-- the repository verifies first install plus replacement-style upgrade via `pnpm run verify:cli-artifact`
+- the repository verifies first install plus replacement-style upgrade plus skeptical installed-path restore/conflict, browse/search, store-scoped admin, and structured retrieval workflows via `pnpm run verify:cli-artifact`
 - install and runtime docs now distinguish the repo-clone path from the CLI-only artifact path without implying API/web packaging

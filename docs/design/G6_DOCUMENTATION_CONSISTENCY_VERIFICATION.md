@@ -11,9 +11,10 @@
 
 ### What exists today
 
-- `README.md` and `README_CN.md` already publish a self-host v1 support-tier
-  table that lists the nine registered adapters and marks six as `Stable` and
-  three as `Experimental`.
+- `README.md` and `README_CN.md` publish the self-host v1 support-tier table;
+  the current roster is larger than the original nine-adapter / six-stable
+  snapshot this note was first written against, so later tier changes must be
+  reflected there rather than inferred from this historical count.
 - `docs/design/CURRENT_RUNTIME_SURFACE.md` publishes the same adapter roster
   with explicit support tiers.
 - `docs/design/SELF_HOST_V1_RELEASE_GATE.md` freezes the stable-vs-experimental
@@ -117,7 +118,9 @@ surprise.
 - The verifier checks support-tier tables and stable/experimental inclusion
   claims, not every sentence that mentions a platform elsewhere in prose. That
   is acceptable because Gate 6 is about support-status truth rather than full
-  copy synchronization.
+  copy synchronization. Historical design notes like this one may still need
+  follow-up wording updates after later tier changes even when
+  `pnpm run verify:support-status` is green.
 
 ### Conclusion
 
