@@ -16,6 +16,7 @@ export type {
   RetentionAxis,
   SearchResult,
   Session,
+  SessionRelatedWork,
   SourceFamily,
   SourcePlatform,
   SourceStatus,

@@ -33,6 +33,7 @@ const MANUAL_SOURCE_OPTIONS: Array<{ platform: SourcePlatform; label: string }> 
   { platform: 'openclaw', label: 'OpenClaw' },
   { platform: 'opencode', label: 'OpenCode' },
   { platform: 'lobechat', label: 'LobeChat' },
+  { platform: 'codebuddy', label: 'CodeBuddy' },
 ]
 
 export function SourcesView() {
@@ -493,7 +494,7 @@ function PlatformIcon({ platform }: { platform: SourcePlatform }) {
   if (platform === 'claude_code') return <Terminal className="h-4 w-4 text-muted" />
   if (platform === 'codex') return <Code2 className="h-4 w-4 text-muted" />
   if (platform === 'cursor' || platform === 'antigravity') return <Code2 className="h-4 w-4 text-muted" />
-  if (platform === 'gemini' || platform === 'claude_web') return <Bot className="h-4 w-4 text-muted" />
+  if (platform === 'gemini' || platform === 'claude_web' || platform === 'codebuddy') return <Bot className="h-4 w-4 text-muted" />
   if (platform === 'amp' || platform === 'factory_droid' || platform === 'openclaw' || platform === 'opencode') {
     return <Zap className="h-4 w-4 text-muted" />
   }

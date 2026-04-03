@@ -2,8 +2,9 @@
 
 import type { ReactNode } from 'react'
 import { cn } from '@/lib/utils'
-import type { ProjectIdentity, Session, UserTurn } from '@/lib/types'
-import { ChevronLeft, Clock, FolderOpen, Layers, MonitorSmartphone, X } from 'lucide-react'
+import { useSessionRelatedWorkQuery } from '@/lib/api'
+import type { ProjectIdentity, Session, SessionRelatedWork, UserTurn } from '@/lib/types'
+import { ChevronLeft, Clock, FolderOpen, Layers, MonitorSmartphone, Waypoints, X } from 'lucide-react'
 import { format } from 'date-fns'
 import { zhCN } from 'date-fns/locale'
 
@@ -28,6 +29,10 @@ export function SessionDetailPanel({
   onSelectTurn,
   className,
 }: SessionDetailPanelProps) {
+  const { data: relatedWork = [] } = useSessionRelatedWorkQuery(session.id)
+  const childSessions = relatedWork.filter((entry) => entry.relation_kind === 'delegated_session')
+  const automationRuns = relatedWork.filter((entry) => entry.relation_kind === 'automation_run')
+
   return (
     <div className={cn('flex h-full min-h-0 flex-col border-l border-border bg-card', className)}>
       <div className="flex-shrink-0 border-b border-border">
@@ -115,6 +120,25 @@ export function SessionDetailPanel({
         </section>
 
         <section className="border-t border-border px-4 py-4">
+          <div className="mb-3 flex items-center justify-between">
+            <div className="text-[10px] stamp-text text-muted">RELATED WORK</div>
+            <div className="flex flex-wrap items-center gap-2 text-[10px] stamp-text text-muted">
+              <span>{childSessions.length} child sessions</span>
+              <span>{automationRuns.length} automation runs</span>
+            </div>
+          </div>
+
+          {relatedWork.length === 0 ? (
+            <div className="border border-dashed border-border px-4 py-6 text-sm text-muted">No related work captured for this session.</div>
+          ) : (
+            <div className="space-y-4">
+              <RelatedWorkGroup label="Child Sessions" items={childSessions} emptyLabel="No child sessions" />
+              <RelatedWorkGroup label="Automation Runs" items={automationRuns} emptyLabel="No automation runs" />
+            </div>
+          )}
+        </section>
+
+        <section className="border-t border-border px-4 py-4">
           <div className="mb-3 text-[10px] stamp-text text-muted">SESSION METADATA</div>
           <div className="grid grid-cols-1 gap-3 text-sm">
             <MetaRow label="Created" value={format(session.created_at, 'yyyy-MM-dd HH:mm', { locale: zhCN })} />
@@ -172,4 +196,51 @@ function LinkStateChip({ state, confidence }: { state: UserTurn['link_state']; c
     )
   }
   return <span className="border border-border bg-card px-1.5 py-0.5 text-muted">UNLINKED</span>
+}
+
+
+function RelatedWorkGroup({
+  label,
+  items,
+  emptyLabel,
+}: {
+  label: string
+  items: SessionRelatedWork[]
+  emptyLabel: string
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="text-xs text-muted">{label}</div>
+      {items.length === 0 ? (
+        <div className="border border-dashed border-border px-3 py-3 text-xs text-muted">{emptyLabel}</div>
+      ) : (
+        items.map((item) => (
+          <div key={item.id} className="border border-border bg-paper px-3 py-3">
+            <div className="flex flex-wrap items-center gap-2 text-[10px] stamp-text">
+              <span className="border border-border bg-card px-1.5 py-0.5 text-muted">{item.relation_kind}</span>
+              <span className="border border-border bg-card px-1.5 py-0.5 text-muted">{item.target_kind}</span>
+              <span className="border border-border bg-card px-1.5 py-0.5 text-muted">
+                {item.transcript_primary ? 'transcript-primary' : 'evidence-only'}
+              </span>
+            </div>
+            <div className="mt-2 flex items-start gap-2 text-sm text-ink">
+              <Waypoints className="mt-0.5 h-4 w-4 text-muted" />
+              <div className="min-w-0 flex-1">
+                <div className="font-medium">{item.title || item.target_session_ref || item.automation_job_ref || item.id}</div>
+                <div className="mt-1 space-y-1 text-xs text-muted">
+                  {item.target_session_ref && <div className="mono-text">target_session_ref: {item.target_session_ref}</div>}
+                  {item.automation_job_ref && <div className="mono-text">automation_job_ref: {item.automation_job_ref}</div>}
+                  {item.automation_run_key && <div className="mono-text">automation_run_key: {item.automation_run_key}</div>}
+                  {item.parent_event_ref && <div className="mono-text">parent_event_ref: {item.parent_event_ref}</div>}
+                  {item.parent_tool_ref && <div className="mono-text">parent_tool_ref: {item.parent_tool_ref}</div>}
+                  {item.child_agent_key && <div className="mono-text">child_agent_key: {item.child_agent_key}</div>}
+                  <div>confidence {Math.round(item.evidence_confidence * 100)}%</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ))
+      )}
+    </div>
+  )
 }

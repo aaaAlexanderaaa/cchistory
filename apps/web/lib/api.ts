@@ -15,9 +15,11 @@ import {
   mapProjectLineageEvent,
   mapProjectManualOverride,
   mapProjectRevision,
-  mapSearchResult,
+  mapSearchResults,
   mapSession,
+  mapSessionRelatedWork,
   mapSourceStatus,
+  mapUserTurns,
   mapTurnContext,
   mapTurnLineage,
   mapUserTurn,
@@ -32,6 +34,7 @@ import {
   type ProjectRevision,
   type SearchResult,
   type Session,
+  type SessionRelatedWork,
   type SourceStatus,
   type TurnContext,
   type TurnLineage,
@@ -39,7 +42,7 @@ import {
 } from '@cchistory/presentation'
 const DEFAULT_API_BASE_URL = '/api/cchistory'
 
-export type { LinkingObservation, LinkingReviewData } from '@cchistory/presentation'
+export type { LinkingObservation, LinkingReviewData, SessionRelatedWork } from '@cchistory/presentation'
 
 export function getApiBaseUrl(): string {
   return (process.env.NEXT_PUBLIC_CCHISTORY_API_BASE_URL || DEFAULT_API_BASE_URL).replace(/\/$/, '')
@@ -53,7 +56,7 @@ export function useTurnsQuery() {
   return useSWR<UserTurn[]>('/api/turns', async (path: string) => {
     void path
     const response = await getApiClient().getTurns()
-    return response.turns.map(mapUserTurn)
+    return mapUserTurns(response.turns)
   }, { revalidateOnFocus: false })
 }
 
@@ -66,7 +69,7 @@ export function usePaginatedTurnsQuery(params: { limit: number; offset: number }
     `/api/turns?limit=${params.limit}&offset=${params.offset}`,
     async () => {
       const response = await getApiClient().getTurns({ limit: params.limit, offset: params.offset })
-      return { turns: response.turns.map(mapUserTurn), total: response.total }
+      return { turns: mapUserTurns(response.turns), total: response.total }
     },
     { revalidateOnFocus: false },
   )
@@ -96,6 +99,14 @@ export function useSessionQuery(sessionId?: string) {
   )
 }
 
+export function useSessionRelatedWorkQuery(sessionId?: string) {
+  return useSWR<SessionRelatedWork[]>(
+    sessionId ? `/api/admin/sessions/${encodeURIComponent(sessionId)}/related-work` : null,
+    async () => (await getApiClient().getSessionRelatedWork(sessionId!)).map(mapSessionRelatedWork),
+    { revalidateOnFocus: false },
+  )
+}
+
 export function useSessionsQuery() {
   return useSWR<Session[]>('/api/sessions', async () => (await getApiClient().getSessions()).map(mapSession), {
     revalidateOnFocus: false,
@@ -111,7 +122,7 @@ export function useProjectsQuery(state: 'committed' | 'candidate' | 'all' = 'all
 export function useProjectTurnsQuery(projectId?: string, state: 'committed' | 'candidate' | 'all' = 'all') {
   return useSWR<UserTurn[]>(
     projectId ? `/api/projects/${encodeURIComponent(projectId)}/turns?state=${state}` : null,
-    async () => (await getApiClient().getProjectTurns(projectId!, state)).map(mapUserTurn),
+    async () => mapUserTurns(await getApiClient().getProjectTurns(projectId!, state)),
     { revalidateOnFocus: false },
   )
 }
@@ -171,7 +182,7 @@ export function useTurnSearchQuery(params: {
         value_axes: params.value_axes,
         limit: params.limit,
       })
-      return response.map(mapSearchResult)
+      return mapSearchResults(response)
     },
     { revalidateOnFocus: false },
   )
