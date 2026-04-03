@@ -10,7 +10,9 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, '..', '..');
 const homeDir = os.homedir();
 const geminiRoot = path.join(homeDir, '.gemini');
-const supportedPlatforms = ['openclaw', 'opencode', 'gemini'];
+const cursorChatStoreRoot = path.join(homeDir, '.cursor', 'chats');
+const codebuddyRoot = path.join(homeDir, '.codebuddy');
+const supportedPlatforms = ['openclaw', 'opencode', 'gemini', 'cursor-chat-store', 'codebuddy', 'lobechat'];
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -66,6 +68,34 @@ async function main() {
   }
 }
 
+async function collectLobeChat(filesRoot, copiedAcrossPlatforms) {
+  const candidateRoot = path.join(homeDir, '.config', 'lobehub-storage');
+  const jsonFiles = await listFiles(candidateRoot, (filePath) => filePath.endsWith('.json'));
+  const copiedFiles = [];
+
+  for (const filePath of jsonFiles) {
+    const relativePath = await copyHomeRelativePath(filePath, filesRoot, copiedAcrossPlatforms);
+    if (relativePath) {
+      copiedFiles.push(relativePath);
+    }
+  }
+
+  return {
+    checked_roots: [
+      {
+        kind: 'candidate_local_root',
+        path: candidateRoot,
+        exists: await pathExists(candidateRoot),
+      },
+    ],
+    exists: copiedFiles.length > 0,
+    copied_files: copiedFiles.sort(),
+    notes: [
+      'Collect all JSON under ~/.config/lobehub-storage only as candidate review evidence; transcript-bearing boundaries are still unverified and must be decided after real-sample review.',
+    ],
+  };
+}
+
 function parseArgs(argv) {
   const parsed = {
     output: undefined,
@@ -112,6 +142,12 @@ async function collectPlatformSamples(platform, filesRoot, copiedAcrossPlatforms
       return collectOpenCode(filesRoot, copiedAcrossPlatforms);
     case 'gemini':
       return collectGeminiCli(filesRoot, copiedAcrossPlatforms);
+    case 'cursor-chat-store':
+      return collectCursorChatStore(filesRoot, copiedAcrossPlatforms);
+    case 'codebuddy':
+      return collectCodeBuddy(filesRoot, copiedAcrossPlatforms);
+    case 'lobechat':
+      return collectLobeChat(filesRoot, copiedAcrossPlatforms);
     default:
       throw new Error(`Unsupported platform: ${platform}`);
   }
@@ -256,6 +292,83 @@ async function collectGeminiChatFiles() {
     (filePath) =>
       filePath.endsWith('.json') && path.basename(path.dirname(filePath)) === 'chats' && filePath.includes(`${path.sep}tmp${path.sep}`),
   );
+}
+
+async function collectCursorChatStore(filesRoot, copiedAcrossPlatforms) {
+  const storeFiles = await listFiles(
+    cursorChatStoreRoot,
+    (filePath) => path.basename(filePath) === 'store.db' && filePath.includes(`${path.sep}.cursor${path.sep}chats${path.sep}`),
+  );
+  const copiedFiles = new Set();
+
+  for (const filePath of storeFiles) {
+    const relativePath = await copyHomeRelativePath(filePath, filesRoot, copiedAcrossPlatforms);
+    if (relativePath) {
+      copiedFiles.add(relativePath);
+    }
+  }
+
+  return {
+    checked_roots: [
+      {
+        kind: 'cursor_chat_store_root',
+        path: cursorChatStoreRoot,
+        exists: await pathExists(cursorChatStoreRoot),
+      },
+    ],
+    exists: copiedFiles.size > 0,
+    copied_files: [...copiedFiles].sort(),
+    notes: [
+      'Collect only ~/.cursor/chats/**/store.db for this slot; intentionally ignore stable Cursor editor-state roots such as ~/.cursor/projects and Cursor workspaceStorage because they are a different source slice.',
+    ],
+  };
+}
+
+async function collectCodeBuddy(filesRoot, copiedAcrossPlatforms) {
+  const topLevelCandidates = [
+    path.join(codebuddyRoot, 'settings.json'),
+  ];
+  const localStorageFiles = await listFiles(
+    path.join(codebuddyRoot, 'local_storage'),
+    (filePath) => filePath.endsWith('.info'),
+  );
+  const projectFiles = await listFiles(
+    path.join(codebuddyRoot, 'projects'),
+    (filePath) => filePath.endsWith('.jsonl'),
+  );
+  const copiedFiles = new Set();
+
+  for (const candidate of [...topLevelCandidates, ...localStorageFiles, ...projectFiles]) {
+    const relativePath = await copyHomeRelativePath(candidate, filesRoot, copiedAcrossPlatforms);
+    if (relativePath) {
+      copiedFiles.add(relativePath);
+    }
+  }
+
+  return {
+    checked_roots: [
+      {
+        kind: 'codebuddy_root',
+        path: codebuddyRoot,
+        exists: await pathExists(codebuddyRoot),
+      },
+      {
+        kind: 'project_transcripts',
+        path: path.join(codebuddyRoot, 'projects'),
+        exists: await pathExists(path.join(codebuddyRoot, 'projects')),
+      },
+      {
+        kind: 'local_storage',
+        path: path.join(codebuddyRoot, 'local_storage'),
+        exists: await pathExists(path.join(codebuddyRoot, 'local_storage')),
+      },
+    ],
+    exists: copiedFiles.size > 0,
+    copied_files: [...copiedFiles].sort(),
+    notes: [
+      'Collect non-empty and zero-byte .codebuddy/projects/**/*.jsonl files plus companion settings/local_storage evidence; do not infer that every copied JSONL already represents a validated standalone session.',
+    ],
+  };
 }
 
 async function copyHomeRelativePath(sourcePath, filesRoot, copiedAcrossPlatforms) {

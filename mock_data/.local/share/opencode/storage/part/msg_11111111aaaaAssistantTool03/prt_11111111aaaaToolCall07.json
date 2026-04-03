@@ -1,0 +1,24 @@
+{
+  "id": "prt_11111111aaaaToolCall07",
+  "sessionID": "ses_11111111aaaaMockOpenCode01",
+  "messageID": "msg_11111111aaaaAssistantTool03",
+  "type": "tool",
+  "callID": "call_mock_read_0001",
+  "tool": "read",
+  "state": {
+    "status": "completed",
+    "input": {
+      "filePath": "/Users/mock_user/workspace/esql-lab/esql_notes.md",
+      "limit": 20
+    },
+    "output": "<file>\n00001| # ES|QL Notes\n00002|\n00003| Keep examples concise and operator-friendly.\n00004| Add a short checklist for validation.\n</file>",
+    "title": "workspace/esql-lab/esql_notes.md",
+    "metadata": {
+      "preview": "# ES|QL Notes\\n\\nKeep examples concise and operator-friendly.\\nAdd a short checklist for validation."
+    },
+    "time": {
+      "start": 1765000007000,
+      "end": 1765000007400
+    }
+  }
+}

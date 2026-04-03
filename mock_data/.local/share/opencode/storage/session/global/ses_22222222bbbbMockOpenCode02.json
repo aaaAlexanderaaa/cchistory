@@ -1,0 +1,16 @@
+{
+  "id": "ses_22222222bbbbMockOpenCode02",
+  "version": "1.0.114",
+  "projectID": "global",
+  "directory": "/Users/mock_user/workspace/esql-lab",
+  "title": "Queued implementation checklist",
+  "time": {
+    "created": 1765000100000,
+    "updated": 1765000103000
+  },
+  "summary": {
+    "additions": 1,
+    "deletions": 0,
+    "files": 1
+  }
+}

@@ -33,6 +33,7 @@ export const cursorAdapter: PlatformAdapter = {
   },
   matchesSourceFile: (filePath) =>
     path.basename(filePath) === "state.vscdb" ||
+    (path.basename(filePath) === "store.db" && filePath.includes(`${path.sep}chats${path.sep}`)) ||
     (filePath.endsWith(".jsonl") && filePath.includes(`${path.sep}agent-transcripts${path.sep}`)),
   getSourceFilePriority: (filePath) => {
     if (filePath.includes(`${path.sep}agent-transcripts${path.sep}`)) {
@@ -41,9 +42,12 @@ export const cursorAdapter: PlatformAdapter = {
     if (filePath.includes(`${path.sep}workspaceStorage${path.sep}`)) {
       return 1;
     }
-    if (filePath.includes(`${path.sep}globalStorage${path.sep}`)) {
+    if (filePath.includes(`${path.sep}chats${path.sep}`) && path.basename(filePath) === "store.db") {
       return 2;
     }
-    return 3;
+    if (filePath.includes(`${path.sep}globalStorage${path.sep}`)) {
+      return 3;
+    }
+    return 4;
   },
 };

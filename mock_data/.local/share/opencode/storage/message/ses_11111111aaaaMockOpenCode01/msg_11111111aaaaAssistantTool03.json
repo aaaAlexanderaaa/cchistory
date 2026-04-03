@@ -1,0 +1,28 @@
+{
+  "id": "msg_11111111aaaaAssistantTool03",
+  "sessionID": "ses_11111111aaaaMockOpenCode01",
+  "role": "assistant",
+  "time": {
+    "created": 1765000006000,
+    "completed": 1765000008500
+  },
+  "parentID": "msg_11111111aaaaAssistantPlan02",
+  "modelID": "mock-planner-4.6",
+  "providerID": "mock-provider-plan",
+  "mode": "plan",
+  "path": {
+    "cwd": "/Users/mock_user/workspace/esql-lab",
+    "root": "/"
+  },
+  "cost": 0,
+  "tokens": {
+    "input": 900,
+    "output": 80,
+    "reasoning": 0,
+    "cache": {
+      "read": 500,
+      "write": 0
+    }
+  },
+  "finish": "tool-calls"
+}

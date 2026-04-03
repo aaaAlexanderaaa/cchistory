@@ -1,0 +1,17 @@
+{
+  "id": "msg_11111111aaaaUserPrompt01",
+  "sessionID": "ses_11111111aaaaMockOpenCode01",
+  "role": "user",
+  "time": {
+    "created": 1765000001500
+  },
+  "path": {
+    "cwd": "/Users/mock_user/workspace/esql-lab",
+    "root": "/"
+  },
+  "summary": {
+    "additions": 0,
+    "deletions": 0,
+    "files": 0
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "recent_prompt_1": {
+    "timestamp": 1767149400000,
+    "value": {
+      "label": "study-lab"
+    },
+    "creator": "mock-creator-1"
+  },
+  "recent_prompt_2": {
+    "timestamp": 1767149460000,
+    "value": {
+      "label": "ai-learning"
+    },
+    "creator": "mock-creator-1"
+  }
+}

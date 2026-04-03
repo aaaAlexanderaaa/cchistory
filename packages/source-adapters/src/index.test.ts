@@ -22,6 +22,7 @@ test("platform adapter registry provides exactly one adapter per supported platf
     "amp",
     "antigravity",
     "claude_code",
+    "codebuddy",
     "codex",
     "cursor",
     "factory_droid",
@@ -45,11 +46,15 @@ test("platform adapter registry distinguishes stable and experimental support ti
     "amp",
     "antigravity",
     "claude_code",
+    "codebuddy",
     "codex",
     "cursor",
     "factory_droid",
+    "gemini",
+    "openclaw",
+    "opencode",
   ]);
-  assert.deepEqual(experimentalPlatforms, ["gemini", "lobechat", "openclaw", "opencode"]);
+  assert.deepEqual(experimentalPlatforms, ["lobechat"]);
 });
 
 test("stable support tier is backed by documented real-world validation assets", async () => {
@@ -215,6 +220,64 @@ test("runSourceProbe emits source-specific fragment kinds and unknown-content au
         `expected stage and diagnostic metadata for ${payload.source.platform}`,
       );
     }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe normalizes Factory delegated session metadata into session_relation fragments", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const factoryDir = path.join(tempRoot, "factory-relation");
+    await mkdir(factoryDir, { recursive: true });
+    await writeFile(
+      path.join(factoryDir, "session.jsonl"),
+      [
+        {
+          timestamp: "2026-03-09T02:00:00.000Z",
+          type: "session_start",
+          sessionTitle: "Factory delegated session",
+          cwd: "/workspace/factory-relation",
+        },
+        {
+          timestamp: "2026-03-09T02:00:01.000Z",
+          type: "message",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "Review the current plan as a delegated agent." }],
+          },
+        },
+        {
+          timestamp: "2026-03-09T02:00:02.000Z",
+          type: "message",
+          callingSessionId: "factory-parent-1",
+          callingToolUseId: "factory-tool-parent-1",
+          agentId: "reviewer-agent",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Subagent reviewed the current plan." }],
+          },
+        },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8",
+    );
+
+    const [payload] = (await runSourceProbe(
+      { source_ids: ["src-factory-relation"] },
+      [createSourceDefinition("src-factory-relation", "factory_droid", factoryDir)],
+    )).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.turns.length, 1);
+    const relation = payload.fragments.find((fragment) => fragment.fragment_kind === "session_relation");
+    assert.ok(relation);
+    assert.equal(relation?.payload.parent_uuid, "factory-parent-1");
+    assert.equal(relation?.payload.parent_tool_ref, "factory-tool-parent-1");
+    assert.equal(relation?.payload.agent_id, "reviewer-agent");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -713,10 +776,280 @@ test("runSourceProbe supports cursor antigravity gemini openclaw opencode and lo
     assert.equal(payloadsByPlatform.get("gemini")?.sessions[0]?.title, "gemini-fixture");
     assert.ok(payloadsByPlatform.get("gemini")?.turns[0]?.canonical_text.includes("Inspect Gemini CLI history."));
     assert.equal(payloadsByPlatform.get("opencode")?.sessions[0]?.title, "OpenCode fixture");
+    assert.ok(payloadsByPlatform.get("opencode")?.turns[0]?.canonical_text.includes("Inspect OpenCode history."));
+    assertFragmentKinds(payloadsByPlatform.get("opencode"), ["workspace_signal", "text", "tool_call", "tool_result"]);
     assert.equal(payloadsByPlatform.get("lobechat")?.source.family, "conversational_export");
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test("[opencode] sanitized real-layout fixtures preserve part content and ignore companion-only files as transcripts", async () => {
+  const mockDataRoot = getRepoMockDataRoot();
+  const baseDir = path.join(mockDataRoot, ".local", "share", "opencode", "storage");
+  const source = createSourceDefinition("src-opencode-mock-data", "opencode", baseDir);
+
+  const result = await runSourceProbe({ source_ids: [source.id] }, [source]);
+  const payload = result.sources[0];
+  assert.ok(payload);
+  assert.equal(payload.source.sync_status, "healthy");
+  assert.deepEqual(
+    payload.sessions.map((session) => session.title).sort(),
+    ["Plan requirements review for ESQL notes", "Queued implementation checklist"],
+  );
+  assert.equal(payload.turns.length, 1);
+  assert.equal(payload.contexts.length, 1);
+  assert.ok(payload.turns[0]?.canonical_text.includes("Review the task requirements"));
+  assert.ok(payload.sessions.some((session) => session.working_directory === "/Users/mock_user/workspace/esql-lab"));
+  assertFragmentKinds(payload, ["workspace_signal", "title_signal", "text", "tool_call", "tool_result"]);
+});
+
+test("[opencode] child session metadata projects delegated-session relation from parent session and agent hints", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const storageRoot = path.join(tempRoot, ".local", "share", "opencode", "storage");
+    const sessionId = "ses_child_opencode_relation";
+    const sessionDir = path.join(storageRoot, "session", "global");
+    const messageDir = path.join(storageRoot, "message", sessionId);
+    const userPartDir = path.join(storageRoot, "part", "msg_opencode_relation_user");
+    const assistantPartDir = path.join(storageRoot, "part", "msg_opencode_relation_assistant");
+    await mkdir(sessionDir, { recursive: true });
+    await mkdir(messageDir, { recursive: true });
+    await mkdir(userPartDir, { recursive: true });
+    await mkdir(assistantPartDir, { recursive: true });
+
+    await writeFile(
+      path.join(sessionDir, `${sessionId}.json`),
+      JSON.stringify({
+        id: sessionId,
+        version: "1.0.114",
+        projectID: "global",
+        directory: "/Users/mock_user/workspace/esql-lab",
+        title: "Delegated implementation checklist",
+        parentId: "ses_parent_opencode_relation",
+        time: { created: 1765000200000, updated: 1765000205000 },
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(messageDir, "msg_opencode_relation_user.json"),
+      JSON.stringify({
+        id: "msg_opencode_relation_user",
+        sessionID: sessionId,
+        role: "user",
+        time: { created: 1765000201000 },
+        path: { cwd: "/Users/mock_user/workspace/esql-lab", root: "/" },
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(userPartDir, "prt_opencode_relation_user_text.json"),
+      JSON.stringify({
+        id: "prt_opencode_relation_user_text",
+        sessionID: sessionId,
+        messageID: "msg_opencode_relation_user",
+        type: "text",
+        text: "Review the implementation checklist as a delegated agent.",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(messageDir, "msg_opencode_relation_assistant.json"),
+      JSON.stringify({
+        id: "msg_opencode_relation_assistant",
+        sessionID: sessionId,
+        role: "assistant",
+        agent: "reviewer-agent",
+        time: { created: 1765000202000, completed: 1765000203500 },
+        modelID: "mock-planner-4.6",
+        path: { cwd: "/Users/mock_user/workspace/esql-lab", root: "/" },
+        finish: "step-finish",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(assistantPartDir, "prt_opencode_relation_assistant_text.json"),
+      JSON.stringify({
+        id: "prt_opencode_relation_assistant_text",
+        sessionID: sessionId,
+        messageID: "msg_opencode_relation_assistant",
+        type: "text",
+        text: "I reviewed the delegated checklist and outlined the next steps.",
+      }),
+      "utf8",
+    );
+    await writeFile(
+      path.join(assistantPartDir, "prt_opencode_relation_assistant_finish.json"),
+      JSON.stringify({
+        id: "prt_opencode_relation_assistant_finish",
+        sessionID: sessionId,
+        messageID: "msg_opencode_relation_assistant",
+        type: "step-finish",
+        reason: "completed",
+        tokens: { input: 10, output: 4 },
+      }),
+      "utf8",
+    );
+
+    const source = createSourceDefinition("src-opencode-relation", "opencode", storageRoot);
+    const [payload] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.source.sync_status, "healthy");
+    assert.equal(payload.sessions.length, 1);
+    assert.ok(payload.turns.length >= 1);
+    const relation = payload.fragments.find(
+      (fragment) =>
+        fragment.fragment_kind === "session_relation" &&
+        fragment.session_ref === `sess:opencode:${sessionId}`,
+    );
+    assert.ok(relation);
+    assert.equal(relation?.payload.parent_uuid, "ses_parent_opencode_relation");
+    assert.equal(relation?.payload.agent_id, "reviewer-agent");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("[openclaw] sanitized real-archive fixtures keep cron-trigger prompts as automation evidence instead of canonical turns", async () => {
+  const mockDataRoot = getRepoMockDataRoot();
+  const baseDir = path.join(mockDataRoot, ".openclaw", "agents");
+  const source = createSourceDefinition("src-openclaw-mock-data", "openclaw", baseDir);
+
+  const result = await runSourceProbe({ source_ids: [source.id] }, [source]);
+  const payload = result.sources[0];
+  assert.ok(payload);
+  assert.equal(payload.source.sync_status, "healthy");
+  assert.equal(payload.sessions.length, 2);
+  assert.equal(payload.turns.length, 0);
+  assert.equal(payload.contexts.length, 0);
+
+  const mainSession = payload.sessions.find((session) => session.working_directory === "/Users/mock_user/workspace/openclaw-automation");
+  const cronRunSession = payload.sessions.find((session) => session.title === "cron:mock-openclaw-hourly");
+  assert.equal(mainSession?.turn_count, 0);
+  assert.ok(cronRunSession);
+  assert.equal(cronRunSession?.turn_count, 0);
+  assert.ok(
+    payload.atoms.some(
+      (atom) => atom.origin_kind === "automation_trigger" && String(atom.payload.text ?? "").includes("[cron:mock-openclaw-hourly]"),
+    ),
+  );
+  assert.ok(
+    payload.fragments.some(
+      (fragment) =>
+        fragment.session_ref === cronRunSession?.id &&
+        fragment.fragment_kind === "session_relation" &&
+        String(fragment.payload.parent_uuid ?? "") === "11111111-2222-4333-8444-555555555555" &&
+        String(fragment.payload.session_key ?? "") === "main:11111111-2222-4333-8444-555555555555",
+    ),
+  );
+  assert.ok(
+    payload.fragments.some(
+      (fragment) =>
+        fragment.session_ref === cronRunSession?.id &&
+        fragment.fragment_kind === "text" &&
+        fragment.payload.origin_kind === "source_meta" &&
+        String(fragment.payload.text ?? "").includes("Reviewed queued rule updates"),
+    ),
+  );
+  assertFragmentKinds(payload, ["workspace_signal", "model_signal", "title_signal", "session_relation", "text", "tool_call", "tool_result"]);
+
+  const blobPaths = payload.blobs.map((blob) => blob.origin_path);
+  assert.equal(
+    blobPaths.includes(path.join(baseDir, "main", "sessions", "22222222-3333-4444-8555-666666666666.jsonl.reset.2026-04-01T00-10-00.000Z")),
+    true,
+  );
+  assert.equal(
+    blobPaths.includes(path.join(baseDir, "main", "sessions", "33333333-4444-4555-8666-777777777777.jsonl.deleted.2026-04-01T00-20-00.000Z")),
+    true,
+  );
+  assert.equal(blobPaths.includes(path.join(baseDir, "main", "agent", "auth-profiles.json")), true);
+  assert.equal(blobPaths.includes(path.join(baseDir, "main", "agent", "models.json")), true);
+  assert.equal(blobPaths.includes(path.join(baseDir, "anyrouter", "agent", "auth-profiles.json")), true);
+  assert.equal(blobPaths.includes(path.join(baseDir, "kimicoding", "agent", "auth-profiles.json")), true);
+});
+test("[claude] sidechain subagent fixtures stay as delegated evidence instead of canonical turns", async () => {
+  const mockDataRoot = getRepoMockDataRoot();
+  const baseDir = path.join(
+    mockDataRoot,
+    ".claude",
+    "projects",
+    "-Users-mock-user-workspace-chat-ui-kit",
+    "cc1df109-4282-4321-8248-8bbcd471da78",
+    "subagents",
+  );
+  const source = createSourceDefinition("src-claude-subagent-mock-data", "claude_code", baseDir);
+
+  const result = await runSourceProbe({ source_ids: [source.id] }, [source]);
+  const payload = result.sources[0];
+  assert.ok(payload);
+  assert.equal(payload.source.sync_status, "healthy");
+  assert.equal(payload.sessions.length, 1);
+  assert.equal(payload.turns.length, 0);
+  assert.equal(payload.contexts.length, 0);
+  assert.equal(payload.sessions[0]?.turn_count, 0);
+  assert.ok(payload.fragments.some((fragment) => fragment.fragment_kind === "session_relation"));
+  assert.ok(
+    payload.atoms.some(
+      (atom) =>
+        atom.origin_kind === "delegated_instruction" &&
+        String(atom.payload.text ?? "").includes("Search the codebase for all timeout"),
+    ),
+  );
+  assert.equal(payload.candidates.some((candidate) => candidate.candidate_kind === "turn"), false);
+});
+
+
+test("[claude] root history jsonl stays out of default capture when scanning the source root", async () => {
+  const mockDataRoot = getRepoMockDataRoot();
+  const baseDir = path.join(mockDataRoot, ".claude");
+  const source = createSourceDefinition("src-claude-root-mock-data", "claude_code", baseDir);
+
+  const result = await runSourceProbe({ source_ids: [source.id] }, [source]);
+  const payload = result.sources[0];
+  assert.ok(payload);
+  assert.equal(payload.source.sync_status, "healthy");
+  assert.equal(payload.blobs.some((blob) => path.basename(blob.origin_path) === "history.jsonl"), false);
+  assert.ok(payload.sessions.length >= 2);
+  assert.ok(payload.turns.every((turn) => !turn.canonical_text.startsWith("/")));
+});
+
+test("[codex] root history jsonl stays out of default capture when scanning the source root", async () => {
+  const mockDataRoot = getRepoMockDataRoot();
+  const baseDir = path.join(mockDataRoot, ".codex");
+  const source = createSourceDefinition("src-codex-root-mock-data", "codex", baseDir);
+
+  const result = await runSourceProbe({ source_ids: [source.id] }, [source]);
+  const payload = result.sources[0];
+  assert.ok(payload);
+  assert.equal(payload.source.sync_status, "healthy");
+  assert.equal(payload.blobs.some((blob) => path.basename(blob.origin_path) === "history.jsonl"), false);
+  assert.equal(payload.sessions.length, 4);
+  assert.equal(payload.turns.length, 4);
+  assert.equal(
+    payload.turns.some(
+      (turn) =>
+        turn.canonical_text === "continue" ||
+        turn.canonical_text === "follow the tasks.csv, once a task, allow subagents." ||
+        turn.canonical_text === "no need to stop, just continue work to finish all tasks",
+    ),
+    false,
+  );
+});
+
+test("[amp] root history jsonl stays out of default capture when scanning the source root", async () => {
+  const mockDataRoot = getRepoMockDataRoot();
+  const baseDir = path.join(mockDataRoot, ".local", "share", "amp");
+  const source = createSourceDefinition("src-amp-root-mock-data", "amp", baseDir);
+
+  const result = await runSourceProbe({ source_ids: [source.id] }, [source]);
+  const payload = result.sources[0];
+  assert.ok(payload);
+  assert.equal(payload.source.sync_status, "healthy");
+  assert.equal(payload.blobs.some((blob) => path.basename(blob.origin_path) === "history.jsonl"), false);
+  assert.equal(payload.sessions.length, 1);
+  assert.equal(payload.turns.length, 1);
 });
 
 test("[gemini] companion project files are captured as evidence blobs without creating extra sessions", async () => {
@@ -764,6 +1097,179 @@ test("[gemini] projects.json restores the workspace path when .project_root side
     assert.equal(payload.sessions.length, 1);
     assert.equal(payload.sessions[0]?.working_directory, "/workspace/gemini-fixture");
     assert.equal(payload.sessions[0]?.title, "gemini-fixture");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("[gemini] hashed tmp chats remain valid when companion files are absent", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const sources = await seedExpandedSourceFixtures(tempRoot);
+    const geminiSource = sources.find((source) => source.platform === "gemini");
+    assert.ok(geminiSource);
+
+    await rm(path.join(geminiSource.base_dir, "projects.json"));
+    await rm(path.join(geminiSource.base_dir, "tmp", "gemini-fixture", ".project_root"));
+    await rm(path.join(geminiSource.base_dir, "history", "gemini-fixture", ".project_root"));
+    await rm(path.join(geminiSource.base_dir, "tmp", "gemini-fixture", "chats", "session-2026-03-10T07-00-gemini-fixture.json"));
+
+    const projectKey = "4f3e2d1c0b9a887766554433221100ffeeddccbbaa99887766554433221100aa";
+    const chatDir = path.join(geminiSource.base_dir, "tmp", projectKey, "chats");
+    await mkdir(chatDir, { recursive: true });
+    await writeFile(
+      path.join(geminiSource.base_dir, "tmp", projectKey, "logs.json"),
+      JSON.stringify([
+        {
+          sessionId: "gemini-missing-1",
+          messageId: 0,
+          type: "user",
+          message: "/memory show",
+          timestamp: "2026-03-31T08:58:21.000Z",
+        },
+      ]),
+      "utf8",
+    );
+    await writeFile(
+      path.join(chatDir, "session-2026-03-31T08-58-gemini-missing-companions.json"),
+      JSON.stringify({
+        sessionId: "gemini-missing-1",
+        projectHash: projectKey,
+        startTime: "2026-03-31T08:58:30.000Z",
+        lastUpdated: "2026-03-31T08:59:14.000Z",
+        messages: [
+          {
+            id: "gemini-missing-user-1",
+            timestamp: "2026-03-31T08:58:30.000Z",
+            type: "user",
+            content: "Review PIPELINE.md and summarize the next ready backlog item.",
+          },
+          {
+            id: "gemini-missing-assistant-1",
+            timestamp: "2026-03-31T08:59:14.000Z",
+            type: "gemini",
+            content: "The next ready backlog item is the Gemini missing-companion fixture task.",
+            model: "gemini-2.5-pro",
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const [payload] = (await runSourceProbe({ limit_files_per_source: 10 }, [geminiSource])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.sessions.length, 1);
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.sessions[0]?.title, projectKey);
+    assert.equal(payload.sessions[0]?.working_directory, undefined);
+    assert.match(payload.turns[0]?.canonical_text ?? "", /Review PIPELINE\.md/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("[gemini] multiple chat files under one hash remain separate sessions without companions", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const sources = await seedExpandedSourceFixtures(tempRoot);
+    const geminiSource = sources.find((source) => source.platform === "gemini");
+    assert.ok(geminiSource);
+
+    await rm(path.join(geminiSource.base_dir, "projects.json"));
+    await rm(path.join(geminiSource.base_dir, "tmp", "gemini-fixture", ".project_root"));
+    await rm(path.join(geminiSource.base_dir, "history", "gemini-fixture", ".project_root"));
+    await rm(path.join(geminiSource.base_dir, "tmp", "gemini-fixture", "chats", "session-2026-03-10T07-00-gemini-fixture.json"));
+
+    const projectKey = "8e7d6c5b4a39281716151413121110ffeeddccbbaa0099887766554433221100";
+    const chatDir = path.join(geminiSource.base_dir, "tmp", projectKey, "chats");
+    await mkdir(chatDir, { recursive: true });
+    await writeFile(
+      path.join(geminiSource.base_dir, "tmp", projectKey, "logs.json"),
+      JSON.stringify([
+        {
+          sessionId: "gemini-scale-a",
+          messageId: 0,
+          type: "user",
+          message: "/init",
+          timestamp: "2026-03-31T10:00:00.000Z",
+        },
+        {
+          sessionId: "gemini-scale-b",
+          messageId: 0,
+          type: "user",
+          message: "/tools",
+          timestamp: "2026-03-31T11:02:00.000Z",
+        },
+        {
+          sessionId: "gemini-scale-c",
+          messageId: 0,
+          type: "user",
+          message: "/memory show",
+          timestamp: "2026-03-31T12:15:00.000Z",
+        },
+      ]),
+      "utf8",
+    );
+
+    const chats = [
+      [
+        "session-2026-03-31T10-00-gemini-scale-a.json",
+        "gemini-scale-a",
+        "Summarize the repo validation commands for local operators.",
+      ],
+      [
+        "session-2026-03-31T11-02-gemini-scale-b.json",
+        "gemini-scale-b",
+        "List the current ready tasks and tell me which one is blocked.",
+      ],
+      [
+        "session-2026-03-31T12-15-gemini-scale-c.json",
+        "gemini-scale-c",
+        "Draft a note explaining why missing companion metadata should not discard a Gemini session.",
+      ],
+    ] as const;
+
+    for (const [fileName, sessionId, prompt] of chats) {
+      await writeFile(
+        path.join(chatDir, fileName),
+        JSON.stringify({
+          sessionId,
+          projectHash: projectKey,
+          startTime: "2026-03-31T10:00:10.000Z",
+          lastUpdated: "2026-03-31T10:00:48.000Z",
+          messages: [
+            {
+              id: `${sessionId}-user`,
+              timestamp: "2026-03-31T10:00:10.000Z",
+              type: "user",
+              content: prompt,
+            },
+            {
+              id: `${sessionId}-assistant`,
+              timestamp: "2026-03-31T10:00:48.000Z",
+              type: "gemini",
+              content: `Handled ${sessionId}.`,
+              model: "gemini-2.5-pro",
+            },
+          ],
+        }),
+        "utf8",
+      );
+    }
+
+    const [payload] = (await runSourceProbe({ limit_files_per_source: 10 }, [geminiSource])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.sessions.length, 3);
+    assert.equal(payload.turns.length, 3);
+    assert.deepEqual(new Set(payload.sessions.map((session) => session.title)), new Set([projectKey]));
+    assert.ok(payload.sessions.every((session) => session.working_directory === undefined));
+    assert.ok(payload.turns.some((turn) => turn.canonical_text.includes("validation commands")));
+    assert.ok(payload.turns.some((turn) => turn.canonical_text.includes("ready tasks")));
+    assert.ok(payload.turns.some((turn) => turn.canonical_text.includes("missing companion metadata")));
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -945,28 +1451,36 @@ test("[gemini] source enumeration narrows ~/.gemini roots to tmp chat data", () 
   assert.deepEqual(listGeminiSourceRoots(path.join(geminiRoot, "tmp")), [path.join(geminiRoot, "tmp")]);
 });
 
-test("discoverDefaultSourcesForHost exposes candidate roots and selected official paths", () => {
+test("discoverDefaultSourcesForHost exposes candidate roots and selected OpenCode storage paths", () => {
   const homeDir = "/Users/tester";
   const discoveries = discoverDefaultSourcesForHost({
     homeDir,
     platform: "darwin",
     pathExists(targetPath) {
       return (
+        targetPath === path.join(homeDir, ".local", "share", "opencode", "storage") ||
         targetPath === path.join(homeDir, ".local", "share", "opencode", "project") ||
-        targetPath === path.join(homeDir, ".openclaw", "agents")
+        targetPath === path.join(homeDir, ".openclaw", "agents") ||
+        targetPath === path.join(homeDir, ".codebuddy")
       );
     },
   });
 
   const opencode = discoveries.find((entry) => entry.platform === "opencode");
   const openclaw = discoveries.find((entry) => entry.platform === "openclaw");
+  const codebuddy = discoveries.find((entry) => entry.platform === "codebuddy");
 
-  assert.equal(opencode?.selected_path, path.join(homeDir, ".local", "share", "opencode", "project"));
+  assert.equal(opencode?.selected_path, path.join(homeDir, ".local", "share", "opencode", "storage"));
   assert.equal(opencode?.selected_exists, true);
   assert.ok(
     opencode?.candidates.some(
       (candidate) =>
-        candidate.path === path.join(homeDir, ".local", "share", "opencode", "project") && candidate.selected,
+        candidate.path === path.join(homeDir, ".local", "share", "opencode", "storage") && candidate.selected,
+    ),
+  );
+  assert.ok(
+    opencode?.candidates.some(
+      (candidate) => candidate.path === path.join(homeDir, ".local", "share", "opencode", "project"),
     ),
   );
   assert.ok(
@@ -976,6 +1490,8 @@ test("discoverDefaultSourcesForHost exposes candidate roots and selected officia
   );
   assert.equal(openclaw?.selected_path, path.join(homeDir, ".openclaw", "agents"));
   assert.equal(openclaw?.selected_exists, true);
+  assert.equal(codebuddy?.selected_path, path.join(homeDir, ".codebuddy"));
+  assert.equal(codebuddy?.selected_exists, true);
 });
 
 test("discoverHostToolsForHost includes discovery-only Gemini CLI paths", () => {
@@ -1002,48 +1518,33 @@ test("discoverHostToolsForHost includes discovery-only Gemini CLI paths", () => 
   ]);
 });
 
-test("getDefaultSourcesForHost keeps legacy OpenCode sessions discoverable when project root exists", async () => {
+test("getDefaultSourcesForHost prefers the OpenCode storage root and keeps session layouts discoverable", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
 
   try {
-    const legacySessionDir = path.join(tempRoot, ".local", "share", "opencode", "storage", "session");
-    const legacyMessageDir = path.join(tempRoot, ".local", "share", "opencode", "storage", "message", "opencode-legacy");
-    const officialSessionDir = path.join(
-      tempRoot,
-      ".local",
-      "share",
-      "opencode",
-      "project",
-      "workspace-demo",
-      "storage",
-      "session",
-    );
-    const officialMessageDir = path.join(
-      tempRoot,
-      ".local",
-      "share",
-      "opencode",
-      "project",
-      "workspace-demo",
-      "storage",
-      "message",
-      "opencode-official",
-    );
+    const storageRoot = path.join(tempRoot, ".local", "share", "opencode", "storage");
+    const legacySessionDir = path.join(storageRoot, "session");
+    const officialSessionDir = path.join(storageRoot, "session", "global");
+    const legacyMessageDir = path.join(storageRoot, "message", "opencode-legacy");
+    const officialMessageDir = path.join(storageRoot, "message", "opencode-official");
+    const projectDir = path.join(tempRoot, ".local", "share", "opencode", "project");
 
     await mkdir(legacySessionDir, { recursive: true });
-    await mkdir(legacyMessageDir, { recursive: true });
     await mkdir(officialSessionDir, { recursive: true });
+    await mkdir(legacyMessageDir, { recursive: true });
     await mkdir(officialMessageDir, { recursive: true });
+    await mkdir(projectDir, { recursive: true });
 
     await writeFile(
       path.join(legacySessionDir, "opencode-legacy.json"),
       JSON.stringify({
         id: "opencode-legacy",
         title: "OpenCode legacy fixture",
-        cwd: "/workspace/opencode-legacy",
-        model: "sonnet-4",
-        createdAt: "2026-03-10T05:00:00.000Z",
-        updatedAt: "2026-03-10T05:00:02.000Z",
+        directory: "/workspace/opencode-legacy",
+        time: {
+          created: 1770000000000,
+          updated: 1770000001000,
+        },
       }),
       "utf8",
     );
@@ -1065,22 +1566,39 @@ test("getDefaultSourcesForHost keeps legacy OpenCode sessions discoverable when 
       JSON.stringify({
         id: "opencode-official",
         title: "OpenCode official fixture",
-        cwd: "/workspace/opencode-official",
-        model: "sonnet-4",
-        createdAt: "2026-03-11T05:10:00.000Z",
-        updatedAt: "2026-03-11T05:10:02.000Z",
+        directory: "/workspace/opencode-official",
+        time: {
+          created: 1770000100000,
+          updated: 1770000102000,
+        },
       }),
       "utf8",
     );
     await writeFile(
       path.join(officialMessageDir, "0001.json"),
       JSON.stringify({
-        info: {
-          id: "opencode-official-user-1",
-          role: "user",
-          createdAt: "2026-03-11T05:10:01.000Z",
+        id: "opencode-official-user-1",
+        sessionID: "opencode-official",
+        role: "user",
+        time: {
+          created: 1770000101000,
         },
-        parts: [{ type: "text", text: "Inspect official OpenCode history." }],
+        path: {
+          cwd: "/workspace/opencode-official",
+          root: "/",
+        },
+      }),
+      "utf8",
+    );
+    await mkdir(path.join(storageRoot, "part", "opencode-official-user-1"), { recursive: true });
+    await writeFile(
+      path.join(storageRoot, "part", "opencode-official-user-1", "0001.json"),
+      JSON.stringify({
+        id: "opencode-official-user-1-part-1",
+        sessionID: "opencode-official",
+        messageID: "opencode-official-user-1",
+        type: "text",
+        text: "Inspect official OpenCode history.",
       }),
       "utf8",
     );
@@ -1089,7 +1607,7 @@ test("getDefaultSourcesForHost keeps legacy OpenCode sessions discoverable when 
       (source) => source.platform === "opencode",
     );
     assert.ok(opencodeSource);
-    assert.equal(opencodeSource?.base_dir, path.join(tempRoot, ".local", "share", "opencode", "project"));
+    assert.equal(opencodeSource?.base_dir, storageRoot);
 
     const result = await runSourceProbe({ source_ids: [opencodeSource.id] }, [opencodeSource]);
     assert.deepEqual(
@@ -2149,6 +2667,34 @@ test("runSourceProbe derives Antigravity user turns from Conversation_History sn
   }
 });
 
+test("runSourceProbe ingests Cursor chat-store metadata and minimal readable fragments as an experimental slice", async () => {
+  const mockDataRoot = getRepoMockDataRoot();
+  const source = createSourceDefinition("src-cursor-chat-store", "cursor", path.join(mockDataRoot, ".cursor", "chats"));
+
+  const [payload] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
+
+  assert.ok(payload);
+  assert.equal(payload.source.sync_status, "healthy");
+  assert.equal(payload.sessions.length, 3);
+  assert.equal(payload.turns.length, 3);
+  assert.equal(payload.contexts.length, 3);
+  assert.equal(payload.sessions.every((session) => session.working_directory === undefined), true);
+  assert.equal(payload.sessions.some((session) => session.title === "MCP Service Guide"), true);
+  assert.equal(payload.sessions.some((session) => session.title === "Custom API Settings"), true);
+  assert.equal(payload.sessions.some((session) => session.title === "Requirement Review"), true);
+  assert.equal(payload.turns.some((turn) => turn.canonical_text.includes("Research stable MCP servers")), true);
+  assert.equal(payload.turns.some((turn) => turn.canonical_text.includes("Design a simple API settings panel")), true);
+  assert.equal(payload.turns.some((turn) => turn.canonical_text.includes("Read @requirement.md")), true);
+  assert.ok(
+    payload.contexts.some((context) =>
+      context.assistant_replies.some((reply) => reply.content.includes("Prefer filesystem, fetch, and GitHub examples")),
+    ),
+  );
+  assert.ok(
+    payload.loss_audits.some((audit) => audit.diagnostic_code === "cursor_chat_store_blob_graph_opaque"),
+  );
+});
+
 test("runSourceProbe falls back to Cursor prompt history with workspace-linked synthetic sessions", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
 
@@ -2396,6 +2942,39 @@ test("runSourceProbe does not use file mtime when atom timestamps already differ
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test("runSourceProbe ingests CodeBuddy transcript JSONL while keeping skipRun echoes and empty siblings out of turns", async () => {
+  const mockDataRoot = getRepoMockDataRoot();
+  const source = createSourceDefinition("src-codebuddy", "codebuddy", path.join(mockDataRoot, ".codebuddy"));
+
+  const [payload] = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources;
+
+  assert.ok(payload);
+  assert.equal(payload.source.platform, "codebuddy");
+  assert.equal(payload.source.sync_status, "healthy");
+  assert.equal(payload.sessions.length, 2);
+  assert.equal(payload.turns.length, 3);
+  assert.equal(payload.sessions.some((session) => session.id.includes("11111111-2222-4333-8444-555555555555")), false);
+
+  const canonicalTexts = payload.turns.map((turn) => turn.canonical_text);
+  assert.equal(canonicalTexts.some((text) => text.includes("Caveat: local command echoes below")), false);
+  assert.equal(canonicalTexts.some((text) => text.includes("<command-name>/model</command-name>")), false);
+  assert.equal(canonicalTexts.some((text) => text.includes("Find practical AI learning resources")), true);
+  assert.equal(canonicalTexts.some((text) => text.includes("two-week practice sprint")), true);
+  assert.equal(canonicalTexts.some((text) => text.includes("Read @requirement.md and restate")), true);
+
+  const aiLearningSession = payload.sessions.find((session) => session.id.includes("22222222-3333-4444-8555-666666666666"));
+  assert.ok(aiLearningSession);
+  assert.match(aiLearningSession?.title ?? "", /Find practical AI learning resources/);
+  assert.equal(aiLearningSession?.source_native_project_ref, "config-workspace-ai_learning");
+
+  const blobPaths = payload.blobs.map((blob) => blob.origin_path);
+  assert.equal(blobPaths.some((value) => value.endsWith(path.join(".codebuddy", "settings.json"))), true);
+  assert.equal(blobPaths.some((value) => value.includes(path.join(".codebuddy", "local_storage"))), true);
+
+  const skipRunAudit = payload.loss_audits.find((audit) => audit.diagnostic_code === "codebuddy_skiprun_command_echo");
+  assert.ok(skipRunAudit);
 });
 
 async function seedSupportedSourceFixtures(tempRoot: string): Promise<SourceDefinition[]> {
@@ -3878,8 +4457,13 @@ async function seedExpandedSourceFixtures(tempRoot: string): Promise<SourceDefin
   const antigravityGlobalDir = path.join(antigravityDir, "globalStorage");
   const openclawDir = path.join(tempRoot, "openclaw", "agent-a", "sessions");
   const opencodeRoot = path.join(tempRoot, "opencode");
-  const opencodeSessionDir = path.join(opencodeRoot, "session");
-  const opencodeMessageDir = path.join(opencodeRoot, "message", "opencode-fixture");
+  const opencodeStorageRoot = path.join(opencodeRoot, "storage");
+  const opencodeSessionDir = path.join(opencodeStorageRoot, "session", "global");
+  const opencodeMessageDir = path.join(opencodeStorageRoot, "message", "opencode-fixture");
+  const opencodeUserPartDir = path.join(opencodeStorageRoot, "part", "opencode-user-1");
+  const opencodeAssistantPartDir = path.join(opencodeStorageRoot, "part", "opencode-assistant-1");
+  const opencodeTodoDir = path.join(opencodeStorageRoot, "todo");
+  const opencodeSessionDiffDir = path.join(opencodeStorageRoot, "session_diff");
   const lobechatDir = path.join(tempRoot, "lobechat");
   const geminiRoot = path.join(tempRoot, ".gemini");
   const geminiChatDir = path.join(geminiRoot, "tmp", "gemini-fixture", "chats");
@@ -3890,6 +4474,10 @@ async function seedExpandedSourceFixtures(tempRoot: string): Promise<SourceDefin
   await mkdir(openclawDir, { recursive: true });
   await mkdir(opencodeSessionDir, { recursive: true });
   await mkdir(opencodeMessageDir, { recursive: true });
+  await mkdir(opencodeUserPartDir, { recursive: true });
+  await mkdir(opencodeAssistantPartDir, { recursive: true });
+  await mkdir(opencodeTodoDir, { recursive: true });
+  await mkdir(opencodeSessionDiffDir, { recursive: true });
   await mkdir(lobechatDir, { recursive: true });
   await mkdir(geminiChatDir, { recursive: true });
   await mkdir(geminiHistoryDir, { recursive: true });
@@ -3914,20 +4502,86 @@ async function seedExpandedSourceFixtures(tempRoot: string): Promise<SourceDefin
     path.join(openclawDir, "openclaw-fixture.jsonl"),
     [
       {
+        type: "session",
+        version: 3,
+        id: "openclaw-fixture",
         timestamp: "2026-03-10T04:00:00.000Z",
-        role: "user",
-        content: "Inspect OpenClaw history.",
+        cwd: "/workspace/openclaw",
       },
       {
-        timestamp: "2026-03-10T04:00:01.000Z",
-        role: "assistant",
-        usage: {
-          input_tokens: 7,
-          output_tokens: 3,
-          total_tokens: 10,
+        type: "model_change",
+        id: "openclaw-model-1",
+        parentId: null,
+        timestamp: "2026-03-10T04:00:00.001Z",
+        provider: "zai",
+        modelId: "glm-5-turbo",
+      },
+      {
+        type: "thinking_level_change",
+        id: "openclaw-thinking-1",
+        parentId: "openclaw-model-1",
+        timestamp: "2026-03-10T04:00:00.002Z",
+        thinkingLevel: "low",
+      },
+      {
+        type: "custom",
+        customType: "model-snapshot",
+        data: { timestamp: 1773115200003, provider: "zai", modelId: "glm-5-turbo" },
+        id: "openclaw-snapshot-1",
+        parentId: "openclaw-thinking-1",
+        timestamp: "2026-03-10T04:00:00.003Z",
+      },
+      {
+        type: "message",
+        id: "openclaw-user-1",
+        parentId: "openclaw-snapshot-1",
+        timestamp: "2026-03-10T04:00:00.010Z",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Inspect OpenClaw history." }],
         },
-        stopReason: "end_turn",
-        content: [{ type: "text", text: "OpenClaw history loaded." }],
+      },
+      {
+        type: "message",
+        id: "openclaw-assistant-1",
+        parentId: "openclaw-user-1",
+        timestamp: "2026-03-10T04:00:01.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Review the queued history before replying.", thinkingSignature: "mock-openclaw-thinking" },
+            { type: "text", text: "I will inspect the queued history first." },
+            { type: "toolCall", id: "call-openclaw-read-1", name: "read", arguments: { path: "/workspace/openclaw/notes.md" } },
+          ],
+          model: "glm-5-turbo",
+          usage: { input: 7, output: 3, totalTokens: 10 },
+          stopReason: "tool_use",
+        },
+      },
+      {
+        type: "message",
+        id: "openclaw-tool-result-1",
+        parentId: "openclaw-assistant-1",
+        timestamp: "2026-03-10T04:00:01.200Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "call-openclaw-read-1",
+          toolName: "read",
+          content: [{ type: "text", text: "OpenClaw history loaded." }],
+        },
+      },
+      {
+        type: "message",
+        id: "openclaw-assistant-2",
+        parentId: "openclaw-tool-result-1",
+        timestamp: "2026-03-10T04:00:01.400Z",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "OpenClaw history loaded." }],
+          model: "glm-5-turbo",
+          usage: { input: 3, output: 3, totalTokens: 6 },
+          stopReason: "end_turn",
+        },
       },
     ]
       .map((line) => JSON.stringify(line))
@@ -3940,41 +4594,105 @@ async function seedExpandedSourceFixtures(tempRoot: string): Promise<SourceDefin
     JSON.stringify({
       id: "opencode-fixture",
       title: "OpenCode fixture",
-      cwd: "/workspace/opencode",
-      model: "sonnet-4",
-      createdAt: "2026-03-10T05:00:00.000Z",
-      updatedAt: "2026-03-10T05:00:02.000Z",
+      directory: "/workspace/opencode",
+      version: "1.0.114",
+      time: {
+        created: 1771000000000,
+        updated: 1771000002000,
+      },
     }),
     "utf8",
   );
   await writeFile(
     path.join(opencodeMessageDir, "0001.json"),
     JSON.stringify({
-      info: {
-        id: "opencode-user-1",
-        role: "user",
-        createdAt: "2026-03-10T05:00:01.000Z",
+      id: "opencode-user-1",
+      sessionID: "opencode-fixture",
+      role: "user",
+      time: {
+        created: 1771000001000,
       },
-      parts: [{ type: "text", text: "Inspect OpenCode history." }],
+      path: {
+        cwd: "/workspace/opencode",
+        root: "/",
+      },
+    }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(opencodeUserPartDir, "0001.json"),
+    JSON.stringify({
+      id: "opencode-user-1-part-1",
+      sessionID: "opencode-fixture",
+      messageID: "opencode-user-1",
+      type: "text",
+      text: "Inspect OpenCode history.",
     }),
     "utf8",
   );
   await writeFile(
     path.join(opencodeMessageDir, "0002.json"),
     JSON.stringify({
-      info: {
-        id: "opencode-assistant-1",
-        role: "assistant",
-        createdAt: "2026-03-10T05:00:02.000Z",
-        stopReason: "end_turn",
+      id: "opencode-assistant-1",
+      sessionID: "opencode-fixture",
+      role: "assistant",
+      time: {
+        created: 1771000002000,
+        completed: 1771000003000,
       },
-      usage: {
-        inputTokens: 8,
-        outputTokens: 4,
-        totalTokens: 12,
+      modelID: "sonnet-4",
+      path: {
+        cwd: "/workspace/opencode",
+        root: "/",
       },
-      parts: [{ type: "text", text: "OpenCode history loaded." }],
+      finish: "tool-calls",
+      tokens: {
+        input: 8,
+        output: 4,
+        reasoning: 0,
+        cache: {
+          read: 2,
+          write: 0,
+        },
+      },
     }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(opencodeAssistantPartDir, "0001.json"),
+    JSON.stringify({
+      id: "opencode-assistant-1-part-1",
+      sessionID: "opencode-fixture",
+      messageID: "opencode-assistant-1",
+      type: "tool",
+      callID: "call-opencode-read-1",
+      tool: "read",
+      state: {
+        status: "completed",
+        input: {
+          filePath: "/workspace/opencode/notes.md",
+          limit: 20,
+        },
+        output: "<file>\n00001| OpenCode history loaded.\n</file>",
+      },
+    }),
+    "utf8",
+  );
+  await writeFile(
+    path.join(opencodeAssistantPartDir, "0002.json"),
+    JSON.stringify({
+      id: "opencode-assistant-1-part-2",
+      sessionID: "opencode-fixture",
+      messageID: "opencode-assistant-1",
+      type: "text",
+      text: "OpenCode history loaded.",
+    }),
+    "utf8",
+  );
+  await writeFile(path.join(opencodeSessionDiffDir, "opencode-fixture.json"), "[]\n", "utf8");
+  await writeFile(
+    path.join(opencodeTodoDir, "opencode-fixture.json"),
+    JSON.stringify([{ id: "todo-1", content: "Capture supporting checklist", status: "pending" }]),
     "utf8",
   );
 
@@ -4049,7 +4767,7 @@ async function seedExpandedSourceFixtures(tempRoot: string): Promise<SourceDefin
     createSourceDefinition("src-antigravity-fixture", "antigravity", antigravityDir),
     createSourceDefinition("src-gemini-fixture", "gemini", geminiRoot),
     createSourceDefinition("src-openclaw-fixture", "openclaw", path.join(tempRoot, "openclaw")),
-    createSourceDefinition("src-opencode-fixture", "opencode", opencodeSessionDir),
+    createSourceDefinition("src-opencode-fixture", "opencode", opencodeStorageRoot),
     createSourceDefinition("src-lobechat-fixture", "lobechat", lobechatDir, "conversational_export"),
   ];
 }

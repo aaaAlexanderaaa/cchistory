@@ -3,16 +3,19 @@
 ## Status
 
 - Objective: `R1 - OpenCode And OpenClaw Stabilization`
-- Backlog status after this note: `decomposing`
-- Phase reached: `Phase 1 - Domain Understanding`
-- Current blocker: awaiting user-run real-sample collection
+- Backlog status after this note: `done`
+- Phase reached: OpenCode and OpenClaw support-tier closure complete on
+  2026-04-02 after real-archive-backed fixture, parser/regression, and
+  evidence-preserving intake validation
+- Current focus: keep both stable claims truthful and reopen source-specific
+  follow-up only if newer real samples expose additional edge cases
 
 ## Phase 1: Domain Understanding
 
 ### What exists today
 
-- `openclaw` and `opencode` are registered as `experimental` in the adapter
-  registry and already have parser/discovery coverage plus fixture-backed tests.
+- `openclaw` and `opencode` are now both `stable` after completing their
+  real-archive-backed fixture, regression, and support-surface slices.
 - `openclaw` discovery currently assumes `~/.openclaw/agents` and matches
   `.jsonl` files whose parent directory is `sessions`.
 - `opencode` discovery currently assumes either
@@ -25,7 +28,7 @@
   real disk structure, error cases, token-usage behavior, and project-signal
   stability well enough to promote them beyond `experimental`.
 
-### Host findings on 2026-03-27 and 2026-03-28
+### Host findings on 2026-03-27, 2026-03-31, and 2026-04-02
 
 The current host does not have the transcript-bearing roots required for either
 experimental adapter:
@@ -40,15 +43,109 @@ A follow-up scan on 2026-03-28 found nearby `.opencode` config directories in
 samples prove otherwise, those config-like paths are not treated as R1 sample
 collection roots.
 
-That means this host cannot complete the required real-world structure analysis
-from local evidence alone.
+On 2026-03-31, the repository received a real dot-file archive extracted under
+`.realdata/config_dots_20260331_212353/`. That archive does not include
+OpenClaw data, but it does include real OpenCode data under
+`.local/share/opencode/storage/`. Review details are recorded in
+`docs/design/REAL_SOURCE_ARCHIVE_REVIEW_2026-03-31.md`.
+
+The real OpenCode layout in this archive is centered on:
+
+- `storage/project/global.json`
+- `storage/session/global/*.json`
+- `storage/message/<session-id>/*.json`
+- `storage/part/<message-id>/*.json`
+- optional-looking `storage/session_diff/*.json` and `storage/todo/*.json`
+
+This means the objective is no longer uniformly blocked. OpenCode now has
+completed Phase 2 fixture work, regression proof, and support-surface closure,
+and OpenClaw now has a real archive that enables executable sample-backed
+parser/fixture work instead of remaining blocked on acquisition.
+
+### 2026-04-02 real OpenClaw archive review
+
+The repository now has a user-provided real archive at `.realdata/openclaw_backup.tar.gz`,
+created from real `~/.openclaw` data. Unlike the earlier handoff-only state,
+this archive already contains transcript-bearing OpenClaw evidence and can drive
+Phase 1 decomposition directly.
+
+Archive-visible findings:
+
+- transcript-bearing files are present under `agents/main/sessions/*.jsonl`; the
+  archive currently contains 183 active session JSONL files plus 172
+  `.reset.*` and 25 `.deleted.*` lifecycle variants in the same `sessions/`
+  tree
+- other agent roots differ by role in this archive: `agents/main/` contains
+  session transcripts plus agent-local config, while `agents/kimicoding/agent/`
+  and `agents/anyrouter/agent/` currently expose `auth-profiles.json` config
+  only and no transcript sessions
+- observed companion files under `agents/main/agent/` are
+  `auth-profiles.json` and `models.json`; these are evidence-bearing config/model
+  metadata, not the primary transcript stream
+- active session logs are typed event streams rather than the current simplified
+  synthetic fixture shape. Sampled top-level event kinds are `session`,
+  `model_change`, `thinking_level_change`, `custom`, and `message`
+- sampled `customType` values include `model-snapshot` plus at least one
+  `openclaw:prompt-error` event
+- sampled `message.message.role` values include `user`, `assistant`, and
+  `toolResult`; sampled content item types include `text`, `thinking`, and
+  `toolCall`
+- session-level workspace signal is carried by `session.cwd`; most sampled
+  active sessions point at `/root/.openclaw/workspace`
+- sampled model/provider evidence appears both in `model_change` events and
+  assistant message metadata; the archive includes multiple provider/model pairs
+  rather than one fixed combination
+- `.reset.*` and `.deleted.*` files are transcript-shaped historical lifecycle
+  artifacts, not generic config noise. They need an explicit capture/derivation
+  rule rather than silent omission by default
+
+Implications for decomposition:
+
+- the current synthetic OpenClaw fixture shape in tests (`role` + `content`
+  rows only) is not sufficient to represent the real archive
+- `packages/source-adapters` now needs sample-backed decisions for typed
+  event-stream parsing, `toolResult` / `toolCall` handling, `thinking` content,
+  `session.cwd` workspace signals, and lifecycle suffix handling for
+  `.reset.*` / `.deleted.*`
+- support-tier decisions for OpenClaw can now proceed only through sample-backed
+  fixture, parser, and higher-layer validation work rather than remaining
+  blocked on acquisition
+
+### 2026-04-01 OpenCode promotion decision
+
+Targeted validation now confirms the OpenCode slice satisfies the promotion
+checklist items that are executable on this host:
+
+- real-world structure review exists via `.realdata/config_dots_20260331_212353/`
+  and `docs/design/REAL_SOURCE_ARCHIVE_REVIEW_2026-03-31.md`
+- sanitized OpenCode fixtures are present in `mock_data/` and
+  `pnpm run mock-data:validate` passes
+- parser and operator regressions pass via
+  `pnpm --filter @cchistory/source-adapters test` and
+  `pnpm --filter @cchistory/cli test`
+- support-surface closure now passes via `pnpm run verify:support-status`
+
+As of 2026-04-01, OpenCode therefore moves to `stable`. As of 2026-04-02, OpenClaw also moves to `stable` after the real-archive-backed fixture, parser/discovery, CLI, evidence-only companion-capture, and support-surface verification slice all closed on this host review path.
+
+### 2026-03-31 split decision
+
+Based on the real archive review:
+
+- At the 2026-03-31 review point, OpenCode was the executable stabilization slice inside `R1`; that work is now closed by the 2026-04-01 promotion decision above.
+- OpenClaw should remain in `R1`, but now as an executable sample-backed
+  parser/fixture/support-tier slice informed by the reviewed real archive.
+- Gemini, Cursor CLI/chat-store, CodeBuddy, and other newly observed roots are
+  broader than `R1` and should be tracked under separate backlog objectives.
 
 ### Unknowns still blocking stabilization
 
 - Whether real OpenClaw session logs include additional event kinds, sidecars,
   or per-agent metadata beyond the current JSONL fixture shape.
-- Whether real OpenCode deployments favor the newer `project/.../storage/*`
-  layout, the legacy `storage/session` layout, or a mix of both in practice.
+- Whether OpenCode `storage/session_diff` and `storage/todo` are derivation-
+  critical evidence, evidence-only companions, or safely ignorable noise.
+- Whether real OpenCode deployments outside this archive favor the observed
+  `storage/session/global` layout, the older `storage/session` layout, or a mix
+  of both in practice.
 - Whether either source has edge cases around truncated files, token usage,
   workspace signals, or cross-session project continuity that are absent from
   the current fixtures.
@@ -56,31 +153,33 @@ from local evidence alone.
 ### Collection path prepared
 
 Canonical operator guidance for inspection helpers now lives in
-`docs/guide/inspection.md`. This section records the specific R1 unblock path
-prepared for future real-sample review.
+`docs/guide/inspection.md`. This section keeps the historical collection shape
+visible for future recollection on other hosts. OpenCode promotion has already
+closed, and additional collection work is only needed if future OpenClaw or
+cross-host comparison evidence is required.
 
-To unblock Phase 1 on a machine that actually has OpenClaw or OpenCode data, the
-repository now provides a one-click collection script:
+The shared collection script remains:
 
 - `pnpm run inspect:collect-source-samples -- --platform openclaw --platform opencode`
 - optional custom output directory: `pnpm run inspect:collect-source-samples -- --platform openclaw --platform opencode --output /tmp/r1-open-source-collection`
 
-The script writes a manifest plus copied sample files under either the supplied
-output path or `.cchistory/inspections/source-samples-<timestamp>/`. The
-manifest explicitly records the requested platforms, checked transcript roots,
-and notes about config-only paths so future analysis does not confuse
-`.opencode` artifacts with transcript-bearing evidence. For this R1 slice, run
-it with both requested platforms so the bundle currently collects:
+For future recollection, agents should treat the OpenClaw-only variant as the
+default command and use the combined command only if a later real-data review
+needs to compare OpenClaw samples against OpenCode again:
 
-- OpenClaw `sessions/*.jsonl` files under `~/.openclaw/agents`
-- OpenCode session JSON files under both official and legacy transcript roots
-- matching OpenCode `storage/message/<session-id>/*.json` message files
+- `pnpm run inspect:collect-source-samples -- --platform openclaw --output /tmp/openclaw-samples`
+
+The manifest still records checked transcript roots and config-only exclusions so
+future analysis does not confuse `.opencode` artifacts with transcript-bearing
+evidence, but OpenCode collection is no longer the active gate for this
+objective.
 
 
-### Sample review checklist once real samples arrive
+### Sample review checklist and current answers
 
-When a real collection bundle exists, the next agent should answer the following
-questions before creating fixtures or proposing promotion-to-stable work.
+A real OpenClaw archive now exists, so the next agent should treat the questions
+below as partially answered by the 2026-04-02 review and use them to drive the
+remaining fixture/parser/support-tier decisions.
 
 #### Both platforms
 
@@ -134,13 +233,12 @@ bundle.
   user submissions.
 - **OpenClaw malformed/partial session**: truncated JSONL, unknown event kinds,
   or incomplete event payloads observed in real logs.
-- **OpenCode official-layout session**: `project/.../storage/session` plus
-  matching `storage/message/<session-id>/` files with cwd/workspace signals.
-- **OpenCode legacy-layout session**: `storage/session` plus matching
-  `storage/message/<session-id>/` files so the legacy path remains regression
-  covered while the official layout is preferred.
-- **OpenCode malformed/missing-message case**: real evidence of absent or
-  mismatched message files, incomplete session JSON, or usage-field drift.
+- **OpenCode official-layout session**: historical Phase 2 target that is now
+  satisfied by the delivered fixtures and regression suite.
+- **OpenCode legacy-layout session**: historical regression target retained here
+  as context for the stable promotion decision.
+- **OpenCode malformed/missing-message case**: historical checklist item now
+  covered by the real-archive-backed parser review and fixture set.
 - **Cross-platform scale case**: at least one session large enough to pressure
   CLI/web readability and reveal whether derived projections need truncation,
   grouping, or pagination safeguards.
@@ -175,11 +273,13 @@ order rather than patching ad hoc symptoms.
 
 #### Support claims and operator-facing inventory
 
-- `docs/design/CURRENT_RUNTIME_SURFACE.md`: keep OpenClaw/OpenCode marked
-  `experimental` until the real-world validation gap is actually closed.
-- `docs/design/SELF_HOST_V1_RELEASE_GATE.md` and `docs/sources/README.md`: do
-  not promote support claims or add stable reference docs until the objective’s
-  real-sample evidence, fixtures, and regressions are complete.
+- `docs/design/CURRENT_RUNTIME_SURFACE.md`: keep both OpenClaw and OpenCode
+  aligned with their evidence-backed `stable` tier unless a later real-data
+  review reopens either claim.
+- `docs/design/SELF_HOST_V1_RELEASE_GATE.md` and `docs/sources/README.md`: the
+  current support-surface closure now covers both OpenCode and OpenClaw; future
+  edits should narrow or revoke those stable claims only when new evidence
+  proves the current validation slice is no longer sufficient.
 - `docs/guide/cli.md`: update operator wording only if real samples prove a
   different root shape, warning, or workflow is needed.
 
@@ -193,21 +293,24 @@ order rather than patching ad hoc symptoms.
 - `mock_data/` and `mock_data/scenarios.json`: add only the anonymized fixture
   scenarios that are actually justified by the collected evidence.
 
-#### Resume validation sequence after samples arrive
+#### Completed validation sequence after real-sample review
 
-1. Run `pnpm run inspect:collect-source-samples -- --platform openclaw --platform opencode` on the host with real data (see `docs/guide/inspection.md` for the stable command contract).
-2. Review the manifest and copied files against the checklist above.
-3. Create anonymized fixtures and run `pnpm run mock-data:validate`.
-4. Run `pnpm --filter @cchistory/source-adapters test`.
-5. Run `pnpm --filter @cchistory/cli test` if parsing behavior changes affect
-   operator-visible flows.
-6. Update `BACKLOG.md` with truthful KRs/tasks before starting non-trivial
-   parser or support-tier changes.
+1. Reviewed `.realdata/openclaw_backup.tar.gz` against the checklist above and recorded which OpenClaw artifacts are active transcripts, lifecycle-history variants, or companion-only config.
+2. Created anonymized OpenClaw fixtures under `mock_data/.openclaw/` and confirmed `pnpm run mock-data:validate` passes.
+3. Updated OpenClaw parser handling for the typed event-stream JSONL shape, `toolResult` / `toolCall` / `thinking` content, `session.cwd` workspace signals, `model_change`/`model-snapshot` model cues, and the current active-session rule for `.reset.*` / `.deleted.*` files.
+4. Confirmed `pnpm --filter @cchistory/source-adapters test` passes.
+5. Confirmed `pnpm --filter @cchistory/cli test` passes for the user-visible CLI slice affected by the parser change.
+6. Reevaluated OpenClaw promotion readiness after the evidence-only intake update: the real-sample, fixture, parser/discovery, CLI, and companion-artifact checklist items are now satisfied on this host review path.
+7. Updated `BACKLOG.md` and this note so the next executable step is the support-surface closure pass (`registry` / `stable-adapter-validation.json` / runtime docs / README surfaces / `pnpm run verify:support-status`) rather than more parser work.
 
 ### Promotion-to-stable evidence checklist
 
-Neither `openclaw` nor `opencode` should move out of `experimental` until every
-item below is satisfied for the platform being promoted.
+No platform should move out of `experimental` until every item below is
+satisfied for the platform being promoted. OpenCode now meets this checklist on
+the current host review path. OpenClaw now also has a real transcript-bearing
+sample bundle plus green fixture/parser/CLI validation and evidence-only
+companion capture; the remaining unchecked slice is support-surface consistency
+for any stable-tier move.
 
 #### Evidence and fixture proof
 
@@ -249,9 +352,7 @@ real evidence plus green validation commands.
 
 ## Next required step
 
-Run the collection script on a machine where OpenClaw and/or OpenCode history is
-present, then resume this objective with the generated manifest and copied
-sample set. Use the checklist above to turn the real evidence into Phase 2
-fixture tasks and truthful KR decomposition. Until that happens, R1 cannot
-proceed into fixture design or stabilization work without guessing about
-real-world structure.
+OpenCode and OpenClaw are now both closed for the current `R1` support-tier
+slice. Reopen this note only if a later real-sample review reveals new evidence
+that should narrow or revoke either stable claim, or if a new platform-specific
+edge case needs its own follow-up KR.

@@ -1,0 +1,11 @@
+{
+  "id": "prt_11111111aaaaPlanReason03",
+  "sessionID": "ses_11111111aaaaMockOpenCode01",
+  "messageID": "msg_11111111aaaaAssistantPlan02",
+  "type": "reasoning",
+  "text": "",
+  "time": {
+    "start": 1765000003200,
+    "end": 1765000003600
+  }
+}

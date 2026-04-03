@@ -14,6 +14,8 @@ export interface GenericSessionMetadata {
   title?: string;
   parentUuid?: string;
   isSidechain?: boolean;
+  parentToolRef?: string;
+  childAgentKey?: string;
 }
 
 export function parseGenericConversationRecord(
@@ -59,18 +61,34 @@ export function parseGenericConversationRecord(
       }),
     );
   }
-  if (meta.parentUuid || meta.isSidechain) {
+  if (meta.parentUuid || meta.isSidechain || meta.parentToolRef || meta.childAgentKey) {
     fragments.push(
       helpers.createFragment(context, record, fragments.length, "session_relation", timeKey, {
         parent_uuid: meta.parentUuid,
         is_sidechain: meta.isSidechain,
+        parent_tool_ref: meta.parentToolRef,
+        agent_id: meta.childAgentKey,
       }),
     );
   }
 
   const message = helpers.isObject(parsed.message) ? parsed.message : parsed;
   const role = extractGenericRole(parsed, helpers) ?? extractGenericRole(message, helpers);
-  const contentItems = extractGenericContentItems(message, helpers);
+  let contentItems = extractGenericContentItems(message, helpers);
+  const normalizedRole = normalizeGenericRoleTag(role);
+  if ((normalizedRole === "tool_result" || normalizedRole === "toolresult") && contentItems.length > 0) {
+    contentItems = [{
+      type: "tool_result",
+      tool_use_id:
+        helpers.asString(message.toolUseId) ??
+        helpers.asString(message.tool_use_id) ??
+        helpers.asString(message.toolCallId) ??
+        helpers.asString(message.tool_call_id) ??
+        helpers.asString(message.id),
+      tool_name: helpers.asString(message.toolName) ?? helpers.asString(message.tool_name),
+      content: message.content,
+    }];
+  }
   const usage = helpers.extractTokenUsage(message.usage ?? parsed.usage);
   const stopReason = helpers.normalizeStopReason(
     message.stop_reason ?? message.stopReason ?? parsed.stop_reason ?? parsed.stopReason,
@@ -100,7 +118,7 @@ export function parseGenericConversationRecord(
 
   const actorKind = helpers.mapRoleToActor(role ?? "assistant");
   for (const item of contentItems) {
-    const itemType = helpers.asString(item.type) ?? "unknown";
+    const itemType = normalizeGenericContentItemType(helpers.asString(item.type));
     if (itemType === "tool_use" || itemType === "tool_call" || itemType === "function_call") {
       fragments.push(
         helpers.createFragment(context, record, localSeq++, "tool_call", timeKey, {
@@ -233,12 +251,15 @@ export function extractGenericSessionMetadata(
     repoRemote: repoRemoteCandidate?.trim() || undefined,
     model:
       helpers.asString(parsed.model) ??
+      helpers.asString(parsed.modelId) ??
+      helpers.asString(parsed.model_id) ??
       helpers.asString(parsed.modelName) ??
       helpers.asString(parsed.model_name) ??
       helpers.asString(parsed.providerModel) ??
       helpers.asString(metadata?.model) ??
       helpers.asString(session?.model) ??
-      helpers.asString(message?.model),
+      helpers.asString(message?.model) ??
+      (helpers.isObject(parsed.data) ? helpers.asString(parsed.data.modelId) ?? helpers.asString(parsed.data.model) : undefined),
     title:
       helpers.asString(parsed.title) ??
       helpers.asString(parsed.name) ??
@@ -249,12 +270,44 @@ export function extractGenericSessionMetadata(
       helpers.asString(parsed.parentUuid) ??
       helpers.asString(parsed.parentId) ??
       helpers.asString(parsed.parent_id) ??
-      helpers.asString(session?.parentUuid),
+      helpers.asString(parsed.callingSessionId) ??
+      helpers.asString(parsed.calling_session_id) ??
+      helpers.asString(session?.parentUuid) ??
+      helpers.asString(session?.parentId) ??
+      helpers.asString(session?.parent_id) ??
+      helpers.asString(session?.callingSessionId) ??
+      helpers.asString(session?.calling_session_id),
     isSidechain:
       helpers.asBoolean(parsed.isSidechain) ??
       helpers.asBoolean(parsed.sidechain) ??
       helpers.asBoolean(session?.isSidechain),
+    parentToolRef:
+      helpers.asString(parsed.parentToolRef) ??
+      helpers.asString(parsed.parent_tool_ref) ??
+      helpers.asString(parsed.callingToolUseId) ??
+      helpers.asString(parsed.calling_tool_use_id) ??
+      helpers.asString(session?.parentToolRef) ??
+      helpers.asString(session?.parent_tool_ref) ??
+      helpers.asString(session?.callingToolUseId) ??
+      helpers.asString(session?.calling_tool_use_id),
+    childAgentKey:
+      helpers.asString(parsed.agentId) ??
+      helpers.asString(parsed.agent_id) ??
+      helpers.asString(parsed.childAgentKey) ??
+      helpers.asString(parsed.child_agent_key) ??
+      helpers.asString(session?.agentId) ??
+      helpers.asString(session?.agent_id) ??
+      helpers.asString(session?.childAgentKey) ??
+      helpers.asString(session?.child_agent_key),
   };
+}
+
+function normalizeGenericRoleTag(value: string | undefined): string | undefined {
+  return value?.trim().replace(/([a-z0-9])([A-Z])/gu, "$1_$2").replace(/[\s-]+/gu, "_").toLowerCase();
+}
+
+function normalizeGenericContentItemType(value: string | undefined): string {
+  return normalizeGenericRoleTag(value) ?? "unknown";
 }
 
 export function extractGenericRole(

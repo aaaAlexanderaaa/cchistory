@@ -12,7 +12,8 @@ export type SupportedSourcePlatform =
   | "gemini"
   | "openclaw"
   | "opencode"
-  | "lobechat";
+  | "lobechat"
+  | "codebuddy";
 
 export interface DefaultSourceResolutionOptions {
   homeDir?: string;
@@ -31,7 +32,7 @@ export interface PlatformAdapter {
   matchesSourceFile(filePath: string): boolean;
   getSourceFilePriority?(filePath: string): number;
   getSupplementalSourceRoots?(baseDir: string): string[];
-  getCompanionEvidencePaths?(baseDir: string, filePath: string): string[];
+  getCompanionEvidencePaths?(baseDir: string, filePath: string): string[] | Promise<string[]>;
 }
 
 export function isSupportedSourcePlatform(platform: SourcePlatform): platform is SupportedSourcePlatform {
@@ -45,6 +46,7 @@ export function isSupportedSourcePlatform(platform: SourcePlatform): platform is
     platform === "gemini" ||
     platform === "openclaw" ||
     platform === "opencode" ||
-    platform === "lobechat"
+    platform === "lobechat" ||
+    platform === "codebuddy"
   );
 }

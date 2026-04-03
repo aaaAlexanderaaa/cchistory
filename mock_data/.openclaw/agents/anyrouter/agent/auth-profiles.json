@@ -1,0 +1,10 @@
+{
+  "defaultProfile": "mock-claude",
+  "profiles": [
+    {
+      "id": "mock-claude",
+      "provider": "anyrouter",
+      "label": "Mock Claude route"
+    }
+  ]
+}

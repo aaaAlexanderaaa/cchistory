@@ -13,7 +13,7 @@
 
 - The adapter registry already distinguishes `stable` and `experimental` tiers
   in `packages/source-adapters/src/platforms/registry.ts`.
-- `packages/source-adapters/src/index.test.ts` already exercises the six
+- `packages/source-adapters/src/index.test.ts` already exercises the current
   `stable` adapters against sanitized `mock_data/` roots derived from real local
   source structures, and separately preserves Antigravity live-trajectory
   fixtures.
@@ -95,7 +95,8 @@ that evidence, but it is implicit. Without a machine-readable contract, the
 ## Current execution evidence
 
 - Added `mock_data/stable-adapter-validation.json` as the machine-readable proof
-  surface for the six stable adapters.
+  surface for the then-current stable adapters, now including OpenCode after the
+  2026-04-01 promotion follow-up.
 - Updated `scripts/validate_mock_data.py` so the manifest is part of fixture
   layout validation.
 - Added a source-adapter regression test that enforces manifest coverage for all

@@ -1,0 +1,7 @@
+{
+  "id": "prt_11111111aaaaPromptText01",
+  "sessionID": "ses_11111111aaaaMockOpenCode01",
+  "messageID": "msg_11111111aaaaUserPrompt01",
+  "type": "text",
+  "text": "@TASK.md Review the task requirements and produce a short implementation plan. Keep notes under ./temp if context gets long."
+}

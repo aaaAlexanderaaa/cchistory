@@ -54,7 +54,7 @@ export function listGeminiSourceRoots(baseDir: string): string[] {
 
 export const geminiAdapter: PlatformAdapter = {
   platform: "gemini",
-  supportTier: "experimental",
+  supportTier: "stable",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".gemini")],
   getSourceRoots: (baseDir) => listGeminiSourceRoots(baseDir),
   matchesSourceFile: (filePath) => {

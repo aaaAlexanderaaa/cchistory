@@ -17,12 +17,19 @@ ALLOWED_FILE_PATTERNS = [
     re.compile(r"stable-adapter-validation\.json"),
     re.compile(r"fixtures/antigravity-live/trajectory-summaries\.json"),
     re.compile(r"fixtures/antigravity-live/steps/[0-9a-f-]+\.json"),
+    re.compile(r"\.codex/history\.jsonl"),
     re.compile(r"\.codex/sessions/\d{4}/\d{2}/\d{2}/rollout-[^/]+\.jsonl"),
+    re.compile(r"\.codebuddy/settings\.json"),
+    re.compile(r"\.codebuddy/local_storage/entry_[0-9a-f]+\.info"),
+    re.compile(r"\.codebuddy/projects/[^/]+/[0-9a-f-]+\.jsonl"),
     re.compile(r"host_remote/\.codex/sessions/\d{4}/\d{2}/\d{2}/rollout-[^/]+\.jsonl"),
+    re.compile(r"\.claude/history\.jsonl"),
     re.compile(r"\.claude/projects/[^/]+/[0-9a-f-]+\.jsonl"),
     re.compile(r"\.claude/projects/[^/]+/[0-9a-f-]+/subagents/agent-[^.]+\.jsonl"),
     re.compile(r"\.factory/sessions/[^/]+/[0-9a-f-]+(?:\.jsonl|\.settings\.json)"),
+    re.compile(r"\.local/share/amp/history\.jsonl"),
     re.compile(r"\.local/share/amp/threads/T-[0-9A-Za-z-]+\.json"),
+    re.compile(r"\.cursor/chats/[0-9a-f]+/[0-9a-f-]+/store\.db"),
     re.compile(
         r"Library/Application Support/(Cursor|antigravity)/User/workspaceStorage/[0-9a-z]+/"
         r"(state\.vscdb|state\.vscdb\.backup|workspace\.json|"
@@ -44,7 +51,17 @@ ALLOWED_FILE_PATTERNS = [
     re.compile(r"\.gemini/projects\.json"),
     re.compile(r"\.gemini/history/[^/]+/\.project_root"),
     re.compile(r"\.gemini/tmp/[^/]+/\.project_root"),
+    re.compile(r"\.gemini/tmp/[^/]+/logs\.json"),
     re.compile(r"\.gemini/tmp/[^/]+/chats/session-[^/]+\.json"),
+    re.compile(r"\.openclaw/agents/[^/]+/agent/(auth-profiles|models)\.json"),
+    re.compile(r"\.openclaw/agents/[^/]+/sessions/[^/]+\.jsonl(?:\.(?:reset|deleted)\.[^/]+)?"),
+    re.compile(r"\.openclaw/cron/runs/[0-9a-f-]+\.jsonl"),
+    re.compile(r"\.local/share/opencode/storage/project/global\.json"),
+    re.compile(r"\.local/share/opencode/storage/session/global/ses_[^/]+\.json"),
+    re.compile(r"\.local/share/opencode/storage/message/ses_[^/]+/msg_[^/]+\.json"),
+    re.compile(r"\.local/share/opencode/storage/part/msg_[^/]+/prt_[^/]+\.json"),
+    re.compile(r"\.local/share/opencode/storage/session_diff/ses_[^/]+\.json"),
+    re.compile(r"\.local/share/opencode/storage/todo/ses_[^/]+\.json"),
 ]
 
 FORBIDDEN_CONTENT_PATTERNS = [

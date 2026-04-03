@@ -1,0 +1,11 @@
+{
+  "id": "prt_11111111aaaaPlanText04",
+  "sessionID": "ses_11111111aaaaMockOpenCode01",
+  "messageID": "msg_11111111aaaaAssistantPlan02",
+  "type": "text",
+  "text": "Plan: inspect the source note, map the required sections, then draft the final summary and validation checklist.",
+  "time": {
+    "start": 1765000003600,
+    "end": 1765000004200
+  }
+}

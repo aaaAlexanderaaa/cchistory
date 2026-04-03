@@ -48,6 +48,7 @@ export function parseClaudeRecord(
     );
   }
   const content = helpers.asArray(message?.content);
+  const directMessageText = helpers.asString(message?.content);
   const extractedUsage = helpers.extractTokenUsage(message);
   const usage =
     messageModel && extractedUsage && !extractedUsage.model
@@ -56,6 +57,22 @@ export function parseClaudeRecord(
   const stopReason = helpers.normalizeStopReason(message?.stop_reason);
   let usageApplied = false;
   let localSeq = 0;
+
+  if (directMessageText) {
+    const appended = helpers.appendChunkedTextFragments(
+      context,
+      record,
+      fragments,
+      timeKey,
+      actorKind,
+      directMessageText,
+      localSeq,
+      { usage, stopReason, usageApplied },
+    );
+    localSeq = appended.nextSeq;
+    usageApplied = appended.usageApplied;
+  }
+
   for (const item of content) {
     if (!helpers.isObject(item)) {
       continue;

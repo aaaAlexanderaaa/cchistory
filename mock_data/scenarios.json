@@ -58,6 +58,20 @@
     ]
   },
   {
+    "id": "codex-root-history-loop-prompts",
+    "apps": [
+      "Codex"
+    ],
+    "visible_cue": "Codex keeps a root history log with repeated continue-style instructions and subagent-related operator prompts outside the transcript session tree.",
+    "tricky": "If a parser promotes root history to transcript truth, it can create duplicate or low-value turns; if it ignores the file entirely, later automation-loop analysis loses real prevalence evidence.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/chat-ui-kit"
+    ],
+    "paths": [
+      ".codex/history.jsonl"
+    ]
+  },
+  {
     "id": "claude-workspace-path",
     "apps": [
       "Claude"
@@ -100,6 +114,20 @@
     ]
   },
   {
+    "id": "claude-root-history-command-log",
+    "apps": [
+      "Claude"
+    ],
+    "visible_cue": "Claude keeps a root history log with slash commands and short follow-up prompts that point at the same visible workspace as the main session tree.",
+    "tricky": "The file is real evidence about operator flow, but it is not automatically the canonical transcript source. Treating it like a full conversation can duplicate or distort user-turn recall.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/chat-ui-kit"
+    ],
+    "paths": [
+      ".claude/history.jsonl"
+    ]
+  },
+  {
     "id": "factory-droid-sidecar-settings",
     "apps": [
       "Factory Droid"
@@ -129,13 +157,27 @@
     ]
   },
   {
+    "id": "amp-root-history-loop-prompts",
+    "apps": [
+      "AMP"
+    ],
+    "visible_cue": "AMP also keeps a root history log with short repeated follow-up prompts outside the main thread JSON surface.",
+    "tricky": "If the product later needs automation prevalence review, this history file matters; if it is treated as transcript-primary, it can over-count low-information prompts such as continue or numeric acknowledgements.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/chat-ui-kit"
+    ],
+    "paths": [
+      ".local/share/amp/history.jsonl"
+    ]
+  },
+  {
     "id": "cursor-shared-path",
     "apps": [
       "Cursor",
       "antigravity"
     ],
     "visible_cue": "Cursor has one workspaceStorage directory whose visible project path is the same path another antigravity directory points to.",
-    "tricky": "If app identity is ignored, cross-app state for one visible path collapses together; if app identity is absolute, users cannot see one project\u2019s history across tools.",
+    "tricky": "If app identity is ignored, cross-app state for one visible path collapses together; if app identity is absolute, users cannot see one project’s history across tools.",
     "visible_roots": [
       "/Users/mock_user/workspace/shared-product-lab"
     ],
@@ -163,13 +205,42 @@
     ]
   },
   {
+    "id": "cursor-chat-store-meta-blobs",
+    "apps": [
+      "Cursor"
+    ],
+    "visible_cue": "Cursor also keeps per-agent chat stores under `.cursor/chats/<workspace-hash>/<agent-id>/store.db`, where one hex-encoded `meta.value` points at opaque blob rows containing prompt, reasoning, and assistant payload fragments.",
+    "tricky": "A parser that treats this as the already-supported Cursor editor-state path will misclassify the source; a parser that samples only ASCII strings can recover text hints while still missing the structure needed for faithful session reconstruction.",
+    "visible_roots": [
+      "/Users/mock_user/.cursor/chats/7ff8eb6283576301c3822ea828f4a8f4"
+    ],
+    "paths": [
+      ".cursor/chats/7ff8eb6283576301c3822ea828f4a8f4/975b36d6-f001-4ce9-b64f-5ccd19e111a6/store.db"
+    ]
+  },
+  {
+    "id": "cursor-chat-store-shared-workspace-hash",
+    "apps": [
+      "Cursor"
+    ],
+    "visible_cue": "One Cursor workspace-hash directory can contain multiple `agent-id/store.db` files, each with its own `meta` row and blob graph.",
+    "tricky": "If the workspace hash alone is treated as one session, multiple chat threads collapse together; if each opaque blob is treated as a standalone turn, the real per-agent grouping disappears.",
+    "visible_roots": [
+      "/Users/mock_user/.cursor/chats/af011dd15c5531c7da90dca20a705268"
+    ],
+    "paths": [
+      ".cursor/chats/af011dd15c5531c7da90dca20a705268/67f5ddd6-5c93-4505-b83a-26c88e0bab19/store.db",
+      ".cursor/chats/af011dd15c5531c7da90dca20a705268/9de177ee-1730-4758-96dd-3ce64a628980/store.db"
+    ]
+  },
+  {
     "id": "antigravity-shared-path",
     "apps": [
       "antigravity",
       "Cursor"
     ],
     "visible_cue": "Antigravity points at the same visible path as the Cursor sample, but keeps different app artifacts and state.",
-    "tricky": "This is the user-facing version of \u2018same folder, different app state\u2019: identical visible root, different app-specific storage shape.",
+    "tricky": "This is the user-facing version of ‘same folder, different app state’: identical visible root, different app-specific storage shape.",
     "visible_roots": [
       "/Users/mock_user/workspace/shared-product-lab"
     ],
@@ -185,7 +256,7 @@
       "antigravity"
     ],
     "visible_cue": "One antigravity storage directory mixes current DB, backup DB, workspace.json, terminal state, and an unrelated Python startup sidecar in the same folder.",
-    "tricky": "Users see all of these files side-by-side. Parsers that hardcode one \u2018main\u2019 file miss useful evidence; parsers that ingest everything equally overfit editor/plugin noise.",
+    "tricky": "Users see all of these files side-by-side. Parsers that hardcode one ‘main’ file miss useful evidence; parsers that ingest everything equally overfit editor/plugin noise.",
     "visible_roots": [
       "/Users/mock_user/docker/codeserver2/project/antigravity_tmp/log-query-validator"
     ],
@@ -321,6 +392,241 @@
     ],
     "paths": [
       ".gemini/tmp/agentresearch/chats/session-2026-03-04T01-47-gemini-minimal.json"
+    ]
+  },
+  {
+    "id": "gemini-cli-missing-companions",
+    "apps": [
+      "gemini"
+    ],
+    "visible_cue": "A real-archive Gemini tmp project can contain `chats/*.json` plus `logs.json` while carrying no `.project_root` sidecars and no matching `projects.json` entry.",
+    "tricky": "A parser that assumes companion metadata is mandatory will drop valid sessions; a parser that ignores `logs.json` loses operator-visible command history that sits alongside the chats.",
+    "visible_roots": [
+      "/Users/mock_user/.gemini/tmp/4f3e2d1c0b9a887766554433221100ffeeddccbbaa99887766554433221100aa"
+    ],
+    "paths": [
+      ".gemini/tmp/4f3e2d1c0b9a887766554433221100ffeeddccbbaa99887766554433221100aa/logs.json",
+      ".gemini/tmp/4f3e2d1c0b9a887766554433221100ffeeddccbbaa99887766554433221100aa/chats/session-2026-03-31T08-58-gemini-missing-companions.json"
+    ]
+  },
+  {
+    "id": "gemini-cli-scale-with-logs",
+    "apps": [
+      "gemini"
+    ],
+    "visible_cue": "One hashed Gemini tmp project can accumulate multiple chat JSON sessions plus a shared `logs.json` activity stream even when no workspace-mapping companions exist.",
+    "tricky": "A parser that samples only one chat file misses scale behavior; a parser that treats the hash directory as noise loses the only stable local grouping visible in the archive.",
+    "visible_roots": [
+      "/Users/mock_user/.gemini/tmp/8e7d6c5b4a39281716151413121110ffeeddccbbaa0099887766554433221100"
+    ],
+    "paths": [
+      ".gemini/tmp/8e7d6c5b4a39281716151413121110ffeeddccbbaa0099887766554433221100/logs.json",
+      ".gemini/tmp/8e7d6c5b4a39281716151413121110ffeeddccbbaa0099887766554433221100/chats/session-2026-03-31T10-00-gemini-scale-a.json",
+      ".gemini/tmp/8e7d6c5b4a39281716151413121110ffeeddccbbaa0099887766554433221100/chats/session-2026-03-31T11-02-gemini-scale-b.json",
+      ".gemini/tmp/8e7d6c5b4a39281716151413121110ffeeddccbbaa0099887766554433221100/chats/session-2026-03-31T12-15-gemini-scale-c.json"
+    ]
+  },
+  {
+    "id": "codebuddy-cli-transcript-with-skiprun-noise",
+    "apps": [
+      "CodeBuddy"
+    ],
+    "visible_cue": "A CodeBuddy project JSONL can mix `providerData.skipRun` local-command echoes with the actual CLI transcript lines that carry the real user request and assistant reply.",
+    "tricky": "A parser that promotes every user row equally will over-count command noise; a parser that ignores `providerData` loses the distinction between local shell echoes and the real chat turn.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/ai_learning"
+    ],
+    "paths": [
+      ".codebuddy/projects/config-workspace-ai_learning/22222222-3333-4444-8555-666666666666.jsonl"
+    ]
+  },
+  {
+    "id": "codebuddy-empty-sibling-session-files",
+    "apps": [
+      "CodeBuddy"
+    ],
+    "visible_cue": "One CodeBuddy project directory can contain both zero-byte JSONL files and non-empty transcript JSONL files, plus local storage companions that reflect recent commands.",
+    "tricky": "A parser that treats every JSONL filename as a real session invents empty conversations; a parser that ignores sibling files misses that empty and non-empty captures coexist under one visible project root.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/ai_learning"
+    ],
+    "paths": [
+      ".codebuddy/projects/config-workspace-ai_learning/11111111-2222-4333-8444-555555555555.jsonl",
+      ".codebuddy/projects/config-workspace-ai_learning/22222222-3333-4444-8555-666666666666.jsonl",
+      ".codebuddy/local_storage/entry_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.info",
+      ".codebuddy/settings.json"
+    ]
+  },
+  {
+    "id": "openclaw-typed-event-session",
+    "apps": [
+      "OpenClaw"
+    ],
+    "visible_cue": "One OpenClaw agent stores a typed event-stream session under `agents/main/sessions/*.jsonl`, with explicit session cwd, model changes, assistant thinking, tool calls, and tool results in the same transcript.",
+    "tricky": "A parser that expects flat `role` + `content` JSONL rows will miss the real event taxonomy, nested `message` payloads, `toolResult` role, and `session.cwd` workspace signal that actually anchor the session.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/openclaw-automation"
+    ],
+    "paths": [
+      ".openclaw/agents/main/sessions/11111111-2222-4333-8444-555555555555.jsonl",
+      ".openclaw/agents/main/agent/models.json"
+    ]
+  },
+  {
+    "id": "openclaw-lifecycle-session-variants",
+    "apps": [
+      "OpenClaw"
+    ],
+    "visible_cue": "The same OpenClaw `sessions/` tree can contain active transcripts plus `.reset.*` and `.deleted.*` lifecycle variants, and one deleted session records an `openclaw:prompt-error` custom event.",
+    "tricky": "A parser that treats lifecycle-suffixed files as generic noise loses evidence about resets, deletions, and prompt-error behavior; a parser that blindly promotes them as ordinary active sessions may double-count history without a lifecycle rule.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/openclaw-automation"
+    ],
+    "paths": [
+      ".openclaw/agents/main/sessions/22222222-3333-4444-8555-666666666666.jsonl.reset.2026-04-01T00-10-00.000Z",
+      ".openclaw/agents/main/sessions/33333333-4444-4555-8666-777777777777.jsonl.deleted.2026-04-01T00-20-00.000Z"
+    ]
+  },
+  {
+    "id": "openclaw-standalone-cron-runs",
+    "apps": [
+      "OpenClaw"
+    ],
+    "visible_cue": "OpenClaw writes standalone cron-run JSONL outside the main session transcript tree, but the records still point back to the related session and summarize the automated run.",
+    "tricky": "A discovery pass that only reads `agents/*/sessions/*.jsonl` misses this evidence completely, while a parser that treats cron-run summaries like normal transcript turns invents human asks that never happened.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/openclaw-automation"
+    ],
+    "paths": [
+      ".openclaw/cron/runs/44444444-5555-4666-8777-888888888888.jsonl"
+    ]
+  },
+  {
+    "id": "openclaw-config-only-agent-roots",
+    "apps": [
+      "OpenClaw"
+    ],
+    "visible_cue": "Inside `~/.openclaw/agents/`, some agent directories may expose only companion config like `auth-profiles.json` while another agent carries the real session transcripts.",
+    "tricky": "A discovery pass that treats every agent root as transcript-bearing will invent empty session families; a parser that ignores agent config entirely can miss model/profile evidence that explains provider labels without being the canonical transcript stream.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/openclaw-automation"
+    ],
+    "paths": [
+      ".openclaw/agents/main/agent/auth-profiles.json",
+      ".openclaw/agents/anyrouter/agent/auth-profiles.json",
+      ".openclaw/agents/kimicoding/agent/auth-profiles.json"
+    ]
+  },
+  {
+    "id": "opencode-global-storage-parts",
+    "apps": [
+      "OpenCode"
+    ],
+    "visible_cue": "The session metadata lives under storage/session/global, but the actual prompt, plan text, and tool trace live in per-message part files.",
+    "tricky": "A parser that only reads session JSON and message headers loses the user prompt and the assistant tool context because the real content sits under storage/part/<message-id>/*.json.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/esql-lab"
+    ],
+    "paths": [
+      ".local/share/opencode/storage/project/global.json",
+      ".local/share/opencode/storage/session/global/ses_11111111aaaaMockOpenCode01.json",
+      ".local/share/opencode/storage/message/ses_11111111aaaaMockOpenCode01/msg_11111111aaaaUserPrompt01.json",
+      ".local/share/opencode/storage/message/ses_11111111aaaaMockOpenCode01/msg_11111111aaaaAssistantPlan02.json",
+      ".local/share/opencode/storage/message/ses_11111111aaaaMockOpenCode01/msg_11111111aaaaAssistantTool03.json",
+      ".local/share/opencode/storage/part/msg_11111111aaaaUserPrompt01/prt_11111111aaaaPromptText01.json",
+      ".local/share/opencode/storage/part/msg_11111111aaaaAssistantPlan02/prt_11111111aaaaPlanStart02.json",
+      ".local/share/opencode/storage/part/msg_11111111aaaaAssistantPlan02/prt_11111111aaaaPlanReason03.json",
+      ".local/share/opencode/storage/part/msg_11111111aaaaAssistantPlan02/prt_11111111aaaaPlanText04.json",
+      ".local/share/opencode/storage/part/msg_11111111aaaaAssistantPlan02/prt_11111111aaaaPlanFinish05.json",
+      ".local/share/opencode/storage/part/msg_11111111aaaaAssistantTool03/prt_11111111aaaaToolStart06.json",
+      ".local/share/opencode/storage/part/msg_11111111aaaaAssistantTool03/prt_11111111aaaaToolCall07.json",
+      ".local/share/opencode/storage/part/msg_11111111aaaaAssistantTool03/prt_11111111aaaaToolFinish08.json",
+      ".local/share/opencode/storage/session_diff/ses_11111111aaaaMockOpenCode01.json"
+    ]
+  },
+  {
+    "id": "opencode-todo-companion",
+    "apps": [
+      "OpenCode"
+    ],
+    "visible_cue": "A second OpenCode session shows up with session metadata plus a todo sidecar even though no transcript messages are present beside it.",
+    "tricky": "If every adjacent JSON file is treated as transcript content, todo planning state pollutes the conversation projection; if companions are ignored entirely, real operator-facing plan state disappears from evidence review.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/esql-lab"
+    ],
+    "paths": [
+      ".local/share/opencode/storage/session/global/ses_22222222bbbbMockOpenCode02.json",
+      ".local/share/opencode/storage/todo/ses_22222222bbbbMockOpenCode02.json"
+    ]
+  },
+  {
+    "id": "claude-session-continue-loop-span",
+    "apps": [
+      "Claude"
+    ],
+    "visible_cue": "One Claude transcript session repeats `continue` three times in the same session before the user finally asks a substantive follow-up.",
+    "tricky": "A loop-aware projection should not mistake every short follow-up pair for a flood, but it also should not let three near-identical low-information prompts drown out the later real ask.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/chat-ui-kit"
+    ],
+    "paths": [
+      ".claude/projects/-Users-mock-user-workspace-chat-ui-kit/4f4f4f4f-1111-4222-8333-aaaaaaaaaaaa.jsonl"
+    ]
+  },
+  {
+    "id": "claude-root-history-repeat-continue",
+    "apps": [
+      "Claude"
+    ],
+    "visible_cue": "Claude root history now shows the same workspace/session issuing `continue` repeatedly outside the transcript tree.",
+    "tricky": "This proves prevalence for loop-like operator behavior, but these rows must remain secondary evidence rather than becoming canonical grouped turns.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/chat-ui-kit"
+    ],
+    "paths": [
+      ".claude/history.jsonl"
+    ]
+  },
+  {
+    "id": "codex-root-history-repeat-continue-same-session",
+    "apps": [
+      "Codex"
+    ],
+    "visible_cue": "Codex root history now includes three `continue` rows for the same session id, not just one isolated prompt.",
+    "tricky": "The pattern is useful for prevalence review and fixture coverage, but it should not leak into transcript-primary grouping because the file remains secondary evidence.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/chat-ui-kit"
+    ],
+    "paths": [
+      ".codex/history.jsonl"
+    ]
+  },
+  {
+    "id": "amp-root-history-repeat-continue-same-cwd",
+    "apps": [
+      "AMP"
+    ],
+    "visible_cue": "AMP root history now repeats `continue` for the same visible cwd, showing loop-like operator behavior outside the main thread JSON file.",
+    "tricky": "This keeps AMP in the family-wide loop review without pretending that root history is transcript truth.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/chat-ui-kit"
+    ],
+    "paths": [
+      ".local/share/amp/history.jsonl"
+    ]
+  },
+  {
+    "id": "openclaw-cron-run-flood-same-job",
+    "apps": [
+      "OpenClaw"
+    ],
+    "visible_cue": "One OpenClaw cron-run file now shows repeated summaries for the same hourly job and linked main session.",
+    "tricky": "The file proves automation flood prevalence and lineage shape, but those repeated summaries must remain secondary evidence rather than synthetic user turns.",
+    "visible_roots": [
+      "/Users/mock_user/workspace/openclaw-automation"
+    ],
+    "paths": [
+      ".openclaw/cron/runs/44444444-5555-4666-8777-888888888888.jsonl"
     ]
   }
 ]

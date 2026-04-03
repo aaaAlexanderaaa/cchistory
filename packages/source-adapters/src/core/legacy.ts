@@ -49,6 +49,7 @@ import {
 } from "../platforms/antigravity/runtime.js";
 import { parseClaudeRecord as parseClaudeRuntimeRecord } from "../platforms/claude-code/runtime.js";
 import { parseCodexRecord as parseCodexRuntimeRecord } from "../platforms/codex/runtime.js";
+import { extractCursorChatStoreSeed } from "../platforms/cursor/runtime.js";
 import {
   collectConversationSeedsFromValue as collectConversationSeedsFromValueRuntime,
   normalizeMessageCandidate as normalizeMessageCandidateRuntime,
@@ -64,6 +65,7 @@ import {
   normalizeToolInput as normalizeToolInputRuntime,
   parseGenericConversationRecord as parseGenericConversationRuntimeRecord,
 } from "../platforms/generic/runtime.js";
+import { parseOpenClawCronRunRecord as parseOpenClawCronRunRuntimeRecord } from "../platforms/openclaw/runtime.js";
 import { getPlatformAdapter } from "../platforms/registry.js";
 import type { DefaultSourceResolutionOptions, SupportedSourcePlatform } from "../platforms/types.js";
 
@@ -311,7 +313,7 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     family: DEFAULT_SOURCE_FAMILY,
     platform: "cursor",
     parser_version: "cursor-parser@2026-03-11.1",
-    description: "Cursor project transcripts plus VS Code state.vscdb fallbacks using composerData and aichat keys.",
+    description: "Cursor project transcripts plus VS Code state.vscdb fallbacks, with experimental chat-store metadata/readable-fragment recovery from .cursor/chats/**/store.db.",
     capabilities: ["session_meta", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
   antigravity: {
@@ -354,6 +356,14 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     parser_version: "lobechat-parser@2026-03-11.1",
     description: "LobeChat exported JSON bundles with one or more conversations.",
     capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
+  },
+  codebuddy: {
+    id: "codebuddy:jsonl:v1",
+    family: DEFAULT_SOURCE_FAMILY,
+    platform: "codebuddy",
+    parser_version: "codebuddy-parser@2026-04-01.1",
+    description: "CodeBuddy project JSONL transcripts with providerData metadata and companion settings/local_storage evidence.",
+    capabilities: ["session_meta", ...COMMON_PARSER_CAPABILITIES],
   },
 };
 
@@ -419,6 +429,12 @@ const DEFAULT_SOURCE_SPECS: ReadonlyArray<
     family: EXPORT_SOURCE_FAMILY,
     platform: "lobechat",
     display_name: "LobeChat",
+  },
+  {
+    slot_id: "codebuddy",
+    family: DEFAULT_SOURCE_FAMILY,
+    platform: "codebuddy",
+    display_name: "CodeBuddy",
   },
 ];
 
@@ -781,7 +797,7 @@ async function collectSourceInputs(
         mergeAdapterBlobResult(sessionsById, adapterResult);
       }
       if (adapter?.getCompanionEvidencePaths) {
-        for (const companionPath of adapter.getCompanionEvidencePaths(source.base_dir, filePath)) {
+        for (const companionPath of await adapter.getCompanionEvidencePaths(source.base_dir, filePath)) {
           const normalizedCompanionPath = path.normalize(companionPath);
           if (capturedCompanionPaths.has(normalizedCompanionPath) || !(await pathExists(normalizedCompanionPath))) {
             continue;
@@ -907,20 +923,27 @@ async function processCollectedSessions(
       submissionResult.edges,
     );
 
+    const suppressEmptySession =
+      sessionInput.draft.source_platform === "codebuddy" &&
+      turnResult.turns.length === 0 &&
+      sessionInput.atoms.length === 0;
+
     blobs.push(...sessionInput.blobs);
     records.push(...sessionInput.records);
     fragments.push(...sessionInput.fragments);
     atoms.push(...sessionInput.atoms);
     edges.push(...sessionInput.edges, ...submissionResult.edges);
-    candidates.push(
-      ...sessionProjectCandidates,
-      ...submissionResult.groups,
-      ...turnResult.turnCandidates,
-      ...turnResult.contextCandidates,
-    );
-    sessions.push(turnResult.session);
-    turns.push(...turnResult.turns);
-    contexts.push(...turnResult.contexts);
+    if (!suppressEmptySession) {
+      candidates.push(
+        ...sessionProjectCandidates,
+        ...submissionResult.groups,
+        ...turnResult.turnCandidates,
+        ...turnResult.contextCandidates,
+      );
+      sessions.push(turnResult.session);
+      turns.push(...turnResult.turns);
+      contexts.push(...turnResult.contexts);
+    }
     lossAudits.push(...sessionInput.loss_audits);
   }
 
@@ -949,6 +972,74 @@ async function processBlob(
 ): Promise<AdapterBlobResult[]> {
   const { blob, fileBuffer } = capturedBlob;
   const blobId = blob.id;
+
+  if (source.platform === "cursor" && path.basename(filePath) === "store.db") {
+    const stat = await fs.stat(filePath);
+    const chatStoreSeed = extractCursorChatStoreSeed(source.platform, filePath, stat.mtime.toISOString(), {
+      asString,
+      asNumber,
+      asArray,
+      isObject,
+      safeJsonParse,
+      coerceIso,
+      epochMillisToIso,
+      nowIso,
+      truncate,
+      sha1,
+      normalizeWorkspacePath,
+      extractGenericSessionMetadata,
+      extractGenericRole,
+      extractGenericContentItems,
+      extractTokenUsage,
+      normalizeStopReason,
+      extractRichTextText,
+      collectConversationSeedsFromValue,
+      firstDefinedNumber,
+    });
+    if (chatStoreSeed) {
+      const records = chatStoreSeed.seed.records.map((record, ordinal) => ({
+        id: stableId("record", source.id, chatStoreSeed.seed.sessionId, blobId, String(ordinal), record.pointer),
+        source_id: source.id,
+        blob_id: blobId,
+        session_ref: chatStoreSeed.seed.sessionId,
+        ordinal,
+        record_path_or_offset: record.pointer,
+        observed_at: record.observedAt ?? nowIso(),
+        parseable: true,
+        raw_json: record.rawJson,
+      }));
+      const initialLossAudits = chatStoreSeed.diagnostics.map((diagnostic) =>
+        createLossAudit(source.id, blobId, "dropped_for_projection", diagnostic.detail, {
+          stageKind: "extract_records",
+          diagnosticCode: diagnostic.code,
+          severity: diagnostic.severity,
+          sessionRef: chatStoreSeed.seed.sessionId,
+          blobRef: blobId,
+          sourceFormatProfileId: sourceFormatProfile.id,
+        }),
+      );
+      return [
+        buildAdapterBlobResult(
+          source,
+          sourceFormatProfile,
+          blob.host_id,
+          filePath,
+          blob.capture_run_id,
+          blob,
+          chatStoreSeed.seed.sessionId,
+          records,
+          {
+            title: chatStoreSeed.seed.title,
+            created_at: chatStoreSeed.seed.createdAt,
+            updated_at: chatStoreSeed.seed.updatedAt,
+            model: chatStoreSeed.seed.model,
+            working_directory: chatStoreSeed.seed.workingDirectory,
+          },
+          initialLossAudits,
+        ),
+      ];
+    }
+  }
 
   const multiSessionSeeds = await extractMultiSessionSeeds(source, filePath, fileBuffer, blobId);
   if (multiSessionSeeds) {
@@ -1495,11 +1586,51 @@ function parseRecord(
   if (context.source.platform === "factory_droid") {
     return parseFactoryRuntimeRecord(context, record, parsed, draft, buildCommonParseRuntimeHelpers());
   }
+  if (context.source.platform === "codebuddy") {
+    const providerData = isObject(parsed.providerData) ? parsed.providerData : undefined;
+    if (asBoolean(providerData?.skipRun)) {
+      return {
+        fragments: [],
+        lossAudits: [
+          createRecordLossAudit(
+            context,
+            record,
+            "dropped_for_projection",
+            "CodeBuddy skipRun command echo kept as raw evidence only",
+            {
+              diagnosticCode: "codebuddy_skiprun_command_echo",
+              severity: "info",
+            },
+          ),
+        ],
+      };
+    }
+
+    const normalizedParsed = providerData && providerData.usage !== undefined && parsed.usage === undefined
+      ? { ...parsed, usage: providerData.usage }
+      : parsed;
+    return parseGenericConversationRuntimeRecord(context, record, normalizedParsed, draft, {
+      ...buildCommonParseRuntimeHelpers(),
+      safeJsonParse,
+    });
+  }
+  if (context.source.platform === "openclaw") {
+    const normalizedFilePath = context.filePath.replace(/\\/g, "/");
+    if (normalizedFilePath.includes("/cron/runs/")) {
+      return parseOpenClawCronRunRuntimeRecord(context, record, parsed, draft, {
+        ...buildCommonParseRuntimeHelpers(),
+        safeJsonParse,
+      });
+    }
+    return parseGenericConversationRuntimeRecord(context, record, parsed, draft, {
+      ...buildCommonParseRuntimeHelpers(),
+      safeJsonParse,
+    });
+  }
   if (
     context.source.platform === "cursor" ||
     context.source.platform === "antigravity" ||
     context.source.platform === "gemini" ||
-    context.source.platform === "openclaw" ||
     context.source.platform === "opencode" ||
     context.source.platform === "lobechat"
   ) {
@@ -1615,7 +1746,7 @@ function appendChunkedTextFragments(
   } = {},
 ): { nextSeq: number; usageApplied: boolean } {
   let usageApplied = options.usageApplied ?? false;
-  const chunks = buildTextChunks(context.source.platform, actorKind, text);
+  const chunks = buildTextChunks(context.source.platform, actorKind, text, { filePath: context.filePath });
   for (const chunk of chunks) {
     const firstAssistantChunk = actorKind === "assistant" && !usageApplied;
     fragments.push(
@@ -2032,44 +2163,45 @@ async function extractOpenCodeSessionSeed(
     asString(parsed.session_id) ??
     path.basename(filePath, path.extname(filePath));
   const sessionId = `sess:opencode:${rawSessionId}`;
-  const messageDir = path.join(path.dirname(path.dirname(filePath)), "message", rawSessionId);
+  const storageRoot = resolveOpenCodeStorageRoot(filePath);
+  const messageDir = storageRoot ? path.join(storageRoot, "message", rawSessionId) : undefined;
   const records: ExtractedSessionSeed["records"] = [];
   const meta = extractGenericSessionMetadata(parsed);
+  const time = isObject(parsed.time) ? parsed.time : undefined;
   const title = meta.title ?? asString(parsed.title) ?? asString(parsed.name);
   const model = meta.model ?? asString(parsed.model);
-  const workingDirectory = meta.workspacePath;
+  const workingDirectory =
+    meta.workspacePath ??
+    (typeof parsed.directory === "string" ? normalizeWorkspacePath(parsed.directory) : undefined);
   const createdAt =
     coerceIso(parsed.createdAt) ??
     coerceIso(parsed.created_at) ??
     epochMillisToIso(asNumber(parsed.createdAt)) ??
-    epochMillisToIso(asNumber(parsed.created));
+    epochMillisToIso(asNumber(parsed.created)) ??
+    epochMillisToIso(asNumber(time?.created));
   const updatedAt =
     coerceIso(parsed.updatedAt) ??
     coerceIso(parsed.updated_at) ??
     epochMillisToIso(asNumber(parsed.updatedAt)) ??
-    epochMillisToIso(asNumber(parsed.updated));
+    epochMillisToIso(asNumber(parsed.updated)) ??
+    epochMillisToIso(asNumber(time?.updated));
+  let childAgentKey: string | undefined;
 
-  if (title || model || workingDirectory) {
-    records.push({
-      pointer: "meta",
-      observedAt: createdAt ?? updatedAt ?? nowIso(),
-      rawJson: JSON.stringify({
-        id: sessionId,
-        title,
-        model,
-        cwd: workingDirectory,
-      }),
-    });
-  }
-
-  if (await pathExists(messageDir)) {
+  if (messageDir && (await pathExists(messageDir))) {
     const messageFiles = (await fs.readdir(messageDir))
       .filter((name) => name.endsWith(".json"))
       .sort();
     for (const [index, name] of messageFiles.entries()) {
       const content = await fs.readFile(path.join(messageDir, name), "utf8");
       const parsedMessage = safeJsonParse(content);
-      const normalized = normalizeMessageCandidate(parsedMessage, workingDirectory);
+      const enrichedMessage = await normalizeOpenCodeMessageEnvelope(
+        parsedMessage,
+        storageRoot,
+        rawSessionId,
+        workingDirectory,
+      );
+      childAgentKey = childAgentKey ?? (isObject(enrichedMessage) ? asString(enrichedMessage.agentId) : undefined);
+      const normalized = normalizeMessageCandidate(enrichedMessage ?? parsedMessage, workingDirectory);
       if (!normalized) {
         continue;
       }
@@ -2079,6 +2211,22 @@ async function extractOpenCodeSessionSeed(
         rawJson: JSON.stringify(normalized.record),
       });
     }
+  }
+
+  if (title || model || workingDirectory || meta.parentUuid || meta.isSidechain || childAgentKey) {
+    records.unshift({
+      pointer: "meta",
+      observedAt: createdAt ?? updatedAt ?? nowIso(),
+      rawJson: JSON.stringify({
+        id: sessionId,
+        title,
+        model,
+        cwd: workingDirectory,
+        parentUuid: meta.parentUuid,
+        isSidechain: meta.isSidechain,
+        agentId: childAgentKey,
+      }),
+    });
   }
 
   if (records.length === 0) {
@@ -2098,6 +2246,167 @@ async function extractOpenCodeSessionSeed(
     model,
     workingDirectory,
     records,
+  };
+}
+
+function resolveOpenCodeStorageRoot(filePath: string): string | undefined {
+  const normalizedPath = filePath.replace(/\\/g, "/");
+  const parts = normalizedPath.split("/").filter(Boolean);
+  const storageIndex = parts.lastIndexOf("storage");
+  if (storageIndex === -1) {
+    return undefined;
+  }
+  return `${normalizedPath.startsWith("/") ? "/" : ""}${parts.slice(0, storageIndex + 1).join("/")}`;
+}
+
+async function normalizeOpenCodeMessageEnvelope(
+  value: unknown,
+  storageRoot: string | undefined,
+  fallbackSessionId: string,
+  defaultWorkingDirectory?: string,
+): Promise<Record<string, unknown> | undefined> {
+  if (!isObject(value)) {
+    return undefined;
+  }
+
+  const info = isObject(value.info) ? value.info : undefined;
+  const time = isObject(value.time) ? value.time : undefined;
+  const messagePath = isObject(value.path) ? value.path : undefined;
+  const messageId = asString(value.id) ?? asString(info?.id);
+  const workingDirectoryCandidate = asString(messagePath?.cwd) ?? defaultWorkingDirectory;
+  const workingDirectory = workingDirectoryCandidate
+    ? normalizeWorkspacePath(workingDirectoryCandidate)
+    : undefined;
+  const partPayload = storageRoot && messageId ? await readOpenCodePartPayload(storageRoot, messageId) : undefined;
+  const inlineParts = Array.isArray(value.parts)
+    ? value.parts.filter((entry): entry is Record<string, unknown> => isObject(entry))
+    : [];
+  const timestamp =
+    coerceIso(value.timestamp) ??
+    coerceIso(info?.timestamp) ??
+    coerceIso(value.createdAt) ??
+    coerceIso(info?.createdAt) ??
+    epochMillisToIso(asNumber(time?.created));
+
+  return {
+    id: messageId,
+    sessionId: asString(value.sessionID) ?? asString(value.sessionId) ?? fallbackSessionId,
+    parentId:
+      asString(value.parentID) ??
+      asString(value.parentId) ??
+      asString(info?.parentID) ??
+      asString(info?.parentId),
+    agentId:
+      asString(value.agentId) ??
+      asString(value.agent) ??
+      asString(info?.agentId) ??
+      asString(info?.agent),
+    role: asString(value.role) ?? asString(info?.role),
+    model: asString(value.modelID) ?? asString(value.model) ?? asString(info?.model),
+    cwd: workingDirectory,
+    timestamp,
+    stopReason:
+      asString(value.finish) ??
+      asString(value.stopReason) ??
+      asString(info?.stopReason) ??
+      partPayload?.stopReason,
+    usage:
+      normalizeOpenCodeUsagePayload(value.tokens) ??
+      normalizeOpenCodeUsagePayload(value.usage) ??
+      partPayload?.usage,
+    parts: [...inlineParts, ...(partPayload?.items ?? [])],
+  };
+}
+
+async function readOpenCodePartPayload(
+  storageRoot: string,
+  messageId: string,
+): Promise<{
+  items: Record<string, unknown>[];
+  usage?: Record<string, unknown>;
+  stopReason?: string;
+}> {
+  const partDir = path.join(storageRoot, "part", messageId);
+  if (!(await pathExists(partDir))) {
+    return { items: [] };
+  }
+
+  const items: Record<string, unknown>[] = [];
+  let usage: Record<string, unknown> | undefined;
+  let stopReason: string | undefined;
+  const partFiles = (await fs.readdir(partDir)).filter((name) => name.endsWith(".json")).sort();
+
+  for (const name of partFiles) {
+    const parsedPart = safeJsonParse(await fs.readFile(path.join(partDir, name), "utf8"));
+    if (!isObject(parsedPart)) {
+      continue;
+    }
+
+    const partType = asString(parsedPart.type);
+    if ((partType === "text" || partType === "reasoning") && typeof parsedPart.text === "string" && parsedPart.text.trim()) {
+      items.push({ type: "text", text: parsedPart.text });
+      continue;
+    }
+
+    if (partType === "tool") {
+      const state = isObject(parsedPart.state) ? parsedPart.state : undefined;
+      const callId = asString(parsedPart.callID) ?? asString(parsedPart.callId);
+      const toolName = asString(parsedPart.tool) ?? asString(parsedPart.name);
+      items.push({
+        type: "tool_call",
+        id: callId,
+        name: toolName,
+        input: state?.input,
+      });
+      if (state?.output !== undefined || state?.result !== undefined || state?.metadata !== undefined) {
+        items.push({
+          type: "tool_result",
+          tool_use_id: callId,
+          content: state?.output ?? state?.result ?? state?.metadata ?? state,
+        });
+      }
+      continue;
+    }
+
+    if (partType === "step-finish") {
+      usage = normalizeOpenCodeUsagePayload(parsedPart.tokens) ?? usage;
+      stopReason = asString(parsedPart.reason) ?? stopReason;
+    }
+  }
+
+  return { items, usage, stopReason };
+}
+
+function normalizeOpenCodeUsagePayload(value: unknown): Record<string, unknown> | undefined {
+  if (!isObject(value)) {
+    return undefined;
+  }
+
+  const cache = isObject(value.cache) ? value.cache : undefined;
+  const inputTokens = asNumber(value.input);
+  const outputTokens = asNumber(value.output);
+  const reasoningTokens = asNumber(value.reasoning);
+  const cacheReadTokens = asNumber(cache?.read);
+  const cacheCreationTokens = asNumber(cache?.write);
+  const totalTokens = sumDefinedNumbers(inputTokens, outputTokens, reasoningTokens, cacheReadTokens, cacheCreationTokens);
+
+  if (
+    inputTokens === undefined &&
+    outputTokens === undefined &&
+    reasoningTokens === undefined &&
+    cacheReadTokens === undefined &&
+    cacheCreationTokens === undefined
+  ) {
+    return undefined;
+  }
+
+  return {
+    inputTokens,
+    outputTokens,
+    reasoningTokens,
+    cacheReadTokens,
+    cacheCreationTokens,
+    totalTokens,
   };
 }
 
@@ -2431,9 +2740,24 @@ function hydrateDraftFromAtoms(draft: SessionDraft, atoms: ConversationAtom[], f
     }
     if (!draft.title && atom.actor_kind === "user" && atom.origin_kind === "user_authored") {
       const text = asString(atom.payload.text);
-      draft.title = text ? truncate(text, 72) : draft.title;
+      const titleCandidate = normalizeSessionTitleCandidate(text);
+      draft.title = titleCandidate ? truncate(titleCandidate, 72) : draft.title;
     }
   }
+}
+
+function normalizeSessionTitleCandidate(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  const stripped = value
+    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/giu, " ")
+    .replace(/<command-(?:name|message|args)>[\s\S]*?<\/command-(?:name|message|args)>/giu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
+
+  return stripped || undefined;
 }
 
 function deriveSourceNativeProjectRef(source: SourceDefinition, filePath: string): string | undefined {
@@ -2450,6 +2774,10 @@ function deriveSourceNativeProjectRef(source: SourceDefinition, filePath: string
 
   const parts = relativePath.split("/").filter(Boolean);
   if (source.platform === "cursor") {
+    const chatStoreMatch = normalizedFilePath.match(/\/\.cursor\/chats\/([^/]+)\/[^/]+\/store\.db$/u);
+    if (chatStoreMatch) {
+      return chatStoreMatch[1];
+    }
     const transcriptIndex = parts.indexOf("agent-transcripts");
     if (transcriptIndex > 0) {
       return parts[transcriptIndex - 1];
@@ -2457,6 +2785,9 @@ function deriveSourceNativeProjectRef(source: SourceDefinition, filePath: string
   }
 
   if (source.platform === "antigravity" && parts[0] === "brain" && parts.length >= 3) {
+    return parts[1];
+  }
+  if (source.platform === "codebuddy" && parts[0] === "projects" && parts.length >= 3) {
     return parts[1];
   }
 
@@ -3391,10 +3722,24 @@ function createLossAudit(
   };
 }
 
-function splitUserText(text: string): UserTextChunk[] {
+function splitUserText(
+  text: string,
+  options: {
+    platform?: SourcePlatform;
+    filePath?: string;
+  } = {},
+): UserTextChunk[] {
   const normalized = text.replace(/\r\n/g, "\n").trim();
   if (!normalized) {
     return [];
+  }
+
+  if (isDelegatedInstructionUserText(options.platform, options.filePath, normalized)) {
+    return [{ originKind: "delegated_instruction", text: normalized }];
+  }
+
+  if (isAutomationTriggerUserText(normalized)) {
+    return [{ originKind: "automation_trigger", text: normalized }];
   }
 
   const requestMarker = "[User Request]";
@@ -3481,7 +3826,14 @@ function extractLeadingInjectedUserChunk(
   return undefined;
 }
 
-function buildTextChunks(platform: SourcePlatform, actorKind: ActorKind, text: string): UserTextChunk[] {
+function buildTextChunks(
+  platform: SourcePlatform,
+  actorKind: ActorKind,
+  text: string,
+  options: {
+    filePath?: string;
+  } = {},
+): UserTextChunk[] {
   if (actorKind === "user") {
     if (platform === "antigravity") {
       const normalized = text.replace(/\r\n/g, "\n").trim();
@@ -3494,7 +3846,7 @@ function buildTextChunks(platform: SourcePlatform, actorKind: ActorKind, text: s
           ]
         : [];
     }
-    return splitUserText(text);
+    return splitUserText(text, { platform, filePath: options.filePath });
   }
   return [
     {
@@ -3505,7 +3857,7 @@ function buildTextChunks(platform: SourcePlatform, actorKind: ActorKind, text: s
 }
 
 function extractTextFromContentItem(item: Record<string, unknown>): string | undefined {
-  const directText = asString(item.text) ?? asString(item.output_text) ?? asString(item.input_text) ?? asString(item.content);
+  const directText = asString(item.text) ?? asString(item.thinking) ?? asString(item.output_text) ?? asString(item.input_text) ?? asString(item.content);
   if (directText) {
     return directText;
   }
@@ -3786,10 +4138,29 @@ function antigravityAtomTimeDeltaMs(left: string, right: string): number {
 }
 
 function inferDisplayPolicy(originKind: OriginKind, text: string): DisplayPolicy {
-  if (originKind === "injected_user_shaped") {
+  if (
+    originKind === "injected_user_shaped" ||
+    originKind === "delegated_instruction" ||
+    originKind === "automation_trigger"
+  ) {
     return text.length > 180 ? "collapse" : "show";
   }
   return "show";
+}
+
+function isDelegatedInstructionUserText(
+  platform: SourcePlatform | undefined,
+  filePath: string | undefined,
+  text: string,
+): boolean {
+  if (platform === "claude_code" && filePath && /(^|[\/])subagents([\/]|$)/u.test(filePath)) {
+    return true;
+  }
+  return text.startsWith("[Subagent Context]") || text.startsWith("You are running as a subagent");
+}
+
+function isAutomationTriggerUserText(text: string): boolean {
+  return text.startsWith("[cron:");
 }
 
 function isClaudeInterruptionMarker(text: string): boolean {

@@ -1,0 +1,17 @@
+{
+  "id": "prt_11111111aaaaToolFinish08",
+  "sessionID": "ses_11111111aaaaMockOpenCode01",
+  "messageID": "msg_11111111aaaaAssistantTool03",
+  "type": "step-finish",
+  "reason": "tool-calls",
+  "cost": 0,
+  "tokens": {
+    "input": 900,
+    "output": 80,
+    "reasoning": 0,
+    "cache": {
+      "read": 500,
+      "write": 0
+    }
+  }
+}

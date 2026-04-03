@@ -31,6 +31,11 @@ async function createFixtureHome() {
   await mkdir(path.join(homeDir, '.gemini', 'tmp', 'session-a', 'chats'), { recursive: true });
   await mkdir(path.join(homeDir, '.gemini', 'tmp', 'bin'), { recursive: true });
   await mkdir(path.join(homeDir, '.gemini', 'antigravity'), { recursive: true });
+  await mkdir(path.join(homeDir, '.cursor', 'chats', 'workspace-hash-a', 'agent-1'), { recursive: true });
+  await mkdir(path.join(homeDir, '.cursor', 'chats', 'workspace-hash-b', 'agent-2'), { recursive: true });
+  await mkdir(path.join(homeDir, '.codebuddy', 'projects', 'config-workspace-ai_learning'), { recursive: true });
+  await mkdir(path.join(homeDir, '.codebuddy', 'local_storage'), { recursive: true });
+  await mkdir(path.join(homeDir, '.config', 'lobehub-storage', 'exports'), { recursive: true });
 
   await writeFile(
     path.join(homeDir, '.openclaw', 'agents', 'agent-a', 'sessions', 'openclaw-fixture.jsonl'),
@@ -70,6 +75,14 @@ async function createFixtureHome() {
   );
   await writeFile(path.join(homeDir, '.gemini', 'tmp', 'bin', 'helper'), 'binary\n', 'utf8');
   await writeFile(path.join(homeDir, '.gemini', 'antigravity', 'trace.pb'), 'pb\n', 'utf8');
+  await writeFile(path.join(homeDir, '.cursor', 'chats', 'workspace-hash-a', 'agent-1', 'store.db'), 'cursor-store-a\n', 'utf8');
+  await writeFile(path.join(homeDir, '.cursor', 'chats', 'workspace-hash-b', 'agent-2', 'store.db'), 'cursor-store-b\n', 'utf8');
+  await writeFile(path.join(homeDir, '.codebuddy', 'settings.json'), '{"model":"claude-4.0"}\n', 'utf8');
+  await writeFile(path.join(homeDir, '.codebuddy', 'local_storage', 'entry_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.info'), '["/model ","real prompt"]\n', 'utf8');
+  await writeFile(path.join(homeDir, '.config', 'lobehub-storage', 'exports', 'conversation.json'), '{"id":"lobechat-export","messages":[]}\n', 'utf8');
+  await writeFile(path.join(homeDir, '.config', 'lobehub-storage', 'index.json'), '{"version":1}\n', 'utf8');
+  await writeFile(path.join(homeDir, '.codebuddy', 'projects', 'config-workspace-ai_learning', 'session-empty.jsonl'), '', 'utf8');
+  await writeFile(path.join(homeDir, '.codebuddy', 'projects', 'config-workspace-ai_learning', 'session-filled.jsonl'), '{"type":"message","role":"user","content":[{"type":"input_text","text":"hello codebuddy"}]}\n', 'utf8');
 
   return homeDir;
 }
@@ -89,6 +102,12 @@ test('inspect:collect-source-samples collects requested platform evidence under 
         'opencode',
         '--platform',
         'gemini',
+        '--platform',
+        'cursor-chat-store',
+        '--platform',
+        'codebuddy',
+        '--platform',
+        'lobechat',
         '--output',
         outputRoot,
       ],
@@ -101,7 +120,7 @@ test('inspect:collect-source-samples collects requested platform evidence under 
     assert.equal(stderr, '');
 
     const manifest = JSON.parse(await readFile(path.join(outputRoot, 'manifest.json'), 'utf8'));
-    assert.deepEqual(manifest.requested_platforms, ['openclaw', 'opencode', 'gemini']);
+    assert.deepEqual(manifest.requested_platforms, ['openclaw', 'opencode', 'gemini', 'cursor-chat-store', 'codebuddy', 'lobechat']);
 
     assert.deepEqual(manifest.sources.openclaw.checked_roots, [
       {
@@ -160,7 +179,57 @@ test('inspect:collect-source-samples collects requested platform evidence under 
       '.gemini/tmp/session-a/chats/chat-001.json',
     ]);
     assert.match(manifest.sources.gemini.notes[0], /\.gemini\/tmp\/bin/);
-    assert.match(manifest.sources.gemini.notes[0], /\.gemini\/antigravity/);
+    assert.deepEqual(manifest.sources['cursor-chat-store'].checked_roots, [
+      {
+        kind: 'cursor_chat_store_root',
+        path: path.join(homeDir, '.cursor', 'chats'),
+        exists: true,
+      },
+    ]);
+    assert.deepEqual(manifest.sources['cursor-chat-store'].copied_files, [
+      '.cursor/chats/workspace-hash-a/agent-1/store.db',
+      '.cursor/chats/workspace-hash-b/agent-2/store.db',
+    ]);
+    assert.match(manifest.sources['cursor-chat-store'].notes[0], /workspaceStorage/);
+
+    assert.deepEqual(manifest.sources.codebuddy.checked_roots, [
+      {
+        kind: 'codebuddy_root',
+        path: path.join(homeDir, '.codebuddy'),
+        exists: true,
+      },
+      {
+        kind: 'project_transcripts',
+        path: path.join(homeDir, '.codebuddy', 'projects'),
+        exists: true,
+      },
+      {
+        kind: 'local_storage',
+        path: path.join(homeDir, '.codebuddy', 'local_storage'),
+        exists: true,
+      },
+    ]);
+    assert.deepEqual(manifest.sources.codebuddy.copied_files, [
+      '.codebuddy/local_storage/entry_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.info',
+      '.codebuddy/projects/config-workspace-ai_learning/session-empty.jsonl',
+      '.codebuddy/projects/config-workspace-ai_learning/session-filled.jsonl',
+      '.codebuddy/settings.json',
+    ]);
+    assert.match(manifest.sources.codebuddy.notes[0], /zero-byte/);
+    assert.deepEqual(manifest.sources.lobechat.checked_roots, [
+      {
+        kind: 'candidate_local_root',
+        path: path.join(homeDir, '.config', 'lobehub-storage'),
+        exists: true,
+      },
+    ]);
+    assert.deepEqual(manifest.sources.lobechat.copied_files, [
+      '.config/lobehub-storage/exports/conversation.json',
+      '.config/lobehub-storage/index.json',
+    ]);
+    assert.match(manifest.sources.lobechat.notes[0], /candidate review evidence/);
+    assert.match(manifest.sources.lobechat.notes[0], /unverified/);
+
 
     const copiedFilesText = JSON.stringify(manifest.sources);
     assert.equal(copiedFilesText.includes('.config/opencode/settings.json'), false);

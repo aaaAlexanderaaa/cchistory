@@ -67,6 +67,34 @@ export function parseFactoryRecord(
     const content = helpers.asArray(message.content);
     const extractedUsage = helpers.extractTokenUsage(message);
     const messageModel = helpers.asString(message.model) ?? extractedUsage?.model;
+    const parentSessionRef =
+      helpers.asString(parsed.callingSessionId) ??
+      helpers.asString(parsed.calling_session_id) ??
+      helpers.asString(parsed.parentUuid) ??
+      helpers.asString(parsed.parent_uuid) ??
+      helpers.asString(parsed.parentId) ??
+      helpers.asString(parsed.parent_id);
+    const parentToolRef =
+      helpers.asString(parsed.callingToolUseId) ??
+      helpers.asString(parsed.calling_tool_use_id) ??
+      helpers.asString(parsed.parentToolRef) ??
+      helpers.asString(parsed.parent_tool_ref);
+    const childAgentKey =
+      helpers.asString(parsed.agentId) ??
+      helpers.asString(parsed.agent_id) ??
+      helpers.asString(parsed.childAgentKey) ??
+      helpers.asString(parsed.child_agent_key);
+    const isSidechain = helpers.asBoolean(parsed.isSidechain) ?? helpers.asBoolean(parsed.sidechain);
+    if (parentSessionRef || parentToolRef || childAgentKey || isSidechain) {
+      fragments.push(
+        helpers.createFragment(context, record, fragments.length, "session_relation", timeKey, {
+          parent_uuid: parentSessionRef,
+          is_sidechain: isSidechain,
+          parent_tool_ref: parentToolRef,
+          agent_id: childAgentKey,
+        }),
+      );
+    }
     if (actorKind === "assistant" && messageModel) {
       draft.model = messageModel;
       fragments.push(

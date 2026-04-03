@@ -5,5 +5,5 @@ export const codexAdapter: PlatformAdapter = {
   platform: "codex",
   supportTier: "stable",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".codex", "sessions")],
-  matchesSourceFile: (filePath) => filePath.endsWith(".jsonl") || filePath.endsWith(".json"),
+  matchesSourceFile: (filePath) => path.basename(filePath) !== "history.jsonl" && (filePath.endsWith(".jsonl") || filePath.endsWith(".json")),
 };

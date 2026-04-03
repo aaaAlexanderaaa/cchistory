@@ -1,0 +1,16 @@
+{
+  "id": "ses_11111111aaaaMockOpenCode01",
+  "version": "1.0.114",
+  "projectID": "global",
+  "directory": "/Users/mock_user/workspace/esql-lab",
+  "title": "Plan requirements review for ESQL notes",
+  "time": {
+    "created": 1765000001000,
+    "updated": 1765000009000
+  },
+  "summary": {
+    "additions": 0,
+    "deletions": 0,
+    "files": 0
+  }
+}

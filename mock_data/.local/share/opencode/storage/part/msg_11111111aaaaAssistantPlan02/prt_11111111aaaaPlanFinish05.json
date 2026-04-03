@@ -1,0 +1,17 @@
+{
+  "id": "prt_11111111aaaaPlanFinish05",
+  "sessionID": "ses_11111111aaaaMockOpenCode01",
+  "messageID": "msg_11111111aaaaAssistantPlan02",
+  "type": "step-finish",
+  "reason": "completed",
+  "cost": 0,
+  "tokens": {
+    "input": 1600,
+    "output": 120,
+    "reasoning": 0,
+    "cache": {
+      "read": 400,
+      "write": 0
+    }
+  }
+}

@@ -1,0 +1,14 @@
+[
+  {
+    "id": "phase-1",
+    "content": "Inspect the source notes and capture the required sections",
+    "priority": "high",
+    "status": "pending"
+  },
+  {
+    "id": "phase-2",
+    "content": "Draft the summary and checklist output",
+    "priority": "medium",
+    "status": "pending"
+  }
+]
