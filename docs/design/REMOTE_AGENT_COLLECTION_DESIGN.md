@@ -274,6 +274,33 @@ Required upload metadata:
 - per-source monotonic `generation` or accepted-capture watermark
 - source-manifest summary for slots not included in the dirty bundle payload
 
+# Current Reusable Surfaces In This Repository
+The upload-first slice can reuse substantial existing code, but the reusable boundary is narrower than the design note alone might imply. The current repository already has a canonical local probe path, bundle format, and source-replacement import path; what is missing is the remote control-plane glue around them.
+
+| Surface | Current reusable behavior | Gap for remote-agent work |
+| --- | --- | --- |
+| `packages/source-adapters/src/core/legacy.ts` `runSourceProbe(...)` | probes explicit `SourceDefinition[]`, filters by `source_ids`, and returns canonical `SourceSyncPayload[]` plus host metadata | remote-agent work can reuse this as the local collect engine, but it currently derives host identity from the local OS hostname and has no concept of paired-agent identity, manifest-only heartbeats, or job receipts |
+| `apps/cli/src/bundle.ts` `exportBundle(...)` | exports source-scoped canonical payloads plus optional raw blobs into one checksummed bundle directory with a stable manifest | good fit for agent-local packaging, but it currently assumes a local filesystem bundle directory rather than a streamed HTTP upload or spool/retry queue |
+| `apps/cli/src/bundle.ts` `readBundle(...)` / `importBundleIntoStore(...)` | verifies checksums, plans conflicts, materializes raw blobs, imports by source payload, and records imported bundle receipts | the main service can reuse the same bundle semantics after upload, but current code expects an unpacked bundle on disk and does not enforce per-agent or per-source generation ordering |
+| `packages/storage/src/ingest/source-payload.ts` `replaceSourcePayloadWithOptions(...)` | preserves the canonical source-replacement ingest model and already supports optional host rekey handling | this is the right import boundary for accepted remote uploads, but it does not by itself model stale-write rejection, absent-source manifests, agent inventory, or job leases |
+| `packages/storage/src/internal/storage.ts` `listSourcePayloads()` / `getImportedBundle()` / `upsertImportedBundle()` | already supports export reconstruction and imported-bundle receipt tracking | there are no storage tables yet for paired agents, labels, liveness, source-manifest summaries, collection jobs, or job results |
+| `apps/api/src/app.ts` local admin routes | already exposes host-local probe (`/api/admin/probe/runs`) and replay (`/api/admin/pipeline/replay`) surfaces and persists probed payloads through `storage.replaceSourcePayload(...)` | these routes are intentionally host-local admin surfaces, not remote-agent APIs; the Fastify app is also configured with a 2 MiB body limit, which is too small and too generic for remote bundle uploads |
+
+The practical implication is that the upload-first remote slice should reuse:
+
+1. `runSourceProbe(...)` for agent-local collection
+2. bundle manifest + checksum semantics from `apps/cli/src/bundle.ts`
+3. source-payload replacement import in `packages/storage`
+
+And it still needs new control-plane pieces for:
+
+- pairing and remote credentials
+- upload transport and unpacking flow
+- per-agent inventory and liveness
+- source-manifest absence reporting
+- per-source ordering or generation checks
+- leased collection jobs for later pull phases
+
 # Main-Service APIs
 Remote-agent APIs must be separate from the existing local-only admin probe APIs.
 

@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import {
   deriveHostId,
   deriveSourceInstanceId,
@@ -55,6 +57,33 @@ test("runtime falls back to the home .cchistory directory when no ancestor store
       runtime.storage.close();
     }
   } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+
+test("runtime honors CCHISTORY_API_DATA_DIR when no explicit dataDir option is provided", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+  const previousDataDir = process.env.CCHISTORY_API_DATA_DIR;
+
+  try {
+    const overriddenDataDir = path.join(tempRoot, "seeded-review-store");
+    process.env.CCHISTORY_API_DATA_DIR = overriddenDataDir;
+
+    const runtime = await createApiRuntime({ sources: [] });
+    try {
+      assert.equal(runtime.dataDir, overriddenDataDir);
+      assert.equal(existsSync(runtime.rawStoreDir), true);
+    } finally {
+      await runtime.app.close();
+      runtime.storage.close();
+    }
+  } finally {
+    if (previousDataDir === undefined) {
+      delete process.env.CCHISTORY_API_DATA_DIR;
+    } else {
+      process.env.CCHISTORY_API_DATA_DIR = previousDataDir;
+    }
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -254,6 +283,153 @@ test("persisted probe snapshots raw blobs and seeds storage", async () => {
       assert.equal(JSON.parse(lineageResponse.body).lineage.turn.id, turns[0]!.id);
     } finally {
       await runtime.app.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("admin pipeline endpoints keep delegated and automation evidence inspectable without canonical turns", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-secondary-evidence-"));
+
+  try {
+    const mockDataRoot = getRepoMockDataRoot();
+    const hostId = deriveHostId(os.hostname());
+    const sources: SourceDefinition[] = [
+      {
+        id: deriveSourceInstanceId({
+          host_id: hostId,
+          slot_id: "openclaw",
+          base_dir: path.join(mockDataRoot, ".openclaw", "agents"),
+        }),
+        slot_id: "openclaw",
+        family: "local_coding_agent",
+        platform: "openclaw",
+        display_name: "OpenClaw automation mock",
+        base_dir: path.join(mockDataRoot, ".openclaw", "agents"),
+      },
+      {
+        id: deriveSourceInstanceId({
+          host_id: hostId,
+          slot_id: "claude_code",
+          base_dir: path.join(
+            mockDataRoot,
+            ".claude",
+            "projects",
+            "-Users-mock-user-workspace-chat-ui-kit",
+            "cc1df109-4282-4321-8248-8bbcd471da78",
+            "subagents",
+          ),
+        }),
+        slot_id: "claude_code",
+        family: "local_coding_agent",
+        platform: "claude_code",
+        display_name: "Claude delegated mock",
+        base_dir: path.join(
+          mockDataRoot,
+          ".claude",
+          "projects",
+          "-Users-mock-user-workspace-chat-ui-kit",
+          "cc1df109-4282-4321-8248-8bbcd471da78",
+          "subagents",
+        ),
+      },
+    ];
+    const dataDir = path.join(tempRoot, "data-secondary-evidence");
+    const runtime = await createApiRuntime({ dataDir, sources });
+
+    try {
+      assert.equal(runtime.storage.listTurns().length, 0);
+
+      const turnsResponse = await runtime.app.inject({ method: "GET", url: "/api/turns" });
+      assert.equal(turnsResponse.statusCode, 200);
+      assert.equal(JSON.parse(turnsResponse.body).turns.length, 0);
+
+      const atomsResponse = await runtime.app.inject({ method: "GET", url: "/api/admin/pipeline/atoms" });
+      assert.equal(atomsResponse.statusCode, 200);
+      const atoms = JSON.parse(atomsResponse.body).atoms as Array<{
+        source_id: string;
+        origin_kind: string;
+        payload: { text?: string };
+      }>;
+      assert.ok(
+        atoms.some(
+          (atom) =>
+            atom.source_id === sources[0]!.id &&
+            atom.origin_kind === "automation_trigger" &&
+            String(atom.payload.text ?? "").includes("[cron:mock-openclaw-hourly]"),
+        ),
+      );
+      assert.ok(
+        atoms.some(
+          (atom) =>
+            atom.source_id === sources[1]!.id &&
+            atom.origin_kind === "delegated_instruction" &&
+            String(atom.payload.text ?? "").includes("Search the codebase for all timeout"),
+        ),
+      );
+
+      const fragmentsResponse = await runtime.app.inject({ method: "GET", url: "/api/admin/pipeline/fragments" });
+      assert.equal(fragmentsResponse.statusCode, 200);
+      const fragments = JSON.parse(fragmentsResponse.body).fragments as Array<{
+        source_id: string;
+        fragment_kind: string;
+        payload: Record<string, unknown>;
+      }>;
+      assert.ok(
+        fragments.some(
+          (fragment) =>
+            fragment.source_id === sources[0]!.id &&
+            fragment.fragment_kind === "session_relation" &&
+            fragment.payload.relation_kind === "automation_run" &&
+            fragment.payload.parent_uuid === "11111111-2222-4333-8444-555555555555",
+        ),
+      );
+      assert.ok(
+        fragments.some(
+          (fragment) =>
+            fragment.source_id === sources[1]!.id &&
+            fragment.fragment_kind === "session_relation" &&
+            fragment.payload.is_sidechain === true,
+        ),
+      );
+
+      const sessions = runtime.storage.listResolvedSessions();
+      const openclawSession = sessions.find((session) => session.source_id === sources[0]!.id);
+      const claudeSession = sessions.find((session) => session.source_id === sources[1]!.id);
+      assert.ok(openclawSession);
+      assert.ok(claudeSession);
+
+      const openclawRelatedWorkResponse = await runtime.app.inject({
+        method: "GET",
+        url: `/api/admin/sessions/${encodeURIComponent(openclawSession!.id)}/related-work`,
+      });
+      assert.equal(openclawRelatedWorkResponse.statusCode, 200);
+      const openclawRelatedWork = JSON.parse(openclawRelatedWorkResponse.body).related_work as Array<{
+        relation_kind: string;
+        target_kind: string;
+        automation_job_ref?: string;
+      }>;
+      assert.equal(openclawRelatedWork[0]?.relation_kind, "automation_run");
+      assert.equal(openclawRelatedWork[0]?.target_kind, "automation_run");
+      assert.equal(openclawRelatedWork[0]?.automation_job_ref, "mock-openclaw-hourly");
+
+      const claudeRelatedWorkResponse = await runtime.app.inject({
+        method: "GET",
+        url: `/api/admin/sessions/${encodeURIComponent(claudeSession!.id)}/related-work`,
+      });
+      assert.equal(claudeRelatedWorkResponse.statusCode, 200);
+      const claudeRelatedWork = JSON.parse(claudeRelatedWorkResponse.body).related_work as Array<{
+        relation_kind: string;
+        target_kind: string;
+        transcript_primary: boolean;
+      }>;
+      assert.equal(claudeRelatedWork[0]?.relation_kind, "delegated_session");
+      assert.equal(claudeRelatedWork[0]?.target_kind, "session");
+      assert.equal(claudeRelatedWork[0]?.transcript_primary, true);
+    } finally {
+      await runtime.app.close();
+      runtime.storage.close();
     }
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
@@ -1030,6 +1206,467 @@ test("project delete endpoint purges the project and preserves unrelated project
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("remote agent pair and upload import one bundle and reject stale generations", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+
+  try {
+    const source = await seedCodexSourceFixture(tempRoot, "remote-agent-upload", {
+      userText: "Remote agent upload turn.",
+    });
+    const dataDir = path.join(tempRoot, "data-remote-agent-upload");
+    const runtime = await createApiRuntime({ dataDir, sources: [], agentPairingToken: "pair-secret" });
+
+    try {
+      const pairResponse = await runtime.app.inject({
+        method: "POST",
+        url: "/api/agent/pair",
+        payload: {
+          pairing_token: "pair-secret",
+          display_name: "Remote Test Host",
+          reported_hostname: "remote-host-a",
+        },
+      });
+      assert.equal(pairResponse.statusCode, 200);
+      const paired = JSON.parse(pairResponse.body) as { agent_id: string; agent_token: string };
+
+      const probe = await runSourceProbe({ source_ids: [source.id], limit_files_per_source: 10 }, [source]);
+      const payload = probe.sources[0]!;
+      const bundle = buildRemoteUploadBundleFromPayload(payload);
+      const uploadResponse = await runtime.app.inject({
+          method: "POST",
+          url: "/api/agent/uploads",
+          payload: {
+            agent_id: paired.agent_id,
+            agent_token: paired.agent_token,
+            collected_at: payload.source.last_sync,
+            bundle,
+            source_manifest: [
+              {
+                source_id: payload.source.id,
+                slot_id: payload.source.slot_id,
+                platform: payload.source.platform,
+                display_name: payload.source.display_name,
+                base_dir: payload.source.base_dir,
+                sync_status: payload.source.sync_status,
+                presence: "present",
+                total_turns: payload.turns.length,
+                payload_checksum: bundle.checksums.payload_sha256_by_source_id[payload.source.id],
+                generation: 1,
+                included_in_bundle: true,
+              },
+            ],
+          },
+        });
+        assert.equal(uploadResponse.statusCode, 200, uploadResponse.body);
+        const uploadBody = JSON.parse(uploadResponse.body) as { imported_source_ids: string[] };
+        assert.deepEqual(uploadBody.imported_source_ids, [payload.source.id]);
+
+        const turnsResponse = await runtime.app.inject({ method: "GET", url: "/api/turns" });
+        assert.equal(turnsResponse.statusCode, 200);
+        const turns = JSON.parse(turnsResponse.body).turns as Array<{ canonical_text: string }>;
+        assert.equal(turns.length, 1);
+        assert.equal(turns[0]?.canonical_text, "Remote agent upload turn.");
+
+      const staleResponse = await runtime.app.inject({
+          method: "POST",
+          url: "/api/agent/uploads",
+          payload: {
+            agent_id: paired.agent_id,
+            agent_token: paired.agent_token,
+            collected_at: payload.source.last_sync,
+            bundle,
+            source_manifest: [
+              {
+                source_id: payload.source.id,
+                slot_id: payload.source.slot_id,
+                platform: payload.source.platform,
+                display_name: payload.source.display_name,
+                base_dir: payload.source.base_dir,
+                sync_status: payload.source.sync_status,
+                presence: "present",
+                total_turns: payload.turns.length,
+                payload_checksum: bundle.checksums.payload_sha256_by_source_id[payload.source.id],
+                generation: 1,
+                included_in_bundle: true,
+              },
+            ],
+          },
+        });
+      assert.equal(staleResponse.statusCode, 409);
+    } finally {
+      await runtime.app.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+
+test("remote agent heartbeat and admin inventory surfaces persist labels and source manifests", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+
+  try {
+    const dataDir = path.join(tempRoot, "data-remote-agent-inventory");
+    const runtime = await createApiRuntime({ dataDir, sources: [], agentPairingToken: "pair-secret" });
+
+    try {
+      const pairResponse = await runtime.app.inject({
+        method: "POST",
+        url: "/api/agent/pair",
+        payload: {
+          pairing_token: "pair-secret",
+          display_name: "Inventory Host",
+          reported_hostname: "inventory-host-a",
+        },
+      });
+      assert.equal(pairResponse.statusCode, 200);
+      const paired = JSON.parse(pairResponse.body) as { agent_id: string; agent_token: string };
+
+      const heartbeatResponse = await runtime.app.inject({
+        method: "POST",
+        url: "/api/agent/heartbeat",
+        payload: {
+          agent_id: paired.agent_id,
+          agent_token: paired.agent_token,
+          labels: ["office", "macbook", "office"],
+          source_manifest: [
+            {
+              source_id: "src-remote-codex",
+              slot_id: "codex",
+              platform: "codex",
+              display_name: "Codex",
+              base_dir: "/remote/.codex/sessions",
+              sync_status: "healthy",
+              presence: "present",
+              total_turns: 3,
+              payload_checksum: "abc123",
+              generation: 1,
+              included_in_bundle: false,
+            },
+          ],
+        },
+      });
+      assert.equal(heartbeatResponse.statusCode, 200, heartbeatResponse.body);
+      const heartbeatBody = JSON.parse(heartbeatResponse.body) as { source_manifest_count: number; last_seen_at: string };
+      assert.equal(heartbeatBody.source_manifest_count, 1);
+      assert.equal(typeof heartbeatBody.last_seen_at, "string");
+
+      const agentsResponse = await runtime.app.inject({ method: "GET", url: "/api/admin/agents" });
+      assert.equal(agentsResponse.statusCode, 200);
+      const agents = JSON.parse(agentsResponse.body).agents as Array<{
+        agent_id: string;
+        display_name?: string;
+        reported_hostname?: string;
+        labels: string[];
+        source_manifest: Array<{ source_id: string; total_turns: number }>;
+      }>;
+      assert.equal(agents.length, 1);
+      assert.equal(agents[0]?.agent_id, paired.agent_id);
+      assert.equal(agents[0]?.display_name, "Inventory Host");
+      assert.equal(agents[0]?.reported_hostname, "inventory-host-a");
+      assert.deepEqual(agents[0]?.labels, ["macbook", "office"]);
+      assert.deepEqual(agents[0]?.source_manifest.map((entry) => entry.source_id), ["src-remote-codex"]);
+      assert.equal(agents[0]?.source_manifest[0]?.total_turns, 3);
+
+      const updateResponse = await runtime.app.inject({
+        method: "POST",
+        url: `/api/admin/agents/${encodeURIComponent(paired.agent_id)}/labels`,
+        payload: {
+          display_name: "Inventory Host Renamed",
+          labels: ["lab", "office"],
+        },
+      });
+      assert.equal(updateResponse.statusCode, 200);
+      const updatedAgent = JSON.parse(updateResponse.body).agent as { display_name?: string; labels: string[] };
+      assert.equal(updatedAgent.display_name, "Inventory Host Renamed");
+      assert.deepEqual(updatedAgent.labels, ["lab", "office"]);
+
+      const restartedRuntime = await createApiRuntime({ dataDir, sources: [], agentPairingToken: "pair-secret" });
+      try {
+        const restartedAgentsResponse = await restartedRuntime.app.inject({ method: "GET", url: "/api/admin/agents" });
+        assert.equal(restartedAgentsResponse.statusCode, 200);
+        const restartedAgents = JSON.parse(restartedAgentsResponse.body).agents as Array<{ display_name?: string; labels: string[] }>;
+        assert.equal(restartedAgents[0]?.display_name, "Inventory Host Renamed");
+        assert.deepEqual(restartedAgents[0]?.labels, ["lab", "office"]);
+      } finally {
+        await restartedRuntime.app.close();
+      }
+    } finally {
+      await runtime.app.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+
+test("remote agent jobs support targeted leasing, upload linkage, and completion status", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+
+  try {
+    const source = await seedCodexSourceFixture(tempRoot, "remote-agent-job", {
+      userText: "Remote agent leased job turn.",
+    });
+    const dataDir = path.join(tempRoot, "data-remote-agent-jobs");
+    const runtime = await createApiRuntime({ dataDir, sources: [], agentPairingToken: "pair-secret" });
+
+    try {
+      const officePair = await runtime.app.inject({
+        method: "POST",
+        url: "/api/agent/pair",
+        payload: {
+          pairing_token: "pair-secret",
+          display_name: "Office Host",
+          reported_hostname: "office-host",
+        },
+      });
+      assert.equal(officePair.statusCode, 200, officePair.body);
+      const officeAgent = JSON.parse(officePair.body) as { agent_id: string; agent_token: string };
+
+      const labPair = await runtime.app.inject({
+        method: "POST",
+        url: "/api/agent/pair",
+        payload: {
+          pairing_token: "pair-secret",
+          display_name: "Lab Host",
+          reported_hostname: "lab-host",
+        },
+      });
+      assert.equal(labPair.statusCode, 200, labPair.body);
+      const labAgent = JSON.parse(labPair.body) as { agent_id: string; agent_token: string };
+
+      assert.equal((await runtime.app.inject({
+        method: "POST",
+        url: "/api/agent/heartbeat",
+        payload: {
+          agent_id: officeAgent.agent_id,
+          agent_token: officeAgent.agent_token,
+          labels: ["office"],
+        },
+      })).statusCode, 200);
+      assert.equal((await runtime.app.inject({
+        method: "POST",
+        url: "/api/agent/heartbeat",
+        payload: {
+          agent_id: labAgent.agent_id,
+          agent_token: labAgent.agent_token,
+          labels: ["lab"],
+        },
+      })).statusCode, 200);
+
+      const createResponse = await runtime.app.inject({
+        method: "POST",
+        url: "/api/admin/agent-jobs",
+        payload: {
+          selector: { kind: "labels", labels: ["office"] },
+          source_slots: ["codex"],
+          sync_mode: "dirty_snapshot",
+          lease_duration_seconds: 300,
+        },
+      });
+      assert.equal(createResponse.statusCode, 200, createResponse.body);
+      const createdJob = JSON.parse(createResponse.body).job as {
+        job_id: string;
+        matched_agent_ids: string[];
+        status: string;
+      };
+      assert.equal(createdJob.status, "pending");
+      assert.deepEqual(createdJob.matched_agent_ids, [officeAgent.agent_id]);
+
+      const labLeaseResponse = await runtime.app.inject({
+        method: "POST",
+        url: "/api/agent/jobs/lease",
+        payload: {
+          agent_id: labAgent.agent_id,
+          agent_token: labAgent.agent_token,
+        },
+      });
+      assert.equal(labLeaseResponse.statusCode, 200, labLeaseResponse.body);
+      assert.equal(JSON.parse(labLeaseResponse.body).job, undefined);
+
+      const officeLeaseResponse = await runtime.app.inject({
+        method: "POST",
+        url: "/api/agent/jobs/lease",
+        payload: {
+          agent_id: officeAgent.agent_id,
+          agent_token: officeAgent.agent_token,
+        },
+      });
+      assert.equal(officeLeaseResponse.statusCode, 200, officeLeaseResponse.body);
+      const leasedJob = JSON.parse(officeLeaseResponse.body).job as { job_id: string; source_slots: string[] };
+      assert.equal(leasedJob.job_id, createdJob.job_id);
+      assert.deepEqual(leasedJob.source_slots, ["codex"]);
+
+      const probe = await runSourceProbe({ source_ids: [source.id], limit_files_per_source: 10 }, [source]);
+      const payload = probe.sources[0]!;
+      const bundle = buildRemoteUploadBundleFromPayload(payload);
+      const uploadResponse = await runtime.app.inject({
+        method: "POST",
+        url: "/api/agent/uploads",
+        payload: {
+          agent_id: officeAgent.agent_id,
+          agent_token: officeAgent.agent_token,
+          job_id: createdJob.job_id,
+          collected_at: payload.source.last_sync,
+          bundle,
+          source_manifest: [
+            {
+              source_id: payload.source.id,
+              slot_id: payload.source.slot_id,
+              platform: payload.source.platform,
+              display_name: payload.source.display_name,
+              base_dir: payload.source.base_dir,
+              sync_status: payload.source.sync_status,
+              presence: "present",
+              total_turns: payload.turns.length,
+              payload_checksum: bundle.checksums.payload_sha256_by_source_id[payload.source.id],
+              generation: 1,
+              included_in_bundle: true,
+            },
+          ],
+        },
+      });
+      assert.equal(uploadResponse.statusCode, 200, uploadResponse.body);
+      const uploadBody = JSON.parse(uploadResponse.body) as { bundle_id: string; imported_source_ids: string[] };
+      assert.deepEqual(uploadBody.imported_source_ids, [payload.source.id]);
+
+      const completeSuccessResponse = await runtime.app.inject({
+        method: "POST",
+        url: `/api/agent/jobs/${encodeURIComponent(createdJob.job_id)}/complete`,
+        payload: {
+          agent_id: officeAgent.agent_id,
+          agent_token: officeAgent.agent_token,
+          status: "succeeded",
+          bundle_id: uploadBody.bundle_id,
+          imported_source_ids: uploadBody.imported_source_ids,
+        },
+      });
+      assert.equal(completeSuccessResponse.statusCode, 200, completeSuccessResponse.body);
+
+      const failedCreateResponse = await runtime.app.inject({
+        method: "POST",
+        url: "/api/admin/agent-jobs",
+        payload: {
+          selector: { kind: "agent_ids", agent_ids: [officeAgent.agent_id] },
+          source_slots: "all",
+          sync_mode: "force_snapshot",
+          lease_duration_seconds: 300,
+        },
+      });
+      assert.equal(failedCreateResponse.statusCode, 200, failedCreateResponse.body);
+      const failedJobId = JSON.parse(failedCreateResponse.body).job.job_id as string;
+
+      const failedLeaseResponse = await runtime.app.inject({
+        method: "POST",
+        url: "/api/agent/jobs/lease",
+        payload: {
+          agent_id: officeAgent.agent_id,
+          agent_token: officeAgent.agent_token,
+        },
+      });
+      assert.equal(failedLeaseResponse.statusCode, 200, failedLeaseResponse.body);
+      assert.equal(JSON.parse(failedLeaseResponse.body).job.job_id, failedJobId);
+
+      const completeFailureResponse = await runtime.app.inject({
+        method: "POST",
+        url: `/api/agent/jobs/${encodeURIComponent(failedJobId)}/complete`,
+        payload: {
+          agent_id: officeAgent.agent_id,
+          agent_token: officeAgent.agent_token,
+          status: "failed",
+          error_message: "simulated collection failure",
+        },
+      });
+      assert.equal(completeFailureResponse.statusCode, 200, completeFailureResponse.body);
+
+      const jobsResponse = await runtime.app.inject({ method: "GET", url: "/api/admin/agent-jobs" });
+      assert.equal(jobsResponse.statusCode, 200, jobsResponse.body);
+      const jobs = JSON.parse(jobsResponse.body).jobs as Array<{
+        job_id: string;
+        status: string;
+        agent_statuses: Array<{ agent_id: string; status: string; bundle_id?: string; error_message?: string }>;
+      }>;
+      const succeededJob = jobs.find((job) => job.job_id === createdJob.job_id);
+      const failedJob = jobs.find((job) => job.job_id === failedJobId);
+      assert.equal(succeededJob?.status, "succeeded");
+      assert.equal(succeededJob?.agent_statuses[0]?.bundle_id, uploadBody.bundle_id);
+      assert.equal(failedJob?.status, "failed");
+      assert.equal(failedJob?.agent_statuses[0]?.error_message, "simulated collection failure");
+    } finally {
+      await runtime.app.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+
+function buildRemoteUploadBundleFromPayload(payload: SourceSyncPayload): {
+  manifest: {
+    bundle_id: string;
+    bundle_version: string;
+    exported_at: string;
+    exported_from_host_ids: string[];
+    schema_version: string;
+    source_instance_ids: string[];
+    counts: { sources: number; sessions: number; turns: number; blobs: number };
+    includes_raw_blobs: boolean;
+    created_by: string;
+  };
+  checksums: {
+    manifest_sha256: string;
+    payload_sha256_by_source_id: Record<string, string>;
+    raw_sha256_by_path: Record<string, string>;
+  };
+  payloads: SourceSyncPayload[];
+  raw_blobs_base64_by_path: Record<string, string>;
+} {
+  const serializedPayload: SourceSyncPayload = {
+    ...payload,
+    blobs: payload.blobs.map((blob) => ({
+      ...blob,
+      captured_path: undefined,
+    })),
+  };
+  const manifest = {
+    bundle_id: `bundle-test-${payload.source.id}`,
+    bundle_version: "cchistory.bundle.v1",
+    exported_at: payload.source.last_sync ?? new Date().toISOString(),
+    exported_from_host_ids: [payload.source.host_id],
+    schema_version: "2026-03-14.1",
+    source_instance_ids: [payload.source.id],
+    counts: {
+      sources: 1,
+      sessions: payload.sessions.length,
+      turns: payload.turns.length,
+      blobs: payload.blobs.length,
+    },
+    includes_raw_blobs: false,
+    created_by: "api-test",
+  };
+  return {
+    manifest,
+    checksums: {
+      manifest_sha256: sha256(JSON.stringify(manifest, null, 2)),
+      payload_sha256_by_source_id: {
+        [payload.source.id]: sha256(JSON.stringify(serializedPayload)),
+      },
+      raw_sha256_by_path: {},
+    },
+    payloads: [serializedPayload],
+    raw_blobs_base64_by_path: {},
+  };
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+
+function getRepoMockDataRoot(): string {
+  return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../mock_data");
+}
 
 async function seedCodexSourceFixture(
   tempRoot: string,

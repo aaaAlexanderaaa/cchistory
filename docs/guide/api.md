@@ -15,9 +15,6 @@ pnpm services:start
 
 # Start API only
 bash scripts/dev-services.sh start api    # Port 8040
-
-# Run API in foreground (no supervisor)
-bash scripts/dev-services.sh run api
 ```
 
 ## Configuration
@@ -123,10 +120,32 @@ bash scripts/dev-services.sh run api
 
 | Method | Path | Description |
 |--------|------|-------------|
+| `GET` | `/api/admin/sessions/:sessionId/related-work` | Get typed related-work relations for a session |
 | `POST` | `/api/admin/projects/lineage-events` | Append lineage events |
+| `POST` | `/api/admin/projects/:projectId/delete` | Delete one project and its linked turns |
 | `POST` | `/api/admin/lifecycle/candidate-gc` | Archive/purge candidate turns |
 | `GET` | `/api/admin/masks` | Built-in mask templates |
 | `GET` | `/api/admin/drift` | Drift and consistency report |
+
+### Remote-Agent Control Plane
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/agent/pair` | Pair a remote agent with the host service |
+| `POST` | `/api/agent/heartbeat` | Record remote-agent liveness and source-manifest state |
+| `POST` | `/api/agent/jobs/lease` | Lease one pending remote-agent collection job |
+| `POST` | `/api/agent/uploads` | Upload one remote-agent bundle |
+| `POST` | `/api/agent/jobs/:jobId/complete` | Report remote-agent collection job completion or failure |
+| `GET` | `/api/admin/agents` | List paired remote agents and their current inventory |
+| `POST` | `/api/admin/agents/:agentId/labels` | Update operator-facing remote-agent labels and display name |
+| `POST` | `/api/admin/agent-jobs` | Create one typed remote-agent collection job |
+| `GET` | `/api/admin/agent-jobs` | List remote-agent collection jobs |
+
+## Managed Review Contract
+
+- The stable manual-review contract for the blocked managed-runtime API read journey lives in `docs/design/R31_MANAGED_API_READ_DIARY_CONTRACT.md`.
+- Use that note when you want to record one user-started API review diary for `GET /api/projects` → `GET /api/turns/search` → `GET /api/turns/:turnId/context` without inventing a new startup path.
+- This remains a user-started manual review flow, not an agent-started runtime workflow.
 
 ## Example
 

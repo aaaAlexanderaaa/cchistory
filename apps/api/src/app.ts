@@ -10,6 +10,14 @@ import {
   deriveSourceInstanceId,
   deriveSourceSlotId,
   isLegacySourceInstanceId,
+  type RemoteAgentAdminSummary,
+  type RemoteAgentCollectionJobSummary,
+  type RemoteAgentCompleteJobRequest,
+  type RemoteAgentCreateJobRequest,
+  type RemoteAgentHeartbeatRequest,
+  type RemoteAgentLeaseJobRequest,
+  type RemoteAgentPairRequest,
+  type RemoteAgentUploadRequest,
   type SourceDefinition,
   type SourceSyncPayload,
   type TurnSearchResult,
@@ -18,6 +26,19 @@ import {
 import { getBuiltinMaskTemplates, getDefaultSources, getDefaultSourcesForHost, runSourceProbe } from "@cchistory/source-adapters";
 import { CCHistoryStorage } from "@cchistory/storage";
 import { resolveDefaultCchistoryDataDir } from "@cchistory/storage/store-layout";
+import {
+  applyRemoteAgentHeartbeat,
+  applyRemoteAgentUpload,
+  completeRemoteAgentJob,
+  createRemoteAgentJob,
+  leaseRemoteAgentJob,
+  listRemoteAgentJobs,
+  listRemoteAgents,
+  pairRemoteAgent,
+  readRemoteAgentState,
+  updateRemoteAgentLabels,
+  writeRemoteAgentState,
+} from "./remote-agent.js";
 
 export interface ApiRuntimeOptions {
   dataDir?: string;
@@ -26,6 +47,7 @@ export interface ApiRuntimeOptions {
   probeRunner?: typeof runSourceProbe;
   sources?: readonly SourceDefinition[];
   storage?: CCHistoryStorage;
+  agentPairingToken?: string;
 }
 
 export interface ApiRuntime {
@@ -80,20 +102,25 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   const hostName = os.hostname();
   const hostId = deriveHostId(hostName);
   const dataDir =
-    options.dataDir ?? resolveDefaultCchistoryDataDir({ cwd: options.cwd ?? process.cwd(), homeDir: options.homeDir });
+    options.dataDir ??
+    process.env.CCHISTORY_API_DATA_DIR ??
+    resolveDefaultCchistoryDataDir({ cwd: options.cwd ?? process.cwd(), homeDir: options.homeDir });
   const rawStoreDir = path.join(dataDir, "raw");
   const sourceConfigPath = path.join(dataDir, "source-overrides.json");
+  const remoteAgentStatePath = path.join(dataDir, "remote-agents.json");
   const probeRunner = options.probeRunner ?? runSourceProbe;
   const defaultSourceDefinitions = normalizeConfiguredSourceDefinitions(
     options.sources ?? getDefaultSourcesForHost({ includeMissing: true }),
     hostId,
   );
   let sourceConfig = normalizePersistedSourceConfig(await readSourceConfig(sourceConfigPath), hostId);
+  let remoteAgentState = await readRemoteAgentState(remoteAgentStatePath);
+  const agentPairingToken = options.agentPairingToken ?? process.env.CCHISTORY_AGENT_PAIRING_TOKEN;
 
   mkdirSync(rawStoreDir, { recursive: true });
 
   const storage = options.storage ?? new CCHistoryStorage(dataDir);
-  const app = Fastify({ logger: false, bodyLimit: 2 * 1024 * 1024 });
+  const app = Fastify({ logger: false, bodyLimit: 32 * 1024 * 1024 });
   const corsOrigins = (process.env.CCHISTORY_CORS_ORIGIN ?? "http://localhost:8085,http://127.0.0.1:8085")
     .split(",")
     .map((s) => s.trim())
@@ -113,7 +140,7 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   if (apiToken) {
     const expectedAuth = Buffer.from(`Bearer ${apiToken}`, "utf8");
     app.addHook("onRequest", async (request, reply) => {
-      if (request.url === "/health" || request.url === "/openapi.json") {
+      if (request.url === "/health" || request.url === "/openapi.json" || request.url.startsWith("/api/agent/")) {
         return;
       }
       const header = request.headers.authorization ?? "";
@@ -136,6 +163,242 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   }));
 
   app.get("/openapi.json", async () => buildOpenApiDocument());
+
+  app.post("/api/agent/pair", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["pairing_token"],
+        properties: {
+          pairing_token: { type: "string" },
+          display_name: { type: "string" },
+          reported_hostname: { type: "string" },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    if (!agentPairingToken) {
+      reply.code(503);
+      return { error: "Remote agent pairing is not configured on this host." };
+    }
+
+    const body = (request.body ?? {}) as RemoteAgentPairRequest;
+    if (body.pairing_token !== agentPairingToken) {
+      reply.code(401);
+      return { error: "Invalid pairing token." };
+    }
+
+    const paired = pairRemoteAgent({
+      state: remoteAgentState,
+      displayName: body.display_name,
+      reportedHostname: body.reported_hostname,
+    });
+    remoteAgentState = paired.state;
+    await writeRemoteAgentState(remoteAgentStatePath, remoteAgentState);
+    return paired.response;
+  });
+
+  app.post("/api/agent/heartbeat", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["agent_id", "agent_token"],
+        properties: {
+          agent_id: { type: "string" },
+          agent_token: { type: "string" },
+          display_name: { type: "string" },
+          reported_hostname: { type: "string" },
+          labels: { type: "array", items: { type: "string" } },
+          source_manifest: { type: "array" },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const applied = applyRemoteAgentHeartbeat({
+        state: remoteAgentState,
+        request: (request.body ?? {}) as RemoteAgentHeartbeatRequest,
+      });
+      remoteAgentState = applied.state;
+      await writeRemoteAgentState(remoteAgentStatePath, remoteAgentState);
+      return applied.response;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reply.code(message.startsWith("Unauthorized") ? 401 : 400);
+      return { error: message };
+    }
+  });
+
+  app.post("/api/agent/jobs/lease", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["agent_id", "agent_token"],
+        properties: {
+          agent_id: { type: "string" },
+          agent_token: { type: "string" },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const leased = leaseRemoteAgentJob({
+        state: remoteAgentState,
+        request: (request.body ?? {}) as RemoteAgentLeaseJobRequest,
+      });
+      remoteAgentState = leased.state;
+      await writeRemoteAgentState(remoteAgentStatePath, remoteAgentState);
+      return leased.response;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reply.code(message.startsWith("Unauthorized") ? 401 : 400);
+      return { error: message };
+    }
+  });
+
+  app.post("/api/agent/uploads", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["agent_id", "agent_token", "collected_at", "bundle", "source_manifest"],
+        properties: {
+          agent_id: { type: "string" },
+          agent_token: { type: "string" },
+          job_id: { type: "string" },
+          collected_at: { type: "string" },
+          bundle: { type: "object" },
+          source_manifest: { type: "array" },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const applied = await applyRemoteAgentUpload({
+        state: remoteAgentState,
+        request: (request.body ?? {}) as RemoteAgentUploadRequest,
+        rawStoreDir,
+        storage,
+      });
+      remoteAgentState = applied.state;
+      await writeRemoteAgentState(remoteAgentStatePath, remoteAgentState);
+      return applied.response;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reply.code(
+        message.startsWith("Unauthorized")
+          ? 401
+          : message.startsWith("Stale remote upload rejected") || message.startsWith("Remote agent job lease expired")
+            ? 409
+            : 400,
+      );
+      return { error: message };
+    }
+  });
+
+  app.post("/api/agent/jobs/:jobId/complete", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["agent_id", "agent_token", "status"],
+        properties: {
+          agent_id: { type: "string" },
+          agent_token: { type: "string" },
+          status: { type: "string", enum: ["succeeded", "failed"] },
+          error_message: { type: "string" },
+          bundle_id: { type: "string" },
+          imported_source_ids: { type: "array", items: { type: "string" } },
+          replaced_source_ids: { type: "array", items: { type: "string" } },
+          skipped_source_ids: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const jobId = (request.params as { jobId: string }).jobId;
+    try {
+      const completed = completeRemoteAgentJob({
+        state: remoteAgentState,
+        jobId,
+        request: (request.body ?? {}) as RemoteAgentCompleteJobRequest,
+      });
+      remoteAgentState = completed.state;
+      await writeRemoteAgentState(remoteAgentStatePath, remoteAgentState);
+      return completed.response;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reply.code(message.startsWith("Unauthorized") ? 401 : message.startsWith("Remote agent job not found") ? 404 : 400);
+      return { error: message };
+    }
+  });
+
+  app.post("/api/admin/agent-jobs", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["selector"],
+        properties: {
+          trigger_kind: { type: "string", enum: ["manual", "scheduled", "server_requested"] },
+          selector: { type: "object" },
+          source_slots: { anyOf: [{ type: "string", enum: ["all"] }, { type: "array", items: { type: "string" } }] },
+          sync_mode: { type: "string", enum: ["dirty_snapshot", "force_snapshot"] },
+          limit_files_per_source: { type: "number" },
+          expected_generation: { type: "number" },
+          lease_duration_seconds: { type: "number" },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    try {
+      const created = createRemoteAgentJob({
+        state: remoteAgentState,
+        request: (request.body ?? {}) as RemoteAgentCreateJobRequest,
+      });
+      remoteAgentState = created.state;
+      await writeRemoteAgentState(remoteAgentStatePath, remoteAgentState);
+      return { job: created.job };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reply.code(message.startsWith("Remote agent not found") ? 404 : 400);
+      return { error: message };
+    }
+  });
+
+  app.get("/api/admin/agent-jobs", async () => ({
+    jobs: listRemoteAgentJobs(remoteAgentState) satisfies RemoteAgentCollectionJobSummary[],
+  }));
+
+  app.get("/api/admin/agents", async () => ({
+    agents: listRemoteAgents(remoteAgentState) satisfies RemoteAgentAdminSummary[],
+  }));
+
+  app.post("/api/admin/agents/:agentId/labels", {
+    schema: {
+      body: {
+        type: "object",
+        properties: {
+          display_name: { type: "string" },
+          labels: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const agentId = (request.params as { agentId: string }).agentId;
+    const body = (request.body ?? {}) as { display_name?: string; labels?: string[] };
+    try {
+      const updated = updateRemoteAgentLabels({
+        state: remoteAgentState,
+        agentId,
+        displayName: body.display_name,
+        labels: body.labels,
+      });
+      remoteAgentState = updated.state;
+      await writeRemoteAgentState(remoteAgentStatePath, remoteAgentState);
+      return { agent: updated.agent };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      reply.code(message.startsWith("Remote agent not found") ? 404 : 400);
+      return { error: message };
+    }
+  });
 
   app.get("/api/admin/source-config", async () => ({
     sources: await listConfiguredSourceStatuses(),
@@ -451,6 +714,16 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
       return { error: `Session not found: ${sessionId}` };
     }
     return { session };
+  });
+
+  app.get("/api/admin/sessions/:sessionId/related-work", async (request, reply) => {
+    const sessionId = (request.params as { sessionId: string }).sessionId;
+    const session = storage.getResolvedSession(sessionId) ?? storage.getSession(sessionId);
+    if (!session) {
+      reply.code(404);
+      return { error: `Session not found: ${sessionId}` };
+    }
+    return { related_work: storage.getSessionRelatedWork(sessionId) };
   });
 
   app.get("/api/sessions", async () => {
@@ -1041,6 +1314,7 @@ function buildOpenApiDocument() {
       "/api/turns/{turnId}": { get: { summary: "Get turn detail" } },
       "/api/turns/{turnId}/context": { get: { summary: "Get turn context" } },
       "/api/sessions/{sessionId}": { get: { summary: "Get session detail" } },
+      "/api/admin/sessions/{sessionId}/related-work": { get: { summary: "Get typed related-work relations for a session" } },
       "/api/projects": { get: { summary: "List committed projects" } },
       "/api/projects/{projectId}": { get: { summary: "Resolve a project id to the current project revision" } },
       "/api/projects/{projectId}/turns": { get: { summary: "List project turns" } },
@@ -1062,6 +1336,17 @@ function buildOpenApiDocument() {
         post: { summary: "Delete a project and purge its currently linked local data" },
       },
       "/api/admin/lifecycle/candidate-gc": { post: { summary: "Archive or purge candidate turns older than a cutoff" } },
+      "/api/agent/pair": { post: { summary: "Pair a remote agent" } },
+      "/api/agent/heartbeat": { post: { summary: "Record remote-agent liveness and source-manifest state" } },
+      "/api/agent/jobs/lease": { post: { summary: "Lease one pending remote-agent collection job" } },
+      "/api/agent/uploads": { post: { summary: "Upload one remote-agent bundle" } },
+      "/api/agent/jobs/{jobId}/complete": { post: { summary: "Report remote-agent collection job completion or failure" } },
+      "/api/admin/agents": { get: { summary: "List paired remote agents and their current inventory" } },
+      "/api/admin/agent-jobs": {
+        get: { summary: "List remote-agent collection jobs and per-agent status" },
+        post: { summary: "Create a remote-agent collection job" },
+      },
+      "/api/admin/agents/{agentId}/labels": { post: { summary: "Update operator-facing remote-agent labels and display name" } },
       "/api/admin/source-config": {
         get: { summary: "List source configuration and current effective directories" },
         post: { summary: "Add a manual source instance for a supported source platform" },
