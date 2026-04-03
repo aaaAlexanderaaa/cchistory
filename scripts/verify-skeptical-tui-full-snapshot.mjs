@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
-import { access, cp, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, rm } from 'node:fs/promises';
+import { runBuiltCliCapture, seedCodexFixtureHome, writeCodexSessionFixture } from './lib/test-fixtures.mjs';
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -17,7 +18,7 @@ async function main() {
     const missingStoreDir = path.join(tempRoot, 'missing-store');
     const missingDbPath = path.join(missingStoreDir, 'cchistory.sqlite');
 
-    await seedCodexHome(tempRoot, {
+    await seedCodexFixtureHome(tempRoot, {
       fileName: 'session.jsonl',
       sessionId: 'codex-tui-session-1',
       cwd: '/workspace/tui-full-snapshot',
@@ -77,7 +78,7 @@ async function main() {
     assert.match(combinedFull.stdout, /Live-only full snapshot prompt/);
     assertQuietStderr(combinedFull, 'combined full TUI snapshot');
 
-    await seedCodexHome(tempRoot, {
+    await seedCodexFixtureHome(tempRoot, {
       fileName: 'session-missing-store.jsonl',
       sessionId: 'codex-tui-missing-store-1',
       cwd: '/workspace/tui-full-snapshot-missing-store',
@@ -107,11 +108,6 @@ async function main() {
   }
 }
 
-async function runBuiltCliCapture(argv, cwd, env = process.env) {
-  const cliEntry = path.resolve(scriptDir, '../apps/cli/dist/index.js');
-  return await runNodeEntry(cliEntry, argv, cwd, env);
-}
-
 async function runBuiltTuiCapture(argv, cwd, env = process.env) {
   const tuiEntry = path.resolve(scriptDir, '../apps/tui/dist/index.js');
   return await runNodeEntry(tuiEntry, argv, cwd, env);
@@ -137,48 +133,6 @@ function assertQuietStderr(result, label) {
   assert.doesNotMatch(result.stderr, /ExperimentalWarning/, `${label} should not emit SQLite experimental warnings`);
   assert.doesNotMatch(result.stderr, /FTS5 unavailable/, `${label} should stay quiet on stderr`);
   assert.equal(result.stderr.trim(), '', `${label} should keep stderr empty`);
-}
-
-async function seedCodexHome(tempRoot, input) {
-  await mkdir(path.join(tempRoot, '.codex', 'sessions'), { recursive: true });
-  await writeCodexSessionFixture(tempRoot, input.fileName, input);
-}
-
-async function writeCodexSessionFixture(tempRoot, fileName, input) {
-  const startAt = new Date(input.startAt);
-  const userAt = new Date(startAt.getTime() + 1000).toISOString();
-  const assistantAt = new Date(startAt.getTime() + 2000).toISOString();
-  const targetPath = path.join(tempRoot, '.codex', 'sessions', fileName);
-
-  await writeFile(
-    targetPath,
-    [
-      {
-        timestamp: input.startAt,
-        type: 'session_meta',
-        payload: { id: input.sessionId, cwd: input.cwd, model: input.model },
-      },
-      {
-        timestamp: userAt,
-        type: 'response_item',
-        payload: {
-          type: 'message',
-          role: 'user',
-          content: [{ type: 'input_text', text: input.prompt }],
-        },
-      },
-      {
-        timestamp: assistantAt,
-        type: 'response_item',
-        payload: {
-          type: 'message',
-          role: 'assistant',
-          content: [{ type: 'output_text', text: input.reply }],
-        },
-      },
-    ].map((entry) => JSON.stringify(entry)).join('\n'),
-    'utf8',
-  );
 }
 
 main().catch((error) => {

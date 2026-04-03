@@ -5,10 +5,10 @@ import { existsSync } from "node:fs";
 import { mkdtemp, readdir, rm, stat } from "node:fs/promises";
 import { buildLocalTuiBrowser, CCHistoryStorage } from "../packages/storage/dist/index.js";
 import { createApiRuntime } from "../apps/api/dist/app.js";
-import { runCli } from "../apps/cli/dist/index.js";
 import { runTui } from "../apps/tui/dist/index.js";
 import { createBrowserState, reduceBrowserState, renderBrowserSnapshot } from "../apps/tui/dist/browser.js";
 import { seedAcceptanceStore } from "./verify-v1-seeded-acceptance.mjs";
+import { createIo, runCliJson, runCliCapture } from "./lib/test-fixtures.mjs";
 
 async function main() {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-readonly-admin-"));
@@ -143,34 +143,6 @@ function snapshotRuntimeCounts(storage) {
     stage_runs: storage.listStageRuns().length,
     overrides: storage.listProjectOverrides().length,
   };
-}
-
-function createIo(cwd) {
-  const stdout = [];
-  const stderr = [];
-  return {
-    io: {
-      cwd,
-      stdout: (value) => stdout.push(value),
-      stderr: (value) => stderr.push(value),
-      isInteractiveTerminal: false,
-    },
-    stdout,
-    stderr,
-  };
-}
-
-async function runCliJson(argv, cwd) {
-  const { io, stdout, stderr } = createIo(cwd);
-  const exitCode = await runCli([...argv, "--json"], io);
-  assert.equal(exitCode, 0, stderr.join(""));
-  return JSON.parse(stdout.join(""));
-}
-
-async function runCliCapture(argv, cwd) {
-  const { io, stdout, stderr } = createIo(cwd);
-  const exitCode = await runCli(argv, io);
-  return { exitCode, stdout: stdout.join(""), stderr: stderr.join("") };
 }
 
 async function countFiles(rootDir) {

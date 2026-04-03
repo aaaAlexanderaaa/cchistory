@@ -5,8 +5,8 @@ import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { cp, mkdtemp, rm } from "node:fs/promises";
 import { createApiRuntime } from "../apps/api/dist/app.js";
-import { runCli } from "../apps/cli/dist/index.js";
 import { runTui } from "../apps/tui/dist/index.js";
+import { createIo, runCliJson, runCliCapture } from "./lib/test-fixtures.mjs";
 
 async function main() {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-fixture-sync-"));
@@ -134,34 +134,6 @@ async function seedMockDataHome(tempRoot) {
     path.join(tempRoot, ".config", "Antigravity"),
     { recursive: true },
   );
-}
-
-function createIo(cwd) {
-  const stdout = [];
-  const stderr = [];
-  return {
-    io: {
-      cwd,
-      stdout: (value) => stdout.push(value),
-      stderr: (value) => stderr.push(value),
-      isInteractiveTerminal: false,
-    },
-    stdout,
-    stderr,
-  };
-}
-
-async function runCliJson(argv, cwd) {
-  const { io, stdout, stderr } = createIo(cwd);
-  const exitCode = await runCli([...argv, "--json"], io);
-  assert.equal(exitCode, 0, stderr.join(""));
-  return JSON.parse(stdout.join(""));
-}
-
-async function runCliCapture(argv, cwd) {
-  const { io, stdout, stderr } = createIo(cwd);
-  const exitCode = await runCli(argv, io);
-  return { exitCode, stdout: stdout.join(""), stderr: stderr.join("") };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

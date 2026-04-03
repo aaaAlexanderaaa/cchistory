@@ -3,11 +3,10 @@ import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createApiRuntime } from "../apps/api/dist/app.js";
 import { CCHistoryStorage } from "../packages/storage/dist/index.js";
 import { computePayloadChecksum } from "../apps/cli/dist/bundle.js";
-import { runCli } from "../apps/cli/dist/index.js";
 import { seedAcceptanceStore } from "./verify-v1-seeded-acceptance.mjs";
+import { createIo, runCliJson, runCliCapture, verifyApiTurn } from "./lib/test-fixtures.mjs";
 
 async function main() {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-bundle-conflict-"));
@@ -165,51 +164,6 @@ function mutatePayloadText(payload, replacementText) {
       fragment.payload.text = replacementText;
     }
   }
-}
-
-async function verifyApiTurn(storeDir, turnId, pattern) {
-  const runtime = await createApiRuntime({ dataDir: storeDir, sources: [] });
-  try {
-    const response = await runtime.app.inject({ method: "GET", url: `/api/turns/${turnId}` });
-    assert.equal(response.statusCode, 200);
-    const body = JSON.parse(response.body);
-    assert.match(body.turn.canonical_text, pattern);
-  } finally {
-    await runtime.app.close();
-    runtime.storage.close();
-  }
-}
-
-function createIo(cwd) {
-  const stdout = [];
-  const stderr = [];
-  return {
-    io: {
-      cwd,
-      stdout: (value) => stdout.push(value),
-      stderr: (value) => stderr.push(value),
-      isInteractiveTerminal: false,
-    },
-    stdout,
-    stderr,
-  };
-}
-
-async function runCliJson(argv, cwd) {
-  const { io, stdout, stderr } = createIo(cwd);
-  const exitCode = await runCli([...argv, "--json"], io);
-  assert.equal(exitCode, 0, stderr.join(""));
-  return JSON.parse(stdout.join(""));
-}
-
-async function runCliCapture(argv, cwd) {
-  const { io, stdout, stderr } = createIo(cwd);
-  const exitCode = await runCli(argv, io);
-  return {
-    exitCode,
-    stdout: stdout.join(""),
-    stderr: stderr.join(""),
-  };
 }
 
 function sha256(value) {

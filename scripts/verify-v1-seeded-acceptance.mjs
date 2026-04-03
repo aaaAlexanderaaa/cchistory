@@ -6,8 +6,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { CCHistoryStorage } from "../packages/storage/dist/index.js";
 import { createApiRuntime } from "../apps/api/dist/app.js";
-import { runCli } from "../apps/cli/dist/index.js";
 import { runTui } from "../apps/tui/dist/index.js";
+import { createIo, runCliJson, runCliCapture } from "./lib/test-fixtures.mjs";
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -361,38 +361,6 @@ function ensureFixtureSourceFile(fixtureRoot, sourceId) {
   writeFileSync(path.join(sourceDir, "session.jsonl"), contents, "utf8");
   writeFileSync(path.join(cacheDir, "session.jsonl"), contents, "utf8");
   return sourceDir;
-}
-
-function createIo(cwd) {
-  const stdout = [];
-  const stderr = [];
-  return {
-    io: {
-      cwd,
-      stdout: (value) => stdout.push(value),
-      stderr: (value) => stderr.push(value),
-      isInteractiveTerminal: false,
-    },
-    stdout,
-    stderr,
-  };
-}
-
-async function runCliJson(argv, cwd) {
-  const { io, stdout, stderr } = createIo(cwd);
-  const exitCode = await runCli([...argv, "--json"], io);
-  assert.equal(exitCode, 0, stderr.join(""));
-  return JSON.parse(stdout.join(""));
-}
-
-async function runCliCapture(argv, cwd) {
-  const { io, stdout, stderr } = createIo(cwd);
-  const exitCode = await runCli(argv, io);
-  return {
-    exitCode,
-    stdout: stdout.join(""),
-    stderr: stderr.join(""),
-  };
 }
 
 function createAcceptancePayload(sourceId, canonicalText, options) {

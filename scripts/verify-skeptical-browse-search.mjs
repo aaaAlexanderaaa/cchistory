@@ -5,6 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { cp, mkdtemp, rm } from "node:fs/promises";
+import { runBuiltCliCapture, runBuiltCliJson } from "./lib/test-fixtures.mjs";
 
 async function main() {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-skeptical-browse-"));
@@ -153,29 +154,6 @@ async function main() {
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
-}
-
-async function runBuiltCliCapture(argv, cwd, env = process.env) {
-  const cliEntry = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../apps/cli/dist/index.js");
-  return await new Promise((resolve, reject) => {
-    execFile(process.execPath, [cliEntry, ...argv], { cwd, env }, (error, stdout, stderr) => {
-      if (error && typeof error.code !== "number") {
-        reject(error);
-        return;
-      }
-      resolve({
-        exitCode: typeof error?.code === "number" ? Number(error.code) : 0,
-        stdout,
-        stderr,
-      });
-    });
-  });
-}
-
-async function runBuiltCliJson(argv, cwd, env = process.env) {
-  const result = await runBuiltCliCapture([...argv, "--json"], cwd, env);
-  assert.equal(result.exitCode, 0, result.stderr);
-  return JSON.parse(result.stdout);
 }
 
 async function runBuiltTuiCapture(argv, cwd, env = process.env) {
