@@ -15,6 +15,7 @@ export type SourcePlatform =
   | "claude_web"
   | "gemini"
   | "lobechat"
+  | "codebuddy"
   | "other";
 
 export type LinkState = "committed" | "candidate" | "unlinked";
@@ -143,6 +144,8 @@ export type OriginKind =
   | "user_authored"
   | "assistant_authored"
   | "injected_user_shaped"
+  | "delegated_instruction"
+  | "automation_trigger"
   | "source_instruction"
   | "tool_generated"
   | "source_meta";
@@ -432,6 +435,173 @@ export interface ImportedBundleRecord {
   checksums: BundleChecksums;
 }
 
+export type RemoteSourcePresence = "present" | "unreadable" | "absent";
+
+export interface RemoteAgentPairRequest {
+  pairing_token: string;
+  display_name?: string;
+  reported_hostname?: string;
+}
+
+export interface RemoteAgentPairResponse {
+  agent_id: string;
+  agent_token: string;
+  paired_at: string;
+}
+
+export interface RemoteAgentBundlePayload {
+  manifest: ImportBundleManifest;
+  checksums: BundleChecksums;
+  payloads: SourceSyncPayload[];
+  raw_blobs_base64_by_path: Record<string, string>;
+}
+
+export interface RemoteAgentSourceManifestEntry {
+  source_id: string;
+  slot_id: string;
+  platform: SourcePlatform;
+  display_name: string;
+  base_dir: string;
+  sync_status: SourceStatus["sync_status"];
+  presence: RemoteSourcePresence;
+  total_turns: number;
+  payload_checksum?: string;
+  generation: number;
+  included_in_bundle: boolean;
+  error_message?: string;
+}
+
+export interface RemoteAgentUploadRequest {
+  agent_id: string;
+  agent_token: string;
+  job_id?: string;
+  collected_at: string;
+  bundle: RemoteAgentBundlePayload;
+  source_manifest: RemoteAgentSourceManifestEntry[];
+}
+
+export interface RemoteAgentUploadResponse {
+  bundle_id: string;
+  imported_source_ids: string[];
+  replaced_source_ids: string[];
+  skipped_source_ids: string[];
+  source_manifest_count: number;
+}
+
+export type RemoteAgentJobTriggerKind = "manual" | "scheduled" | "server_requested";
+export type RemoteAgentJobSyncMode = "dirty_snapshot" | "force_snapshot";
+export type RemoteAgentJobLifecycleStatus = "pending" | "leased" | "succeeded" | "failed";
+
+export type RemoteAgentJobSelector =
+  | { kind: "all" }
+  | { kind: "agent_ids"; agent_ids: string[] }
+  | { kind: "labels"; labels: string[] };
+
+export interface RemoteAgentJobAgentStatus {
+  agent_id: string;
+  status: RemoteAgentJobLifecycleStatus;
+  leased_at?: string;
+  lease_expires_at?: string;
+  completed_at?: string;
+  bundle_id?: string;
+  imported_source_ids?: string[];
+  replaced_source_ids?: string[];
+  skipped_source_ids?: string[];
+  error_message?: string;
+}
+
+export interface RemoteAgentCollectionJobSummary {
+  job_id: string;
+  trigger_kind: RemoteAgentJobTriggerKind;
+  selector: RemoteAgentJobSelector;
+  source_slots: "all" | string[];
+  sync_mode: RemoteAgentJobSyncMode;
+  limit_files_per_source?: number;
+  expected_generation?: number;
+  created_at: string;
+  lease_duration_seconds: number;
+  status: RemoteAgentJobLifecycleStatus;
+  matched_agent_ids: string[];
+  agent_statuses: RemoteAgentJobAgentStatus[];
+}
+
+export interface RemoteAgentCreateJobRequest {
+  trigger_kind?: RemoteAgentJobTriggerKind;
+  selector: RemoteAgentJobSelector;
+  source_slots?: "all" | string[];
+  sync_mode?: RemoteAgentJobSyncMode;
+  limit_files_per_source?: number;
+  expected_generation?: number;
+  lease_duration_seconds?: number;
+}
+
+export interface RemoteAgentLeasedJob {
+  job_id: string;
+  trigger_kind: RemoteAgentJobTriggerKind;
+  selector: RemoteAgentJobSelector;
+  source_slots: "all" | string[];
+  sync_mode: RemoteAgentJobSyncMode;
+  limit_files_per_source?: number;
+  expected_generation?: number;
+  created_at: string;
+  leased_at: string;
+  lease_expires_at: string;
+}
+
+export interface RemoteAgentLeaseJobRequest {
+  agent_id: string;
+  agent_token: string;
+}
+
+export interface RemoteAgentLeaseJobResponse {
+  agent_id: string;
+  job?: RemoteAgentLeasedJob;
+}
+
+export interface RemoteAgentCompleteJobRequest {
+  agent_id: string;
+  agent_token: string;
+  status: "succeeded" | "failed";
+  error_message?: string;
+  bundle_id?: string;
+  imported_source_ids?: string[];
+  replaced_source_ids?: string[];
+  skipped_source_ids?: string[];
+}
+
+export interface RemoteAgentCompleteJobResponse {
+  job_id: string;
+  agent_id: string;
+  status: "succeeded" | "failed";
+  completed_at: string;
+}
+
+export interface RemoteAgentHeartbeatRequest {
+  agent_id: string;
+  agent_token: string;
+  display_name?: string;
+  reported_hostname?: string;
+  labels?: string[];
+  source_manifest?: RemoteAgentSourceManifestEntry[];
+}
+
+export interface RemoteAgentHeartbeatResponse {
+  agent_id: string;
+  last_seen_at: string;
+  source_manifest_count: number;
+}
+
+export interface RemoteAgentAdminSummary {
+  agent_id: string;
+  paired_at: string;
+  display_name?: string;
+  reported_hostname?: string;
+  labels: string[];
+  last_seen_at?: string;
+  last_upload_at?: string;
+  source_manifest: RemoteAgentSourceManifestEntry[];
+}
+
 export interface Host {
   id: string;
   hostname: string;
@@ -454,6 +624,33 @@ export interface SessionProjection {
   source_native_project_ref?: string;
   primary_project_id?: string;
   sync_axis: SyncAxis;
+}
+
+export type SessionRelatedWorkKind = "delegated_session" | "automation_run";
+export type SessionRelatedWorkTargetKind = "session" | "automation_run";
+
+export interface SessionRelatedWorkProjection {
+  id: string;
+  source_id: string;
+  source_platform: SourcePlatform;
+  source_session_ref: string;
+  relation_kind: SessionRelatedWorkKind;
+  target_kind: SessionRelatedWorkTargetKind;
+  target_session_ref?: string;
+  target_run_ref?: string;
+  transcript_primary: boolean;
+  evidence_confidence: number;
+  parent_event_ref?: string;
+  parent_tool_ref?: string;
+  child_agent_key?: string;
+  automation_job_ref?: string;
+  automation_run_key?: string;
+  title?: string;
+  status?: string;
+  created_at: string;
+  updated_at: string;
+  fragment_refs: string[];
+  raw_detail: Record<string, unknown>;
 }
 
 export interface UserMessageProjection {

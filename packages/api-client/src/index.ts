@@ -136,6 +136,7 @@ export interface SessionProjectionDto {
     | "claude_web"
     | "gemini"
     | "lobechat"
+    | "codebuddy"
     | "other";
   host_id: string;
   title?: string;
@@ -147,6 +148,47 @@ export interface SessionProjectionDto {
   source_native_project_ref?: string;
   primary_project_id?: string;
   sync_axis: "current" | "superseded" | "source_absent" | "import_snapshot";
+}
+
+export type SessionRelatedWorkKindDto = "delegated_session" | "automation_run";
+export type SessionRelatedWorkTargetKindDto = "session" | "automation_run";
+
+export interface SessionRelatedWorkDto {
+  id: string;
+  source_id: string;
+  source_platform:
+    | "codex"
+    | "claude_code"
+    | "factory_droid"
+    | "amp"
+    | "cursor"
+    | "antigravity"
+    | "openclaw"
+    | "opencode"
+    | "chatgpt"
+    | "claude_web"
+    | "gemini"
+    | "lobechat"
+    | "codebuddy"
+    | "other";
+  source_session_ref: string;
+  relation_kind: SessionRelatedWorkKindDto;
+  target_kind: SessionRelatedWorkTargetKindDto;
+  target_session_ref?: string;
+  target_run_ref?: string;
+  transcript_primary: boolean;
+  evidence_confidence: number;
+  parent_event_ref?: string;
+  parent_tool_ref?: string;
+  child_agent_key?: string;
+  automation_job_ref?: string;
+  automation_run_key?: string;
+  title?: string;
+  status?: string;
+  created_at: string;
+  updated_at: string;
+  fragment_refs: string[];
+  raw_detail: Record<string, unknown>;
 }
 
 export interface SourceStatusDto {
@@ -165,6 +207,7 @@ export interface SourceStatusDto {
     | "claude_web"
     | "gemini"
     | "lobechat"
+    | "codebuddy"
     | "other";
   display_name: string;
   base_dir: string;
@@ -218,6 +261,7 @@ export interface ProjectSummaryDto {
     | "claude_web"
     | "gemini"
     | "lobechat"
+    | "codebuddy"
     | "other"
   >;
   host_ids: string[];
@@ -365,6 +409,8 @@ export interface PipelineLineageDto {
       | "user_authored"
       | "assistant_authored"
       | "injected_user_shaped"
+      | "delegated_instruction"
+      | "automation_trigger"
       | "source_instruction"
       | "tool_generated"
       | "source_meta";
@@ -395,6 +441,8 @@ export interface PipelineLineageDto {
       | "user_authored"
       | "assistant_authored"
       | "injected_user_shaped"
+      | "delegated_instruction"
+      | "automation_trigger"
       | "source_instruction"
       | "tool_generated"
       | "source_meta";
@@ -461,6 +509,7 @@ export interface LinkingObservationDto {
     | "claude_web"
     | "gemini"
     | "lobechat"
+    | "codebuddy"
     | "other";
   workspace_subpath?: string;
   project_id?: string;
@@ -494,6 +543,10 @@ interface SessionResponse {
 
 interface SessionsResponse {
   sessions: SessionProjectionDto[];
+}
+
+interface SessionRelatedWorkResponse {
+  related_work: SessionRelatedWorkDto[];
 }
 
 interface ProjectsResponse {
@@ -702,6 +755,15 @@ export function createCCHistoryApiClient(options: CCHistoryApiClientOptions = {}
     },
     async getSessions(): Promise<SessionProjectionDto[]> {
       return (await fetchJson<SessionsResponse>(fetchImpl, baseUrl, "/api/sessions")).sessions;
+    },
+    async getSessionRelatedWork(sessionId: string): Promise<SessionRelatedWorkDto[]> {
+      return (
+        await fetchJson<SessionRelatedWorkResponse>(
+          fetchImpl,
+          baseUrl,
+          `/api/admin/sessions/${encodeURIComponent(sessionId)}/related-work`,
+        )
+      ).related_work;
     },
     async getSources(): Promise<SourceStatusDto[]> {
       return (await fetchJson<SourcesResponse>(fetchImpl, baseUrl, "/api/sources")).sources;

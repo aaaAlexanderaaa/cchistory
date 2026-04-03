@@ -9,6 +9,7 @@ import type {
   ProjectManualOverrideDto,
   ProjectSummaryDto,
   SessionProjectionDto,
+  SessionRelatedWorkDto,
   SourceStatusDto,
   TurnContextProjectionDto,
   TurnSearchResultDto,
@@ -33,6 +34,7 @@ export type SourcePlatform =
   | "chatgpt"
   | "lobechat"
   | "gemini"
+  | "codebuddy"
   | "other";
 
 export type SegmentType = "text" | "masked" | "highlight" | "code" | "reference" | "injected";
@@ -80,6 +82,18 @@ export interface TurnContextSummary {
   zero_token_reason?: ZeroTokenReason;
 }
 
+export type LoopFamily = "operator_control" | "injected_repeat";
+export type LoopVisibility = "leading" | "middle_collapsed" | "trailing";
+
+export interface LoopSpanMetadata {
+  loop_group_id: string;
+  loop_family: LoopFamily;
+  loop_position: number;
+  loop_span_size: number;
+  loop_confidence: number;
+  loop_visibility: LoopVisibility;
+}
+
 export interface UserTurn {
   id: string;
   revision_id: string;
@@ -103,6 +117,7 @@ export interface UserTurn {
   is_flagged?: boolean;
   flag_reason?: string;
   covered_by_artifact_id?: string;
+  loop?: LoopSpanMetadata;
 }
 
 export interface SystemMessage {
@@ -166,6 +181,33 @@ export interface Session {
   source_native_project_ref?: string;
   primary_project_id?: string;
   sync_axis: SyncAxis;
+}
+
+export type SessionRelatedWorkKind = "delegated_session" | "automation_run";
+export type SessionRelatedWorkTargetKind = "session" | "automation_run";
+
+export interface SessionRelatedWork {
+  id: string;
+  source_id: string;
+  source_platform: SourcePlatform;
+  source_session_ref: string;
+  relation_kind: SessionRelatedWorkKind;
+  target_kind: SessionRelatedWorkTargetKind;
+  target_session_ref?: string;
+  target_run_ref?: string;
+  transcript_primary: boolean;
+  evidence_confidence: number;
+  parent_event_ref?: string;
+  parent_tool_ref?: string;
+  child_agent_key?: string;
+  automation_job_ref?: string;
+  automation_run_key?: string;
+  title?: string;
+  status?: string;
+  created_at: Date;
+  updated_at: Date;
+  fragment_refs: string[];
+  raw_detail: Record<string, unknown>;
 }
 
 export interface ProjectIdentity {
@@ -319,6 +361,8 @@ export interface TurnLineage {
       | "user_authored"
       | "assistant_authored"
       | "injected_user_shaped"
+      | "delegated_instruction"
+      | "automation_trigger"
       | "source_instruction"
       | "tool_generated"
       | "source_meta";
@@ -432,6 +476,166 @@ export function mapUserTurn(turn: UserTurnProjectionDto): UserTurn {
   };
 }
 
+function mapSearchResultInternal(result: TurnSearchResultDto): SearchResult {
+  return {
+    turn: mapUserTurn(result.turn),
+    session: mapSession(
+      result.session ?? {
+        id: result.turn.session_id,
+        source_id: result.turn.source_id,
+        source_platform: "other",
+        host_id: "unknown",
+        created_at: result.turn.created_at,
+        updated_at: result.turn.last_context_activity_at,
+        turn_count: 1,
+        sync_axis: "current",
+      },
+    ),
+    project: result.project ? mapProject(result.project) : undefined,
+    match_highlights: result.highlights,
+    relevance_score: result.relevance_score,
+  };
+}
+
+export function mapUserTurns(turns: UserTurnProjectionDto[]): UserTurn[] {
+  return orderTurnsForDefaultDisplay(applyLoopMetadata(turns.map(mapUserTurn)));
+}
+
+export function mapSearchResults(results: TurnSearchResultDto[]): SearchResult[] {
+  const mapped = results.map(mapSearchResultInternal);
+  const annotatedTurns = orderTurnsForDefaultDisplay(applyLoopMetadata(mapped.map((result) => result.turn)));
+  const orderById = new Map(annotatedTurns.map((turn, index) => [turn.id, { turn, index }]));
+  return [...mapped]
+    .map((result) => ({
+      ...result,
+      turn: orderById.get(result.turn.id)?.turn ?? result.turn,
+    }))
+    .sort((left, right) => (orderById.get(left.turn.id)?.index ?? 0) - (orderById.get(right.turn.id)?.index ?? 0));
+}
+
+function applyLoopMetadata(turns: UserTurn[]): UserTurn[] {
+  const annotated = turns.map((turn) => ({ ...turn }));
+  const spans = detectLoopSpans(annotated);
+  for (const span of spans) {
+    for (let index = span.start; index <= span.end; index += 1) {
+      const turn = annotated[index];
+      if (!turn) {
+        continue;
+      }
+      const position = index - span.start + 1;
+      const visibility = position === 1 ? "leading" : position === span.size ? "trailing" : "middle_collapsed";
+      annotated[index] = {
+        ...turn,
+        loop: {
+          loop_group_id: span.groupId,
+          loop_family: span.family,
+          loop_position: position,
+          loop_span_size: span.size,
+          loop_confidence: span.confidence,
+          loop_visibility: visibility,
+        },
+      };
+    }
+  }
+  return annotated;
+}
+
+function orderTurnsForDefaultDisplay(turns: UserTurn[]): UserTurn[] {
+  return turns
+    .map((turn, index) => ({ turn, index }))
+    .sort((left, right) => {
+      const visibilityDelta = loopVisibilityRank(left.turn.loop?.loop_visibility) - loopVisibilityRank(right.turn.loop?.loop_visibility);
+      return visibilityDelta !== 0 ? visibilityDelta : left.index - right.index;
+    })
+    .map((entry) => entry.turn);
+}
+
+function loopVisibilityRank(visibility: LoopVisibility | undefined): number {
+  switch (visibility) {
+    case "middle_collapsed":
+      return 1;
+    case "leading":
+    case "trailing":
+    default:
+      return 0;
+  }
+}
+
+function detectLoopSpans(turns: UserTurn[]): Array<{ start: number; end: number; size: number; family: LoopFamily; confidence: number; groupId: string }> {
+  const spans: Array<{ start: number; end: number; size: number; family: LoopFamily; confidence: number; groupId: string }> = [];
+  let index = 0;
+  while (index < turns.length) {
+    const candidate = getLoopCandidate(turns[index]);
+    if (!candidate) {
+      index += 1;
+      continue;
+    }
+
+    let end = index;
+    while (end + 1 < turns.length) {
+      const nextCandidate = getLoopCandidate(turns[end + 1]);
+      if (!nextCandidate) {
+        break;
+      }
+      if (nextCandidate.session_id !== candidate.session_id || nextCandidate.family !== candidate.family || nextCandidate.key !== candidate.key) {
+        break;
+      }
+      end += 1;
+    }
+
+    const size = end - index + 1;
+    if (size >= 3) {
+      spans.push({
+        start: index,
+        end,
+        size,
+        family: candidate.family,
+        confidence: candidate.confidence,
+        groupId: `loop:${candidate.session_id}:${candidate.family}:${candidate.key}`,
+      });
+    }
+    index = end + 1;
+  }
+  return spans;
+}
+
+function getLoopCandidate(turn: UserTurn | undefined): { session_id: string; family: LoopFamily; key: string; confidence: number } | undefined {
+  if (!turn) {
+    return undefined;
+  }
+  const normalizedText = normalizeLoopText(turn.canonical_text);
+  if (!normalizedText) {
+    return undefined;
+  }
+  const allInjected = turn.user_messages.length > 0 && turn.user_messages.every((message) => message.is_injected);
+  if (allInjected) {
+    return {
+      session_id: turn.session_id,
+      family: "injected_repeat",
+      key: normalizedText,
+      confidence: 0.95,
+    };
+  }
+  if (isOperatorControlPhrase(normalizedText)) {
+    return {
+      session_id: turn.session_id,
+      family: "operator_control",
+      key: normalizedText,
+      confidence: 0.9,
+    };
+  }
+  return undefined;
+}
+
+function normalizeLoopText(text: string | undefined): string {
+  return (text ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function isOperatorControlPhrase(text: string): boolean {
+  return text === "continue" || text === "/loop";
+}
+
+
 export function mapTurnContext(context: TurnContextProjectionDto): TurnContext {
   return {
     turn_id: context.turn_id,
@@ -456,6 +660,14 @@ export function mapSession(session: SessionProjectionDto): Session {
     ...session,
     created_at: new Date(session.created_at),
     updated_at: new Date(session.updated_at),
+  };
+}
+
+export function mapSessionRelatedWork(relatedWork: SessionRelatedWorkDto): SessionRelatedWork {
+  return {
+    ...relatedWork,
+    created_at: new Date(relatedWork.created_at),
+    updated_at: new Date(relatedWork.updated_at),
   };
 }
 
@@ -550,24 +762,7 @@ export function mapDriftReport(report: DriftReportDto): DriftReport {
 }
 
 export function mapSearchResult(result: TurnSearchResultDto): SearchResult {
-  return {
-    turn: mapUserTurn(result.turn),
-    session: mapSession(
-      result.session ?? {
-        id: result.turn.session_id,
-        source_id: result.turn.source_id,
-        source_platform: "other",
-        host_id: "unknown",
-        created_at: result.turn.created_at,
-        updated_at: result.turn.last_context_activity_at,
-        turn_count: 1,
-        sync_axis: "current",
-      },
-    ),
-    project: result.project ? mapProject(result.project) : undefined,
-    match_highlights: result.highlights,
-    relevance_score: result.relevance_score,
-  };
+  return mapSearchResultInternal(result);
 }
 
 export function mapTurnLineage(lineage: PipelineLineageDto): TurnLineage {

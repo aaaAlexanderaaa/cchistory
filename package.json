@@ -7,7 +7,7 @@
     "pnpm": ">=10 <11"
   },
   "scripts": {
-    "build": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/storage build && pnpm --filter @cchistory/api-client build && pnpm --filter @cchistory/presentation build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/api build",
+    "build": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/storage build && pnpm --filter @cchistory/api-client build && pnpm --filter @cchistory/presentation build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && pnpm --filter @cchistory/api build",
     "build:all:safe": "pnpm run build && NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build",
     "cli": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=${CLI_NODE_MEMORY_MB:-768}\" node apps/cli/dist/index.js",
     "cli:link": "pnpm --filter @cchistory/cli build && cd apps/cli && npm link",
@@ -26,11 +26,23 @@
     "verify:cli-artifact": "node scripts/verify-cli-artifact.mjs",
     "verify:web-build-offline": "node scripts/verify-web-build-offline.mjs",
     "verify:support-status": "node scripts/verify-support-status.mjs",
+    "verify:v1-seeded-acceptance": "pnpm --filter @cchistory/api build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && node scripts/verify-v1-seeded-acceptance.mjs",
+    "verify:read-only-admin": "pnpm --filter @cchistory/api build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && node scripts/verify-read-only-admin.mjs",
+    "verify:fixture-sync-recall": "pnpm --filter @cchistory/api build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && node scripts/verify-fixture-sync-to-recall.mjs",
+    "verify:bundle-conflict-recovery": "pnpm --filter @cchistory/api build && pnpm --filter @cchistory/cli build && node scripts/verify-bundle-conflict-recovery.mjs",
+    "verify:real-layout-sync-recall": "pnpm --filter @cchistory/api build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && node scripts/verify-real-layout-sync-recall.mjs",
+    "verify:related-work-recall": "pnpm --filter @cchistory/api build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && node --import ./scripts/install-node-sqlite-warning-filter.mjs scripts/verify-related-work-recall.mjs",
+    "verify:skeptical-cli-bundle-restore": "pnpm --filter @cchistory/cli build && node scripts/verify-skeptical-cli-bundle-restore.mjs",
+    "verify:skeptical-browse-search": "pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && node scripts/verify-skeptical-browse-search.mjs",
+    "verify:skeptical-tui-full-snapshot": "pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && node scripts/verify-skeptical-tui-full-snapshot.mjs",
+    "verify:local-full-read-bundle": "node scripts/verify-local-full-read-bundle.mjs",
+    "prepare:v1-seeded-web-review": "pnpm --filter @cchistory/api build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && node scripts/verify-v1-seeded-acceptance.mjs --materialize-only",
     "probe:smoke": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && node scripts/probe-smoke.mjs",
     "inspect:antigravity-live": "node scripts/antigravity-live-dump.mjs",
     "inspect:collect-source-samples": "node scripts/inspect/collect-source-samples.mjs",
     "validate:core": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/api build",
-    "test": "pnpm --filter @cchistory/source-adapters test"
+    "test": "pnpm --filter @cchistory/source-adapters test",
+    "verify:real-archive-probes": "node scripts/verify-real-archive-probes.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.2.0",

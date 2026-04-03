@@ -114,7 +114,7 @@ export interface TurnContextProjectionDto {
 export interface SessionProjectionDto {
     id: string;
     source_id: string;
-    source_platform: "codex" | "claude_code" | "factory_droid" | "amp" | "cursor" | "antigravity" | "openclaw" | "opencode" | "chatgpt" | "claude_web" | "gemini" | "lobechat" | "other";
+    source_platform: "codex" | "claude_code" | "factory_droid" | "amp" | "cursor" | "antigravity" | "openclaw" | "opencode" | "chatgpt" | "claude_web" | "gemini" | "lobechat" | "codebuddy" | "other";
     host_id: string;
     title?: string;
     created_at: string;
@@ -126,10 +126,35 @@ export interface SessionProjectionDto {
     primary_project_id?: string;
     sync_axis: "current" | "superseded" | "source_absent" | "import_snapshot";
 }
+export type SessionRelatedWorkKindDto = "delegated_session" | "automation_run";
+export type SessionRelatedWorkTargetKindDto = "session" | "automation_run";
+export interface SessionRelatedWorkDto {
+    id: string;
+    source_id: string;
+    source_platform: "codex" | "claude_code" | "factory_droid" | "amp" | "cursor" | "antigravity" | "openclaw" | "opencode" | "chatgpt" | "claude_web" | "gemini" | "lobechat" | "codebuddy" | "other";
+    source_session_ref: string;
+    relation_kind: SessionRelatedWorkKindDto;
+    target_kind: SessionRelatedWorkTargetKindDto;
+    target_session_ref?: string;
+    target_run_ref?: string;
+    transcript_primary: boolean;
+    evidence_confidence: number;
+    parent_event_ref?: string;
+    parent_tool_ref?: string;
+    child_agent_key?: string;
+    automation_job_ref?: string;
+    automation_run_key?: string;
+    title?: string;
+    status?: string;
+    created_at: string;
+    updated_at: string;
+    fragment_refs: string[];
+    raw_detail: Record<string, unknown>;
+}
 export interface SourceStatusDto {
     id: string;
     family: "local_coding_agent" | "conversational_export";
-    platform: "codex" | "claude_code" | "factory_droid" | "amp" | "cursor" | "antigravity" | "openclaw" | "opencode" | "chatgpt" | "claude_web" | "gemini" | "lobechat" | "other";
+    platform: "codex" | "claude_code" | "factory_droid" | "amp" | "cursor" | "antigravity" | "openclaw" | "opencode" | "chatgpt" | "claude_web" | "gemini" | "lobechat" | "codebuddy" | "other";
     display_name: string;
     base_dir: string;
     default_base_dir?: string;
@@ -161,7 +186,7 @@ export interface ProjectSummaryDto {
     repo_root?: string;
     repo_remote?: string;
     repo_fingerprint?: string;
-    source_platforms: Array<"codex" | "claude_code" | "factory_droid" | "amp" | "cursor" | "antigravity" | "openclaw" | "opencode" | "chatgpt" | "claude_web" | "gemini" | "lobechat" | "other">;
+    source_platforms: Array<"codex" | "claude_code" | "factory_droid" | "amp" | "cursor" | "antigravity" | "openclaw" | "opencode" | "chatgpt" | "claude_web" | "gemini" | "lobechat" | "codebuddy" | "other">;
     host_ids: string[];
     committed_turn_count: number;
     candidate_turn_count: number;
@@ -286,7 +311,7 @@ export interface PipelineLineageDto {
         session_ref: string;
         seq_no: number;
         actor_kind: "user" | "assistant" | "system" | "tool";
-        origin_kind: "user_authored" | "assistant_authored" | "injected_user_shaped" | "source_instruction" | "tool_generated" | "source_meta";
+        origin_kind: "user_authored" | "assistant_authored" | "injected_user_shaped" | "delegated_instruction" | "automation_trigger" | "source_instruction" | "tool_generated" | "source_meta";
         content_kind: "text" | "tool_call" | "tool_result" | "meta_signal";
         time_key: string;
         display_policy: "show" | "collapse" | "hide";
@@ -310,7 +335,7 @@ export interface PipelineLineageDto {
         seq_no: number;
         fragment_kind: "session_meta" | "title_signal" | "workspace_signal" | "model_signal" | "token_usage_signal" | "session_relation" | "text" | "tool_call" | "tool_result" | "unknown";
         actor_kind?: "user" | "assistant" | "system" | "tool";
-        origin_kind?: "user_authored" | "assistant_authored" | "injected_user_shaped" | "source_instruction" | "tool_generated" | "source_meta";
+        origin_kind?: "user_authored" | "assistant_authored" | "injected_user_shaped" | "delegated_instruction" | "automation_trigger" | "source_instruction" | "tool_generated" | "source_meta";
         time_key: string;
         payload: Record<string, unknown>;
         raw_refs: string[];
@@ -362,7 +387,7 @@ export interface LinkingObservationDto {
     repo_fingerprint?: string;
     source_native_project_ref?: string;
     host_id: string;
-    source_platform: "codex" | "claude_code" | "factory_droid" | "amp" | "cursor" | "antigravity" | "openclaw" | "opencode" | "chatgpt" | "claude_web" | "gemini" | "lobechat" | "other";
+    source_platform: "codex" | "claude_code" | "factory_droid" | "amp" | "cursor" | "antigravity" | "openclaw" | "opencode" | "chatgpt" | "claude_web" | "gemini" | "lobechat" | "codebuddy" | "other";
     workspace_subpath?: string;
     project_id?: string;
     linkage_state?: "committed" | "candidate";
@@ -447,6 +472,7 @@ export declare function createCCHistoryApiClient(options?: CCHistoryApiClientOpt
     getTurnContext(turnId: string): Promise<TurnContextProjectionDto>;
     getSession(sessionId: string): Promise<SessionProjectionDto>;
     getSessions(): Promise<SessionProjectionDto[]>;
+    getSessionRelatedWork(sessionId: string): Promise<SessionRelatedWorkDto[]>;
     getSources(): Promise<SourceStatusDto[]>;
     createSourceConfig(payload: CreateSourceConfigRequest): Promise<SourceConfigMutationResponse>;
     updateSourceConfig(sourceId: string, payload: UpdateSourceConfigRequest): Promise<SourceConfigMutationResponse>;

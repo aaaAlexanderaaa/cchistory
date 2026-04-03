@@ -12,6 +12,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm --filter @cchistory/api build && pnpm run build && node --import ../../scripts/install-node-sqlite-warning-filter.mjs --test dist/index.test.js"
   }
 }
