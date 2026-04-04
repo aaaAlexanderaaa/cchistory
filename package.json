@@ -44,7 +44,8 @@
     "validate:core": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage test && pnpm --filter @cchistory/cli test && pnpm --filter @cchistory/api test",
     "test": "pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage test && pnpm --filter @cchistory/presentation test && pnpm --filter @cchistory/api-client test && pnpm --filter @cchistory/cli test && pnpm --filter @cchistory/tui test && pnpm --filter @cchistory/api test",
     "test:core": "pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage test",
-    "verify:real-archive-probes": "node scripts/verify-real-archive-probes.mjs"
+    "verify:real-archive-probes": "node scripts/verify-real-archive-probes.mjs",
+    "test:e2e": "node --test tests/e2e/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.2.0",

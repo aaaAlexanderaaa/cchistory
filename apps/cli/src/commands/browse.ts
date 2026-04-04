@@ -403,7 +403,7 @@ export async function handleShow(parsed: ParsedArgs, io: CliIo): Promise<Command
             ]),
           ),
         ].join("\n"),
-        json: { kind: "turn", db_path: layout.dbPath, turn, session, project },
+        json: { kind: "turn", db_path: layout.dbPath, turn, session, project, context },
       };
     }
 
