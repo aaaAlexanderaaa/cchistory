@@ -306,9 +306,9 @@ cchistory stats
 - **[CLI 指南](docs/guide/cli.md)** — 所有命令、参数和输出示例
 - **[API 指南](docs/guide/api.md)** — REST 接口、配置和请求/响应模式
 - **[Web 界面指南](docs/guide/web.md)** — 功能、导航、视图和配置
-- **[Inspection Guide](docs/guide/inspection.md)** — 说明何时使用 `probe:*` 与 `inspect:*` 这类证据/诊断辅助命令
-- **[Bug Reporting Guide](docs/guide/bug-reporting.md)** — 说明可复现缺陷报告的标准字段与最小证据集
-- **[TUI Guide](docs/guide/tui.md)** — 说明本地 TUI 的启动方式、键盘操作、面板行为与快照输出
+- **[检查指南](docs/guide/inspection.md)** — 说明何时使用 `probe:*` 与 `inspect:*` 这类证据/诊断辅助命令
+- **[缺陷报告指南](docs/guide/bug-reporting.md)** — 说明可复现缺陷报告的标准字段与最小证据集
+- **[TUI 指南](docs/guide/tui.md)** — 说明本地 TUI 的启动方式、键盘操作、面板行为与快照输出
 - **[数据源技术说明](docs/sources/README.md)** — 已验证数据源的存储布局与采集路径
 - **[Self-Host V1 发布门槛](docs/design/SELF_HOST_V1_RELEASE_GATE.md)** — 单用户 self-host v1 的最小发布标准
 - **[开发路线图](docs/ROADMAP.md)** — 当前里程碑式开发计划

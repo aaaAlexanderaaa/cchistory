@@ -16,7 +16,7 @@
 
 ---
 
-CCHistory ingests, parses, and projects your AI coding assistant conversations into a unified, evidence-preserving model. It collects local session data from **Codex, Claude Code, Cursor, AMP, Factory Droid, Antigravity** and more, then organizes them by project identity — so you can search, review, and analyze everything you've asked across every tool.
+CCHistory ingests, parses, and projects your AI coding assistant conversations into a unified, evidence-preserving model. It collects local session data from **11 AI coding assistant platforms including Claude Code, Cursor, Codex, AMP, Gemini CLI, and more** (see [Supported Platforms](#supported-platforms)), then organizes them by project identity — so you can search, review, and analyze everything you've asked across every tool.
 
 <p align="center">
   <img src="docs/screenshots/web-all-turns.webp" alt="CCHistory Web — All Turns view" width="800" />

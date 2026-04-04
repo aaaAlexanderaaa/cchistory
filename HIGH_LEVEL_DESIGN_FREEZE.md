@@ -113,8 +113,8 @@ objects and lifecycle rules.
 
 ### 5.1 Family A: Local Coding-Agent Logs
 
-This family includes examples such as Claude Code, Codex, Factory Droid, AMP,
-Cursor, Antigravity, OpenClaw, and OpenCode.
+This family includes, but is not limited to, Claude Code, Codex, CodeBuddy,
+Gemini CLI, Factory Droid, AMP, Cursor, Antigravity, OpenClaw, and OpenCode.
 
 Common traits:
 
@@ -127,7 +127,7 @@ Common traits:
 ### 5.2 Family B: Conversational Export / App-Database Sources
 
 This family includes targets such as LobeChat exports, ChatGPT exports, Gemini
-exports, and activity-derived or app-database imports.
+web exports, and activity-derived or app-database imports.
 
 Common traits:
 
@@ -239,6 +239,32 @@ Rules:
 - From project observation onward, the pipeline should converge on the same
   product semantics.
 - Parser, project linker, turn builder, and mask logic must each be versioned.
+
+### 7.1 Implementation Note: Adapter-Level Pipeline
+
+> **Added as a non-normative implementation note. Does not alter the frozen
+> canonical pipeline.**
+
+The canonical pipeline defined above (Capture → Parse → Normalize → …) describes
+the product-level data flow. In the `source-adapters` implementation layer, the
+first three canonical steps are refined into a four-stage adapter-level pipeline:
+
+1. **capture** — acquire raw source material (files, databases, exports).
+2. **extract** — isolate individual records from the captured material.
+3. **parse** — interpret each record's internal structure.
+4. **atomize** — decompose parsed records into minimal canonical-ready units.
+
+The corresponding data-transformation chain is:
+
+    Blobs → Records → Fragments → Atoms → Candidates
+
+From the *Candidates* stage onward, data enters the canonical pipeline at step 4
+(Observe project evidence) and converges on the shared product semantics.
+
+These two sets of terminology are complementary, not contradictory: the canonical
+pipeline operates at the product abstraction level, while the adapter-level
+pipeline operates at the source-integration abstraction level. Both are governed
+by the same versioning and traceability rules.
 
 ## 8. Project Linking Model
 

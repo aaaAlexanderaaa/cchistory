@@ -359,7 +359,7 @@ Notes:
 **Regression checklist**:
 
 - All affected package builds succeed.
-- All package tests pass (148+ baseline as of 2026-03-26).
+- All package tests pass (230+ tests across all packages; verify with `pnpm test`).
 - Web lint passes with zero warnings.
 - Web build succeeds (if web-affecting changes were made).
 - No new `any` types introduced.

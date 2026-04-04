@@ -4,8 +4,6 @@ This document records the repository-visible runtime surface as of 2026-04-02. I
 
 > [`HIGH_LEVEL_DESIGN_FREEZE.md`]](../../HIGH_LEVEL_DESIGN_FREEZE.md) remains the source of truth for product semantics and invariants.
 >
-> [`docs/design/IMPLEMENTATION_PLAN.md`]](./IMPLEMENTATION_PLAN.md) is the delivered slice record for the early 2026-03 local-source push, not the complete live roadmap.
->
 > `tasks.csv` is a historical KR ledger that stops at work explicitly tracked in this repository on this host. It is not the live backlog.
 
 # Entry Points
@@ -188,6 +186,46 @@ Current route groups:
 
 The OpenAPI path summary is generated in [`apps/api/src/app.ts`]](../../apps/api/src/app.ts).
 
+# Build And Memory Constraints
+
+This host must be treated as a 4 GB machine, so installation and build workflows must stay strictly scoped.
+
+> Never use repository-root `pnpm install` or repository-root `pnpm build` as a default step on this host.
+>
+> Run one package build at a time.
+>
+> Reserve Next.js production builds for focused validation and cap Node memory when doing so.
+
+## Safe Dependency Order
+
+Sequential builds must follow the actual workspace dependency graph:
+
+1. `@cchistory/domain` — canonical contracts (base layer)
+2. `@cchistory/source-adapters` — depends on domain
+3. `@cchistory/storage` — depends on domain
+4. `@cchistory/api` — depends on domain, source-adapters, storage
+5. `@cchistory/web` — depends on api-client; most memory-expensive, run alone with `NODE_OPTIONS=--max-old-space-size=1536`
+
+## Preflight Checklist
+
+1. Identify the exact package and acceptance criterion being validated.
+2. Prefer `build`, `test`, `curl`, or `dev` over any install when existing dependencies are present.
+3. Confirm no other TypeScript, Next.js, or `pnpm` build is already running.
+4. For probe and replay runs, set `source_ids` and `limit_files_per_source` before sending.
+5. For web builds, set `NODE_OPTIONS=--max-old-space-size=1536` and run no other package build in parallel.
+
+## Cleanup And Recovery
+
+> Never delete `.cchistory/`, source capture roots, or any user SQLite data as part of dependency cleanup.
+>
+> Treat deletion of `node_modules` at the repository root as a last resort requiring explicit user confirmation.
+
+1. Record the exact failed command and triggering package.
+2. Re-run the smallest non-install validation command to confirm reproducibility.
+3. If stale build output is suspected, remove only the affected package `dist/` and rebuild.
+4. If a filtered install created a package-local `node_modules`, clean only that directory and repeat.
+5. After any cleanup, rerun only the matching package validation, not a workspace-wide build.
+
 # Document Roles
 
 The repository now maintains separate semantic, runtime, release-gate, guide, source-reference, template, roadmap, and historical-plan documents instead of one overloaded plan document.
@@ -201,5 +239,5 @@ The repository now maintains separate semantic, runtime, release-gate, guide, so
 | `docs/sources/*.md` | per-source technical reference | refresh when adapter discovery, storage assumptions, or parser entrypoints materially change |
 | `docs/templates/*.md` | reusable issue/report templates | refresh when the corresponding intake/reporting contract materially changes |
 | `docs/ROADMAP.md` | live milestone roadmap | update when milestone priorities or current-status assumptions materially change |
-| [`docs/design/IMPLEMENTATION_PLAN.md`]](./IMPLEMENTATION_PLAN.md) | delivered slice record and historical baseline | keep as historical context; avoid treating it as the live roadmap |
+| [`docs/design/V1_VALIDATION_STRATEGY.md`]](./V1_VALIDATION_STRATEGY.md) | consolidated validation strategy, matrix, and verifier inventory | refresh when validation surface materially changes |
 | `tasks.csv` | historical KR ledger | do not rely on it as the authoritative current backlog |
