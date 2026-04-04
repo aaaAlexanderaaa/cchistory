@@ -1,11 +1,12 @@
-import type {
-  ProjectIdentity,
-  SearchHighlight,
-  SessionProjection,
-  SessionRelatedWorkProjection,
-  SourceStatus,
-  TurnContextProjection,
-  UserTurnProjection,
+import {
+  statusRank,
+  type ProjectIdentity,
+  type SearchHighlight,
+  type SessionProjection,
+  type SessionRelatedWorkProjection,
+  type SourceStatus,
+  type TurnContextProjection,
+  type UserTurnProjection,
 } from "@cchistory/domain";
 import type { CCHistoryStorage } from "./internal/storage.js";
 import { buildLocalReadOverview, type LocalReadOverview } from "./read-overview.js";
@@ -97,7 +98,6 @@ export function buildLocalTuiBrowser(storage: CCHistoryStorage, options: { readM
 }
 
 function compareSourceHealth(left: SourceStatus, right: SourceStatus): number {
-  const statusRank = { error: 0, stale: 1, healthy: 2 } as const;
   const statusDiff = statusRank[left.sync_status] - statusRank[right.sync_status];
   if (statusDiff !== 0) {
     return statusDiff;

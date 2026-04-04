@@ -1,5 +1,6 @@
 import process from "node:process";
 import type { DatabaseSync } from "node:sqlite";
+import { nowIso } from "@cchistory/domain";
 
 export const STORAGE_SCHEMA_VERSION = "2026-03-20.1";
 
@@ -285,10 +286,6 @@ function setSchemaMeta(db: DatabaseSync, key: string, value: string): void {
   }
 
   db.prepare("INSERT INTO schema_meta (key, value_text, updated_at) VALUES (?, ?, ?)").run(key, value, nowIso());
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
 }
 
 function ensureAtomEdgeEndpointColumns(db: DatabaseSync): void {

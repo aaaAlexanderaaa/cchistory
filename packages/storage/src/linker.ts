@@ -11,7 +11,7 @@ import type {
   SourcePlatform,
   UserTurnProjection,
 } from "@cchistory/domain";
-import { normalizeLocalPathIdentity } from "@cchistory/domain";
+import { normalizeLocalPathIdentity, nowIso } from "@cchistory/domain";
 
 export interface LinkedProjectObservation extends ProjectObservation {
   host_id: string;
@@ -917,10 +917,6 @@ function asOptionalString(value: unknown): string | undefined {
 
 function asOptionalNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function nowIso(): string {
-  return new Date().toISOString();
 }
 
 function compareProjectsByActivityDesc(left: ProjectIdentity, right: ProjectIdentity): number {

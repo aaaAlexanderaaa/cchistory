@@ -1,3 +1,7 @@
+import { nowIso } from "@cchistory/domain";
+
+export { nowIso };
+
 export function uniqueStrings<T extends string>(values: readonly T[]): T[] {
   return [...new Set(values)].sort();
 }
@@ -44,10 +48,6 @@ export function fromJson<T>(value: string, context?: string): T {
 
 export function stableId(prefix: string, ...parts: string[]): string {
   return `${prefix}-${parts.join("-").replace(/[^a-zA-Z0-9._-]+/g, "-")}`;
-}
-
-export function nowIso(): string {
-  return new Date().toISOString();
 }
 
 export function incrementArtifactRevisionId(currentRevisionId: string): string {

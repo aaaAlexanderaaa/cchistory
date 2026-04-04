@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import { useSWRConfig } from 'swr'
+import { statusRank } from '@cchistory/domain'
 import { cn, formatAbsoluteDateTime, formatRelativeTime } from '@/lib/utils'
 import { SummaryPill } from '@/components/summary-pill'
 import { createSourceConfig, resetSourceConfig, updateSourceConfig, useSourcesQuery } from '@/lib/api'
@@ -63,7 +64,6 @@ export function SourcesView() {
     [query, sources, statusFilter],
   )
   const sortedSources = useMemo(() => {
-    const statusRank = { error: 0, stale: 1, healthy: 2 } as const
     const items = [...filteredSources]
     items.sort((left, right) => {
       if (sortBy === 'name') {

@@ -3,6 +3,7 @@
 import type { ReactNode } from 'react'
 import { useMemo, useState } from 'react'
 import { useSWRConfig } from 'swr'
+import { statusRank } from '@cchistory/domain'
 import { cn, formatAbsoluteDateTime, formatRelativeTime } from '@/lib/utils'
 import { SummaryPill } from '@/components/summary-pill'
 import { useDriftQuery, useSourcesQuery } from '@/lib/api'
@@ -40,7 +41,6 @@ export function DriftView() {
     [drift],
   )
   const sortedSources = useMemo(() => {
-    const statusRank = { error: 0, stale: 1, healthy: 2 } as const
     const items = [...sources]
     items.sort((left, right) => {
       if (sourceSort === 'name') {

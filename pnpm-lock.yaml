@@ -92,6 +92,9 @@ importers:
       '@cchistory/api-client':
         specifier: workspace:*
         version: link:../../packages/api-client
+      '@cchistory/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@cchistory/presentation':
         specifier: workspace:*
         version: link:../../packages/presentation

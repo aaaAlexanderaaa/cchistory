@@ -105,6 +105,9 @@ export interface CanonicalOrderingTerm {
   nulls?: "first" | "last";
 }
 
+/** Canonical ranking for source sync status used in health-based sorting (lower = worse). */
+export const statusRank = { error: 0, stale: 1, healthy: 2 } as const;
+
 export const CANONICAL_ORDERING_POLICIES: Record<
   CanonicalOrderingView,
   readonly CanonicalOrderingTerm[]
@@ -1096,4 +1099,24 @@ function posixNormalize(value: string): string {
 function posixBasename(value: string): string {
   const last = value.split("/").filter(Boolean).at(-1);
   return last ?? "";
+}
+
+// ---------------------------------------------------------------------------
+// Utility functions
+// ---------------------------------------------------------------------------
+
+import { createHash } from "node:crypto";
+
+/**
+ * Produce a deterministic, content-addressable hex ID by SHA-1-hashing the
+ * joined parts.  Used throughout the pipeline for fragment, atom, edge, and
+ * other entity IDs.
+ */
+export function stableId(...parts: string[]): string {
+  return createHash("sha1").update(parts.join("::")).digest("hex");
+}
+
+/** Current wall-clock time as an ISO-8601 string. */
+export function nowIso(): string {
+  return new Date().toISOString();
 }

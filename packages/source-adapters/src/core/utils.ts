@@ -15,7 +15,7 @@ import type {
   SourcePlatform,
   StageKind,
 } from "@cchistory/domain";
-import { normalizeLocalPathIdentity } from "@cchistory/domain";
+import { normalizeLocalPathIdentity, stableId, nowIso } from "@cchistory/domain";
 import { getPlatformAdapter } from "../platforms/registry.js";
 import { getBuiltinMaskTemplates } from "../masks.js";
 import { firstNonEmptyTrimmedLineFromBuffer } from "./jsonl-records.js";
@@ -589,9 +589,7 @@ export function compareTimeThenSeq(
   return left.time_key.localeCompare(right.time_key);
 }
 
-export function stableId(...parts: string[]): string {
-  return createHash("sha1").update(parts.join("::")).digest("hex");
-}
+export { stableId };
 
 export function sha1(value: string | Buffer): string {
   return createHash("sha1").update(value).digest("hex");
@@ -601,9 +599,7 @@ export function truncate(value: string, length: number): string {
   return value.length <= length ? value : `${value.slice(0, length - 1)}...`;
 }
 
-export function nowIso(): string {
-  return new Date().toISOString();
-}
+export { nowIso };
 
 export { getBuiltinMaskTemplates };
 
