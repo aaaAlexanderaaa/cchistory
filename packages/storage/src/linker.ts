@@ -11,7 +11,8 @@ import type {
   SourcePlatform,
   UserTurnProjection,
 } from "@cchistory/domain";
-import { normalizeLocalPathIdentity, nowIso } from "@cchistory/domain";
+import { nowIso, minIso, maxIso, decodeUriPath } from "@cchistory/domain";
+import { asOptionalString, normalizePathKey } from "./internal/utils.js";
 
 export interface LinkedProjectObservation extends ProjectObservation {
   host_id: string;
@@ -531,8 +532,8 @@ function buildProjectIdentity(group: ProjectGroup): ProjectIdentity {
   const sourceNativeProjectRef = pickMostCommon(
     group.observations.map((observation) => observation.source_native_project_ref),
   );
-  const createdAt = minIso(group.observations.map((observation) => observation.observed_at)) ?? nowIso();
-  const updatedAt = maxIsoFrom(group.observations.map((observation) => observation.observed_at)) ?? createdAt;
+  const createdAt = group.observations.map((observation) => observation.observed_at).reduce<string | undefined>((acc, val) => minIso(acc, val), undefined) ?? nowIso();
+  const updatedAt = group.observations.map((observation) => observation.observed_at).reduce<string | undefined>((acc, val) => maxIso(acc, val), undefined) ?? createdAt;
   const displayName = deriveDisplayName(primaryWorkspacePath, repoRoot, repoRemote, group.observations);
   const slugBase = slugify(displayName) || "project";
 
@@ -839,45 +840,12 @@ function pickMostCommon<T extends string>(values: readonly (T | undefined)[]): T
   return selected;
 }
 
-function minIso(values: readonly (string | undefined)[]): string | undefined {
-  return [...values].filter((value): value is string => Boolean(value)).sort()[0];
-}
-
-function maxIso(current: string | undefined, candidate: string | undefined): string | undefined {
-  if (!current) {
-    return candidate;
-  }
-  if (!candidate) {
-    return current;
-  }
-  return current >= candidate ? current : candidate;
-}
-
-function maxIsoFrom(values: readonly (string | undefined)[]): string | undefined {
-  return [...values].filter((value): value is string => Boolean(value)).sort().at(-1);
-}
-
 function clampConfidence(value: number, min: number, max: number): number {
   return roundConfidence(Math.min(max, Math.max(min, value)));
 }
 
 function roundConfidence(value: number): number {
   return Math.round(value * 100) / 100;
-}
-
-function normalizePathKey(value: string | undefined): string | undefined {
-  return normalizeLocalPathIdentity(value);
-}
-
-function decodeUriPath(value: string): string {
-  if (!/%[0-9a-f]{2}/iu.test(value)) {
-    return value;
-  }
-  try {
-    return decodeURI(value);
-  } catch {
-    return value;
-  }
 }
 
 function decodeUriLabel(value: string | undefined): string | undefined {
@@ -909,10 +877,6 @@ function isWeakWorkspacePath(workspacePath: string): boolean {
     basename.startsWith("claude-temp-") ||
     basename.startsWith("codex-temp-")
   );
-}
-
-function asOptionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function asOptionalNumber(value: unknown): number | undefined {

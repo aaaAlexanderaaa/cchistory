@@ -638,7 +638,7 @@ async function writeCodexFixtureDirectory(
   await mkdir(sourceDir, { recursive: true });
 
   await writeFile(
-    path.join(sourceDir, "session.jsonl"),
+    path.join(sourceDir, `rollout-${options.sessionId}.jsonl`),
     [
       {
         timestamp: "2026-03-09T08:00:00.000Z",

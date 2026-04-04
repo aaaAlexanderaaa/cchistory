@@ -53,10 +53,11 @@ import {
   type LinkedProjectObservation,
 } from "../linker.js";
 import {
+  asOptionalString,
   fromJson,
   incrementArtifactRevisionId,
   nowIso,
-  stableId,
+  compositeKey,
   toJson,
   uniqueStrings,
 } from "./utils.js";
@@ -148,7 +149,7 @@ export class CCHistoryStorage {
     );
     const now = nowIso();
     const override: ProjectManualOverride = {
-      id: existing?.id ?? stableId("project-override", input.target_kind, input.target_ref),
+      id: existing?.id ?? compositeKey("project-override", input.target_kind, input.target_ref),
       target_kind: input.target_kind,
       target_ref: input.target_ref,
       project_id: input.project_id,
@@ -292,7 +293,7 @@ export class CCHistoryStorage {
   }): ProjectLineageEvent {
     const project = this.getProject(input.project_id);
     const event: ProjectLineageEvent = {
-      id: stableId("project-lineage", input.project_id, input.project_revision_id ?? project?.project_revision_id ?? "unknown", input.event_kind, nowIso()),
+      id: compositeKey("project-lineage", input.project_id, input.project_revision_id ?? project?.project_revision_id ?? "unknown", input.event_kind, nowIso()),
       project_id: input.project_id,
       project_revision_id: input.project_revision_id ?? project?.project_revision_id ?? `${input.project_id}:r1`,
       previous_project_revision_id: input.previous_project_revision_id,
@@ -442,7 +443,7 @@ export class CCHistoryStorage {
     source_turn_refs: string[];
   }): KnowledgeArtifact {
     const now = nowIso();
-    const artifactId = input.artifact_id ?? stableId("artifact", input.title.toLowerCase());
+    const artifactId = input.artifact_id ?? compositeKey("artifact", input.title.toLowerCase());
     const existing = this.listKnowledgeArtifacts().find((artifact) => artifact.artifact_id === artifactId);
     const nextRevisionId = existing ? incrementArtifactRevisionId(existing.artifact_revision_id) : `${artifactId}:r1`;
     const artifact: KnowledgeArtifact = {
@@ -471,7 +472,7 @@ export class CCHistoryStorage {
       );
       for (const turnId of artifact.source_turn_refs) {
         const coverage: ArtifactCoverageRecord = {
-          id: stableId("artifact-coverage", artifact.artifact_id, turnId),
+          id: compositeKey("artifact-coverage", artifact.artifact_id, turnId),
           artifact_id: artifact.artifact_id,
           artifact_revision_id: artifact.artifact_revision_id,
           turn_id: turnId,
@@ -904,7 +905,7 @@ function buildSessionRelatedWork(
       continue;
     }
     grouped.set(key, {
-      id: stableId("session-related-work", session.id, key),
+      id: compositeKey("session-related-work", session.id, key),
       source_id: session.source_id,
       source_platform: session.source_platform,
       source_session_ref: session.id,
@@ -913,10 +914,10 @@ function buildSessionRelatedWork(
       target_session_ref: relationKind === "automation_run" ? parentUuid : parentUuid ?? session.id,
       target_run_ref:
         relationKind === "automation_run"
-          ? stableId("automation-run", session.source_id, session.id, jobId ?? "", sessionKey ?? fragment.id)
+          ? compositeKey("automation-run", session.source_id, session.id, jobId ?? "", sessionKey ?? fragment.id)
           : undefined,
       transcript_primary: relationKind === "delegated_session",
-      evidence_confidence: relationKind === "automation_run" ? 0.95 : asOptionalBoolean(payload.is_sidechain) ? 0.95 : 0.8,
+      evidence_confidence: relationKind === "automation_run" ? 0.95 : isStrictlyTrue(payload.is_sidechain) ? 0.95 : 0.8,
       parent_event_ref: relationKind === "delegated_session" ? parentUuid : undefined,
       parent_tool_ref: parentToolRef,
       child_agent_key: childAgentKey,
@@ -939,7 +940,7 @@ function normalizeRelatedWorkKind(payload: Record<string, unknown>): SessionRela
     return "automation_run";
   }
   if (
-    asOptionalBoolean(payload.is_sidechain) ||
+    isStrictlyTrue(payload.is_sidechain) ||
     asOptionalString(payload.parent_uuid) ||
     asOptionalString(payload.callingSessionId) ||
     asOptionalString(payload.calling_session_id) ||
@@ -951,10 +952,6 @@ function normalizeRelatedWorkKind(payload: Record<string, unknown>): SessionRela
   return undefined;
 }
 
-function asOptionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function asOptionalBoolean(value: unknown): boolean {
+function isStrictlyTrue(value: unknown): boolean {
   return value === true;
 }

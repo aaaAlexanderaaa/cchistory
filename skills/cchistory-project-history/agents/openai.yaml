@@ -1,4 +1,0 @@
-interface:
-  display_name: "CCHistory Project History"
-  short_description: "Read one project canonical history JSON"
-  default_prompt: "Use $cchistory-project-history to inspect one project through canonical history JSON."

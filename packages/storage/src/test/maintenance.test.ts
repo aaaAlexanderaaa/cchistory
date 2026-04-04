@@ -45,17 +45,21 @@ test("garbageCollectCandidateTurns with purge mode creates tombstones", async ()
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-gc-"));
   try {
     const storage = new CCHistoryStorage(dataDir);
-    storage.replaceSourcePayload(createFixturePayload("src-1", "GC test", "sr-1"));
+    storage.replaceSourcePayload(createFixturePayload("src-1", "GC test", "sr-1", {
+      projectObservation: {
+        workspacePath: "/workspace/gc-test",
+      },
+    }));
     const turnId = "turn-1";
 
     const result = (storage as any).garbageCollectCandidateTurns({
+      before_iso: "2099-01-01T00:00:00.000Z",
       mode: "purge",
-      reason: "gc_test",
     });
 
-    assert.equal(result.purged_count, 1);
+    assert.equal(result.processed_turn_ids.length, 1);
     assert.equal(storage.getTurn(turnId), undefined);
-    assert.equal(storage.getTombstone(turnId)?.purge_reason, "gc_test");
+    assert.equal(storage.getTombstone(turnId)?.purge_reason, "candidate_gc");
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

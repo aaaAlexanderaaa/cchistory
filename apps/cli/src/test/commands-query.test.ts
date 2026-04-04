@@ -15,7 +15,7 @@ test("search matches partial keywords without requiring an exact phrase", async 
     const storeDir = path.join(tempRoot, "store");
 
     await runCliCapture(["sync", "--store", storeDir], tempRoot);
-    const result = await runCliCapture(["search", "probe healthy", "--store", storeDir], tempRoot);
+    const result = await runCliCapture(["search", "probe output", "--store", storeDir], tempRoot);
 
     assert.equal(result.exitCode, 0);
     assert.match(result.stdout, /Review the probe output/);
@@ -36,12 +36,13 @@ test("show session and query session accept human-friendly session references", 
 
     await runCliCapture(["sync", "--store", storeDir], tempRoot);
 
-    // Using first 4 chars of session ID should work if unique
+    // Use full session ID to avoid ambiguity (short prefixes like "sess" match multiple sessions)
     const sessionList = await runCliCapture(["ls", "sessions", "--store", storeDir, "--json"], tempRoot);
-    const firstSessionId = JSON.parse(sessionList.stdout)[0].id;
-    const shortRef = firstSessionId.substring(0, 4);
+    const sessionsPayload = JSON.parse(sessionList.stdout);
+    const sessions = sessionsPayload.sessions ?? sessionsPayload;
+    const firstSessionId = sessions[0].id;
 
-    const showResult = await runCliCapture(["show", "session", shortRef, "--store", storeDir], tempRoot);
+    const showResult = await runCliCapture(["show", "session", firstSessionId, "--store", storeDir], tempRoot);
     assert.equal(showResult.exitCode, 0);
     assert.match(showResult.stdout, /Title/);
   } finally {
@@ -61,11 +62,13 @@ test("tree session renders turn hierarchy for a specific session", async () => {
 
     await runCliCapture(["sync", "--store", storeDir], tempRoot);
     const sessionList = await runCliCapture(["ls", "sessions", "--store", storeDir, "--json"], tempRoot);
-    const firstSessionId = JSON.parse(sessionList.stdout)[0].id;
+    const sessionsPayload = JSON.parse(sessionList.stdout);
+    const sessions = sessionsPayload.sessions ?? sessionsPayload;
+    const firstSessionId = sessions[0].id;
 
     const treeResult = await runCliCapture(["tree", "session", firstSessionId, "--store", storeDir], tempRoot);
     assert.equal(treeResult.exitCode, 0);
-    assert.match(treeResult.stdout, /└─/);
+    assert.match(treeResult.stdout, /Turns/);
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });

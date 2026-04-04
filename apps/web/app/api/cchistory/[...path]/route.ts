@@ -34,7 +34,13 @@ async function proxy(
 
   let body: ArrayBuffer | undefined
   if (request.method !== 'GET' && request.method !== 'HEAD') {
+    // Pre-check Content-Length header before reading body into memory
+    const contentLength = parseInt(request.headers.get('content-length') ?? '0', 10)
+    if (contentLength > MAX_PROXY_BODY_BYTES) {
+      return NextResponse.json({ error: 'Request body too large' }, { status: 413 })
+    }
     body = await request.arrayBuffer()
+    // Still check actual size in case Content-Length was missing or inaccurate
     if (body.byteLength > MAX_PROXY_BODY_BYTES) {
       return NextResponse.json({ error: 'Request body too large' }, { status: 413 })
     }

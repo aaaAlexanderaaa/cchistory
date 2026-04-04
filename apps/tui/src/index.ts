@@ -2,7 +2,8 @@
 
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { installRuntimeWarningFilter, type LocalTuiBrowser } from "@cchistory/storage";
+import { installRuntimeWarningFilter } from "@cchistory/storage/runtime-warning-filter";
+import type { LocalTuiBrowser } from "@cchistory/storage";
 import type { BrowserAction, BrowserState } from "./browser.js";
 import type { StoreLayout } from "./store.js";
 

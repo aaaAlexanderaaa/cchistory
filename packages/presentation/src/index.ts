@@ -14,28 +14,11 @@ import type {
   TurnContextProjectionDto,
   TurnSearchResultDto,
   UserTurnProjectionDto,
-} from "../../api-client/dist/index.js";
-import type { LinkState, SyncAxis } from "@cchistory/domain";
+} from "@cchistory/api-client";
+import type { LinkState, SyncAxis, ValueAxis, RetentionAxis, SourceFamily, SourcePlatform } from "@cchistory/domain";
 
-export type { LinkState, SyncAxis };
-export type ValueAxis = "active" | "covered" | "archived" | "suppressed";
-export type RetentionAxis = "keep_raw_and_derived" | "keep_raw_only" | "purged";
-export type SourceFamily = "local_coding_agent" | "conversational_export";
-export type SourcePlatform =
-  | "claude_code"
-  | "codex"
-  | "amp"
-  | "factory_droid"
-  | "cursor"
-  | "antigravity"
-  | "openclaw"
-  | "opencode"
-  | "claude_web"
-  | "chatgpt"
-  | "lobechat"
-  | "gemini"
-  | "codebuddy"
-  | "other";
+export type { LinkState, SyncAxis, ValueAxis, RetentionAxis, SourceFamily, SourcePlatform } from "@cchistory/domain";
+export { statusRank, localPathIdentitiesMatch } from "@cchistory/domain";
 
 export type SegmentType = "text" | "masked" | "highlight" | "code" | "reference" | "injected";
 

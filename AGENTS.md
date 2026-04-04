@@ -7,23 +7,19 @@
 `HIGH_LEVEL_DESIGN_FREEZE.md` is the authoritative definition of product scope and architecture. Read it before changing docs, code, or data models. Contributions must preserve the frozen invariants there: project-first history, `UserTurn` as the primary object, evidence-preserving ingestion, and UI/API as projections of one canonical model.
 
 ## Repository Scope
-This repository currently contains seven different classes of material.
+This repository currently contains five different classes of material.
 
-- Root docs plus `docs/`: the current project definition, implementation status, and decision surface. `HIGH_LEVEL_DESIGN_FREEZE.md` remains authoritative; `PIPELINE.md` defines the agent execution workflow; `BACKLOG.md` is the living work surface for current objectives and tasks; `docs/design/CURRENT_RUNTIME_SURFACE.md` is the current repository-visible runtime inventory; `docs/design/IMPLEMENTATION_PLAN.md` is the delivered baseline for the 2026-03 local-source slice and may lag newer runtime work; `docs/guide/` contains user-facing guides for CLI, API, Web, TUI, inspection, and bug-reporting workflows; `docs/sources/` contains technical notes for validated source layouts; `docs/templates/` contains reusable issue/report templates; `docs/screenshots/` contains checked-in UI screenshot assets used by repository-facing documentation; `tasks.csv` is a historical KR ledger, not a complete current backlog.
+- Root docs plus `docs/`: the current project definition, implementation status, and decision surface. `HIGH_LEVEL_DESIGN_FREEZE.md` remains authoritative; `PIPELINE.md` defines the agent execution workflow; `BACKLOG.md` is the living work surface for current objectives and tasks; `docs/design/CURRENT_RUNTIME_SURFACE.md` is the current repository-visible runtime inventory; `docs/guide/` contains user-facing guides for CLI, API, Web, TUI, inspection, and bug-reporting workflows; `docs/sources/` contains technical notes for validated source layouts; `docs/templates/` contains reusable issue/report templates; `docs/screenshots/` contains checked-in UI screenshot assets used by repository-facing documentation.
 - `apps/`: canonical product entrypoints. `apps/api` is the managed API, `apps/web` is the canonical frontend, `apps/cli` is the canonical local operator CLI, and `apps/tui` is the canonical local TUI. The API runtime now also includes a remote-agent control-plane slice under `/api/agent/*` plus admin inventory and job routes under `/api/admin/agents*` and `/api/admin/agent-jobs`, distinct from the host-local admin probe/config routes.
 - `packages/`: canonical shared implementation for domain contracts, source adapters, storage, API DTOs, and presentation mapping.
 - `.cchistory/`: local runtime state and persisted evidence-derived data for this workspace. Inspect it when needed, but do not delete, reset, or regenerate it casually.
 - `mock_data/`: sanitized, source-shaped fixture corpus used for adapter and CLI validation. Preserve scenario coverage and validate it after edits.
-- `frontend_demo/`: an imported UI/UX reference. It is useful for interaction ideas, but it is not the product, not the canonical frontend, and must not define architecture or domain semantics.
-- `archive/`: the previous MVP and historical documents. Use it as reference material only, especially for known source parsing and ingestion patterns. Do not treat archived routes, schemas, or UX as the baseline for new work.
 
 ## Documentation Status And Drift
 - `HIGH_LEVEL_DESIGN_FREEZE.md` freezes product semantics and invariants. It is not a complete inventory of every currently implemented adapter, CLI verb, or UI interaction.
 - `docs/design/CURRENT_RUNTIME_SURFACE.md` is the canonical inventory of the current repository-visible entrypoints, adapter roster, and user-facing runtime surfaces.
-- `docs/design/IMPLEMENTATION_PLAN.md` should be read as a delivered slice baseline plus status snapshot for the 2026-03 local-source push, not as the live roadmap or exhaustive feature inventory.
 - `PIPELINE.md` defines the seven-phase execution workflow and task decomposition standards. It is the operational counterpart to the design freeze.
-- `BACKLOG.md` is the living work surface. It replaces `tasks.csv` as the active backlog. Agents must read it at session start.
-- `tasks.csv` records work that was explicitly tracked in this repository on this host. It is a historical ledger for the 2026-03 local-source slice, not the active backlog. Missing rows are not evidence that a capability is absent or unimplemented elsewhere.
+- `BACKLOG.md` is the living work surface and the active backlog. Agents must read it at session start.
 - When docs and runtime surface disagree, preserve the freeze invariants first, then verify current behavior against `apps/*`, `packages/*`, and targeted tests before editing.
 - The currently registered source adapters live in `packages/source-adapters/src/platforms/registry.ts`. The implemented adapter set presently includes `codex`, `claude_code`, `factory_droid`, `amp`, `cursor`, `antigravity`, `gemini`, `openclaw`, `opencode`, `lobechat`, and `codebuddy`.
 - Broader platform enums in `packages/domain` or `packages/api-client` are not proof that a live adapter already exists for every value.
@@ -67,8 +63,6 @@ Repository-root aggregate scripts exist, but they are not the default validation
 - `pnpm run build`: aggregate non-web workspace build. It exists, but it is not a default verification step on this host.
 - `pnpm run build:all:safe`: aggregate workspace build including `apps/web` with capped Node memory. Use only for explicit full-workspace validation.
 
-- `cd frontend_demo && pnpm dev`: view the reference UI locally.
-- `cd frontend_demo && pnpm build`: verify the imported demo still builds.
 - `pnpm services:start`: canonical user-operated startup entrypoint for the managed API (`0.0.0.0:8040`) and web (`0.0.0.0:8085`) dev services via `scripts/dev-services.sh`.
 - `pnpm services:stop`: canonical user-operated stop entrypoint for the managed dev services.
 - `pnpm services:restart`: canonical user-operated restart entrypoint for the managed dev services.
@@ -124,7 +118,7 @@ Browser automation for this repository must use the wrapped skill entrypoint or 
 - Never delete local source capture roots such as `/root/.codex`, `/root/.claude`, `/root/.factory`, `/root/.local/share/amp`, or platform-native Cursor/antigravity user-data directories as part of cleanup or debugging.
 
 ## Coding Style & Naming Conventions
-When adding new material, keep changes small and map them back to the design freeze. Reuse domain terms exactly as defined there, including `UserTurn`, `ProjectIdentity`, `MaskTemplate`, `KnowledgeArtifact`, `candidate`, `committed`, and `unlinked`. New source work may borrow parser ideas from `archive/`, but source-specific quirks must stop at the capture/parse boundary and must not leak into product semantics.
+When adding new material, keep changes small and map them back to the design freeze. Reuse domain terms exactly as defined there, including `UserTurn`, `ProjectIdentity`, `MaskTemplate`, `KnowledgeArtifact`, `candidate`, `committed`, and `unlinked`. Source-specific quirks must stop at the capture/parse boundary and must not leak into product semantics.
 
 ## Bug Handling And Evidence Preservation
 - Treat any parsing, ingestion, masking, or UI rendering bug as a potentially class-wide issue. Do not dismiss a reported item as an isolated bad case without first checking prevalence and root cause in the broader dataset.

@@ -66,6 +66,8 @@ import {
   inferDisplayPolicy,
   firstDefinedNumber,
   sumDefinedNumbers,
+  minIso,
+  maxIso,
 } from "./utils.js";
 import type {
   AdapterBlobResult,
@@ -254,7 +256,7 @@ export function parseRecord(
   }
   if (context.source.platform === "codebuddy") {
     const providerData = isObject(parsed.providerData) ? parsed.providerData : undefined;
-    if (asBoolean(providerData?.skipRun)) {
+    if (asBoolean(providerData?.skipRun) || asString(parsed.type) === "skip_run") {
       return {
         fragments: [],
         lossAudits: [
@@ -1163,26 +1165,6 @@ export function extractRichTextText(value: string): string | undefined {
   visit(parsed);
   const text = parts.join("").trim();
   return text || undefined;
-}
-
-function minIso(left: string | undefined, right: string | undefined): string | undefined {
-  if (!left) {
-    return right;
-  }
-  if (!right) {
-    return left;
-  }
-  return left < right ? left : right;
-}
-
-function maxIso(left: string | undefined, right: string | undefined): string | undefined {
-  if (!left) {
-    return right;
-  }
-  if (!right) {
-    return left;
-  }
-  return left > right ? left : right;
 }
 
 async function loadExtractVscodeStateSeeds(): Promise<typeof import("./vscode-state.js").extractVscodeStateSeeds> {

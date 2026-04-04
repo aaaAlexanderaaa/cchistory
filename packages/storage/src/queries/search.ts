@@ -114,7 +114,8 @@ export function querySearchIndex(input: {
       }
     }
     return mergedTurnIds.slice(0, input.limit);
-  } catch {
+  } catch (err) {
+    console.warn(`[cchistory] FTS5 search failed, falling back to substring scan:`, err instanceof Error ? err.message : err);
     return fallbackTurnIds(input.listResolvedTurns(), input.query, input.limit);
   }
 }

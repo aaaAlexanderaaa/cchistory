@@ -16,10 +16,10 @@ test("export project produces a standalone JSON bundle", async () => {
     const exportDir = path.join(tempRoot, "export");
 
     await runCliCapture(["sync", "--store", storeDir], tempRoot);
-    const result = await runCliCapture(["export", "project", "all", "--store", storeDir, "--to", exportDir], tempRoot);
+    const result = await runCliCapture(["export", "project", "all", "--store", storeDir, "--out", exportDir], tempRoot);
 
     assert.equal(result.exitCode, 0);
-    assert.match(result.stdout, /Exported/);
+    assert.match(result.stdout, /Bundle/);
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });
@@ -37,10 +37,10 @@ test("backup/restore creates and recovers full sqlite database dumps", async () 
     const backupFile = path.join(tempRoot, "backup.sqlite");
 
     await runCliCapture(["sync", "--store", storeDir], tempRoot);
-    const backupResult = await runCliCapture(["backup", "--store", storeDir, "--write", "--to", backupFile], tempRoot);
+    const backupResult = await runCliCapture(["backup", "--store", storeDir, "--write", "--out", backupFile], tempRoot);
 
     assert.equal(backupResult.exitCode, 0);
-    assert.match(backupResult.stdout, /Backup complete/);
+    assert.match(backupResult.stdout, /Bundle/);
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });

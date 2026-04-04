@@ -2,7 +2,7 @@
 
 The remote-host feature should be implemented as a minimal collection control plane around the existing canonical ingest pipeline, not as remote live federation.
 
-> Source of truth: [HIGH_LEVEL_DESIGN_FREEZE.md](/root/cchistory/HIGH_LEVEL_DESIGN_FREEZE.md)
+> Source of truth: [HIGH_LEVEL_DESIGN_FREEZE.md](../../HIGH_LEVEL_DESIGN_FREEZE.md)
 >
 > Preserved invariants:
 > - local-first capture
@@ -11,9 +11,9 @@ The remote-host feature should be implemented as a minimal collection control pl
 > - one canonical model consumed by UI and API
 >
 > Existing reusable implementation:
-> - source probing: [packages/source-adapters/src/core/legacy.ts](/root/cchistory/packages/source-adapters/src/core/legacy.ts)
-> - bundle export/import: [apps/cli/src/bundle.ts](/root/cchistory/apps/cli/src/bundle.ts)
-> - source replacement ingest: [packages/storage/src/ingest/source-payload.ts](/root/cchistory/packages/storage/src/ingest/source-payload.ts)
+> - source probing: [packages/source-adapters/src/core/legacy.ts](../../packages/source-adapters/src/core/legacy.ts)
+> - bundle export/import: [apps/cli/src/bundle.ts](../../apps/cli/src/bundle.ts)
+> - source replacement ingest: [packages/storage/src/ingest/source-payload.ts](../../packages/storage/src/ingest/source-payload.ts)
 
 # Scope
 This design covers multi-host reporting, targeted collection, and staged rollout, while explicitly avoiding a general-purpose remote execution system.

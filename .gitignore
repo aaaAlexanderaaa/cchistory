@@ -63,5 +63,5 @@ coverage/
 *.tsbuildinfo
 
 # Review / analysis artifacts
-.review/
+.reviews/
 .pnpm-store/

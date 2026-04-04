@@ -4,7 +4,7 @@ import { realpathSync } from "node:fs";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import type { runCli as mainRunCli } from "./main.js";
-import { installRuntimeWarningFilter } from "@cchistory/storage";
+import { installRuntimeWarningFilter } from "@cchistory/storage/runtime-warning-filter";
 
 installRuntimeWarningFilter();
 

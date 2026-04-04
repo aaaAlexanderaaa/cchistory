@@ -15,7 +15,7 @@ import type {
   SourcePlatform,
   StageKind,
 } from "@cchistory/domain";
-import { normalizeLocalPathIdentity, stableId, nowIso } from "@cchistory/domain";
+import { normalizeLocalPathIdentity, stableId, nowIso, minIso, maxIso } from "@cchistory/domain";
 import { getPlatformAdapter } from "../platforms/registry.js";
 import { getBuiltinMaskTemplates } from "../masks.js";
 import { firstNonEmptyTrimmedLineFromBuffer } from "./jsonl-records.js";
@@ -25,6 +25,7 @@ export const RULE_VERSION = "2026-03-10.1";
 const execFileAsync = promisify(execFile);
 const gitProjectEvidenceCache = new Map<string, Promise<GitProjectEvidence | undefined>>();
 const CLAUDE_INTERRUPTION_MARKERS = new Set([
+  "[Request interrupted by user]",
   "I'll stop here for now.",
   "I'll stop here to avoid making too many changes at once.",
   "Stopping here to let you review the changes.",
@@ -618,25 +619,7 @@ export function coerceIso(value: unknown): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-export function minIso(left: string | undefined, right: string | undefined): string | undefined {
-  if (!left) {
-    return right;
-  }
-  if (!right) {
-    return left;
-  }
-  return left < right ? left : right;
-}
-
-export function maxIso(left: string | undefined, right: string | undefined): string | undefined {
-  if (!left) {
-    return right;
-  }
-  if (!right) {
-    return left;
-  }
-  return left > right ? left : right;
-}
+export { minIso, maxIso };
 
 export function asString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
@@ -797,6 +780,8 @@ export function extractTokenUsage(value: unknown, depth = 0): TokenUsageMetrics 
     value.token_count,
     value.tokenCount,
     value.metadata,
+    value.last_token_usage,
+    value.lastTokenUsage,
   ]) {
     nestedUsage = mergeTokenUsageMetrics(nestedUsage, extractTokenUsage(nested, depth + 1));
   }
@@ -820,7 +805,7 @@ export function extractCumulativeTokenUsage(value: unknown, depth = 0): TokenUsa
 }
 
 export function normalizeTokenUsageObject(value: Record<string, unknown>): TokenUsageMetrics | undefined {
-  const input =
+  const rawInput =
     asNumber(value.input_tokens) ??
     asNumber(value.inputTokens) ??
     asNumber(value.prompt_tokens) ??
@@ -842,27 +827,64 @@ export function normalizeTokenUsageObject(value: Record<string, unknown>): Token
     asNumber(value.total_token_count) ??
     asNumber(value.totalTokenCount);
 
-  const cacheRead = asNumber(value.cache_read_input_tokens) ?? asNumber(value.cacheReadInputTokens);
-  const cacheCreation = asNumber(value.cache_creation_input_tokens) ?? asNumber(value.cacheCreationInputTokens);
-  const cachedInput = asNumber(value.cached_input_tokens) ?? asNumber(value.cachedInputTokens);
-  const reasoningOutput = asNumber(value.reasoning_output_tokens) ?? asNumber(value.reasoningOutputTokens);
+  const rawCacheRead =
+    asNumber(value.cache_read_input_tokens) ??
+    asNumber(value.cacheReadInputTokens) ??
+    asNumber(value.cacheReadTokens) ??
+    asNumber(value.cache_read_tokens);
+  const rawCacheCreation =
+    asNumber(value.cache_creation_input_tokens) ??
+    asNumber(value.cacheCreationInputTokens) ??
+    asNumber(value.cacheCreationTokens) ??
+    asNumber(value.cache_creation_tokens);
+  const rawCachedInput = asNumber(value.cached_input_tokens) ?? asNumber(value.cachedInputTokens);
+  const reasoningOutput =
+    asNumber(value.reasoning_output_tokens) ??
+    asNumber(value.reasoningOutputTokens) ??
+    asNumber(value.thinkingTokens) ??
+    asNumber(value.thinking_tokens);
 
   if (
-    input === undefined &&
+    rawInput === undefined &&
     output === undefined &&
     total === undefined &&
-    cacheRead === undefined &&
-    cacheCreation === undefined &&
-    cachedInput === undefined &&
+    rawCacheRead === undefined &&
+    rawCacheCreation === undefined &&
+    rawCachedInput === undefined &&
     reasoningOutput === undefined
   ) {
     return undefined;
   }
 
+  // When cached_input_tokens is given but cache_read/cache_creation are not,
+  // the platform reports cached as a lump sum (e.g. Codex). Map it to cache_read
+  // and subtract from input_tokens to yield non-cached input.
+  let cacheRead = rawCacheRead;
+  let cacheCreation = rawCacheCreation;
+  let input = rawInput;
+  let cachedInput = rawCachedInput;
+
+  if (cachedInput !== undefined && cacheRead === undefined && cacheCreation === undefined) {
+    cacheRead = cachedInput;
+    if (input !== undefined) {
+      input = input - cachedInput;
+    }
+  }
+
+  // Derive cached_input_tokens when not directly provided but cache_read/cache_creation are
+  if (cachedInput === undefined && (cacheRead !== undefined || cacheCreation !== undefined)) {
+    cachedInput = (cacheCreation ?? 0) + (cacheRead ?? 0);
+  }
+
+  // Compute total including cache tokens: input + output + cache_creation + cache_read
+  const computedTotal =
+    total ??
+    sumDefinedNumbers(input, output, cacheCreation, cacheRead);
+
   return {
     input_tokens: input,
     output_tokens: output,
-    total_tokens: total ?? sumDefinedNumbers(input, output),
+    total_tokens: computedTotal,
     cache_read_input_tokens: cacheRead,
     cache_creation_input_tokens: cacheCreation,
     cached_input_tokens: cachedInput,

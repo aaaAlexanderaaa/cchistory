@@ -25,7 +25,6 @@ This review is based on the repository-visible evidence that already exists toda
 - `packages/source-adapters/src/platforms/lobechat.ts`
 - `packages/source-adapters/src/core/legacy.ts`
 - `packages/source-adapters/src/index.test.ts`
-- `docs/design/REAL_SOURCE_ARCHIVE_REVIEW_2026-03-31.md`
 - `docs/design/CURRENT_RUNTIME_SURFACE.md`
 - `docs/design/SELF_HOST_V1_RELEASE_GATE.md`
 - `docs/sources/README.md`
@@ -40,7 +39,7 @@ This review is based on the repository-visible evidence that already exists toda
 
 ### What is still missing
 
-- No reviewed real LobeHub/LobeChat transcript or export sample is present in `.realdata/`; the 2026-03-31 archive review explicitly recorded zero observed LobeChat transcript data.
+- No reviewed real LobeHub/LobeChat transcript or export sample is present in `.realdata/`; previous archive reviews recorded zero observed LobeChat transcript data.
 - No sanitized `mock_data/` corpus currently backs the LobeChat parser; the only regression coverage is a synthetic fixture created inside the source-adapter test file.
 - No machine-readable stable validation basis exists for LobeChat, so it cannot satisfy Gate 5 today.
 - The current default root candidate `~/.config/lobehub-storage` and broad `.json` matcher are still unverified against a reviewed real local sample, which means they must not be treated as promotion-ready evidence.

@@ -4,11 +4,9 @@
 
 - This document is the design lock for product direction and system
   architecture.
-- It supersedes the product-definition portions of
-  `archive/docs/ARCHITECTURE.md` and the UX direction in
-  `archive/docs/plans/2026-03-06-conversation-ux-overhaul.md`.
-- Historical API and operations references remain archived in
-  `archive/docs/API_GUIDE.md` and `archive/docs/OPERATIONS.md`.
+- It supersedes all prior product-definition and UX-direction documents.
+- Historical API and operations references from earlier drafts have been
+  retired.
 
 ## 1. Project Essence
 

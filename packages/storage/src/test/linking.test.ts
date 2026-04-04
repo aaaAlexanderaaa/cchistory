@@ -84,7 +84,7 @@ test("derived project linker commits repo continuity and preserves workspace-onl
     storage.replaceSourcePayload(
       createFixturePayload("src-1", "Turn 1", "sr-1", {
         projectObservation: {
-          workspacePath: "/workspace/a",
+          workspacePath: "/workspace/repo",
           repoFingerprint: sharedFingerprint,
           repoRemote: "https://github.com/org/repo",
         },
@@ -92,8 +92,10 @@ test("derived project linker commits repo continuity and preserves workspace-onl
     );
     storage.replaceSourcePayload(
       createFixturePayload("src-2", "Turn 2", "sr-2", {
+        turnId: "turn-2",
+        sessionId: "session-2",
         projectObservation: {
-          workspacePath: "/workspace/b",
+          workspacePath: "/workspace/repo",
           repoFingerprint: sharedFingerprint,
           repoRemote: "https://github.com/org/repo",
         },

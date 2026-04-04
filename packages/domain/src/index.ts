@@ -1019,17 +1019,6 @@ export function localPathIdentitiesMatch(left: string | undefined, right: string
   return Boolean(normalizedLeft && normalizedRight && normalizedLeft === normalizedRight);
 }
 
-function decodeUriPath(value: string): string {
-  if (!/%[0-9a-f]{2}/iu.test(value)) {
-    return value;
-  }
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
 function trimTrailingSlash(value: string): string {
   if (value === "/" || value === "//" || /^[a-z]:\/$/u.test(value)) {
     return value;
@@ -1119,4 +1108,41 @@ export function stableId(...parts: string[]): string {
 /** Current wall-clock time as an ISO-8601 string. */
 export function nowIso(): string {
   return new Date().toISOString();
+}
+
+/** Return the earlier of two optional ISO-8601 timestamps (or the defined one). */
+export function minIso(left: string | undefined, right: string | undefined): string | undefined {
+  if (!left) {
+    return right;
+  }
+  if (!right) {
+    return left;
+  }
+  return left < right ? left : right;
+}
+
+/** Return the later of two optional ISO-8601 timestamps (or the defined one). */
+export function maxIso(left: string | undefined, right: string | undefined): string | undefined {
+  if (!left) {
+    return right;
+  }
+  if (!right) {
+    return left;
+  }
+  return left > right ? left : right;
+}
+
+/**
+ * Decode percent-encoded segments in a URI path.  Returns the original
+ * string when no encoded sequences are detected or decoding fails.
+ */
+export function decodeUriPath(value: string): string {
+  if (!/%[0-9a-f]{2}/iu.test(value)) {
+    return value;
+  }
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }

@@ -8,9 +8,9 @@
 
 ## Why This Exists
 
-`docs/design/E2E_2_HLD_USER_JOURNEY_COVERAGE.md` already records `J7-supply-managed-api-read` as a truthful managed-runtime/manual journey, and `BACKLOG.md` already owns the future execution of that diary under `R31-KR2`.
+`BACKLOG.md` already owns the future execution of the `J7-supply-managed-api-read` managed-runtime/manual diary under `R31-KR2`.
 
-What was still missing was the stable review contract that sits between those two things:
+What was still missing was the stable review contract:
 
 - one place that states the exact user-started preconditions,
 - one place that names the minimum route chain to review,
@@ -123,23 +123,9 @@ Every managed API review diary should record at least:
 - evidence refs (JSON snippets, curl output, screenshots, terminal logs)
 - backlog action or explicit statement that no follow-up was needed
 
-## Friction Categories
+## Friction Categories / Severity Guidance
 
-Use the same review language already used elsewhere in repository-owned manual reviews:
-
-- `Discoverability`
-- `Readability`
-- `Traceability`
-- `Guardrail truthfulness`
-- `Workflow overhead`
-- `Parity drift`
-
-## Severity Guidance
-
-- `S0`: cosmetic only; no backlog follow-up needed
-- `S1`: noticeable friction, but the API journey still succeeds
-- `S2`: misleading or high-friction behavior worth backlog ownership
-- `S3`: canonical managed-runtime read failure or semantic mismatch
+> Friction categories and severity scale are defined in [`OPERATOR_REVIEW_RUBRIC.md`](./OPERATOR_REVIEW_RUBRIC.md).
 
 ## Relationship To Existing Proof
 

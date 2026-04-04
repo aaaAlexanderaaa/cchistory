@@ -12,21 +12,23 @@ function resolveOpenClawHome(baseDir: string): string {
 
 async function listOpenClawCompanionEvidencePaths(baseDir: string): Promise<string[]> {
   const companionPaths = new Set<string>();
-  const normalizedBaseName = path.basename(baseDir);
   const agentRoots: string[] = [];
 
-  if (normalizedBaseName === "agents") {
-    try {
-      for (const entry of await fs.readdir(baseDir, { withFileTypes: true })) {
-        if (entry.isDirectory()) {
-          agentRoots.push(path.join(baseDir, entry.name));
-        }
+  try {
+    const entries = await fs.readdir(baseDir, { withFileTypes: true });
+    const subdirs = entries.filter((entry) => entry.isDirectory());
+    const hasAgentSubdirs = subdirs.some((entry) => entry.name === "agent" || entry.name === "sessions");
+
+    if (path.basename(baseDir) === "agents" || !hasAgentSubdirs) {
+      for (const entry of subdirs) {
+        agentRoots.push(path.join(baseDir, entry.name));
       }
-    } catch {
-      return [];
     }
-  } else {
-    agentRoots.push(baseDir);
+    if (hasAgentSubdirs || subdirs.length === 0) {
+      agentRoots.push(baseDir);
+    }
+  } catch {
+    return [];
   }
 
   for (const agentRoot of agentRoots) {

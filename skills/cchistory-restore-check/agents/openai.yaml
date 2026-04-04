@@ -1,4 +1,0 @@
-interface:
-  display_name: "CCHistory Restore Check"
-  short_description: "Verify restored store readability"
-  default_prompt: "Use $cchistory-restore-check to verify a restored CCHistory store through the canonical read-only workflow."

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type {
   RemoteAgentAdminSummary,
@@ -53,7 +54,9 @@ export function registerAgentRoutes(app: FastifyInstance, context: AgentRoutesCo
     }
 
     const body = (request.body ?? {}) as RemoteAgentPairRequest;
-    if (body.pairing_token !== context.agentPairingToken) {
+    const a = Buffer.from(body.pairing_token);
+    const b = Buffer.from(context.agentPairingToken);
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
       reply.code(401);
       return { error: "Invalid pairing token." };
     }

@@ -22,7 +22,6 @@ It answers four questions that other project documents do not:
 | `docs/ROADMAP.md` | directional priorities | source of objectives to decompose |
 | `BACKLOG.md` | living work surface | where decomposed objectives, KRs, and tasks live |
 | `AGENTS.md` | repository interaction rules and build commands | constrains how pipeline phases execute |
-| `tasks.csv` | historical KR ledger | reference only; not the active backlog |
 
 ## How An Agent Enters The Pipeline
 
@@ -542,9 +541,7 @@ The release gate is satisfied when:
 
 ## Backlog Format
 
-The living backlog lives in `BACKLOG.md` at the repository root. It replaces
-`tasks.csv` as the active work surface. `tasks.csv` remains as historical
-reference for the 2026-03 local-source slice.
+The living backlog lives in `BACKLOG.md` at the repository root.
 
 ### Structure
 

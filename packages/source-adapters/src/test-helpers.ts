@@ -51,7 +51,7 @@ export async function seedSupportedSourceFixtures(tempRoot: string): Promise<Sou
   await mkdir(ampDir, { recursive: true });
 
   await writeFile(
-    path.join(codexDir, "session.jsonl"),
+    path.join(codexDir, "rollout-2026-03-09T00-00-00-codex-session-1.jsonl"),
     [
       {
         timestamp: "2026-03-09T00:00:00.000Z",
@@ -328,7 +328,7 @@ export async function seedMultiTurnCodexFixture(tempRoot: string): Promise<Sourc
   await mkdir(codexDir, { recursive: true });
 
   await writeFile(
-    path.join(codexDir, "session.jsonl"),
+    path.join(codexDir, "rollout-2026-03-09T00-00-00-codex-fixture.jsonl"),
     [
       {
         timestamp: "2026-03-09T07:00:00.000Z",
@@ -430,7 +430,7 @@ export async function seedCodexInjectedScaffoldFixture(tempRoot: string): Promis
   await mkdir(codexDir, { recursive: true });
 
   await writeFile(
-    path.join(codexDir, "session.jsonl"),
+    path.join(codexDir, "rollout-2026-03-09T00-00-00-codex-fixture.jsonl"),
     [
       {
         timestamp: "2026-03-09T08:00:00.000Z",
@@ -479,7 +479,7 @@ export async function seedCodexInjectedOnlyFixture(tempRoot: string): Promise<So
   await mkdir(codexDir, { recursive: true });
 
   await writeFile(
-    path.join(codexDir, "session.jsonl"),
+    path.join(codexDir, "rollout-2026-03-09T00-00-00-codex-fixture.jsonl"),
     [
       {
         timestamp: "2026-03-09T08:10:00.000Z",
@@ -569,7 +569,7 @@ export async function seedWindowsNormalizedWorkspaceFixtures(tempRoot: string): 
   await mkdir(ampDir, { recursive: true });
 
   await writeFile(
-    path.join(codexDir, "session.jsonl"),
+    path.join(codexDir, "rollout-2026-03-09T00-00-00-codex-fixture.jsonl"),
     [
       {
         timestamp: "2026-03-09T10:00:00.000Z",
@@ -679,7 +679,7 @@ export async function seedNormalizedWorkspaceFixtures(tempRoot: string): Promise
   await mkdir(ampDir, { recursive: true });
 
   await writeFile(
-    path.join(codexDir, "session.jsonl"),
+    path.join(codexDir, "rollout-2026-03-09T00-00-00-codex-fixture.jsonl"),
     [
       {
         timestamp: "2026-03-09T10:00:00.000Z",
@@ -794,7 +794,7 @@ export async function seedRepoEvidenceFixtures(tempRoot: string): Promise<Source
   await mkdir(ampDir, { recursive: true });
 
   await writeFile(
-    path.join(codexDir, "session.jsonl"),
+    path.join(codexDir, "rollout-2026-03-09T00-00-00-codex-fixture.jsonl"),
     [
       {
         timestamp: "2026-03-09T11:00:00.000Z",
@@ -904,7 +904,7 @@ export async function seedTokenProjectionFixtures(tempRoot: string): Promise<Sou
   await mkdir(ampDir, { recursive: true });
 
   await writeFile(
-    path.join(codexDir, "session.jsonl"),
+    path.join(codexDir, "rollout-2026-03-09T00-00-00-codex-fixture.jsonl"),
     [
       {
         timestamp: "2026-03-10T00:00:00.000Z",
@@ -1144,7 +1144,7 @@ export async function seedMultiTurnCodexTokenFixture(tempRoot: string): Promise<
   await mkdir(codexDir, { recursive: true });
 
   await writeFile(
-    path.join(codexDir, "session.jsonl"),
+    path.join(codexDir, "rollout-2026-03-09T00-00-00-codex-fixture.jsonl"),
     [
       {
         timestamp: "2026-03-10T04:00:00.000Z",
@@ -1267,7 +1267,7 @@ export async function seedMultiReplyCodexTokenFixture(tempRoot: string): Promise
   await mkdir(codexDir, { recursive: true });
 
   await writeFile(
-    path.join(codexDir, "session.jsonl"),
+    path.join(codexDir, "rollout-2026-03-09T00-00-00-codex-fixture.jsonl"),
     [
       {
         timestamp: "2026-03-10T05:00:00.000Z",
@@ -1411,7 +1411,7 @@ export async function seedCodexCumulativeTokenFixture(tempRoot: string): Promise
   await mkdir(codexDir, { recursive: true });
 
   await writeFile(
-    path.join(codexDir, "session.jsonl"),
+    path.join(codexDir, "rollout-2026-03-09T00-00-00-codex-fixture.jsonl"),
     [
       {
         timestamp: "2026-03-10T06:00:00.000Z",

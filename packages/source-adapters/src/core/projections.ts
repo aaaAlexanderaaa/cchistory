@@ -520,6 +520,67 @@ export function buildTurnContext(
     }
   }
 
+  // Apply token_usage_signal atoms to the most recent preceding assistant reply.
+  // Each signal is associated with the reply that precedes it in the atom sequence.
+  if (assistantReplies.length > 0) {
+    // Build a map: replyIndex → [signalAtoms]
+    const signalsByReply = new Map<number, ConversationAtom[]>();
+    let currentReplyIndex = -1;
+    for (const atom of contextAtoms) {
+      if (atom.actor_kind === "assistant" && atom.content_kind === "text" && atom.display_policy !== "hide") {
+        currentReplyIndex++;
+      } else if (
+        atom.content_kind === "meta_signal" &&
+        atom.payload.signal_kind === "token_usage_signal" &&
+        currentReplyIndex >= 0
+      ) {
+        let signals = signalsByReply.get(currentReplyIndex);
+        if (!signals) {
+          signals = [];
+          signalsByReply.set(currentReplyIndex, signals);
+        }
+        signals.push(atom);
+      }
+    }
+
+    for (const [replyIndex, signals] of signalsByReply.entries()) {
+      const reply = assistantReplies[replyIndex];
+      if (!reply || signals.length === 0) {
+        continue;
+      }
+
+      // Check if signals carry delta_token_usage (cumulative mode)
+      const hasDeltas = signals.some((s) => isObject(s.payload.delta_token_usage));
+      let resolvedUsage: TokenUsageMetrics | undefined;
+
+      if (hasDeltas) {
+        // Sum all delta_token_usage values
+        for (const signal of signals) {
+          const delta = extractTokenUsageFromPayload(
+            isObject(signal.payload.delta_token_usage) ? { token_usage: signal.payload.delta_token_usage } : {},
+          );
+          resolvedUsage = mergeTokenUsageMetrics(resolvedUsage, delta);
+        }
+      } else {
+        // Use the LAST signal's token_usage directly
+        const lastSignal = signals.at(-1)!;
+        resolvedUsage = extractTokenUsageFromPayload(lastSignal.payload);
+      }
+
+      if (resolvedUsage) {
+        reply.token_usage = resolvedUsage;
+        reply.token_count = resolvedUsage.total_tokens ?? reply.token_count;
+        if (resolvedUsage.model && reply.model === "unknown") {
+          reply.model = resolvedUsage.model;
+        }
+        if (!reply.stop_reason) {
+          const lastSignal = signals.at(-1)!;
+          reply.stop_reason = extractStopReasonFromPayload(lastSignal.payload);
+        }
+      }
+    }
+  }
+
   const lastAssistantReplyId = () => assistantReplies.at(-1)?.id ?? stableId("assistant-reply", draft.id, "synthetic");
   for (const atom of contextAtoms) {
     if (atom.content_kind !== "tool_call" || atom.display_policy === "hide") {
@@ -736,6 +797,3 @@ export function extractCanonicalFallback(segments: readonly DisplaySegment[]): s
     .trim();
 }
 
-function asBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined;
-}

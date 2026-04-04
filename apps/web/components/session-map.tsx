@@ -20,7 +20,7 @@ import {
   summarizeTurnsTokenUsage,
 } from '@/lib/token-usage'
 import { cn } from '@/lib/utils'
-import { localPathIdentitiesMatch } from '@cchistory/domain'
+import { localPathIdentitiesMatch } from '@cchistory/presentation'
 import type { ProjectIdentity, Session, TokenUsageSummary, UserTurn } from '@/lib/types'
 import { formatSourcePlatform, SessionBadge } from './session-badge'
 

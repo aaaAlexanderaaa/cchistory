@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import process from "node:process";
 import {
   getDefaultSources,
   discoverDefaultSourcesForHost,
@@ -40,7 +41,7 @@ import { createStatsOverviewOutput } from "./stats.js";
 
 export async function handleSync(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
   if (hasFlag(parsed, "dry-run")) {
-    return handleSyncDryRun(parsed);
+    return handleSyncDryRun(parsed, io);
   }
 
   const layout = resolveStoreLayout({
@@ -92,7 +93,7 @@ export async function handleSync(parsed: ParsedArgs, io: CliIo): Promise<Command
   }
 }
 
-export async function handleSyncDryRun(parsed: ParsedArgs): Promise<CommandOutput> {
+export async function handleSyncDryRun(parsed: ParsedArgs, io?: CliIo): Promise<CommandOutput> {
   const sourceRefs = getFlagValues(parsed, "source");
   const discoveries = applySourceDiscoverySelection(
     discoverDefaultSourcesForHost({ includeMissing: true }),
@@ -100,9 +101,16 @@ export async function handleSyncDryRun(parsed: ParsedArgs): Promise<CommandOutpu
   );
   const availableCount = discoveries.filter((entry) => entry.selected_exists).length;
 
+  const layout = resolveStoreLayout({
+    cwd: io?.cwd ?? process.cwd(),
+    storeArg: getFlag(parsed, "store"),
+    dbArg: getFlag(parsed, "db"),
+  });
+
   return {
     text: [
       `Dry run: ${availableCount}/${discoveries.length} supported source(s) currently available`,
+      `Store: ${layout.dbPath}`,
       "",
       renderTable(
         ["Source", "Slot", "Platform", "Selected Path", "Exists", "Discovered Paths"],
@@ -118,6 +126,7 @@ export async function handleSyncDryRun(parsed: ParsedArgs): Promise<CommandOutpu
     ].join("\n"),
     json: {
       kind: "sync-dry-run",
+      store: layout.dbPath,
       sources: discoveries,
     },
   };

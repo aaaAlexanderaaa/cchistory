@@ -1,4 +1,0 @@
-interface:
-  display_name: "CCHistory Backup Workflow"
-  short_description: "Preview and create portable backups"
-  default_prompt: "Use $cchistory-backup-workflow to preview and create a canonical CCHistory backup bundle."

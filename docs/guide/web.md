@@ -18,9 +18,9 @@ The web server listens on port **8085** and expects the API to be available at p
 
 Use this flow when you want to inspect the canonical seeded V1 acceptance journey through the web UI without mutating the repository's default `.cchistory/` store.
 
-The stable manual-review checklist now lives in `docs/design/R27_USER_STARTED_WEB_REVIEW_CHECKLIST.md`. Use this guide for the runtime steps, and use the checklist note for required observations, evidence capture, and friction logging.
+The seeded web review checklist is documented inline below. Use the Setup and Review Checks sections for runtime steps, and the Evidence Capture section for required observations, evidence capture, and friction logging.
 
-That checklist is the contract, not the completed diary: the actual recorded seeded web review remains blocked manual work under `R31-KR1` until a user starts the canonical services and performs the review.
+The actual recorded seeded web review remains blocked manual work under `R31-KR1` until a user starts the canonical services and performs the review.
 
 ### Setup
 
@@ -46,7 +46,7 @@ CCHISTORY_API_DATA_DIR=/tmp/cchistory-v1-web-review pnpm services:start
 
 ### Evidence Capture
 
-Record at least the seeded store path, the service-start command, which checks passed or failed, any screenshots or notes for confusing states, and any friction using the `Discoverability`, `Readability`, `Traceability`, `Guardrail truthfulness`, `Workflow overhead`, or `Parity drift` labels from `docs/design/R27_USER_STARTED_WEB_REVIEW_CHECKLIST.md`.
+Record at least the seeded store path, the service-start command, which checks passed or failed, any screenshots or notes for confusing states, and any friction using these review labels: `Discoverability`, `Readability`, `Traceability`, `Guardrail truthfulness`, `Workflow overhead`, or `Parity drift`.
 
 ### Shutdown
 

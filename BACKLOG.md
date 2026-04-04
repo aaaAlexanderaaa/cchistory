@@ -1,7 +1,6 @@
 # Backlog
 
-This is the living work surface for CCHistory. It replaces `tasks.csv` as the
-active backlog. Agents must read this file at the start of every session.
+This is the living work surface for CCHistory and the active backlog. Agents must read this file at the start of every session.
 
 For the operational workflow that governs how objectives and tasks are executed,
 see `PIPELINE.md`.
@@ -22,7 +21,7 @@ No executable tasks are currently available for autonomous agent work.
 | R31 - Managed-Runtime Manual Review Diaries | active | Waiting for user to start canonical services |
 | R35 - Managed Remote-Agent Manual Review | active | Waiting for user to start canonical API service |
 
-231 completed objectives have been archived to `BACKLOG_HISTORY.md`.
+231 completed objectives were archived and subsequently removed during repository cleanup.
 
 ---
 
@@ -96,7 +95,7 @@ review contracts for the seeded web slice (`R27`) and remote-agent workflows
 (`R29`), but it still does not have backlog-owned execution records for the two
 highest-value managed-runtime journeys that remain outside the current automated
 bar: (1) the seeded web spot-check with diary capture from `R22`, and (2) the
-managed API read journey `J7` from `E2E_2_HLD_USER_JOURNEY_COVERAGE.md`. These
+managed API read journey `J7` as defined in `docs/design/R31_MANAGED_API_READ_DIARY_CONTRACT.md`. These
 are not agent-executable in this environment because they depend on user-started
 services, but they should still be explicitly owned instead of remaining only as
 design-note intent.
@@ -113,7 +112,7 @@ services.
   review store, one diary records the exact startup command, required checks
   across `Projects`, `Search`, and `Sources`, observed friction, and resulting
   backlog follow-up if needed.
-  Artifact: future web-review diary note using `docs/design/R27_USER_STARTED_WEB_REVIEW_CHECKLIST.md`
+  Artifact: future web-review diary note using the seeded web review checklist in `docs/guide/web.md`
 
 ### KR: R31-KR2 Managed API read journey is explicitly owned
 Status: open
@@ -126,7 +125,7 @@ manual validation path once a user-started API service is available.
   indexed store, one diary records the route chain, observable parity with the
   canonical store objects, and any friction or drift that should become backlog
   work.
-  Artifact: future managed-runtime API review note aligned with `docs/design/E2E_2_HLD_USER_JOURNEY_COVERAGE.md`
+  Artifact: future managed-runtime API review note aligned with `docs/design/R31_MANAGED_API_READ_DIARY_CONTRACT.md`
 
 ---
 

@@ -14,7 +14,7 @@ import {
   fromJson,
   incrementArtifactRevisionId,
   nowIso,
-  stableId,
+  compositeKey,
   toJson,
   uniqueStrings,
 } from "./utils.js";
@@ -232,7 +232,7 @@ export function performDeleteProject(params: {
       const insertCoverage = db.prepare("INSERT INTO artifact_coverage (id, artifact_id, turn_id, payload_json) VALUES (?, ?, ?, ?)");
       for (const turnId of nextArtifact.source_turn_refs) {
         const coverage: ArtifactCoverageRecord = {
-          id: stableId("artifact-coverage", nextArtifact.artifact_id, turnId),
+          id: compositeKey("artifact-coverage", nextArtifact.artifact_id, turnId),
           artifact_id: nextArtifact.artifact_id,
           artifact_revision_id: nextArtifact.artifact_revision_id,
           turn_id: turnId,

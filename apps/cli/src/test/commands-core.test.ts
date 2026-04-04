@@ -36,9 +36,10 @@ test("sync, ls, search, and stats usage render human-readable output for real so
 test("pnpm-style leading -- is ignored before the command name", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-"));
   try {
-    const result = await runCliCapture(["--", "ls", "sources", "--version"], tempRoot);
+    const result = await runCliCapture(["--", "discover", "--showall"], tempRoot);
     // Should not fail or complain about unknown option '--'
     assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /Codex|Claude|Cursor/i);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

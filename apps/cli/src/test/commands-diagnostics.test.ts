@@ -60,7 +60,7 @@ test("templates prints format profiles without opening a store", async () => {
   try {
     const profiles = await runCliJson<Array<{ id: string; family: string }>>(["templates"], tempRoot);
     assert.ok(profiles.length > 0);
-    assert.ok(profiles.some((profile) => profile.family === "local_coding_agent"));
+    assert.ok(profiles.some((profile) => profile.family === "local_runtime_sessions"));
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

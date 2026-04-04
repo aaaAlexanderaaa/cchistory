@@ -526,7 +526,7 @@ test("entrypoint can render non-interactive full snapshot without mutating the i
   const originalHome = process.env.HOME;
 
   try {
-    await writeCodexSessionFixture(tempDir, "session.jsonl", {
+    await writeCodexSessionFixture(tempDir, "rollout-codex-tui-full-session-1.jsonl", {
       sessionId: "codex-tui-full-session-1",
       cwd: "/workspace/tui-full",
       model: "gpt-5",
@@ -540,7 +540,7 @@ test("entrypoint can render non-interactive full snapshot without mutating the i
     const dbPath = path.join(storeDir, "cchistory.sqlite");
     await seedIndexedCodexStoreFromProbe(tempDir, dbPath);
 
-    await writeCodexSessionFixture(tempDir, "session-2.jsonl", {
+    await writeCodexSessionFixture(tempDir, "rollout-codex-tui-full-session-2.jsonl", {
       sessionId: "codex-tui-full-session-2",
       cwd: "/workspace/tui-full",
       model: "gpt-5",
@@ -585,7 +585,7 @@ test("entrypoint can render non-interactive full snapshot against a missing stor
   const originalHome = process.env.HOME;
 
   try {
-    await writeCodexSessionFixture(tempDir, "session.jsonl", {
+    await writeCodexSessionFixture(tempDir, "rollout-codex-tui-full-missing-store-session-1.jsonl", {
       sessionId: "codex-tui-full-missing-store-session-1",
       cwd: "/workspace/tui-full-missing-store",
       model: "gpt-5",
@@ -619,7 +619,7 @@ test("entrypoint can render combined full search and source-health snapshot with
   const originalHome = process.env.HOME;
 
   try {
-    await writeCodexSessionFixture(tempDir, "session.jsonl", {
+    await writeCodexSessionFixture(tempDir, "rollout-codex-tui-full-health-session-1.jsonl", {
       sessionId: "codex-tui-full-health-session-1",
       cwd: "/workspace/tui-full-health",
       model: "gpt-5",
@@ -633,7 +633,7 @@ test("entrypoint can render combined full search and source-health snapshot with
     const dbPath = path.join(storeDir, "cchistory.sqlite");
     await seedIndexedCodexStoreFromProbe(tempDir, dbPath);
 
-    await writeCodexSessionFixture(tempDir, "session-2.jsonl", {
+    await writeCodexSessionFixture(tempDir, "rollout-codex-tui-full-health-session-2.jsonl", {
       sessionId: "codex-tui-full-health-session-2",
       cwd: "/workspace/tui-full-health",
       model: "gpt-5",

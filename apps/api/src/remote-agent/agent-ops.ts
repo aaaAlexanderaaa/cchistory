@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type {
   RemoteAgentAdminSummary,
   RemoteAgentHeartbeatRequest,
@@ -27,7 +27,9 @@ export function authenticateRemoteAgent(
   if (!record) {
     return undefined;
   }
-  return record.agent_token_sha256 === sha256(agentToken) ? record : undefined;
+  const expected = Buffer.from(record.agent_token_sha256);
+  const actual = Buffer.from(sha256(agentToken));
+  return expected.length === actual.length && timingSafeEqual(expected, actual) ? record : undefined;
 }
 
 export function pairRemoteAgent(input: {

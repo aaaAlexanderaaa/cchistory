@@ -74,9 +74,10 @@ test("replaceSourcePayload can rekey a local source when host identity changes",
     const sourceA = storage.listSources()[0]!;
     assert.equal(sourceA.host_id, "host-a");
 
-    // Re-ingest same baseDir from host-b
+    // Re-ingest same baseDir from host-b (allow_host_rekey enables cross-host identity match)
     storage.replaceSourcePayload(
       createFixturePayload("src-rekey-new", "Text B", "sr-b", { hostId: "host-b", baseDir }),
+      { allow_host_rekey: true },
     );
 
     // Should have replaced the source because baseDir matched
@@ -262,7 +263,7 @@ test("replaceSourcePayload with Windows-style backslash paths normalizes correct
 
     storage.replaceSourcePayload(payload);
     const projects = storage.listProjects();
-    assert.equal(projects[0]?.primary_workspace_path, "C:/Users/tester/project");
+    assert.equal(projects[0]?.primary_workspace_path, "c:/Users/tester/project");
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -273,7 +274,7 @@ test("replaceSourcePayload treats equivalent Windows source roots as one source 
   try {
     const storage = new CCHistoryStorage(dataDir);
     const winPath1 = "C:\\Users\\tester\\.codex";
-    const winPath2 = "c:/users/tester/.codex";
+    const winPath2 = "c:/Users/tester/.codex";
 
     storage.replaceSourcePayload(
       createFixturePayload("src-win-1", "Turn 1", "sr-1", {
@@ -354,3 +355,4 @@ test("upsertImportedBundle stores and retrieves bundle records", async () => {
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+

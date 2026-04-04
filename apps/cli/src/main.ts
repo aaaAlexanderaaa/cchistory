@@ -67,7 +67,9 @@ export interface SyncedSourceSummary {
 export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<number> {
   const parsed = parseArgs(argv);
   const jsonMode = hasFlag(parsed, "json");
-  const [rawCommand, ...restPositionals] = parsed.positionals;
+  // Strip leading "--" (pnpm-style separator) before extracting the command
+  const effectivePositionals = parsed.positionals[0] === "--" ? parsed.positionals.slice(1) : parsed.positionals;
+  const [rawCommand, ...restPositionals] = effectivePositionals;
   const command = normalizeCommand(rawCommand);
 
   if (!command) {

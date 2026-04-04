@@ -14,7 +14,7 @@
     "@cchistory/source-adapters": "workspace:*",
     "@cchistory/storage": "workspace:*",
     "@fastify/cors": "^11.1.0",
-    "fastify": "^5.6.1"
+    "fastify": "^5.8.4"
   },
   "devDependencies": {
     "@types/node": "^24.2.0",

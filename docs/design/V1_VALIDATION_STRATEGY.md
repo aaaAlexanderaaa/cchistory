@@ -80,7 +80,7 @@
 
 | ID | Prerequisite | Contract |
 | --- | --- | --- |
-| `R31-KR1` — Seeded web review diary | User starts API + web services | `docs/design/R27_USER_STARTED_WEB_REVIEW_CHECKLIST.md` |
+| `R31-KR1` — Seeded web review diary | User starts API + web services | Seeded web review checklist in `docs/guide/web.md` |
 | `R31-KR2` — Managed API read diary | User starts API service | `docs/design/R31_MANAGED_API_READ_DIARY_CONTRACT.md` |
 | `R35-KR1` — Remote-agent pair/upload/schedule | User starts API service | `docs/design/R29_REMOTE_AGENT_VALIDATION_CONTRACT.md` |
 | `R35-KR2` — Remote-agent leased-pull | User starts API + creates admin job | `docs/design/R29_REMOTE_AGENT_VALIDATION_CONTRACT.md` |
@@ -104,7 +104,7 @@ When no user-started services are available:
 
 1. Run `pnpm run verify:local-full-read-bundle` as the default local confidence pass.
 2. If that surface changed, run drift guards: `node --test scripts/verify-local-full-read-bundle.test.mjs` and `node --test scripts/verify-cli-artifact.test.mjs scripts/verify-local-full-read-bundle.test.mjs`.
-3. Use `docs/design/R121_CONSOLIDATED_SKEPTICAL_LOCAL_FLOW_DIARY_2026-04-03.md` for contiguous skeptical-user walkthroughs.
+3. Refer to completed skeptical manual review diaries (R121 and others listed in the Completed Manual Review Diaries section below) for contiguous skeptical-user walkthrough patterns.
 4. Keep `R31` and `R35` blocked until the user provides running services.
 5. Do not reopen LobeChat scope without new user-provided real data.
 

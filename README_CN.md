@@ -16,7 +16,7 @@
 
 ---
 
-CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对话，汇聚为统一的、证据保全的数据模型。它从 **Codex、Claude Code、Cursor、AMP、Factory Droid、Antigravity** 等平台的本地会话数据中收集信息，然后按照项目身份进行组织，让你能够跨工具搜索、回顾和分析所有对话内容。
+CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对话，汇聚为统一的、证据保全的数据模型。它从 **11 个 AI 编程助手平台（包括 Claude Code、Cursor、Codex、AMP、Gemini CLI 等）** 的本地会话数据中收集信息（详见[支持平台](#支持平台)），然后按照项目身份进行组织，让你能够跨工具搜索、回顾和分析所有对话内容。
 
 <p align="center">
   <img src="docs/screenshots/web-all-turns.webp" alt="CCHistory Web — 所有对话轮次视图" width="800" />
@@ -332,8 +332,7 @@ cchistory/
 │   └── presentation/           # DTO → UI 类型映射
 ├── scripts/                    # 开发服务、验证与 inspection 辅助脚本
 ├── mock_data/                  # 脱敏的夹具数据集
-├── frontend_demo/              # 导入的 UI/UX 参考应用
-├── archive/                    # 历史 MVP 与参考资料
+├── skills/                     # AI Agent 技能定义与共享契约
 ├── docs/
 │   ├── guide/                  # 用户指南（CLI、API、Web、TUI、inspection、缺陷报告）
 │   ├── sources/                # 已验证数据源的技术说明
@@ -353,13 +352,13 @@ pnpm run build
 NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build
 
 # 运行测试
-pnpm --filter @cchistory/source-adapters test    # 60 个测试
-pnpm --filter @cchistory/storage test            # 75 个测试
-pnpm --filter @cchistory/api-client test         # 9 个测试
-pnpm --filter @cchistory/presentation test       # 12 个测试
-pnpm --filter @cchistory/cli test                # 48 个测试
-pnpm --filter @cchistory/tui test                # 11 个测试
-pnpm --filter @cchistory/api test                # 15 个测试
+pnpm --filter @cchistory/source-adapters test
+pnpm --filter @cchistory/storage test
+pnpm --filter @cchistory/api-client test
+pnpm --filter @cchistory/presentation test
+pnpm --filter @cchistory/cli test
+pnpm --filter @cchistory/tui test
+pnpm --filter @cchistory/api test
 
 # 代码检查
 cd apps/web && pnpm lint

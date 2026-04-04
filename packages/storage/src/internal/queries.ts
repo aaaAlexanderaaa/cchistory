@@ -25,7 +25,7 @@ import { hydrateSourceStatus } from "./source-identity.js";
 import {
   fromJson,
   nowIso,
-  stableId,
+  compositeKey,
   toJson,
 } from "./utils.js";
 

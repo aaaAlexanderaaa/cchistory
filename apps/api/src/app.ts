@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { timingSafeEqual } from "node:crypto";
-import { copyFile, readFile, stat, writeFile } from "node:fs/promises";
+import { copyFile, readFile, rename, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import Fastify, { type FastifyInstance } from "fastify";
@@ -454,8 +454,9 @@ async function writeSourceConfig(
   sourceConfigPath: string,
   config: { overrides: SourceOverrideMap; extras: ManualSourceRecord[] },
 ): Promise<void> {
+  const tmpPath = `${sourceConfigPath}.tmp`;
   await writeFile(
-    sourceConfigPath,
+    tmpPath,
     JSON.stringify(
       {
         version: 2,
@@ -467,6 +468,7 @@ async function writeSourceConfig(
     ),
     "utf8",
   );
+  await rename(tmpPath, sourceConfigPath);
 }
 
 function createManualSourceRecord(

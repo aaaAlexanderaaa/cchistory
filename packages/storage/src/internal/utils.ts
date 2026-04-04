@@ -1,4 +1,4 @@
-import { nowIso } from "@cchistory/domain";
+import { nowIso, normalizeLocalPathIdentity } from "@cchistory/domain";
 
 export { nowIso };
 
@@ -46,8 +46,16 @@ export function fromJson<T>(value: string, context?: string): T {
   }
 }
 
-export function stableId(prefix: string, ...parts: string[]): string {
+export function compositeKey(prefix: string, ...parts: string[]): string {
   return `${prefix}-${parts.join("-").replace(/[^a-zA-Z0-9._-]+/g, "-")}`;
+}
+
+export function normalizePathKey(value: string | undefined): string | undefined {
+  return normalizeLocalPathIdentity(value);
+}
+
+export function asOptionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 export function incrementArtifactRevisionId(currentRevisionId: string): string {

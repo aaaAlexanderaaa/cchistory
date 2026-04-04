@@ -1,4 +1,5 @@
 import type { SourcePlatform } from "@cchistory/domain";
+import { minIso, maxIso } from "@cchistory/domain";
 
 export interface ExtractedSessionSeed {
   sessionId: string;
@@ -335,22 +336,4 @@ function upsertExtractedSeed(target: Map<string, ExtractedSessionSeed>, seed: Ex
   });
 }
 
-function minIso(left: string | undefined, right: string | undefined): string | undefined {
-  if (!left) {
-    return right;
-  }
-  if (!right) {
-    return left;
-  }
-  return left <= right ? left : right;
-}
 
-function maxIso(left: string | undefined, right: string | undefined): string | undefined {
-  if (!left) {
-    return right;
-  }
-  if (!right) {
-    return left;
-  }
-  return left >= right ? left : right;
-}

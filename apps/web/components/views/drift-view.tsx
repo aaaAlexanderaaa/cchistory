@@ -3,7 +3,7 @@
 import type { ReactNode } from 'react'
 import { useMemo, useState } from 'react'
 import { useSWRConfig } from 'swr'
-import { statusRank } from '@cchistory/domain'
+import { statusRank } from '@cchistory/presentation'
 import { cn, formatAbsoluteDateTime, formatRelativeTime } from '@/lib/utils'
 import { SummaryPill } from '@/components/summary-pill'
 import { useDriftQuery, useSourcesQuery } from '@/lib/api'

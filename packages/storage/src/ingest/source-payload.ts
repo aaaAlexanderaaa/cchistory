@@ -79,7 +79,7 @@ export function replaceSourcePayloadWithOptions(
     }
 
     const insertEdge = db.prepare("INSERT INTO atom_edges (id, source_id, session_ref, from_atom_id, to_atom_id, payload_json) VALUES (?, ?, ?, ?, ?, ?)");
-    for (const edge of normalizedPayload.edges) {
+    for (const edge of dedupeByKey(normalizedPayload.edges, (entry) => entry.id)) {
       insertEdge.run(edge.id, normalizedPayload.source.id, edge.session_ref, edge.from_atom_id, edge.to_atom_id, toJson(edge));
     }
 

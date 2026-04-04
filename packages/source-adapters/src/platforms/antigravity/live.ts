@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { normalizeLocalPathIdentity } from "@cchistory/domain";
 import type { ExtractedSessionSeed } from "../../core/conversation-seeds.js";
+import { asString, isObject, truncate } from "../../core/utils.js";
 import { resolveAntigravityRoots } from "../antigravity.js";
 
 const execFileAsync = promisify(execFileCallback);
@@ -716,10 +717,6 @@ function normalizeLocalPath(value: string | undefined): string | undefined {
   return normalized.startsWith("/") || /^[a-z]:/u.test(normalized) ? normalized : undefined;
 }
 
-function truncate(value: string, maxLength: number): string {
-  return value.length > maxLength ? `${value.slice(0, maxLength - 1)}…` : value;
-}
-
 function uniqueNumbers(values: number[]): number[] {
   const seen = new Set<number>();
   const unique: number[] = [];
@@ -746,10 +743,4 @@ function uniqueStrings(values: string[]): string[] {
   return unique;
 }
 
-function asString(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
 
-function isObject(value: unknown): value is Record<string, any> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}

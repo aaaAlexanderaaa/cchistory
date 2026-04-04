@@ -22,8 +22,8 @@ export const codebuddyAdapter: PlatformAdapter = {
   platform: "codebuddy",
   supportTier: "stable",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".codebuddy")],
-  getSourceRoots: (baseDir) => [path.join(baseDir, "projects")],
-  matchesSourceFile: (filePath) => filePath.endsWith(".jsonl") && normalizePath(filePath).includes("/projects/"),
+  getSourceRoots: (baseDir) => [path.join(baseDir, "projects"), baseDir],
+  matchesSourceFile: (filePath) => filePath.endsWith(".jsonl"),
   getCompanionEvidencePaths: (baseDir) => listCodeBuddyCompanionEvidencePaths(baseDir),
 };
 

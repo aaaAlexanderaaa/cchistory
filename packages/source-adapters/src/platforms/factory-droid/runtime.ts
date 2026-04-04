@@ -140,7 +140,7 @@ export function parseFactoryRecord(
             actor_kind: "system",
             origin_kind: "source_meta",
             text: helpers.asString(item.thinking),
-            display_policy: "hide",
+            display_policy: "collapse",
           }),
         );
         continue;

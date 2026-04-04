@@ -6,8 +6,7 @@ import type {
   SourceStatus,
   UserTurnProjection,
 } from "@cchistory/domain";
-import { normalizeLocalPathIdentity } from "@cchistory/domain";
-import { stableId, uniqueStrings } from "../internal/utils.js";
+import { compositeKey, normalizePathKey, uniqueStrings } from "../internal/utils.js";
 
 const FALLBACK_LINKER_RULE_VERSION = "storage-linker-fallback@2026-03-13.1";
 
@@ -56,7 +55,7 @@ export function buildFallbackProjectObservationCandidates(input: {
 
     const observedAt = session.updated_at ?? session.created_at;
     fallbackCandidates.push({
-      id: stableId(
+      id: compositeKey(
         "candidate",
         "project_observation_fallback",
         session.source_id,
@@ -171,8 +170,4 @@ function deriveSourceNativeProjectRefFromOrigin(
   }
 
   return undefined;
-}
-
-function normalizePathKey(value: string | undefined): string | undefined {
-  return normalizeLocalPathIdentity(value);
 }

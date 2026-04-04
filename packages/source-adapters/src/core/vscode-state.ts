@@ -6,6 +6,7 @@ import type {
   SourceDefinition,
   SourcePlatform,
 } from "@cchistory/domain";
+import { minIso, maxIso } from "@cchistory/domain";
 import { extractAntigravityTrajectorySeeds, isAntigravityTrajectoryKey } from "../platforms/antigravity/runtime.js";
 import { buildCursorComposerSeed, buildCursorPromptHistorySeed } from "../platforms/cursor/runtime.js";
 import type { ConversationSeedOptions, ExtractedSessionSeed } from "./conversation-seeds.js";
@@ -284,26 +285,6 @@ function upsertExtractedSeed(
       (left.observedAt ?? "").localeCompare(right.observedAt ?? ""),
     ),
   });
-}
-
-function minIso(left: string | undefined, right: string | undefined): string | undefined {
-  if (!left) {
-    return right;
-  }
-  if (!right) {
-    return left;
-  }
-  return left <= right ? left : right;
-}
-
-function maxIso(left: string | undefined, right: string | undefined): string | undefined {
-  if (!left) {
-    return right;
-  }
-  if (!right) {
-    return left;
-  }
-  return left >= right ? left : right;
 }
 
 function coerceDbText(value: unknown): string | undefined {

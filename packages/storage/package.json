@@ -13,6 +13,10 @@
     "./store-layout": {
       "types": "./dist/store-layout.d.ts",
       "default": "./dist/store-layout.js"
+    },
+    "./runtime-warning-filter": {
+      "types": "./dist/runtime-warning-filter.d.ts",
+      "default": "./dist/runtime-warning-filter.js"
     }
   },
   "scripts": {

@@ -3,7 +3,7 @@ import type {
   ProjectLineageEvent,
   ProjectLinkRevision,
 } from "@cchistory/domain";
-import { stableId } from "../internal/utils.js";
+import { compositeKey } from "../internal/utils.js";
 
 export function assignProjectRevisions(
   nextProjects: ProjectIdentity[],
@@ -26,7 +26,7 @@ export function assignProjectRevisions(
       };
       revisions.push(projectToRevision(initialProject));
       lineageEvents.push({
-        id: stableId("project-lineage", initialProject.project_id, initialProject.project_revision_id, "created"),
+        id: compositeKey("project-lineage", initialProject.project_id, initialProject.project_revision_id, "created"),
         project_id: initialProject.project_id,
         project_revision_id: initialProject.project_revision_id,
         event_kind: "created",
@@ -55,7 +55,7 @@ export function assignProjectRevisions(
     };
     revisions.push(projectToRevision(revisedProject, existing.project_revision_id));
     lineageEvents.push({
-      id: stableId("project-lineage", revisedProject.project_id, nextRevisionId, "revised"),
+      id: compositeKey("project-lineage", revisedProject.project_id, nextRevisionId, "revised"),
       project_id: revisedProject.project_id,
       project_revision_id: nextRevisionId,
       previous_project_revision_id: existing.project_revision_id,
@@ -69,7 +69,7 @@ export function assignProjectRevisions(
       },
     });
     lineageEvents.push({
-      id: stableId("project-lineage", revisedProject.project_id, existing.project_revision_id, "superseded"),
+      id: compositeKey("project-lineage", revisedProject.project_id, existing.project_revision_id, "superseded"),
       project_id: revisedProject.project_id,
       project_revision_id: existing.project_revision_id,
       previous_project_revision_id: nextRevisionId,

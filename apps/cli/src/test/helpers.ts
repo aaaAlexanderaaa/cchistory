@@ -326,7 +326,7 @@ export async function seedCliFixtures(
   await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
   await mkdir(path.join(tempRoot, ".claude", "projects"), { recursive: true });
 
-  await writeCodexSessionFixture(tempRoot, "session.jsonl", {
+  await writeCodexSessionFixture(tempRoot, "rollout-codex-session-1.jsonl", {
     sessionId: "codex-session-1",
     cwd: "/workspace/cchistory",
     model: "gpt-5",
@@ -659,7 +659,7 @@ export async function seedCliDiscoveryFixtures(tempRoot: string): Promise<void> 
 }
 
 export async function overwriteCodexPrompt(tempRoot: string, prompt: string): Promise<void> {
-  await writeCodexSessionFixture(tempRoot, "session.jsonl", {
+  await writeCodexSessionFixture(tempRoot, "rollout-codex-session-1.jsonl", {
     sessionId: "codex-session-1",
     cwd: "/workspace/cchistory",
     model: "gpt-5",

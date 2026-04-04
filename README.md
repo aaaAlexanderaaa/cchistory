@@ -340,8 +340,7 @@ cchistory/
 │   └── presentation/           # DTO → UI type mapping
 ├── scripts/                    # Dev-service, verification, and inspection helpers
 ├── mock_data/                  # Sanitized fixture corpus
-├── frontend_demo/              # Imported UI/UX reference app
-├── archive/                    # Historical MVP and reference material
+├── skills/                     # AI agent skill definitions and shared contracts
 ├── docs/
 │   ├── guide/                  # User-facing guides (CLI, API, Web, TUI, inspection, bug reporting)
 │   ├── sources/                # Technical notes for validated source layouts
@@ -361,13 +360,13 @@ pnpm run build
 NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build
 
 # Run tests
-pnpm --filter @cchistory/source-adapters test    # 60 tests
-pnpm --filter @cchistory/storage test            # 75 tests
-pnpm --filter @cchistory/api-client test         # 9 tests
-pnpm --filter @cchistory/presentation test       # 12 tests
-pnpm --filter @cchistory/cli test                # 48 tests
-pnpm --filter @cchistory/tui test                # 11 tests
-pnpm --filter @cchistory/api test                # 15 tests
+pnpm --filter @cchistory/source-adapters test
+pnpm --filter @cchistory/storage test
+pnpm --filter @cchistory/api-client test
+pnpm --filter @cchistory/presentation test
+pnpm --filter @cchistory/cli test
+pnpm --filter @cchistory/tui test
+pnpm --filter @cchistory/api test
 
 # Lint
 cd apps/web && pnpm lint

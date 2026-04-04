@@ -136,23 +136,9 @@ Every manual remote-agent review should record:
 - evidence refs (stdout, JSON payloads, screenshots, API responses)
 - backlog action or explicit statement that no follow-up was needed
 
-## Friction Categories
+## Friction Categories / Severity Guidance
 
-Use the same categories already established for operator reviews:
-
-- `Discoverability`
-- `Readability`
-- `Traceability`
-- `Guardrail truthfulness`
-- `Workflow overhead`
-- `Parity drift`
-
-## Severity Guidance
-
-- `S0`: cosmetic only
-- `S1`: noticeable friction, workflow still succeeds
-- `S2`: misleading or high-friction behavior worth backlog ownership
-- `S3`: canonical remote-agent workflow failure or semantic mismatch
+> Friction categories and severity scale are defined in [`OPERATOR_REVIEW_RUBRIC.md`](./OPERATOR_REVIEW_RUBRIC.md).
 
 ## Relationship To Existing Rules
 

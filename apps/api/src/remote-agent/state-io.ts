@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type {
   RemoteAgentJobSelector,
@@ -62,8 +62,11 @@ export async function readRemoteAgentState(statePath: string): Promise<Persisted
 }
 
 export async function writeRemoteAgentState(statePath: string, state: PersistedRemoteAgentState): Promise<void> {
+  const serialized = JSON.stringify(state, null, 2);
+  const tmpPath = `${statePath}.tmp`;
   await mkdir(path.dirname(statePath), { recursive: true });
-  await writeFile(statePath, JSON.stringify(state, null, 2), "utf8");
+  await writeFile(tmpPath, serialized, "utf8");
+  await rename(tmpPath, statePath);
 }
 
 function normalizePersistedSourceStates(value: unknown): Record<string, PersistedRemoteAgentSourceState> {
