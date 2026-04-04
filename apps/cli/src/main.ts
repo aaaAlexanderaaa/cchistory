@@ -18,6 +18,10 @@ import {
   renderHelp,
   type ParsedArgs,
 } from "./args.js";
+import { red, yellow } from "./colors.js";
+
+const errorStyle = red;
+const hintStyle = yellow;
 import {
   createStorage,
   openStorage,
@@ -67,6 +71,14 @@ export interface SyncedSourceSummary {
 export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<number> {
   const parsed = parseArgs(argv);
   const jsonMode = hasFlag(parsed, "json");
+
+  // --version / -v
+  if (hasFlag(parsed, "version") || parsed.positionals.includes("-v")) {
+    const version = "0.1.0";
+    printOutput({ text: `cchistory ${version}`, json: { version } }, jsonMode, io);
+    return 0;
+  }
+
   // Strip leading "--" (pnpm-style separator) before extracting the command
   const effectivePositionals = parsed.positionals[0] === "--" ? parsed.positionals.slice(1) : parsed.positionals;
   const [rawCommand, ...restPositionals] = effectivePositionals;
@@ -90,7 +102,13 @@ export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<n
     printOutput(output, jsonMode || command === "query" || command === "templates", io);
     return 0;
   } catch (error) {
-    io.stderr(`${formatError(error)}\n`);
+    const message = formatError(error);
+    io.stderr(`${errorStyle(`Error: ${message}`)}\n`);
+    // If the store wasn't found, add a helpful hint
+    if (message.includes("Store not found")) {
+      io.stderr(`\n${hintStyle("Hint:")} Run \`cchistory sync\` first to ingest data from AI coding tools on this machine.\n`);
+      io.stderr(`${hintStyle("     ")} Run \`cchistory discover\` to see what sources are available.\n`);
+    }
     return 1;
   }
 }
@@ -144,6 +162,9 @@ function normalizeCommand(value: string | undefined): string | undefined {
   if (normalized === "restore") {
     return "restore-check";
   }
+  if (normalized === "help" || normalized === "-h" || normalized === "--help") {
+    return undefined; // triggers help output
+  }
   return normalized;
 }
 
@@ -171,6 +192,7 @@ async function openReadStoreDefault(parsed: ParsedArgs, io: CliIo): Promise<Open
   });
   const readMode = resolveReadMode(parsed);
   if (readMode === "index") {
+    await requireStoreDatabase(baseLayout.dbPath);
     const storage = await openStorage(baseLayout);
     return {
       layout: baseLayout,

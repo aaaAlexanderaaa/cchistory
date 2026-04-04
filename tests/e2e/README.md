@@ -1,6 +1,6 @@
-# E2E Tests
+# Journey Tests
 
-End-to-end journey tests for CCHistory. Each test file exercises a complete user workflow through the CLI and API, using real (or realistically seeded) data.
+Automated journey tests for CCHistory, covering the full user workflow through CLI and API surfaces.
 
 ## Prerequisites
 
@@ -11,35 +11,60 @@ pnpm run build          # build all packages
 ## Running
 
 ```bash
-# All E2E tests
+# All journey tests
 pnpm run test:e2e
 
 # Single journey
 node --test tests/e2e/journey-a-multi-source-recall.test.mjs
 ```
 
+## Test Classification
+
+These tests live under `tests/e2e/` but have different levels of integration:
+
+### Integration tests (Journey A–D)
+
+Data is seeded **in-process** via `CCHistoryStorage.replaceSourcePayload()`, bypassing the parse → link → resolve pipeline. CLI commands run **out-of-process** (real child process). API calls use Fastify's `inject()` (in-process HTTP simulation, not real TCP).
+
+**What they verify:** Cross-surface consistency (CLI and API agree on the same data), command output shape, export/import round-trip, read-only invariant.
+
+**What they don't cover:** Adapter parsing, file discovery, project linking — the most complex and error-prone parts of the pipeline.
+
+### True E2E test (Journey E)
+
+Data starts as **real files on disk** (from `mock_data/`). The test runs `cchistory sync` as a child process, which exercises the full pipeline: discover → parse → link → resolve → store. Five adapters participate (gemini, opencode, openclaw, codebuddy, cursor).
+
+**What it verifies:** That the complete pipeline produces correct sources, sessions, projects, and search results from real file layouts.
+
 ## Test Journeys
 
-| File | Journey | What it validates |
-|------|---------|-------------------|
-| `journey-a-multi-source-recall.test.mjs` | Multi-source project recall | Seeded multi-platform data → project/turn/source listing via CLI and API |
-| `journey-b-search-traceability.test.mjs` | Search → traceability drill-down | FTS search → show turn (with context) → show session → API agreement |
-| `journey-c-readonly-admin.test.mjs` | Read-only admin / source-health | health, ls, restore-check on existing/missing stores; read-only invariant |
-| `journey-d-supply-restore.test.mjs` | Supply / restore readability | export → import → restore-check → search/show on restored store |
-| `journey-e-real-layout.test.mjs` | Real-layout truthfulness | Sync from `mock_data/` real layouts (gemini, opencode, openclaw, codebuddy, cursor) → verify sources, sessions, projects, search, API |
+| File | Type | What it validates |
+|------|------|-------------------|
+| `journey-a-*` | Integration | Multi-source project recall: CLI and API agree on projects, turns, sources |
+| `journey-b-*` | Integration | Search → show turn → show session drill-down chain; context attached |
+| `journey-c-*` | Integration | Health/stats/ls are read-only; missing store handled explicitly |
+| `journey-d-*` | Integration | Export → import → restore-check → search survives round-trip |
+| `journey-e-*` | **E2E** | Real file layouts → sync → verify sources, sessions, projects, search, API |
 
 ## Architecture
 
-- **`helpers.mjs`** — shared utilities: CLI runner (out-of-process), API server lifecycle (programmatic Fastify), temp store setup/teardown, mock data seeding, acceptance payload builder.
+- **`helpers.mjs`** — CLI runner (`execFile`, out-of-process), API server lifecycle (`Fastify.inject`), temp store, mock data seeding, acceptance payload builder.
 - Tests use `node:test` (built-in test runner, Node ≥ 22).
 - Each journey creates an isolated temp directory and tears it down after.
-- Journey A–D use `seedAcceptanceStore()` (in-process storage seeding).
-- Journey E uses `seedRealLayoutHome()` (copies `mock_data/` fixtures into a temp HOME, then runs CLI sync).
+- SQLite experimental warning is suppressed in the test runner process.
+
+## Future improvements
+
+- [ ] Add real HTTP tests (start Fastify on a port, use `fetch()`) for true API E2E
+- [ ] Add more Journey E-style tests for remaining adapters (codex, claude_code, amp)
+- [ ] Add Web E2E tests (Next.js + Playwright)
 
 ## Adding a New Journey
 
 1. Create `journey-f-<name>.test.mjs`
 2. Import helpers from `./helpers.mjs`
 3. Use `createTempRoot()` / `removeTempRoot()` for isolation
-4. Choose seeding strategy: `seedAcceptanceStore()` for controlled data, `seedRealLayoutHome()` for real fixture sync
+4. Choose seeding strategy:
+   - `seedAcceptanceStore()` — for integration tests with controlled data
+   - `seedRealLayoutHome()` — for E2E tests using real file layouts
 5. Assert via `runCliJson()` (CLI) and `apiGet()` (API)

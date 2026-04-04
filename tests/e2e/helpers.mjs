@@ -15,7 +15,18 @@ import { existsSync } from "node:fs";
 import { cp, mkdtemp, rm, readdir, stat, access } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import process from "node:process";
 import { fileURLToPath } from "node:url";
+
+// Suppress the Node.js SQLite experimental warning in the test runner process.
+// CLI child processes already install their own filter; this covers the in-process
+// storage imports used by seedAcceptanceStore() and getStorageClass().
+const _origEmit = process.emitWarning;
+process.emitWarning = (warning, ...args) => {
+  const msg = typeof warning === "string" ? warning : warning?.message;
+  if (msg?.includes("SQLite is an experimental feature")) return;
+  return _origEmit.call(process, warning, ...args);
+};
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "../..");

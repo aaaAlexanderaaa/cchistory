@@ -7,6 +7,7 @@ import {
 } from "@cchistory/domain";
 import type { CCHistoryStorage } from "@cchistory/storage";
 import { type ParsedArgs, getFlag, hasFlag } from "./args.js";
+import { bold, dim, cyan, green, yellow, magenta, blue, heading, muted, id as idColor } from "./colors.js";
 import type { StoreLayout } from "./store.js";
 
 export interface RelatedWorkRollup {
@@ -16,14 +17,14 @@ export interface RelatedWorkRollup {
 
 export function renderTable(headers: string[], rows: string[][]): string {
   if (rows.length === 0) {
-    return "(no rows)";
+    return muted("(no rows)");
   }
 
   const widths = headers.map((header, index) =>
     Math.max(header.length, ...rows.map((row) => (row[index] ?? "").length)),
   );
-  const headerLine = headers.map((header, index) => header.padEnd(widths[index] ?? header.length)).join("  ");
-  const separatorLine = widths.map((width) => "-".repeat(width)).join("  ");
+  const headerLine = headers.map((header, index) => bold(header.padEnd(widths[index] ?? header.length))).join("  ");
+  const separatorLine = dim(widths.map((width) => "-".repeat(width)).join("  "));
   const rowLines = rows.map((row) => row.map((cell, index) => (cell ?? "").padEnd(widths[index] ?? 0)).join("  "));
   return [headerLine, separatorLine, ...rowLines].join("\n");
 }
@@ -50,18 +51,18 @@ export function renderBarChart(
     .map((row, index) => {
       const barLength =
         maxValue <= 0 ? 0 : Math.max(row.value > 0 ? 1 : 0, Math.round((row.value / maxValue) * width));
-      return `${row.label.padEnd(labelWidth)}  ${formattedValues[index]?.padStart(valueWidth) ?? "0"}  ${barChar.repeat(barLength)}`;
+      return `${row.label.padEnd(labelWidth)}  ${cyan(formattedValues[index]?.padStart(valueWidth) ?? "0")}  ${green(barChar.repeat(barLength))}`;
     })
     .join("\n");
 }
 
 export function renderKeyValue(entries: Array<[string, string]>): string {
   const width = Math.max(...entries.map(([key]) => key.length), 0);
-  return entries.map(([key, value]) => `${key.padEnd(width)} : ${value}`).join("\n");
+  return entries.map(([key, val]) => `${dim(key.padEnd(width))} ${dim(":")} ${val}`).join("\n");
 }
 
 export function renderSection(title: string, body: string): string {
-  return `${title}\n${"-".repeat(title.length)}\n${body}`;
+  return `${heading(title)}\n${dim("-".repeat(title.length))}\n${body}`;
 }
 
 export function indentBlock(value: string, spaces = 2): string {
@@ -186,11 +187,15 @@ export function formatSearchResultContext(
 
 export function formatSearchResultPivots(result: TurnSearchResult): string {
   const sessionRef = result.session?.id ?? result.turn.session_id;
-  const pivots = [`show turn ${shortId(result.turn.id)}`, `show session ${sessionRef}`, `tree session ${sessionRef} --long`];
+  const pivots = [
+    `show turn ${idColor(shortId(result.turn.id))}`,
+    `show session ${idColor(sessionRef)}`,
+    `tree session ${idColor(sessionRef)} --long`,
+  ];
   if (result.project) {
-    pivots.push(`show project ${result.project.slug}`);
+    pivots.push(`show project ${idColor(result.project.slug)}`);
   }
-  return pivots.join(" | ");
+  return pivots.join(dim(" | "));
 }
 
 export function formatBrowseSnippet(value: string | null | undefined, maxLength: number): string {

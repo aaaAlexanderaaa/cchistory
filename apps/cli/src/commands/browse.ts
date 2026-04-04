@@ -49,6 +49,7 @@ import {
   resolveTurnRef,
 } from "../resolvers.js";
 import { createSourcesListOutput } from "./sync.js";
+import { bold, dim, cyan, magenta, muted } from "../colors.js";
 
 export async function handleLs(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
   const [target] = parsed.positionals;
@@ -456,22 +457,22 @@ export async function handleSearch(parsed: ParsedArgs, io: CliIo): Promise<Comma
     const groups = groupSearchResults(results);
     const lines: string[] = [];
     for (const group of groups) {
-      lines.push(`${group.label} (${group.results.length})`);
+      lines.push(bold(`${group.label} (${group.results.length})`));
       for (const result of group.results) {
         const relatedWork = result.session
           ? rollupRelatedWork(storage.getSessionRelatedWork(result.session.id))
           : { delegated_sessions: 0, automation_runs: 0 };
         lines.push(
-          `  ${result.turn.submission_started_at} ${shortId(result.turn.id)} ${formatBrowseSnippet(result.turn.canonical_text, 92)}`,
+          `  ${dim(result.turn.submission_started_at)} ${magenta(shortId(result.turn.id))} ${formatBrowseSnippet(result.turn.canonical_text, 92)}`,
         );
         lines.push(`    ${formatSearchResultContext(result, relatedWork, sourcesById)}`);
-        lines.push(`    pivots: ${formatSearchResultPivots(result)}`);
+        lines.push(`    ${dim("pivots:")} ${formatSearchResultPivots(result)}`);
       }
     }
     if (lines.length > 0) {
       lines.push("");
-      lines.push("Use `cchistory show turn <shown-id>` to inspect a full turn.");
-      lines.push("Use `cchistory tree session <session-ref> --long` when you want nearby turns and related work together.");
+      lines.push(muted("Use `cchistory show turn <shown-id>` to inspect a full turn."));
+      lines.push(muted("Use `cchistory tree session <session-ref> --long` when you want nearby turns and related work together."));
     }
     return {
       text: lines.length > 0 ? lines.join("\n") : "(no matches)",
