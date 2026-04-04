@@ -75,9 +75,6 @@ Repository-root aggregate scripts exist, but they are not the default validation
 - `pnpm services:status`: canonical status entrypoint for the managed dev services.
 - `pnpm restart:api`: compatibility alias for `scripts/dev-services.sh restart api`. It is not a separate startup system.
 - `pnpm restart:web`: compatibility alias for `scripts/dev-services.sh restart web`. It is not a separate startup system.
-- `cd archive/legacy/server && pytest`: validate legacy parser or ingestion behavior when mining reference code.
-- `cd archive/legacy/server && python -m ruff check cchistory tests`: lint archived Python reference code.
-- `cd archive/legacy/web && pnpm test`: compare old MVP frontend behavior if needed.
 
 ## Web Runtime Workflow
 When a user is actively reviewing `apps/web` UI changes, the web dev server should be user-started and reachable on `0.0.0.0:8085`. After meaningful web code changes that need live verification, tell the user which canonical runtime command to run manually; do not run restart or startup commands from the agent environment.

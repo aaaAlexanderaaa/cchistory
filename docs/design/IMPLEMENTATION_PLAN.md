@@ -1,13 +1,13 @@
 # Implementation Plan And Slice Record
 This document serves as the delivered baseline and status record for the 2026-03 local-source slice. It should not be treated as the complete live roadmap for the current repository state.
 
-> The source of truth remains [`HIGH_LEVEL_DESIGN_FREEZE.md`](/root/cchistory/HIGH_LEVEL_DESIGN_FREEZE.md).
+> The source of truth remains [`HIGH_LEVEL_DESIGN_FREEZE.md`](../../HIGH_LEVEL_DESIGN_FREEZE.md).
 >
 > `frontend_demo/` remains a reference UI only.
 >
 > `archive/` remains parser and historical-reference material only.
 >
-> [`docs/CURRENT_RUNTIME_SURFACE.md`](/root/cchistory/docs/CURRENT_RUNTIME_SURFACE.md) tracks the current repository-visible runtime inventory.
+> [`docs/design/CURRENT_RUNTIME_SURFACE.md`](./CURRENT_RUNTIME_SURFACE.md) tracks the current repository-visible runtime inventory.
 >
 > Current adapters, CLI workflows, and some UI interactions may be ahead of this document because additional work landed outside the ledger captured here. Verify current runtime surface against `apps/*`, `packages/*`, and focused tests before treating this file as exhaustive.
 

@@ -2,9 +2,9 @@
 
 This document records the repository-visible runtime surface as of 2026-04-02. It complements the design freeze and should be consulted when implementation inventory matters more than frozen semantics.
 
-> [`HIGH_LEVEL_DESIGN_FREEZE.md`](/root/cchistory/HIGH_LEVEL_DESIGN_FREEZE.md) remains the source of truth for product semantics and invariants.
+> [`HIGH_LEVEL_DESIGN_FREEZE.md`]](../../HIGH_LEVEL_DESIGN_FREEZE.md) remains the source of truth for product semantics and invariants.
 >
-> [`docs/design/IMPLEMENTATION_PLAN.md`](/root/cchistory/docs/design/IMPLEMENTATION_PLAN.md) is the delivered slice record for the early 2026-03 local-source push, not the complete live roadmap.
+> [`docs/design/IMPLEMENTATION_PLAN.md`]](./IMPLEMENTATION_PLAN.md) is the delivered slice record for the early 2026-03 local-source push, not the complete live roadmap.
 >
 > `tasks.csv` is a historical KR ledger that stops at work explicitly tracked in this repository on this host. It is not the live backlog.
 
@@ -46,9 +46,9 @@ The repository currently registers eleven source adapters, spanning both local c
 | `lobechat` | `conversational_export` | `experimental` | registered parser and discovery path, but not yet real-world validated enough for self-host v1 support claims |
 | `codebuddy` | `local_coding_agent` | `stable` | real-archive-backed `.codebuddy/projects/**/*.jsonl` intake with `settings.json` and `local_storage/*.info` preserved as companion evidence; `providerData.skipRun` noise stays evidence-only and zero-byte sibling JSONL files do not become standalone sessions |
 
-The adapter registry is defined in [`packages/source-adapters/src/platforms/registry.ts`](/root/cchistory/packages/source-adapters/src/platforms/registry.ts).
+The adapter registry is defined in [`packages/source-adapters/src/platforms/registry.ts`]](../../packages/source-adapters/src/platforms/registry.ts).
 
-The self-host v1 release gate is defined in [`docs/design/SELF_HOST_V1_RELEASE_GATE.md`](/root/cchistory/docs/design/SELF_HOST_V1_RELEASE_GATE.md).
+The self-host v1 release gate is defined in [`docs/design/SELF_HOST_V1_RELEASE_GATE.md`]](./SELF_HOST_V1_RELEASE_GATE.md).
 
 Broader enums in domain or DTO packages may mention additional platforms such as `chatgpt` or `claude_web`. Those enums should be read as schema allowance, not proof that a live adapter is already registered.
 
@@ -99,7 +99,7 @@ Additional current behavior:
 - Search is a first-class page-level workflow triggered from the shell.
 - `Imports` is not a live canonical admin view in the current web shell.
 
-The current web view wiring is visible in [`apps/web/app/page.tsx`](/root/cchistory/apps/web/app/page.tsx) and [`apps/web/components/app-shell.tsx`](/root/cchistory/apps/web/components/app-shell.tsx).
+The current web view wiring is visible in [`apps/web/app/page.tsx`]](../../apps/web/app/page.tsx) and [`apps/web/components/app-shell.tsx`]](../../apps/web/components/app-shell.tsx).
 
 # CLI Surface
 
@@ -140,7 +140,7 @@ Default store resolution:
 
 The current remote-agent CLI slice now ships through `cchistory agent pair`, `cchistory agent upload`, `cchistory agent schedule`, and `cchistory agent pull`. The local agent state file persists pairing plus cheap dirty-source fingerprints, `agent upload` supports bounded retry/backoff flags, `agent schedule` runs repeated local upload cycles on a caller-provided interval, and `agent pull` leases one typed collection job from the main service, reuses the same canonical bundle/upload path, and reports success or failure back to the control plane. On the API side, the paired-agent control plane also accepts heartbeat updates, exposes admin inventory/label-management routes, and now persists typed collection jobs plus lease/result metadata through dedicated agent/admin job routes.
 
-The CLI dispatcher and help text live in [`apps/cli/src/index.ts`](/root/cchistory/apps/cli/src/index.ts).
+The CLI dispatcher and help text live in [`apps/cli/src/index.ts`]](../../apps/cli/src/index.ts).
 
 Current install and verification surfaces:
 
@@ -186,7 +186,7 @@ Current route groups:
 - pipeline diagnostics: `/api/admin/pipeline/runs`, `/api/admin/pipeline/blobs`, `/api/admin/pipeline/records`, `/api/admin/pipeline/fragments`, `/api/admin/pipeline/atoms`, `/api/admin/pipeline/edges`, `/api/admin/pipeline/candidates`, `/api/admin/pipeline/loss-audits`, `/api/admin/pipeline/lineage/{turnId}`
 - masks, drift, and tombstones: `/api/admin/masks`, `/api/admin/drift`, `/api/tombstones/{logicalId}`
 
-The OpenAPI path summary is generated in [`apps/api/src/app.ts`](/root/cchistory/apps/api/src/app.ts).
+The OpenAPI path summary is generated in [`apps/api/src/app.ts`]](../../apps/api/src/app.ts).
 
 # Document Roles
 
@@ -194,12 +194,12 @@ The repository now maintains separate semantic, runtime, release-gate, guide, so
 
 | Document | Role | Update policy |
 | --- | --- | --- |
-| [`HIGH_LEVEL_DESIGN_FREEZE.md`](/root/cchistory/HIGH_LEVEL_DESIGN_FREEZE.md) | semantic source of truth | change only when product invariants actually change |
-| [`docs/design/CURRENT_RUNTIME_SURFACE.md`](/root/cchistory/docs/design/CURRENT_RUNTIME_SURFACE.md) | current repository-visible inventory | refresh when runtime surface materially changes |
-| [`docs/design/SELF_HOST_V1_RELEASE_GATE.md`](/root/cchistory/docs/design/SELF_HOST_V1_RELEASE_GATE.md) | self-host release-gate policy | refresh when the minimum self-host v1 acceptance bar or verifier set materially changes |
+| [`HIGH_LEVEL_DESIGN_FREEZE.md`]](../../HIGH_LEVEL_DESIGN_FREEZE.md) | semantic source of truth | change only when product invariants actually change |
+| [`docs/design/CURRENT_RUNTIME_SURFACE.md`]](./CURRENT_RUNTIME_SURFACE.md) | current repository-visible inventory | refresh when runtime surface materially changes |
+| [`docs/design/SELF_HOST_V1_RELEASE_GATE.md`]](./SELF_HOST_V1_RELEASE_GATE.md) | self-host release-gate policy | refresh when the minimum self-host v1 acceptance bar or verifier set materially changes |
 | `docs/guide/*.md` | user-facing operational guides | refresh when shipped CLI/API/Web/TUI/admin/reporting workflows materially change |
 | `docs/sources/*.md` | per-source technical reference | refresh when adapter discovery, storage assumptions, or parser entrypoints materially change |
 | `docs/templates/*.md` | reusable issue/report templates | refresh when the corresponding intake/reporting contract materially changes |
 | `docs/ROADMAP.md` | live milestone roadmap | update when milestone priorities or current-status assumptions materially change |
-| [`docs/design/IMPLEMENTATION_PLAN.md`](/root/cchistory/docs/design/IMPLEMENTATION_PLAN.md) | delivered slice record and historical baseline | keep as historical context; avoid treating it as the live roadmap |
+| [`docs/design/IMPLEMENTATION_PLAN.md`]](./IMPLEMENTATION_PLAN.md) | delivered slice record and historical baseline | keep as historical context; avoid treating it as the live roadmap |
 | `tasks.csv` | historical KR ledger | do not rely on it as the authoritative current backlog |
