@@ -169,6 +169,9 @@ importers:
       '@cchistory/api-client':
         specifier: workspace:*
         version: link:../api-client
+      '@cchistory/domain':
+        specifier: workspace:*
+        version: link:../domain
 
   packages/source-adapters:
     dependencies:

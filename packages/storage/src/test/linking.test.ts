@@ -30,8 +30,46 @@ test("getSessionRelatedWork normalizes delegated factory relations from callingS
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-related-work-"));
   try {
     const storage = new CCHistoryStorage(dataDir);
-    // Setup will be needed here to test related work normalization
-    // For brevity in this split, I'm just including the test structure as it was in index.test.ts
+
+    const parentSessionId = "session-parent";
+    const childSessionId = "session-child";
+
+    // Ingest parent session (the delegating session)
+    const parentPayload = createFixturePayload("src-factory-parent", "Parent turn", "sr-parent", {
+      sessionId: parentSessionId,
+      turnId: "turn-parent",
+    });
+    storage.replaceSourcePayload(parentPayload);
+
+    // Ingest child session with a session_relation fragment referencing the parent via callingSessionId
+    const childPayload = createFixturePayload("src-factory-child", "Child turn", "sr-child", {
+      sessionId: childSessionId,
+      turnId: "turn-child",
+    });
+    childPayload.fragments.push({
+      id: "fragment-relation-child",
+      source_id: "src-factory-child",
+      session_ref: childSessionId,
+      record_id: "turn-child-record",
+      seq_no: 99,
+      fragment_kind: "session_relation",
+      time_key: "2026-03-09T09:00:00.000Z",
+      payload: {
+        callingSessionId: parentSessionId,
+        relation_kind: "delegated_session",
+      },
+      raw_refs: [],
+      source_format_profile_id: "generic-v1",
+    });
+    storage.replaceSourcePayload(childPayload);
+
+    const relatedWork = storage.getSessionRelatedWork(childSessionId);
+    assert.ok(relatedWork.length >= 1, "child session should have at least one related work entry");
+
+    const delegated = relatedWork.find((r) => r.relation_kind === "delegated_session");
+    assert.ok(delegated, "should find a delegated_session relation");
+    assert.equal(delegated.source_session_ref, childSessionId);
+    assert.equal(delegated.target_session_ref, parentSessionId);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

@@ -1,4 +1,3 @@
-import path from "node:path";
 
 export type SourceFamily = "local_coding_agent" | "conversational_export" | "local_runtime_sessions" | "manual_export_bundles";
 
@@ -987,7 +986,7 @@ export function normalizeLocalPathIdentity(value: string | undefined): string | 
 
   const isUncPath = raw.startsWith("//") && !/^\/\/[A-Za-z]:/u.test(raw);
   if (isUncPath) {
-    const normalizedUnc = path.posix.normalize(`/${raw.slice(2)}`);
+    const normalizedUnc = posixNormalize(`/${raw.slice(2)}`);
     return `/${trimTrailingSlash(normalizedUnc)}`;
   }
 
@@ -995,11 +994,11 @@ export function normalizeLocalPathIdentity(value: string | undefined): string | 
   if (/^[A-Za-z]:/u.test(collapsed)) {
     const drive = collapsed.slice(0, 1).toLowerCase();
     const rest = collapsed.slice(2);
-    const normalizedRest = path.posix.normalize(rest.startsWith("/") ? rest : `/${rest}`);
+    const normalizedRest = posixNormalize(rest.startsWith("/") ? rest : `/${rest}`);
     return `${drive}:${trimTrailingSlash(normalizedRest)}`;
   }
 
-  return trimTrailingSlash(path.posix.normalize(collapsed));
+  return trimTrailingSlash(posixNormalize(collapsed));
 }
 
 export function getLocalPathBasename(value: string | undefined): string | undefined {
@@ -1007,7 +1006,7 @@ export function getLocalPathBasename(value: string | undefined): string | undefi
   if (!normalized) {
     return undefined;
   }
-  const basename = path.posix.basename(normalized);
+  const basename = posixBasename(normalized);
   return basename || undefined;
 }
 
@@ -1058,4 +1057,43 @@ function stableHash(value: string): string {
     hash = Math.imul(hash, 0x01000193) >>> 0;
   }
   return hash.toString(16).padStart(8, "0");
+}
+
+/**
+ * Pure POSIX path normalization: collapses repeated slashes and resolves `.` / `..` segments.
+ * Equivalent to `path.posix.normalize` but requires no Node.js import, keeping the domain
+ * package platform-agnostic.
+ */
+function posixNormalize(value: string): string {
+  if (!value) {
+    return ".";
+  }
+  const isAbsolute = value.startsWith("/");
+  const parts = value.split("/").filter(Boolean);
+  const resolved: string[] = [];
+  for (const part of parts) {
+    if (part === ".") {
+      continue;
+    }
+    if (part === "..") {
+      if (resolved.length > 0 && resolved[resolved.length - 1] !== "..") {
+        resolved.pop();
+      } else if (!isAbsolute) {
+        resolved.push("..");
+      }
+    } else {
+      resolved.push(part);
+    }
+  }
+  const result = (isAbsolute ? "/" : "") + resolved.join("/");
+  return result || (isAbsolute ? "/" : ".");
+}
+
+/**
+ * Pure POSIX basename: returns the final path component.
+ * Equivalent to `path.posix.basename` but requires no Node.js import.
+ */
+function posixBasename(value: string): string {
+  const last = value.split("/").filter(Boolean).at(-1);
+  return last ?? "";
 }

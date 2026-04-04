@@ -39,11 +39,16 @@ test("usage rollup by model groups turns correctly", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-rollup-"));
   try {
     const storage = new CCHistoryStorage(dataDir);
-    storage.replaceSourcePayload(createFixturePayload("src-1", "Model 1", "sr-1", { platform: "codex" }));
-    storage.replaceSourcePayload(createFixturePayload("src-2", "Model 2", "sr-2", { platform: "claude_code" }));
+    try {
+      storage.replaceSourcePayload(createFixturePayload("src-1", "Model 1", "sr-1", { platform: "codex", sessionId: "session-rollup-1", turnId: "turn-rollup-1" }));
+      storage.replaceSourcePayload(createFixturePayload("src-2", "Model 2", "sr-2", { platform: "claude_code", sessionId: "session-rollup-2", turnId: "turn-rollup-2" }));
 
-    const stats = (storage as any).getUsageStats?.({ by: "model" }) ?? [];
-    // Just verifying it doesn't crash if we can't test internal private methods easily in split
+      const rollup = storage.listUsageRollup("model");
+      assert.ok(Array.isArray(rollup.rows), "rollup.rows should be an array");
+      assert.equal(rollup.dimension, "model");
+    } finally {
+      storage.close();
+    }
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -53,11 +58,13 @@ test("drift report with all healthy sources yields low drift index", async () =>
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-drift-"));
   try {
     const storage = new CCHistoryStorage(dataDir);
-    storage.replaceSourcePayload(createFixturePayload("src-1", "Drift test", "sr-1"));
+    try {
+      storage.replaceSourcePayload(createFixturePayload("src-1", "Drift test", "sr-1"));
 
-    const report = (storage as any).getDriftReport?.();
-    if (report) {
-      assert.ok(report.consistency_score > 0.9);
+      const report = storage.getDriftReport();
+      assert.ok(report.consistency_score > 0.9, `Expected consistency_score > 0.9, got ${report.consistency_score}`);
+    } finally {
+      storage.close();
     }
   } finally {
     await rm(dataDir, { recursive: true, force: true });
@@ -68,17 +75,23 @@ test("upsertKnowledgeArtifact deduplicates source_turn_refs", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-artifact-"));
   try {
     const storage = new CCHistoryStorage(dataDir);
-    const artifactId = "artifact-1";
+    try {
+      const artifactId = "artifact-1";
 
-    storage.upsertKnowledgeArtifact({
-      artifact_id: artifactId,
-      title: "Test Artifact",
-      summary: "Summary",
-      source_turn_refs: ["turn-1", "turn-1", "turn-2"],
-    });
+      storage.upsertKnowledgeArtifact({
+        artifact_id: artifactId,
+        title: "Test Artifact",
+        summary: "Summary",
+        source_turn_refs: ["turn-1", "turn-1", "turn-2"],
+      });
 
-    const artifact = (storage as any).db.prepare("SELECT * FROM knowledge_artifacts WHERE artifact_id = ?").get(artifactId);
-    assert.equal(JSON.parse(artifact.source_turn_refs_json).length, 2);
+      const artifacts = storage.listKnowledgeArtifacts();
+      const artifact = artifacts.find((a) => a.artifact_id === artifactId);
+      assert.ok(artifact, "artifact should exist after upsert");
+      assert.equal(artifact.source_turn_refs.length, 2, "duplicate turn refs should be deduplicated");
+    } finally {
+      storage.close();
+    }
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

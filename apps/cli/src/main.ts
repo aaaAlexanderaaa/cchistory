@@ -7,6 +7,7 @@ import process from "node:process";
 import { type SourceStatus } from "@cchistory/domain";
 import {
   type CCHistoryStorage,
+  installRuntimeWarningFilter,
 } from "@cchistory/storage";
 import {
   getFlag,
@@ -30,10 +31,7 @@ import { handleQueryAlias, handleTemplates } from "./commands/query.js";
 import { handleStats } from "./commands/stats.js";
 import { handleDiscover, handleHealth, handleSync, syncSelectedSources } from "./commands/sync.js";
 
-const SQLITE_EXPERIMENTAL_WARNING_TEXT = "SQLite is an experimental feature and might change at any time";
-const SHOW_RUNTIME_WARNINGS_ENV = "CCHISTORY_SHOW_RUNTIME_WARNINGS";
-
-installCliRuntimeWarningFilter();
+installRuntimeWarningFilter();
 
 export interface CliIo {
   cwd: string;
@@ -64,31 +62,6 @@ export interface SyncedSourceSummary {
     atoms: number;
     blobs: number;
   };
-}
-
-export function installCliRuntimeWarningFilter(): void {
-  if (process.env[SHOW_RUNTIME_WARNINGS_ENV] === "1") {
-    return;
-  }
-
-  const currentEmitWarning = process.emitWarning as typeof process.emitWarning & {
-    __cchistoryRuntimeFilterInstalled?: boolean;
-  };
-  if (currentEmitWarning.__cchistoryRuntimeFilterInstalled) {
-    return;
-  }
-
-  const originalEmitWarning = process.emitWarning.bind(process);
-  const filteredEmitWarning = ((warning: string | Error, ...args: unknown[]) => {
-    const message = typeof warning === "string" ? warning : warning.message;
-    if (message.includes(SQLITE_EXPERIMENTAL_WARNING_TEXT)) {
-      return;
-    }
-    return (originalEmitWarning as (...values: unknown[]) => void)(warning, ...args);
-  }) as typeof process.emitWarning & { __cchistoryRuntimeFilterInstalled?: boolean };
-
-  filteredEmitWarning.__cchistoryRuntimeFilterInstalled = true;
-  process.emitWarning = filteredEmitWarning;
 }
 
 export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<number> {

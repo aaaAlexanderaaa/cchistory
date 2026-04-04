@@ -12,10 +12,11 @@
     }
   },
   "scripts": {
-    "build": "pnpm --filter @cchistory/api-client build && tsc -p tsconfig.json",
+    "build": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/api-client build && tsc -p tsconfig.json",
     "test": "pnpm run build && node --test dist/index.test.js"
   },
   "dependencies": {
-    "@cchistory/api-client": "workspace:*"
+    "@cchistory/api-client": "workspace:*",
+    "@cchistory/domain": "workspace:*"
   }
 }

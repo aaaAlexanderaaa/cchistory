@@ -15,9 +15,9 @@ import type {
   TurnSearchResultDto,
   UserTurnProjectionDto,
 } from "../../api-client/dist/index.js";
+import type { LinkState, SyncAxis } from "@cchistory/domain";
 
-export type LinkState = "committed" | "candidate" | "unlinked";
-export type SyncAxis = "current" | "superseded" | "source_absent" | "import_snapshot";
+export type { LinkState, SyncAxis };
 export type ValueAxis = "active" | "covered" | "archived" | "suppressed";
 export type RetentionAxis = "keep_raw_and_derived" | "keep_raw_only" | "purged";
 export type SourceFamily = "local_coding_agent" | "conversational_export";

@@ -2,14 +2,11 @@
 
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import type { LocalTuiBrowser } from "@cchistory/storage";
+import { installRuntimeWarningFilter, type LocalTuiBrowser } from "@cchistory/storage";
 import type { BrowserAction, BrowserState } from "./browser.js";
 import type { StoreLayout } from "./store.js";
 
-const SQLITE_EXPERIMENTAL_WARNING_TEXT = "SQLite is an experimental feature and might change at any time";
-const SHOW_RUNTIME_WARNINGS_ENV = "CCHISTORY_SHOW_RUNTIME_WARNINGS";
-
-installTuiRuntimeWarningFilter();
+installRuntimeWarningFilter();
 
 const tuiModulePromise = Promise.all([
   import("react"),
@@ -36,31 +33,6 @@ interface SnapshotHelpers {
   createBrowserState: (browser: LocalTuiBrowser) => BrowserState;
   reduceBrowserState: (browser: LocalTuiBrowser, state: BrowserState, action: BrowserAction) => BrowserState;
   renderBrowserSnapshot: (browser: LocalTuiBrowser, state: BrowserState) => string;
-}
-
-function installTuiRuntimeWarningFilter(): void {
-  if (process.env[SHOW_RUNTIME_WARNINGS_ENV] === "1") {
-    return;
-  }
-
-  const currentEmitWarning = process.emitWarning as typeof process.emitWarning & {
-    __cchistoryRuntimeFilterInstalled?: boolean;
-  };
-  if (currentEmitWarning.__cchistoryRuntimeFilterInstalled) {
-    return;
-  }
-
-  const originalEmitWarning = process.emitWarning.bind(process);
-  const filteredEmitWarning = ((warning: string | Error, ...args: unknown[]) => {
-    const message = typeof warning === "string" ? warning : warning.message;
-    if (message.includes(SQLITE_EXPERIMENTAL_WARNING_TEXT)) {
-      return;
-    }
-    return (originalEmitWarning as (...values: unknown[]) => void)(warning, ...args);
-  }) as typeof process.emitWarning & { __cchistoryRuntimeFilterInstalled?: boolean };
-
-  filteredEmitWarning.__cchistoryRuntimeFilterInstalled = true;
-  process.emitWarning = filteredEmitWarning;
 }
 
 export async function runTui(argv: string[], io: TuiIo = defaultIo()): Promise<number> {

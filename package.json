@@ -40,8 +40,9 @@
     "probe:smoke": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && node scripts/probe-smoke.mjs",
     "inspect:antigravity-live": "node scripts/antigravity-live-dump.mjs",
     "inspect:collect-source-samples": "node scripts/inspect/collect-source-samples.mjs",
-    "validate:core": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/api build",
-    "test": "pnpm --filter @cchistory/source-adapters test",
+    "validate:core": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage test && pnpm --filter @cchistory/cli test && pnpm --filter @cchistory/api test",
+    "test": "pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage test && pnpm --filter @cchistory/presentation test && pnpm --filter @cchistory/api-client test && pnpm --filter @cchistory/cli test && pnpm --filter @cchistory/tui test && pnpm --filter @cchistory/api test",
+    "test:core": "pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage test",
     "verify:real-archive-probes": "node scripts/verify-real-archive-probes.mjs"
   },
   "devDependencies": {
