@@ -5,7 +5,7 @@ import { access, mkdtemp, rm } from "node:fs/promises";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { getDefaultSources, runSourceProbe } from "../../../packages/source-adapters/dist/index.js";
+import { getDefaultSources, runSourceProbe } from "@cchistory/source-adapters";
 import { CCHistoryStorage, buildLocalTuiBrowser } from "@cchistory/storage";
 
 type FixturePayload = Parameters<CCHistoryStorage["replaceSourcePayload"]>[0];
@@ -1268,6 +1268,8 @@ function createFixturePayload(
       {
         id: turnId,
         revision_id: `${turnId}:r1`,
+        turn_id: turnId,
+        turn_revision_id: `${turnId}:r1`,
         user_messages: [
           {
             id: userMessageId,

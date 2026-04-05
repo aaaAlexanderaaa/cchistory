@@ -489,6 +489,9 @@ export interface RemoteAgentUploadResponse {
   replaced_source_ids: string[];
   skipped_source_ids: string[];
   source_manifest_count: number;
+  /** Server-side accepted generation per source_id, so the client can
+   *  reconcile local state even after a crash-before-write scenario. */
+  accepted_generations: Record<string, number>;
 }
 
 export type RemoteAgentJobTriggerKind = "manual" | "scheduled" | "server_requested";
@@ -702,11 +705,9 @@ export interface TokenUsageSummary {
   total_tokens?: number;
 }
 
-export interface UserTurnProjection {
+export interface UserTurnProjection extends TurnIdentity {
   id: string;
   revision_id: string;
-  turn_id?: string;
-  turn_revision_id?: string;
   user_messages: UserMessageProjection[];
   raw_text: string;
   canonical_text: string;
@@ -948,6 +949,14 @@ export function deriveSourceSlotId(platform: SourcePlatform): string {
 }
 
 export function normalizeSourceBaseDir(baseDir: string): string {
+  // Delegate to normalizeLocalPathIdentity for full URI-aware normalization
+  // (file:/// stripping, percent-decode, UNC, etc.).  Fall back to the
+  // lightweight slash-only normalizer when the input is not a recognisable
+  // local path (e.g. a remote URL).
+  const identity = normalizeLocalPathIdentity(baseDir);
+  if (identity !== undefined) {
+    return identity;
+  }
   const normalized = baseDir.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/, "");
   if (/^[A-Za-z]:/.test(normalized)) {
     return `${normalized.slice(0, 1).toLowerCase()}${normalized.slice(1)}`;

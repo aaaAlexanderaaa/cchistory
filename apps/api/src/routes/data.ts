@@ -2,6 +2,8 @@ import type { FastifyInstance } from "fastify";
 import { getBuiltinMaskTemplates } from "@cchistory/source-adapters";
 import type { CCHistoryStorage } from "@cchistory/storage";
 import {
+  asLimit,
+  asOffset,
   asOptionalNumber,
   inferOverrideDisplayName,
   splitCsv,
@@ -18,20 +20,50 @@ export interface DataRoutesContext {
 export function registerDataRoutes(app: FastifyInstance, context: DataRoutesContext) {
   const { storage } = context;
 
-  app.get("/api/turns", async (request) => {
-    const query = request.query as Record<string, string | undefined>;
-    const limit = asOptionalNumber(query.limit);
-    const offset = asOptionalNumber(query.offset) ?? 0;
-    const allTurns = storage.listResolvedTurns();
-    const sliced = limit != null ? allTurns.slice(offset, offset + limit) : allTurns.slice(offset);
+  app.get("/api/turns", {
+    schema: {
+      querystring: {
+        type: "object",
+        properties: {
+          limit: { type: "integer", minimum: 1 },
+          offset: { type: "integer", minimum: 0 },
+        },
+      },
+    },
+  }, async (request) => {
+    const query = request.query as { limit?: number; offset?: number };
+    const limit = asLimit(query.limit);
+    const offset = asOffset(query.offset);
+    const page = storage.listResolvedTurnsPage(offset, limit);
     return {
-      turns: sliced.map(summarizeTurn),
-      total: allTurns.length,
+      turns: page.turns.map(summarizeTurn),
+      total: page.total,
     };
   });
 
-  app.get("/api/turns/search", async (request) => {
-    const query = request.query as Record<string, string | undefined>;
+  app.get("/api/turns/search", {
+    schema: {
+      querystring: {
+        type: "object",
+        properties: {
+          q: { type: "string" },
+          project_id: { type: "string" },
+          source_ids: { type: "string" },
+          link_states: { type: "string" },
+          value_axes: { type: "string" },
+          limit: { type: "integer", minimum: 1 },
+        },
+      },
+    },
+  }, async (request) => {
+    const query = request.query as {
+      q?: string;
+      project_id?: string;
+      source_ids?: string;
+      link_states?: string;
+      value_axes?: string;
+      limit?: number;
+    };
     return {
       search_mode: storage.searchMode,
       results: storage
@@ -41,7 +73,7 @@ export function registerDataRoutes(app: FastifyInstance, context: DataRoutesCont
           source_ids: splitCsv(query.source_ids),
           link_states: splitCsv(query.link_states) as Array<"committed" | "candidate" | "unlinked">,
           value_axes: splitCsv(query.value_axes) as Array<"active" | "covered" | "archived" | "suppressed">,
-          limit: asOptionalNumber(query.limit) ?? 50,
+          limit: asLimit(query.limit) ?? 50,
         })
         .map(summarizeSearchResult),
     };
@@ -98,8 +130,17 @@ export function registerDataRoutes(app: FastifyInstance, context: DataRoutesCont
     };
   });
 
-  app.get("/api/projects", async (request) => {
-    const query = request.query as Record<string, string | undefined>;
+  app.get("/api/projects", {
+    schema: {
+      querystring: {
+        type: "object",
+        properties: {
+          state: { type: "string", enum: ["committed", "candidate", "all"] },
+        },
+      },
+    },
+  }, async (request) => {
+    const query = request.query as { state?: "committed" | "candidate" | "all" };
     const state = query.state === "committed" || query.state === "candidate" ? query.state : "all";
     const projects = storage.listProjects();
     return {
@@ -125,9 +166,18 @@ export function registerDataRoutes(app: FastifyInstance, context: DataRoutesCont
     return { project };
   });
 
-  app.get("/api/projects/:projectId/turns", async (request) => {
+  app.get("/api/projects/:projectId/turns", {
+    schema: {
+      querystring: {
+        type: "object",
+        properties: {
+          state: { type: "string", enum: ["committed", "candidate", "all"] },
+        },
+      },
+    },
+  }, async (request) => {
     const projectId = (request.params as { projectId: string }).projectId;
-    const query = request.query as Record<string, string | undefined>;
+    const query = request.query as { state?: "committed" | "candidate" | "all" };
     const state = query.state === "committed" || query.state === "candidate" ? query.state : "all";
     return {
       turns: storage.listProjectTurns(projectId, state).map(summarizeTurn),
@@ -142,8 +192,17 @@ export function registerDataRoutes(app: FastifyInstance, context: DataRoutesCont
     };
   });
 
-  app.get("/api/artifacts", async (request) => {
-    const query = request.query as Record<string, string | undefined>;
+  app.get("/api/artifacts", {
+    schema: {
+      querystring: {
+        type: "object",
+        properties: {
+          project_id: { type: "string" },
+        },
+      },
+    },
+  }, async (request) => {
+    const query = request.query as { project_id?: string };
     return {
       artifacts: storage.listKnowledgeArtifacts(query.project_id),
     };

@@ -26,7 +26,3 @@ export const codebuddyAdapter: PlatformAdapter = {
   matchesSourceFile: (filePath) => filePath.endsWith(".jsonl"),
   getCompanionEvidencePaths: (baseDir) => listCodeBuddyCompanionEvidencePaths(baseDir),
 };
-
-function normalizePath(value: string): string {
-  return value.replace(/\\/g, "/");
-}

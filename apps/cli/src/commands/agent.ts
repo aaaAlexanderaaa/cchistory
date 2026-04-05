@@ -300,10 +300,14 @@ export async function runAgentUploadCycle(parsed: ParsedArgs, overrides: {
       throw lastError instanceof Error ? lastError : new Error(String(lastError));
     }
 
+    // Use server-returned accepted_generations to reconcile local state.
+    // This prevents stale retry loops when a previous upload succeeded on
+    // the server but the client crashed before writing local state.
     const nextState = applyRemoteUploadSuccess({
       state,
       entries: manifest.entries,
       dirtyFingerprintBySourceId: manifest.dirtyFingerprintBySourceId,
+      acceptedGenerations: uploadResult.accepted_generations,
     });
     await writeLocalRemoteAgentState(statePath, nextState);
 

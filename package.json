@@ -41,8 +41,8 @@
     "probe:smoke": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && node scripts/probe-smoke.mjs",
     "inspect:antigravity-live": "node scripts/antigravity-live-dump.mjs",
     "inspect:collect-source-samples": "node scripts/inspect/collect-source-samples.mjs",
-    "validate:core": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage test && pnpm --filter @cchistory/cli test && pnpm --filter @cchistory/api test",
-    "test": "pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage test && pnpm --filter @cchistory/presentation test && pnpm --filter @cchistory/api-client test && pnpm --filter @cchistory/cli test && pnpm --filter @cchistory/tui test && pnpm --filter @cchistory/api test",
+    "validate:core": "pnpm --filter @cchistory/domain test && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage test && pnpm --filter @cchistory/cli test && pnpm --filter @cchistory/api test",
+    "test": "pnpm --filter @cchistory/domain test && pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage test && pnpm --filter @cchistory/presentation test && pnpm --filter @cchistory/api-client test && pnpm --filter @cchistory/cli test && pnpm --filter @cchistory/tui test && pnpm --filter @cchistory/api test",
     "test:core": "pnpm --filter @cchistory/source-adapters test && pnpm --filter @cchistory/storage test",
     "verify:real-archive-probes": "node scripts/verify-real-archive-probes.mjs",
     "test:e2e": "node --test tests/e2e/*.test.mjs"
@@ -56,8 +56,7 @@
       "flatted": ">=3.4.2",
       "picomatch": ">=4.0.4",
       "lodash": ">=4.18.0",
-      "next@>=16.0.0-beta.0 <16.1.7": ">=16.1.7",
-      "brace-expansion": ">=5.0.5"
+      "next@>=16.0.0-beta.0 <16.1.7": ">=16.1.7"
     }
   }
 }

@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { type SourceSyncPayload } from "@cchistory/domain";
@@ -35,7 +35,9 @@ import {
 import {
   type CliIo,
   type CommandOutput,
+  isMissingPathError,
   openExistingStore,
+  pathExists,
   requireStoreDatabase,
 } from "../main.js";
 import { resolveSourceRef } from "../resolvers.js";
@@ -453,15 +455,4 @@ export function formatBytes(value: number): string {
   return `${size.toFixed(decimals)} ${units[unitIndex]}`;
 }
 
-export function isMissingPathError(error: unknown): error is NodeJS.ErrnoException {
-  return (error as NodeJS.ErrnoException).code === "ENOENT";
-}
 
-async function pathExists(targetPath: string): Promise<boolean> {
-  try {
-    await access(targetPath);
-    return true;
-  } catch {
-    return false;
-  }
-}

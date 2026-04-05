@@ -55,7 +55,11 @@ export function normalizePathKey(value: string | undefined): string | undefined 
 }
 
 export function asOptionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
 }
 
 export function incrementArtifactRevisionId(currentRevisionId: string): string {

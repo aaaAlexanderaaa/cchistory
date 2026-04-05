@@ -243,7 +243,7 @@ export interface ProjectLineageEvent {
   project_id: string;
   project_revision_id: string;
   previous_project_revision_id?: string;
-  event_kind: "created" | "revised" | "manual_override";
+  event_kind: "created" | "revised" | "manual_override" | "superseded" | "split" | "merge";
   created_at: Date;
   detail: Record<string, unknown>;
 }
@@ -800,4 +800,31 @@ export function projectColor(projectId: string): string {
   }
   const hue = Math.abs(hash) % 360;
   return `hsl(${hue} 65% 45%)`;
+}
+
+/**
+ * Strip AI-assistant command markup (caveat, message, args, name tags) and
+ * collapse whitespace.  Shared across CLI renderers and TUI browser to avoid
+ * markup noise in human-facing turn summaries.
+ */
+export function tameBrowseMarkup(value: string): string {
+  return value
+    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, " ")
+    .replace(/<command-message>[\s\S]*?<\/command-message>/gi, " ")
+    .replace(/<command-args>[\s\S]*?<\/command-args>/gi, " ")
+    .replace(/<command-name>([\s\S]*?)<\/command-name>/gi, "$1 ")
+    .replace(/<\/?(?:command-name|command-message|command-args)>/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Truncate a string to `maxLength` with an ellipsis, collapsing whitespace.
+ */
+export function compactText(value: string, maxLength: number): string {
+  const trimmed = value.replace(/\s+/g, " ").trim();
+  if (trimmed.length <= maxLength) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, Math.max(maxLength - 1, 1))}…`;
 }

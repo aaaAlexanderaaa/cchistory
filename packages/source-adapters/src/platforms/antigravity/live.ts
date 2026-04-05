@@ -669,6 +669,7 @@ async function postJson(
       {
         method: "POST",
         rejectUnauthorized: false,
+        timeout: 30_000,
         headers: {
           ...headers,
           "Content-Length": Buffer.byteLength(payload).toString(),
@@ -692,6 +693,9 @@ async function postJson(
         });
       },
     );
+    request.on("timeout", () => {
+      request.destroy(new Error(`Request to ${url} timed out after 30s`));
+    });
     request.on("error", reject);
     request.write(payload);
     request.end();

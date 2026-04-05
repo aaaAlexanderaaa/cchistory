@@ -1,4 +1,5 @@
 import type { LocalTuiBrowser, LocalTuiSearchResult } from "@cchistory/storage";
+import { tameBrowseMarkup, compactText as compact } from "@cchistory/presentation";
 
 export type BrowserFocusPane = "projects" | "turns" | "detail";
 export type BrowserMode = "browse" | "search";
@@ -475,23 +476,4 @@ function emptyRow(label: string): string {
 
 function compactBrowseSnippet(value: string, maxLength: number): string {
   return compact(tameBrowseMarkup(value), maxLength);
-}
-
-function tameBrowseMarkup(value: string): string {
-  return value
-    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, " ")
-    .replace(/<command-message>[\s\S]*?<\/command-message>/gi, " ")
-    .replace(/<command-args>[\s\S]*?<\/command-args>/gi, " ")
-    .replace(/<command-name>([\s\S]*?)<\/command-name>/gi, "$1 ")
-    .replace(/<\/?(?:command-name|command-message|command-args)>/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function compact(value: string, maxLength: number): string {
-  const trimmed = value.replace(/\s+/g, " ").trim();
-  if (trimmed.length <= maxLength) {
-    return trimmed;
-  }
-  return `${trimmed.slice(0, Math.max(maxLength - 1, 1))}…`;
 }

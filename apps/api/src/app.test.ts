@@ -1602,6 +1602,108 @@ test("remote agent jobs support targeted leasing, upload linkage, and completion
 });
 
 
+test("readSourceConfig normalizes file:/// URIs in persisted overrides and extras", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+
+  try {
+    const source = await seedCodexSourceFixture(tempRoot, "file-uri-override");
+    const dataDir = path.join(tempRoot, "data-file-uri");
+    const runtime = await createApiRuntime({ dataDir, sources: [source] });
+
+    try {
+      // Write a source-overrides.json with file:/// URI in base_dir
+      const sourceConfigPath = path.join(dataDir, "source-overrides.json");
+      await writeFile(
+        sourceConfigPath,
+        JSON.stringify({
+          version: 2,
+          overrides: {
+            [source.id]: {
+              base_dir: `file:///${source.base_dir.replace(/^\//, "")}`,
+              updated_at: new Date().toISOString(),
+            },
+          },
+          extras: [],
+        }),
+        "utf8",
+      );
+    } finally {
+      await runtime.app.close();
+    }
+
+    // Restart to reload the persisted config
+    const restartedRuntime = await createApiRuntime({ dataDir, sources: [source] });
+
+    try {
+      const configResponse = await restartedRuntime.app.inject({
+        method: "GET",
+        url: "/api/admin/source-config",
+      });
+      assert.equal(configResponse.statusCode, 200);
+      const configuredSource = JSON.parse(configResponse.body).sources[0] as {
+        base_dir: string;
+        override_base_dir?: string;
+        path_exists: boolean;
+      };
+
+      // After normalization, the file:/// prefix should be stripped
+      assert.ok(
+        !configuredSource.base_dir.startsWith("file:///"),
+        `base_dir should not start with file:/// after normalization, got: ${configuredSource.base_dir}`,
+      );
+      assert.ok(
+        !configuredSource.override_base_dir?.startsWith("file:///"),
+        `override_base_dir should not start with file:/// after normalization, got: ${configuredSource.override_base_dir}`,
+      );
+      assert.equal(
+        configuredSource.path_exists,
+        true,
+        `path_exists should be true for a valid directory after file:/// normalization`,
+      );
+    } finally {
+      await restartedRuntime.app.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("API default log level is warn to prevent query string leakage", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+  const previousLogLevel = process.env.CCHISTORY_LOG_LEVEL;
+  const previousNodeEnv = process.env.NODE_ENV;
+
+  try {
+    // Clear env vars to test the default
+    delete process.env.CCHISTORY_LOG_LEVEL;
+    delete process.env.NODE_ENV;
+
+    const runtime = await createApiRuntime({ dataDir: path.join(tempRoot, "data"), sources: [] });
+
+    try {
+      // Fastify exposes the log level on the logger instance
+      const level = runtime.app.log.level;
+      assert.equal(level, "warn", `Default log level should be 'warn' to prevent query string leakage, got '${level}'`);
+    } finally {
+      await runtime.app.close();
+      runtime.storage.close();
+    }
+  } finally {
+    if (previousLogLevel === undefined) {
+      delete process.env.CCHISTORY_LOG_LEVEL;
+    } else {
+      process.env.CCHISTORY_LOG_LEVEL = previousLogLevel;
+    }
+    if (previousNodeEnv === undefined) {
+      delete process.env.NODE_ENV;
+    } else {
+      process.env.NODE_ENV = previousNodeEnv;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+
 function buildRemoteUploadBundleFromPayload(payload: SourceSyncPayload): {
   manifest: {
     bundle_id: string;
@@ -2067,6 +2169,8 @@ function createApiFixturePayload(
       {
         id: options.turnId,
         revision_id: `${options.turnId}:r1`,
+        turn_id: options.turnId,
+        turn_revision_id: `${options.turnId}:r1`,
         user_messages: [
           {
             id: `${options.turnId}-user-message`,

@@ -203,6 +203,8 @@ export function createLegacySchemaFixturePayload(): SourceSyncPayload {
       {
         id: "turn-cli-legacy-search",
         revision_id: "turn-cli-legacy-search:r1",
+        turn_id: "turn-cli-legacy-search",
+        turn_revision_id: "turn-cli-legacy-search:r1",
         user_messages: [
           {
             id: "message-cli-legacy-user",

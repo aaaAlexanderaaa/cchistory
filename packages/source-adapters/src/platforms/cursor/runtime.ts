@@ -452,7 +452,7 @@ function decodeStructuredCursorBlobRecord(
 function extractReadableCursorBlobText(value: Buffer): string | undefined {
   const cleaned = value
     .toString("utf8")
-    .replace(/[ --]/gu, "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, "")
     .trim();
   return cleaned.length > 0 ? cleaned : undefined;
 }

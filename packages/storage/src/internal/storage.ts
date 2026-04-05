@@ -210,6 +210,16 @@ export class CCHistoryStorage {
     return this.buildProjectLinkSnapshot().turns;
   }
 
+  /**
+   * Return a page of resolved turns with a total count, avoiding the need to
+   * map/serialize the entire turn list when only a slice is needed.
+   */
+  listResolvedTurnsPage(offset: number, limit?: number): { turns: UserTurnProjection[]; total: number } {
+    const all = this.buildProjectLinkSnapshot().turns;
+    const sliced = limit != null ? all.slice(offset, offset + limit) : all.slice(offset);
+    return { turns: sliced, total: all.length };
+  }
+
   listResolvedSessions(): SessionProjection[] {
     return this.buildProjectLinkSnapshot().sessions;
   }

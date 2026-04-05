@@ -122,7 +122,6 @@ export function AppShell({
   }
 
   const openView = (view: HistoryView | AdminView, area: AppArea) => {
-    onAreaChange(area)
     onViewChange(view, area)
     setNavOpen(false)
   }

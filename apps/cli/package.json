@@ -7,12 +7,13 @@
     "cchistory": "./dist/index.js"
   },
   "scripts": {
-    "build": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/storage build && tsc -p tsconfig.json",
+    "build": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/storage build && pnpm --filter @cchistory/presentation build && tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "test": "pnpm run build && node --import ../../scripts/install-node-sqlite-warning-filter.mjs --test --test-concurrency=1 dist/index.test.js"
   },
   "dependencies": {
     "@cchistory/domain": "workspace:*",
+    "@cchistory/presentation": "workspace:*",
     "@cchistory/source-adapters": "workspace:*",
     "@cchistory/storage": "workspace:*"
   },

@@ -169,7 +169,7 @@ export function useTurnSearchQuery(params: {
   value_axes?: Array<'active' | 'covered' | 'archived' | 'suppressed'>
   limit?: number
 }) {
-  const shouldFetch = Boolean(params.query?.trim()) || Boolean(params.project_id) || Boolean(params.link_states?.length)
+  const shouldFetch = Boolean(params.query?.trim()) || Boolean(params.project_id) || Boolean(params.link_states?.length) || Boolean(params.source_ids?.length) || Boolean(params.value_axes?.length)
   const key = shouldFetch ? JSON.stringify(['turn-search', params]) : null
   return useSWR<SearchResult[]>(
     key,

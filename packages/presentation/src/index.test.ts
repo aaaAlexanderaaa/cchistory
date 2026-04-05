@@ -42,6 +42,8 @@ function createTurn(overrides: Partial<UserTurnProjectionDto> & Pick<UserTurnPro
   return {
     id: overrides.id,
     revision_id: overrides.revision_id ?? `${overrides.id}:r1`,
+    turn_id: overrides.turn_id ?? overrides.id,
+    turn_revision_id: overrides.turn_revision_id ?? `${overrides.id}:r1`,
     user_messages: overrides.user_messages ?? [
       {
         id: `${overrides.id}-message-1`,
@@ -443,6 +445,8 @@ test("mapSearchResult creates a fallback session when DTO omits one", () => {
     turn: {
       id: "turn-1",
       revision_id: "turn-1:r1",
+      turn_id: "turn-1",
+      turn_revision_id: "turn-1:r1",
       user_messages: [],
       raw_text: "raw",
       canonical_text: "Search me",
@@ -519,6 +523,8 @@ test("mapTurnLineage converts nested temporal fields", () => {
     turn: {
       id: "turn-1",
       revision_id: "turn-1:r1",
+      turn_id: "turn-1",
+      turn_revision_id: "turn-1:r1",
       user_messages: [],
       raw_text: "raw",
       canonical_text: "Need lineage",

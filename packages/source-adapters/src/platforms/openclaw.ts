@@ -1,10 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { normalizePathSeparators } from "../core/utils.js";
 import type { PlatformAdapter } from "./types.js";
-
-function normalizePath(value: string): string {
-  return value.replace(/\\/g, "/");
-}
 
 function resolveOpenClawHome(baseDir: string): string {
   return path.basename(baseDir) === "agents" ? path.dirname(baseDir) : baseDir;
@@ -60,7 +57,7 @@ export const openclawAdapter: PlatformAdapter = {
     if (!filePath.endsWith(".jsonl")) {
       return false;
     }
-    const normalized = normalizePath(filePath);
+    const normalized = normalizePathSeparators(filePath);
     return path.basename(path.dirname(filePath)) === "sessions" || normalized.includes("/cron/runs/");
   },
   getCompanionEvidencePaths: (baseDir) => listOpenClawCompanionEvidencePaths(baseDir),

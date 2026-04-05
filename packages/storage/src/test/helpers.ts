@@ -346,6 +346,8 @@ export function createFixturePayload(
       {
         id: turnId,
         revision_id: `${turnId}:r1`,
+        turn_id: turnId,
+        turn_revision_id: `${turnId}:r1`,
         user_messages: [
           {
             id: userMessageId,

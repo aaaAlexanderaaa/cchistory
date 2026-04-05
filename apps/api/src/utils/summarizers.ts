@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import type {
-  SourceSyncPayload,
-  TurnSearchResult,
-  UserTurnProjection,
+import {
+  normalizeLocalPathIdentity,
+  type SourceSyncPayload,
+  type TurnSearchResult,
+  type UserTurnProjection,
 } from "@cchistory/domain";
 import type { CCHistoryStorage } from "@cchistory/storage";
 
@@ -93,23 +94,42 @@ export function uniqueStrings<T extends string>(values: readonly T[]): T[] {
   return [...new Set(values)].sort();
 }
 
-export function splitCsv(value: string | undefined): string[] | undefined {
-  if (!value) {
+export function splitCsv(value: string | number | undefined): string[] | undefined {
+  if (!value && value !== 0) {
     return undefined;
   }
-  const parts = value
+  const str = String(value);
+  const parts = str
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
   return parts.length > 0 ? parts : undefined;
 }
 
-export function asOptionalNumber(value: string | undefined): number | undefined {
+export function asOptionalNumber(value: string | number | undefined): number | undefined {
+  if (value == null) {
+    return undefined;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : undefined;
+  }
   if (!value) {
     return undefined;
   }
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/** Parse a pagination limit (must be >= 1), returning undefined if absent or invalid. */
+export function asLimit(value: string | number | undefined): number | undefined {
+  const parsed = asOptionalNumber(value);
+  return parsed != null && parsed >= 1 ? Math.floor(parsed) : undefined;
+}
+
+/** Parse a pagination offset (must be >= 0), defaulting to 0 if absent or invalid. */
+export function asOffset(value: string | number | undefined): number {
+  const parsed = asOptionalNumber(value);
+  return parsed != null && parsed >= 0 ? Math.floor(parsed) : 0;
 }
 
 export function stableManualProjectId(displayName: string, targetKind: string, targetRef: string): string {
@@ -132,5 +152,5 @@ export function inferOverrideDisplayName(
 }
 
 export function normalizePathKey(value: string): string {
-  return value.replace(/\\/g, "/").replace(/\/+/g, "/").replace(/\/$/u, "");
+  return normalizeLocalPathIdentity(value) ?? value;
 }

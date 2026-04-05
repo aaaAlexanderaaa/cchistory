@@ -22,7 +22,7 @@ export interface OpenedReadStore {
 const SQLITE_MIN_NODE_MAJOR = 22;
 
 type StorageModule = typeof import("@cchistory/storage");
-type SourceAdaptersModule = typeof import("../../../packages/source-adapters/dist/index.js");
+type SourceAdaptersModule = typeof import("@cchistory/source-adapters");
 
 let storageModulePromise: Promise<StorageModule> | undefined;
 let sourceAdaptersModulePromise: Promise<SourceAdaptersModule> | undefined;
@@ -167,7 +167,7 @@ async function loadStorageModule(): Promise<StorageModule> {
 }
 
 async function loadSourceAdaptersModule(): Promise<SourceAdaptersModule> {
-  sourceAdaptersModulePromise ??= import("../../../packages/source-adapters/dist/index.js");
+  sourceAdaptersModulePromise ??= import("@cchistory/source-adapters");
   return sourceAdaptersModulePromise;
 }
 

@@ -1,4 +1,5 @@
 import path from "node:path";
+import { normalizePathSeparators } from "../core/utils.js";
 import type { PlatformAdapter } from "./types.js";
 
 const OPENCODE_STORAGE_SUFFIX = "/.local/share/opencode/storage";
@@ -17,7 +18,7 @@ export const opencodeAdapter: PlatformAdapter = {
     if (!filePath.endsWith(".json")) {
       return false;
     }
-    const normalized = normalizePath(filePath);
+    const normalized = normalizePathSeparators(filePath);
     return normalized.includes("/storage/session/");
   },
   getSupplementalSourceRoots: (baseDir) => {
@@ -25,7 +26,7 @@ export const opencodeAdapter: PlatformAdapter = {
     if (!homeDir) {
       return [];
     }
-    if (normalizePath(baseDir).endsWith(OPENCODE_PROJECT_SUFFIX)) {
+    if (normalizePathSeparators(baseDir).endsWith(OPENCODE_PROJECT_SUFFIX)) {
       return [path.join(homeDir, ".local", "share", "opencode", "storage")];
     }
     return [];
@@ -33,7 +34,7 @@ export const opencodeAdapter: PlatformAdapter = {
 };
 
 function deriveOpencodeHomeDir(baseDir: string): string | undefined {
-  const normalizedBaseDir = normalizePath(baseDir);
+  const normalizedBaseDir = normalizePathSeparators(baseDir);
   for (const suffix of [OPENCODE_STORAGE_SUFFIX, OPENCODE_PROJECT_SUFFIX, OPENCODE_LEGACY_SESSION_SUFFIX]) {
     if (!normalizedBaseDir.endsWith(suffix)) {
       continue;
@@ -44,6 +45,3 @@ function deriveOpencodeHomeDir(baseDir: string): string | undefined {
   return undefined;
 }
 
-function normalizePath(value: string): string {
-  return value.replace(/\\/g, "/");
-}

@@ -19,6 +19,7 @@ import {
   normalizeLocalPathIdentity,
   normalizeSourceBaseDir,
 } from "@cchistory/domain";
+import { asOptionalString } from "./utils.js";
 
 export function hydrateSourceStatus(source: SourceStatus): SourceStatus {
   return {
@@ -151,6 +152,3 @@ function normalizeComparablePath(value: string | undefined): string | undefined 
   return normalizeLocalPathIdentity(value);
 }
 
-function asOptionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
-}

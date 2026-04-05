@@ -34,7 +34,6 @@ import {
   X,
 } from 'lucide-react'
 import { format } from 'date-fns'
-import { zhCN } from 'date-fns/locale'
 
 interface TurnDetailPanelProps {
   turn: UserTurn
@@ -167,7 +166,7 @@ export function TurnDetailPanel({
         <div className="flex flex-wrap items-center gap-4 px-4 pb-3 text-xs text-muted">
           <span className="flex items-center gap-1">
             <Clock className="w-3 h-3" />
-            {format(turn.created_at, 'yyyy-MM-dd HH:mm', { locale: zhCN })}
+            {format(turn.created_at, 'yyyy-MM-dd HH:mm')}
           </span>
           <span className="flex items-center gap-1">
             <MessageSquare className="w-3 h-3" />

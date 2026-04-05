@@ -137,9 +137,13 @@ export function applyRemoteAgentHeartbeat(input: {
     },
   };
   for (const entry of input.request.source_manifest ?? []) {
+    // Heartbeat updates source metadata (presence, sync_status, etc.) but
+    // must NOT advance last_generation. Generation should only advance
+    // through actual data upload, not client-side reporting. Otherwise a
+    // single anomalous heartbeat can push generation forward and make
+    // subsequent real uploads permanently stale.
     const previousGeneration = nextRecord.sources[entry.source_id]?.last_generation ?? 0;
-    const generation = entry.generation > previousGeneration ? entry.generation : previousGeneration;
-    nextRecord.sources[entry.source_id] = buildPersistedSourceState({ ...entry, generation }, lastSeenAt);
+    nextRecord.sources[entry.source_id] = buildPersistedSourceState({ ...entry, generation: previousGeneration }, lastSeenAt);
   }
 
   return {

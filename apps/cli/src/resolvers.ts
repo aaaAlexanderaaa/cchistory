@@ -77,7 +77,7 @@ export function resolveTurnRef(storage: CCHistoryStorage, ref: string): UserTurn
     ref,
     turns.filter(
       (turn) =>
-        turn.turn_id === ref ||
+        (turn.turn_id != null && turn.turn_id === ref) ||
         turn.revision_id === ref ||
         turn.turn_revision_id === ref,
     ),

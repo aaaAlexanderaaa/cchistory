@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { SearchHighlight, UserTurnProjection } from "@cchistory/domain";
 
@@ -12,6 +13,18 @@ interface SearchTerm {
   mode: "prefix" | "literal";
 }
 
+/**
+ * Compute a lightweight hash of the indexable fields for a turn so we can
+ * detect changes without reading the full FTS content back from SQLite.
+ */
+function turnIndexHash(turn: UserTurnProjection): string {
+  return createHash("sha1")
+    .update(
+      `${turn.project_id ?? ""}\0${turn.source_id}\0${turn.link_state}\0${turn.value_axis}\0${turn.canonical_text ?? ""}\0${turn.raw_text ?? ""}`,
+    )
+    .digest("hex");
+}
+
 export function replaceSearchIndex(
   db: DatabaseSync,
   searchIndexReady: boolean,
@@ -20,46 +33,59 @@ export function replaceSearchIndex(
   if (!searchIndexReady) {
     return;
   }
+
+  // Ensure the lightweight hash-tracking table exists (idempotent).
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS search_index_hashes (turn_id TEXT PRIMARY KEY, hash TEXT NOT NULL);",
+  );
+
   db.exec("SAVEPOINT replace_search_index;");
   try {
+    // Build the desired set keyed by turn id.
     const desiredById = new Map<string, UserTurnProjection>();
     for (const turn of turns) {
       desiredById.set(turn.id, turn);
     }
 
-    const currentRows = db
-      .prepare("SELECT turn_id, project_id, link_state, value_axis FROM search_index")
-      .all() as Array<{ turn_id: string; project_id: string; link_state: string; value_axis: string }>;
-
-    const currentById = new Map<string, { project_id: string; link_state: string; value_axis: string }>();
-    for (const row of currentRows) {
-      currentById.set(row.turn_id, row);
+    // Only load the lightweight hash table — NOT the full FTS content.
+    const currentHashes = new Map<string, string>();
+    for (const row of db
+      .prepare("SELECT turn_id, hash FROM search_index_hashes")
+      .all() as Array<{ turn_id: string; hash: string }>) {
+      currentHashes.set(row.turn_id, row.hash);
     }
 
-    const deleteStmt = db.prepare("DELETE FROM search_index WHERE turn_id = ?");
-    const insertStmt = db.prepare(
+    const deleteIdx = db.prepare("DELETE FROM search_index WHERE turn_id = ?");
+    const deleteHash = db.prepare("DELETE FROM search_index_hashes WHERE turn_id = ?");
+    const insertIdx = db.prepare(
       "INSERT INTO search_index (turn_id, project_id, source_id, link_state, value_axis, canonical_text, raw_text) VALUES (?, ?, ?, ?, ?, ?, ?)",
     );
+    const upsertHash = db.prepare(
+      "INSERT OR REPLACE INTO search_index_hashes (turn_id, hash) VALUES (?, ?)",
+    );
 
-    for (const turnId of currentById.keys()) {
+    // Remove rows that no longer exist in the desired set.
+    for (const turnId of currentHashes.keys()) {
       if (!desiredById.has(turnId)) {
-        deleteStmt.run(turnId);
+        deleteIdx.run(turnId);
+        deleteHash.run(turnId);
       }
     }
 
+    // Upsert rows whose content changed or are new.
+    // Always delete-before-insert: FTS5 tables do not enforce uniqueness on
+    // turn_id, so we must remove any pre-existing row to avoid duplicates.
+    // This is especially important on stores upgraded from before the hash
+    // table existed — currentHashes will be empty while search_index already
+    // contains rows.
     for (const turn of turns) {
-      const existing = currentById.get(turn.id);
-      if (existing) {
-        if (
-          existing.project_id === (turn.project_id ?? "") &&
-          existing.link_state === turn.link_state &&
-          existing.value_axis === turn.value_axis
-        ) {
-          continue;
-        }
-        deleteStmt.run(turn.id);
+      const hash = turnIndexHash(turn);
+      const existingHash = currentHashes.get(turn.id);
+      if (existingHash === hash) {
+        continue;
       }
-      insertStmt.run(
+      deleteIdx.run(turn.id);
+      insertIdx.run(
         turn.id,
         turn.project_id ?? "",
         turn.source_id,
@@ -68,6 +94,7 @@ export function replaceSearchIndex(
         turn.canonical_text,
         turn.raw_text,
       );
+      upsertHash.run(turn.id, hash);
     }
 
     db.exec("RELEASE replace_search_index;");

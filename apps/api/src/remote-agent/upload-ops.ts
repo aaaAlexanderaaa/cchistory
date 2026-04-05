@@ -87,17 +87,70 @@ export async function applyRemoteAgentUpload(options: {
     ? requireLeasedJobAssignment(options.state, options.request.job_id, record.agent_id, { requireActiveLease: true })
     : undefined;
 
-  const manifestJson = JSON.stringify(options.request.bundle.manifest, null, 2);
-  if (sha256(manifestJson) !== options.request.bundle.checksums.manifest_sha256) {
+  // Accept both canonical (stable) and pretty-printed manifest checksums
+  // to be resilient against different JSON serializers on the client side.
+  const prettyManifestJson = JSON.stringify(options.request.bundle.manifest, null, 2);
+  const canonicalManifestJson = stableStringify(options.request.bundle.manifest);
+  const expectedChecksum = options.request.bundle.checksums.manifest_sha256;
+  if (sha256(prettyManifestJson) !== expectedChecksum && sha256(canonicalManifestJson) !== expectedChecksum) {
     throw new Error("Remote upload manifest checksum mismatch.");
   }
 
   const existingBundle = options.storage.getImportedBundle(options.request.bundle.manifest.bundle_id);
-  if (existingBundle && JSON.stringify(existingBundle.checksums) !== JSON.stringify(options.request.bundle.checksums)) {
+  if (existingBundle && stableStringify(existingBundle.checksums) !== stableStringify(options.request.bundle.checksums)) {
     throw new Error(`Bundle id ${options.request.bundle.manifest.bundle_id} already exists with different checksums.`);
   }
 
+  // Enforce source_slots: when the leased job restricts to specific slots,
+  // every included manifest entry must belong to one of those slots.
+  if (jobLease && Array.isArray(jobLease.job.source_slots)) {
+    const allowedSlots = new Set(jobLease.job.source_slots);
+    for (const entry of options.request.source_manifest) {
+      if (entry.included_in_bundle && !allowedSlots.has(entry.slot_id)) {
+        throw new Error(
+          `Source ${entry.source_id} (slot ${entry.slot_id}) is outside the allowed source_slots for job ${jobLease.job.job_id}. Allowed: [${jobLease.job.source_slots.join(", ")}].`,
+        );
+      }
+    }
+  }
+
+  // Enforce expected_generation guard: when the leased job specifies an
+  // expected_generation, every included manifest entry must match it exactly.
+  if (jobLease?.job.expected_generation !== undefined) {
+    for (const entry of options.request.source_manifest) {
+      if (entry.included_in_bundle && entry.generation !== jobLease.job.expected_generation) {
+        throw new Error(
+          `Generation mismatch for ${entry.source_id}: manifest has generation=${entry.generation} but job ${jobLease.job.job_id} requires expected_generation=${jobLease.job.expected_generation}.`,
+        );
+      }
+    }
+  }
+
   const manifestEntries = new Map(options.request.source_manifest.map((entry) => [entry.source_id, entry]));
+
+  // Validate bidirectional consistency between manifest and payloads:
+  // 1. Every manifest entry with included_in_bundle=true must have a payload.
+  // 2. Every payload must have a manifest entry with included_in_bundle=true.
+  // Without (1), the server would persist "uploaded" status with no data.
+  // Without (2), an agent could sneak payloads past manifest-level guards
+  // (source_slots, expected_generation) by marking them as not bundled.
+  const payloadSourceIds = new Set(options.request.bundle.payloads.map((payload) => payload.source.id));
+  for (const entry of options.request.source_manifest) {
+    if (entry.included_in_bundle && !payloadSourceIds.has(entry.source_id)) {
+      throw new Error(
+        `Source manifest entry ${entry.source_id} declares included_in_bundle=true but no matching payload exists in the bundle.`,
+      );
+    }
+  }
+  for (const payload of options.request.bundle.payloads) {
+    const manifestEntry = manifestEntries.get(payload.source.id);
+    if (!manifestEntry || !manifestEntry.included_in_bundle) {
+      throw new Error(
+        `Bundle contains payload for ${payload.source.id} but manifest does not declare included_in_bundle=true for it.`,
+      );
+    }
+  }
+
   const importedSourceIds: string[] = [];
   const replacedSourceIds: string[] = [];
   const skippedSourceIds: string[] = [];
@@ -160,7 +213,18 @@ export async function applyRemoteAgentUpload(options: {
     },
   };
   for (const entry of options.request.source_manifest) {
-    nextAgentRecord.sources[entry.source_id] = buildPersistedSourceState(entry, options.request.collected_at);
+    if (entry.included_in_bundle) {
+      // Only advance generation for entries that actually carried payload data.
+      nextAgentRecord.sources[entry.source_id] = buildPersistedSourceState(entry, options.request.collected_at);
+    } else {
+      // For non-bundled entries, update metadata but preserve server's
+      // last_generation to prevent client-side generation escalation.
+      const previousGeneration = nextAgentRecord.sources[entry.source_id]?.last_generation ?? 0;
+      nextAgentRecord.sources[entry.source_id] = buildPersistedSourceState(
+        { ...entry, generation: previousGeneration },
+        options.request.collected_at,
+      );
+    }
   }
 
   let nextJobs = options.state.jobs;
@@ -183,6 +247,14 @@ export async function applyRemoteAgentUpload(options: {
     };
   }
 
+  // Build accepted_generations: the server's authoritative generation for
+  // each source after this upload, so clients can reconcile local state
+  // even when a previous response was lost (crash-before-write recovery).
+  const acceptedGenerations: Record<string, number> = {};
+  for (const entry of options.request.source_manifest) {
+    acceptedGenerations[entry.source_id] = nextAgentRecord.sources[entry.source_id]?.last_generation ?? entry.generation;
+  }
+
   return {
     state: {
       ...options.state,
@@ -198,6 +270,21 @@ export async function applyRemoteAgentUpload(options: {
       replaced_source_ids: replacedSourceIds,
       skipped_source_ids: skippedSourceIds,
       source_manifest_count: options.request.source_manifest.length,
+      accepted_generations: acceptedGenerations,
     },
   };
+}
+
+/** Key-order-independent JSON serialization for structural equality checks. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return "[" + value.map(stableStringify).join(",") + "]";
+  }
+  const entries = Object.keys(value as Record<string, unknown>)
+    .sort()
+    .map((key) => JSON.stringify(key) + ":" + stableStringify((value as Record<string, unknown>)[key]));
+  return "{" + entries.join(",") + "}";
 }

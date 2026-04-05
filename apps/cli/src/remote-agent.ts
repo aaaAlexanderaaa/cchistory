@@ -149,6 +149,11 @@ export function applyRemoteUploadSuccess(input: {
   state: LocalRemoteAgentState;
   entries: RemoteAgentSourceManifestEntry[];
   dirtyFingerprintBySourceId: Record<string, string>;
+  /** Server-authoritative generations per source_id. When provided, these
+   *  take precedence over locally-computed entry.generation values, which
+   *  prevents the client from getting stuck in a stale retry loop after a
+   *  crash-before-write scenario. */
+  acceptedGenerations?: Record<string, number>;
 }): LocalRemoteAgentState {
   const nextState: LocalRemoteAgentState = {
     ...input.state,
@@ -163,7 +168,9 @@ export function applyRemoteUploadSuccess(input: {
     if (!entry.included_in_bundle) {
       continue;
     }
-    nextState.last_uploaded_generation_by_source_id[entry.source_id] = entry.generation;
+    // Prefer server-returned generation (authoritative) over locally computed value.
+    const serverGeneration = input.acceptedGenerations?.[entry.source_id];
+    nextState.last_uploaded_generation_by_source_id[entry.source_id] = serverGeneration ?? entry.generation;
     nextState.last_uploaded_checksum_by_source_id[entry.source_id] = input.dirtyFingerprintBySourceId[entry.source_id] ?? nextState.last_uploaded_checksum_by_source_id[entry.source_id] ?? "";
   }
   return nextState;
@@ -275,6 +282,9 @@ function computeDirtyFingerprint(payload: SourceSyncPayload): string {
       size_bytes: blob.size_bytes,
       file_modified_at: blob.file_modified_at,
     })),
+    // Include derived layer data so that parser/linker/projection changes
+    // invalidate the fingerprint even when raw blobs are unchanged.
+    payload_checksum: computePayloadChecksum(payload),
   })).digest("hex");
 }
 

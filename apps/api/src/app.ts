@@ -10,6 +10,7 @@ import {
   deriveSourceInstanceId,
   deriveSourceSlotId,
   isLegacySourceInstanceId,
+  normalizeSourceBaseDir,
   type SourceDefinition,
   type SourceSyncPayload,
 } from "@cchistory/domain";
@@ -71,7 +72,11 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   mkdirSync(rawStoreDir, { recursive: true });
 
   const storage = options.storage ?? new CCHistoryStorage(dataDir);
-  const app = Fastify({ logger: false, bodyLimit: 32 * 1024 * 1024 });
+  const logLevel = process.env.CCHISTORY_LOG_LEVEL ?? "warn";
+  const app = Fastify({
+    logger: { level: logLevel },
+    bodyLimit: 32 * 1024 * 1024,
+  });
   const corsOrigins = (process.env.CCHISTORY_CORS_ORIGIN ?? "http://localhost:8085,http://127.0.0.1:8085")
     .split(",")
     .map((s) => s.trim())
@@ -264,6 +269,12 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   return { app, dataDir, rawStoreDir, storage };
 }
 
+const VIRTUAL_BLOB_PATH_PREFIXES = ["antigravity-live://"];
+
+function isVirtualBlobPath(value: string): boolean {
+  return VIRTUAL_BLOB_PATH_PREFIXES.some((prefix) => value.startsWith(prefix));
+}
+
 async function snapshotRawBlobs(rawStoreDir: string, payload: SourceSyncPayload): Promise<void> {
   for (const blob of payload.blobs) {
     const extension = path.extname(blob.origin_path) || ".json";
@@ -271,7 +282,20 @@ async function snapshotRawBlobs(rawStoreDir: string, payload: SourceSyncPayload)
     const targetPath = path.join(targetDir, `${blob.id}${extension}`);
     mkdirSync(targetDir, { recursive: true });
     if (!(await pathExists(targetPath))) {
-      await copyFile(blob.origin_path, targetPath);
+      if (isVirtualBlobPath(blob.origin_path)) {
+        // Virtual blobs (e.g. antigravity-live://) have no file on disk.
+        // Materialize them from the parsed records in the payload.
+        const records = payload.records
+          .filter((record) => record.blob_id === blob.id)
+          .sort((left, right) => left.ordinal - right.ordinal);
+        await writeFile(
+          targetPath,
+          `${JSON.stringify({ blob, records }, null, 2)}\n`,
+          "utf8",
+        );
+      } else {
+        await copyFile(blob.origin_path, targetPath);
+      }
     }
     blob.captured_path = targetPath;
     blob.size_bytes = (await stat(targetPath)).size;
@@ -403,7 +427,7 @@ async function readSourceConfig(sourceConfigPath: string): Promise<{ overrides: 
         .map(([sourceId, value]) => [
           sourceId,
           {
-            base_dir: value.base_dir.trim(),
+            base_dir: normalizeSourceBaseDir(value.base_dir.trim()),
             updated_at:
               typeof value.updated_at === "string" && value.updated_at.length > 0
                 ? value.updated_at
@@ -432,7 +456,7 @@ async function readSourceConfig(sourceConfigPath: string): Promise<{ overrides: 
                   ? value.slot_id.trim()
                   : deriveSourceSlotId(value.platform),
               display_name: value.display_name.trim() || value.platform,
-              base_dir: value.base_dir.trim(),
+              base_dir: normalizeSourceBaseDir(value.base_dir.trim()),
               created_at:
                 typeof value.created_at === "string" && value.created_at.length > 0
                   ? value.created_at
@@ -477,7 +501,7 @@ function createManualSourceRecord(
   displayName: string | undefined,
   hostId: string,
 ): ManualSourceRecord {
-  const normalizedBaseDir = baseDir.trim();
+  const normalizedBaseDir = normalizeSourceBaseDir(baseDir.trim());
   const now = new Date().toISOString();
   return {
     id: deriveSourceInstanceId({

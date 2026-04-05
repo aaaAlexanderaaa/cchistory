@@ -1,5 +1,5 @@
 import type { FastifyInstance } from "fastify";
-import type { SourceDefinition } from "@cchistory/domain";
+import { normalizeSourceBaseDir, type Host, type SourceDefinition, type SourceSyncPayload } from "@cchistory/domain";
 import type { CCHistoryStorage } from "@cchistory/storage";
 import { summarizeRun } from "../utils/summarizers.js";
 
@@ -47,7 +47,7 @@ export interface SourceRoutesContext {
   getDefaultSourceTemplateByPlatform: (platform: SourceDefinition["platform"]) => SourceDefinition | undefined;
   getSourceConfig: () => { overrides: SourceOverrideMap; extras: ManualSourceRecord[] };
   setSourceConfig: (config: { overrides: SourceOverrideMap; extras: ManualSourceRecord[] }) => Promise<void>;
-  syncSources: (options: { source_ids?: string[]; limit_files_per_source?: number; persist: boolean }) => Promise<any>;
+  syncSources: (options: { source_ids?: string[]; limit_files_per_source?: number; persist: boolean }) => Promise<{ host: Host; sources: SourceSyncPayload[] }>;
   createManualSourceRecord: (template: SourceDefinition, baseDir: string, displayName?: string) => ManualSourceRecord;
   normalizePathKey: (value: string) => string;
 }
@@ -80,11 +80,12 @@ export function registerSourceRoutes(app: FastifyInstance, context: SourceRoutes
       limit_files_per_source?: number;
     };
     const platform = body.platform;
-    const nextBaseDir = body.base_dir?.trim();
-    if (!platform || !nextBaseDir) {
+    const rawBaseDir = body.base_dir?.trim();
+    if (!platform || !rawBaseDir) {
       reply.code(400);
       return { error: "platform and base_dir are required" };
     }
+    const nextBaseDir = normalizeSourceBaseDir(rawBaseDir);
 
     const sourceTemplate = context.getDefaultSourceTemplateByPlatform(platform);
     if (!sourceTemplate) {
@@ -98,7 +99,11 @@ export function registerSourceRoutes(app: FastifyInstance, context: SourceRoutes
     const existingSource = statuses.find(
       (source) => source.platform === platform && context.normalizePathKey(source.base_dir) === context.normalizePathKey(nextBaseDir),
     );
-    if (existingSource) {
+    // Only short-circuit for sources that are actually in the configured set
+    // (default or extras). Stored-only sources (historical data without a
+    // config entry) must fall through so a manual record is persisted and
+    // the source becomes manageable via subsequent API calls.
+    if (existingSource && context.getConfiguredSourceDefinition(existingSource.id)) {
       return {
         source: await context.getConfiguredSourceStatus(existingSource.id),
         synced: false,
@@ -153,11 +158,12 @@ export function registerSourceRoutes(app: FastifyInstance, context: SourceRoutes
       sync?: boolean;
       limit_files_per_source?: number;
     };
-    const nextBaseDir = body.base_dir?.trim();
-    if (!nextBaseDir) {
+    const rawBaseDir = body.base_dir?.trim();
+    if (!rawBaseDir) {
       reply.code(400);
       return { error: "base_dir is required" };
     }
+    const nextBaseDir = normalizeSourceBaseDir(rawBaseDir);
 
     const defaultSource = context.getDefaultSourceDefinition(sourceId);
     const sourceConfig = context.getSourceConfig();

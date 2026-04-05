@@ -22,8 +22,37 @@ import { firstNonEmptyTrimmedLineFromBuffer } from "./jsonl-records.js";
 import type { AssistantStopReason, FragmentBuildContext, GitProjectEvidence, LossAuditOptions, UserTextChunk, TokenUsageMetrics } from "./types.js";
 
 export const RULE_VERSION = "2026-03-10.1";
+
+/** Normalize backslash path separators to forward slashes. */
+export function normalizePathSeparators(value: string): string {
+  return value.replace(/\\/g, "/");
+}
 const execFileAsync = promisify(execFile);
-const gitProjectEvidenceCache = new Map<string, Promise<GitProjectEvidence | undefined>>();
+class TtlCache<K, V> {
+  private entries = new Map<K, { value: V; expiresAt: number }>();
+  constructor(private maxSize: number, private ttlMs: number) {}
+
+  get(key: K): V | undefined {
+    const entry = this.entries.get(key);
+    if (!entry) return undefined;
+    if (Date.now() > entry.expiresAt) {
+      this.entries.delete(key);
+      return undefined;
+    }
+    return entry.value;
+  }
+
+  set(key: K, value: V): void {
+    if (this.entries.size >= this.maxSize) {
+      // Evict oldest (first inserted — Map preserves insertion order)
+      const firstKey = this.entries.keys().next().value;
+      if (firstKey !== undefined) this.entries.delete(firstKey);
+    }
+    this.entries.set(key, { value, expiresAt: Date.now() + this.ttlMs });
+  }
+}
+
+const gitProjectEvidenceCache = new TtlCache<string, Promise<GitProjectEvidence | undefined>>(200, 5 * 60 * 1000);
 const CLAUDE_INTERRUPTION_MARKERS = new Set([
   "[Request interrupted by user]",
   "I'll stop here for now.",

@@ -6,6 +6,7 @@ import {
   type TurnSearchResult,
 } from "@cchistory/domain";
 import type { CCHistoryStorage } from "@cchistory/storage";
+import { tameBrowseMarkup } from "@cchistory/presentation";
 import { type ParsedArgs, getFlag, hasFlag } from "./args.js";
 import { bold, dim, cyan, green, yellow, magenta, blue, heading, muted, id as idColor } from "./colors.js";
 import type { StoreLayout } from "./store.js";
@@ -202,16 +203,7 @@ export function formatBrowseSnippet(value: string | null | undefined, maxLength:
   return truncateText(tameBrowseMarkup(value ?? ""), maxLength);
 }
 
-export function tameBrowseMarkup(value: string): string {
-  return value
-    .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, " ")
-    .replace(/<command-message>[\s\S]*?<\/command-message>/gi, " ")
-    .replace(/<command-args>[\s\S]*?<\/command-args>/gi, " ")
-    .replace(/<command-name>([\s\S]*?)<\/command-name>/gi, "$1 ")
-    .replace(/<\/?(?:command-name|command-message|command-args)>/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-}
+export { tameBrowseMarkup } from "@cchistory/presentation";
 
 export function formatSessionListTitle(title: string | null | undefined): string {
   return truncateText(title ?? "", 56);

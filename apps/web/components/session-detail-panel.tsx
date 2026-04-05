@@ -6,7 +6,6 @@ import { useSessionRelatedWorkQuery } from '@/lib/api'
 import type { ProjectIdentity, Session, SessionRelatedWork, UserTurn } from '@/lib/types'
 import { ChevronLeft, Clock, FolderOpen, Layers, MonitorSmartphone, Waypoints, X } from 'lucide-react'
 import { format } from 'date-fns'
-import { zhCN } from 'date-fns/locale'
 
 interface SessionDetailPanelProps {
   session: Session
@@ -100,7 +99,7 @@ export function SessionDetailPanel({
               >
                 <div className="mb-2 flex items-center justify-between gap-3 text-xs">
                   <span className="mono-text text-muted">TURN {index + 1}</span>
-                  <span className="text-muted">{format(turn.created_at, 'MM-dd HH:mm', { locale: zhCN })}</span>
+                  <span className="text-muted">{format(turn.created_at, 'MM-dd HH:mm')}</span>
                 </div>
                 <div className="text-sm text-ink line-clamp-3">{turn.canonical_text}</div>
                 <div className="mt-2 flex items-center gap-2 text-[10px] stamp-text">
@@ -141,8 +140,8 @@ export function SessionDetailPanel({
         <section className="border-t border-border px-4 py-4">
           <div className="mb-3 text-[10px] stamp-text text-muted">SESSION METADATA</div>
           <div className="grid grid-cols-1 gap-3 text-sm">
-            <MetaRow label="Created" value={format(session.created_at, 'yyyy-MM-dd HH:mm', { locale: zhCN })} />
-            <MetaRow label="Updated" value={format(session.updated_at, 'yyyy-MM-dd HH:mm', { locale: zhCN })} />
+            <MetaRow label="Created" value={format(session.created_at, 'yyyy-MM-dd HH:mm')} />
+            <MetaRow label="Updated" value={format(session.updated_at, 'yyyy-MM-dd HH:mm')} />
             <MetaRow label="Model" value={session.model || 'Unknown'} />
             <MetaRow label="Host" value={session.host_id} mono />
             {session.working_directory && <MetaRow label="Working Dir" value={session.working_directory} mono />}

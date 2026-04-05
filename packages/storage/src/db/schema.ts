@@ -189,6 +189,12 @@ export function initializeStorageSchema(db: DatabaseSync): boolean {
     CREATE INDEX IF NOT EXISTS idx_artifact_coverage_artifact ON artifact_coverage (artifact_id);
     CREATE INDEX IF NOT EXISTS idx_artifact_coverage_turn ON artifact_coverage (turn_id);
     CREATE INDEX IF NOT EXISTS idx_derived_candidates_source ON derived_candidates (source_id);
+
+    CREATE INDEX IF NOT EXISTS idx_raw_records_session ON raw_records (session_ref);
+    CREATE INDEX IF NOT EXISTS idx_source_fragments_session ON source_fragments (session_ref);
+    CREATE INDEX IF NOT EXISTS idx_conversation_atoms_session ON conversation_atoms (session_ref);
+    CREATE INDEX IF NOT EXISTS idx_atom_edges_session ON atom_edges (session_ref);
+    CREATE INDEX IF NOT EXISTS idx_derived_candidates_session ON derived_candidates (session_ref);
   `);
 
   try {

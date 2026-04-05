@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { access, mkdir } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { realpathSync } from "node:fs";
 import process from "node:process";
@@ -74,7 +75,9 @@ export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<n
 
   // --version / -v
   if (hasFlag(parsed, "version") || parsed.positionals.includes("-v")) {
-    const version = "0.1.0";
+    const _require = createRequire(import.meta.url);
+    const pkg = _require("../package.json") as { version: string };
+    const version = pkg.version;
     printOutput({ text: `cchistory ${version}`, json: { version } }, jsonMode, io);
     return 0;
   }

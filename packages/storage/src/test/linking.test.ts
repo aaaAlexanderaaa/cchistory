@@ -4,6 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { CCHistoryStorage } from "../index.js";
+import { asOptionalString } from "../internal/utils.js";
 import { createFixturePayload } from "./helpers.js";
 
 test("storage keeps delegated and automation evidence inspectable even when no canonical turns are emitted", async () => {
@@ -279,6 +280,50 @@ test("same repo fingerprint across different platforms consolidates into one pro
       crossProject.source_platforms.length >= 2,
       `Should have 2+ platforms, got ${crossProject.source_platforms.join(", ")}`,
     );
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("asOptionalString treats whitespace-only strings as undefined", () => {
+  assert.equal(asOptionalString(""), undefined);
+  assert.equal(asOptionalString("  "), undefined);
+  assert.equal(asOptionalString(" \t\n "), undefined);
+  assert.equal(asOptionalString(null), undefined);
+  assert.equal(asOptionalString(undefined), undefined);
+  assert.equal(asOptionalString(42), undefined);
+  assert.equal(asOptionalString("hello"), "hello");
+  assert.equal(asOptionalString("  hello  "), "hello");
+});
+
+test("blank workspace_path in evidence falls back to session working_directory for project linking", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-blank-ws-"));
+
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const realWorkspace = "/workspace/my-project";
+
+    // Create a payload where evidence.workspace_path is whitespace-only
+    // but session.working_directory is valid
+    const payload = createFixturePayload("src-blank-ws", "Blank ws turn", "sr-blank-ws", {
+      turnId: "turn-blank-ws",
+      sessionId: "session-blank-ws",
+      workingDirectory: realWorkspace,
+      includeProjectObservation: true,
+      projectObservation: {
+        workspacePath: "   ",
+        repoFingerprint: "abc123fingerprint",
+        repoRemote: "git@github.com:user/repo.git",
+      },
+    });
+
+    storage.replaceSourcePayload(payload);
+
+    // The project should still be linked via the session's working_directory fallback
+    const projects = storage.listProjects();
+    const linkedProject = projects.find((p) => p.repo_fingerprint === "abc123fingerprint");
+    assert.ok(linkedProject, "Project should exist despite blank workspace_path in evidence");
+    assert.equal(linkedProject.linkage_state, "committed", "Should be committed via repo_fingerprint match");
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

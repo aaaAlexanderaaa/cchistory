@@ -44,7 +44,7 @@ async function verifyRelatedWorkRecall(storeDir, cwd) {
 
   const repeatedSearchText = await runCliCapture(["search", "expert code reviewer", "--store", storeDir], cwd);
   assert.equal(repeatedSearchText.exitCode, 0, repeatedSearchText.stderr);
-  assert.match(repeatedSearchText.stdout, /chat-ui-kit \(\d+\)/);
+  assert.match(repeatedSearchText.stdout, /chat-ui-kit \([^)]+\) \(\d+\)/);
   assert.match(repeatedSearchText.stdout, /related=\d+ delegated/);
   assert.match(repeatedSearchText.stdout, /tree session .* --long/);
 

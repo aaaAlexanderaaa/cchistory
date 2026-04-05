@@ -92,9 +92,9 @@ export function AllTurnsView() {
       nextTurns = nextTurns.filter((turn) => filters.linkStates.includes(turn.link_state))
     }
 
-    if (filters.valueAxes.length > 0) {
-      nextTurns = nextTurns.filter((turn) => filters.valueAxes.includes(turn.value_axis))
-    }
+    // When no value-axis chips are selected, show no turns (consistent with
+    // link-state behaviour where deselecting all states yields zero results).
+    nextTurns = nextTurns.filter((turn) => filters.valueAxes.includes(turn.value_axis))
 
     nextTurns.sort((left, right) => {
       if (sortBy === 'newest') {
@@ -165,9 +165,7 @@ export function AllTurnsView() {
       nextTurns = nextTurns.filter((turn) => turn.project_id === filters.projectId)
     }
 
-    if (filters.valueAxes.length > 0) {
-      nextTurns = nextTurns.filter((turn) => filters.valueAxes.includes(turn.value_axis))
-    }
+    nextTurns = nextTurns.filter((turn) => filters.valueAxes.includes(turn.value_axis))
 
     // Keep these counts aligned with the non-link-state filters so the chips show
     // how many turns each link-state filter would reveal if toggled on.

@@ -399,7 +399,7 @@ export async function handleShow(parsed: ParsedArgs, io: CliIo): Promise<Command
           renderSection(
             "Context",
             renderKeyValue([
-              ["Turn ID", turn.turn_id ?? "unknown"],
+              ["Turn ID", turn.turn_id],
               ["Revision ID", turn.revision_id],
             ]),
           ),

@@ -1,3 +1,30 @@
+/**
+ * Shared DTO type aliases – single source of truth for platform/family unions
+ * used across all DTO interfaces.  Kept in sync with the canonical domain types
+ * in `@cchistory/domain`.
+ */
+export type SourcePlatformDto =
+  | "codex"
+  | "claude_code"
+  | "factory_droid"
+  | "amp"
+  | "cursor"
+  | "antigravity"
+  | "openclaw"
+  | "opencode"
+  | "chatgpt"
+  | "claude_web"
+  | "gemini"
+  | "lobechat"
+  | "codebuddy"
+  | "other";
+
+export type SourceFamilyDto =
+  | "local_coding_agent"
+  | "conversational_export"
+  | "local_runtime_sessions"
+  | "manual_export_bundles";
+
 export interface DisplaySegmentDto {
   type: "text" | "masked" | "highlight" | "code" | "reference" | "injected";
   content: string;
@@ -42,8 +69,8 @@ export interface TokenUsageSummaryDto {
 export interface UserTurnProjectionDto {
   id: string;
   revision_id: string;
-  turn_id?: string;
-  turn_revision_id?: string;
+  turn_id: string;
+  turn_revision_id: string;
   user_messages: UserMessageProjectionDto[];
   raw_text: string;
   canonical_text: string;
@@ -123,21 +150,7 @@ export interface TurnContextProjectionDto {
 export interface SessionProjectionDto {
   id: string;
   source_id: string;
-  source_platform:
-    | "codex"
-    | "claude_code"
-    | "factory_droid"
-    | "amp"
-    | "cursor"
-    | "antigravity"
-    | "openclaw"
-    | "opencode"
-    | "chatgpt"
-    | "claude_web"
-    | "gemini"
-    | "lobechat"
-    | "codebuddy"
-    | "other";
+  source_platform: SourcePlatformDto;
   host_id: string;
   title?: string;
   created_at: string;
@@ -156,21 +169,7 @@ export type SessionRelatedWorkTargetKindDto = "session" | "automation_run";
 export interface SessionRelatedWorkDto {
   id: string;
   source_id: string;
-  source_platform:
-    | "codex"
-    | "claude_code"
-    | "factory_droid"
-    | "amp"
-    | "cursor"
-    | "antigravity"
-    | "openclaw"
-    | "opencode"
-    | "chatgpt"
-    | "claude_web"
-    | "gemini"
-    | "lobechat"
-    | "codebuddy"
-    | "other";
+  source_platform: SourcePlatformDto;
   source_session_ref: string;
   relation_kind: SessionRelatedWorkKindDto;
   target_kind: SessionRelatedWorkTargetKindDto;
@@ -193,22 +192,8 @@ export interface SessionRelatedWorkDto {
 
 export interface SourceStatusDto {
   id: string;
-  family: "local_coding_agent" | "conversational_export";
-  platform:
-    | "codex"
-    | "claude_code"
-    | "factory_droid"
-    | "amp"
-    | "cursor"
-    | "antigravity"
-    | "openclaw"
-    | "opencode"
-    | "chatgpt"
-    | "claude_web"
-    | "gemini"
-    | "lobechat"
-    | "codebuddy"
-    | "other";
+  family: SourceFamilyDto;
+  platform: SourcePlatformDto;
   display_name: string;
   base_dir: string;
   default_base_dir?: string;
@@ -238,6 +223,7 @@ export interface ProjectSummaryDto {
   link_reason:
     | "repo_fingerprint_match"
     | "repo_remote_match"
+    | "repo_root_match"
     | "workspace_path_continuity"
     | "source_native_project"
     | "manual_override"
@@ -248,22 +234,7 @@ export interface ProjectSummaryDto {
   repo_root?: string;
   repo_remote?: string;
   repo_fingerprint?: string;
-  source_platforms: Array<
-    | "codex"
-    | "claude_code"
-    | "factory_droid"
-    | "amp"
-    | "cursor"
-    | "antigravity"
-    | "openclaw"
-    | "opencode"
-    | "chatgpt"
-    | "claude_web"
-    | "gemini"
-    | "lobechat"
-    | "codebuddy"
-    | "other"
-  >;
+  source_platforms: SourcePlatformDto[];
   host_ids: string[];
   committed_turn_count: number;
   candidate_turn_count: number;
@@ -282,6 +253,7 @@ export interface ProjectLinkRevisionDto {
   link_reason:
     | "repo_fingerprint_match"
     | "repo_remote_match"
+    | "repo_root_match"
     | "workspace_path_continuity"
     | "source_native_project"
     | "manual_override"
@@ -298,7 +270,7 @@ export interface ProjectLineageEventDto {
   project_id: string;
   project_revision_id: string;
   previous_project_revision_id?: string;
-  event_kind: "created" | "revised" | "manual_override";
+  event_kind: "created" | "revised" | "manual_override" | "superseded" | "split" | "merge";
   created_at: string;
   detail: Record<string, unknown>;
 }
@@ -496,27 +468,14 @@ export interface LinkingObservationDto {
   repo_fingerprint?: string;
   source_native_project_ref?: string;
   host_id: string;
-  source_platform:
-    | "codex"
-    | "claude_code"
-    | "factory_droid"
-    | "amp"
-    | "cursor"
-    | "antigravity"
-    | "openclaw"
-    | "opencode"
-    | "chatgpt"
-    | "claude_web"
-    | "gemini"
-    | "lobechat"
-    | "codebuddy"
-    | "other";
+  source_platform: SourcePlatformDto;
   workspace_subpath?: string;
   project_id?: string;
   linkage_state?: "committed" | "candidate";
   link_reason?:
     | "repo_fingerprint_match"
     | "repo_remote_match"
+    | "repo_root_match"
     | "workspace_path_continuity"
     | "source_native_project"
     | "manual_override"
