@@ -311,6 +311,15 @@ function ensureAtomEdgeEndpointColumns(db: DatabaseSync): void {
     db.exec("ALTER TABLE atom_edges ADD COLUMN to_atom_id TEXT NOT NULL DEFAULT ''");
   }
 
+  // Skip the expensive full-table backfill scan if already completed.
+  const migrationKey = "atom_edge_endpoint_backfill";
+  const done = db.prepare("SELECT value_text FROM schema_meta WHERE key = ?").get(migrationKey) as
+    | { value_text: string }
+    | undefined;
+  if (done?.value_text === "done") {
+    return;
+  }
+
   const rows = db.prepare("SELECT id, payload_json, from_atom_id, to_atom_id FROM atom_edges").all() as Array<{
     id: string;
     payload_json: string;
@@ -339,4 +348,6 @@ function ensureAtomEdgeEndpointColumns(db: DatabaseSync): void {
 
     update.run(fromAtomId, toAtomId, row.id);
   }
+
+  setSchemaMeta(db, migrationKey, "done");
 }

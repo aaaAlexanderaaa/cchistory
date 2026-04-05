@@ -666,6 +666,9 @@ export function createCCHistoryApiClient(options: CCHistoryApiClientOptions = {}
       const response = await fetchJson<TurnsResponse>(fetchImpl, baseUrl, path);
       return { turns: response.turns, total: response.total };
     },
+    async getTurnSummary(): Promise<{ counts: Record<string, number> }> {
+      return fetchJson<{ counts: Record<string, number> }>(fetchImpl, baseUrl, "/api/turns/summary");
+    },
     async searchTurns(params: {
       q?: string;
       project_id?: string;

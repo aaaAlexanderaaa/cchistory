@@ -86,7 +86,6 @@ export class CCHistoryStorage {
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA foreign_keys = ON;");
     this.searchIndexReady = this.initialize();
-    this.refreshDerivedState();
   }
 
   close(): void {
@@ -260,6 +259,16 @@ export class CCHistoryStorage {
     }
     const fragments = Queries.selectPayloadsBySession<SourceFragment>(this.db, "source_fragments", sessionId, "ORDER BY id ASC");
     return buildSessionRelatedWork(session, fragments);
+  }
+
+  getTurnSummary(): Record<string, number> {
+    const turns = this.listResolvedTurns();
+    const counts: Record<string, number> = { total: turns.length };
+    for (const turn of turns) {
+      const key = turn.link_state ?? "unknown";
+      counts[key] = (counts[key] ?? 0) + 1;
+    }
+    return counts;
   }
 
   listProjects(): ProjectIdentity[] {
@@ -641,7 +650,7 @@ export class CCHistoryStorage {
         continue;
       }
 
-      const highlights = query.length > 0 ? findHighlights(turn.canonical_text, query) : [];
+      const highlights = query.length > 0 ? findHighlights(turn.canonical_text ?? "", query) : [];
       results.push({
         turn,
         session: sessionsById.get(turn.session_id),

@@ -3,7 +3,7 @@
 import dynamic from 'next/dynamic'
 import { Suspense, useMemo } from 'react'
 import { AppShell } from '@/components/app-shell'
-import { useDriftQuery, useTurnsQuery } from '@/lib/api'
+import { useDriftQuery, useTurnSummaryQuery } from '@/lib/api'
 import { useViewRouter } from '@/lib/use-view-router'
 
 const AllTurnsView = dynamic(
@@ -59,12 +59,12 @@ function HomeContent() {
     handleCloseSearch,
   } = useViewRouter()
 
-  const { data: turns = [] } = useTurnsQuery()
+  const { data: summary } = useTurnSummaryQuery()
   const { data: drift } = useDriftQuery()
 
   const inboxCount = useMemo(
-    () => turns.filter((turn) => turn.link_state === 'unlinked' || turn.link_state === 'candidate').length,
-    [turns],
+    () => (summary?.counts.unlinked ?? 0) + (summary?.counts.candidate ?? 0),
+    [summary],
   )
 
   const renderView = () => {

@@ -989,18 +989,21 @@ export function diffTokenUsageMetrics(
   if (!previous) {
     return current;
   }
+  const diffField = (
+    cur: number | undefined,
+    prev: number | undefined,
+  ): number | undefined => {
+    if (cur == null && prev == null) return undefined;
+    return Math.max(0, (cur ?? 0) - (prev ?? 0));
+  };
   return {
-    input_tokens: Math.max(0, (current.input_tokens ?? 0) - (previous.input_tokens ?? 0)) || undefined,
-    output_tokens: Math.max(0, (current.output_tokens ?? 0) - (previous.output_tokens ?? 0)) || undefined,
-    total_tokens: Math.max(0, (current.total_tokens ?? 0) - (previous.total_tokens ?? 0)) || undefined,
-    cache_read_input_tokens:
-      Math.max(0, (current.cache_read_input_tokens ?? 0) - (previous.cache_read_input_tokens ?? 0)) || undefined,
-    cache_creation_input_tokens:
-      Math.max(0, (current.cache_creation_input_tokens ?? 0) - (previous.cache_creation_input_tokens ?? 0)) || undefined,
-    cached_input_tokens:
-      Math.max(0, (current.cached_input_tokens ?? 0) - (previous.cached_input_tokens ?? 0)) || undefined,
-    reasoning_output_tokens:
-      Math.max(0, (current.reasoning_output_tokens ?? 0) - (previous.reasoning_output_tokens ?? 0)) || undefined,
+    input_tokens: diffField(current.input_tokens, previous.input_tokens),
+    output_tokens: diffField(current.output_tokens, previous.output_tokens),
+    total_tokens: diffField(current.total_tokens, previous.total_tokens),
+    cache_read_input_tokens: diffField(current.cache_read_input_tokens, previous.cache_read_input_tokens),
+    cache_creation_input_tokens: diffField(current.cache_creation_input_tokens, previous.cache_creation_input_tokens),
+    cached_input_tokens: diffField(current.cached_input_tokens, previous.cached_input_tokens),
+    reasoning_output_tokens: diffField(current.reasoning_output_tokens, previous.reasoning_output_tokens),
     model: current.model,
   };
 }

@@ -41,6 +41,10 @@ export function registerDataRoutes(app: FastifyInstance, context: DataRoutesCont
     };
   });
 
+  app.get("/api/turns/summary", async () => {
+    return { counts: storage.getTurnSummary() };
+  });
+
   app.get("/api/turns/search", {
     schema: {
       querystring: {

@@ -84,20 +84,46 @@ interface Match {
   content: string
 }
 
+/**
+ * Reject regex patterns that are likely to cause catastrophic backtracking.
+ * Detects nested quantifiers like (a+)+, (a*)+, (a+)*, etc.
+ */
+function isReDoSRisky(pattern: string): boolean {
+  // Nested quantifiers: a quantifier applied to a group that itself contains a quantifier
+  return /(\([^)]*[+*][^)]*\))[+*{]/.test(pattern) ||
+    /(\[[^\]]*\])[+*{]\??\)*[+*{]/.test(pattern)
+}
+
 function findMatches(text: string, template: MaskTemplate): Match[] {
   const matches: Match[] = []
   
   switch (template.match_type) {
     case 'regex': {
       try {
+        if (isReDoSRisky(template.match_pattern)) {
+          break
+        }
         const regex = new RegExp(template.match_pattern, 'g')
         let match
-        while ((match = regex.exec(text)) !== null) {
+        const MAX_MATCHES = 10000
+        const TIMEOUT_MS = 50
+        let count = 0
+        const start = performance.now()
+        while ((match = regex.exec(text)) !== null && count < MAX_MATCHES) {
+          count++
+          if (match[0].length === 0) {
+            regex.lastIndex++
+            continue
+          }
           matches.push({
             start: match.index,
             end: match.index + match[0].length,
             content: match[0],
           })
+          // Bail out if regex execution is taking too long (ReDoS protection)
+          if (count % 100 === 0 && performance.now() - start > TIMEOUT_MS) {
+            break
+          }
         }
       } catch {
         // Invalid regex, skip

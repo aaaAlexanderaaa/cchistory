@@ -75,6 +75,12 @@ export function usePaginatedTurnsQuery(params: { limit: number; offset: number }
   )
 }
 
+export function useTurnSummaryQuery() {
+  return useSWR<{ counts: Record<string, number> }>('/api/turns/summary', async () => {
+    return getApiClient().getTurnSummary()
+  }, { revalidateOnFocus: false })
+}
+
 export function useTurnQuery(turnId?: string) {
   return useSWR<UserTurn>(
     turnId ? `/api/turns/${encodeURIComponent(turnId)}` : null,

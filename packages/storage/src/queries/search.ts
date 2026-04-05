@@ -150,9 +150,12 @@ export function querySearchIndex(input: {
 export function computeRelevanceScore(turn: UserTurnProjection, highlights: SearchHighlight[]): number {
   const nowMs = Date.now();
   const turnMs = Date.parse(turn.submission_started_at) || 0;
-  const TEN_YEARS_MS = 10 * 365.25 * 24 * 60 * 60 * 1000;
-  const ageRatio = Math.min(1, Math.max(0, nowMs - turnMs) / TEN_YEARS_MS);
-  return highlights.length * 10 + (1 - ageRatio);
+  const ageMs = Math.max(0, nowMs - turnMs);
+  const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
+  // Logarithmic decay: recent turns get a meaningful boost that tapers off.
+  // recency ranges from 0 (very old) to 5 (just now).
+  const recency = 5 * Math.max(0, 1 - Math.log1p(ageMs / NINETY_DAYS_MS) / Math.log1p(100));
+  return highlights.length * 10 + recency;
 }
 
 export function findHighlights(text: string, query: string): SearchHighlight[] {
@@ -162,17 +165,19 @@ export function findHighlights(text: string, query: string): SearchHighlight[] {
     return [];
   }
 
-  const loweredText = text.toLowerCase();
+  // Use regex with the 'ig' flags to find matches in the original text.
+  // This avoids the offset mismatch caused by toLowerCase() changing
+  // string length for certain Unicode characters (e.g. İ → i̇).
   const highlights: SearchHighlight[] = [];
   for (const term of terms) {
-    let cursor = 0;
-    while (cursor < loweredText.length) {
-      const foundAt = loweredText.indexOf(term, cursor);
-      if (foundAt < 0) {
-        break;
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(escaped, "gi");
+    let match: RegExpExecArray | null;
+    while ((match = regex.exec(text)) !== null) {
+      highlights.push({ start: match.index, end: match.index + match[0].length });
+      if (match[0].length === 0) {
+        regex.lastIndex++;
       }
-      highlights.push({ start: foundAt, end: foundAt + term.length });
-      cursor = foundAt + term.length;
     }
   }
 

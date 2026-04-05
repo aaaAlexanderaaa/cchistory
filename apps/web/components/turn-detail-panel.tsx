@@ -91,7 +91,7 @@ export function TurnDetailPanel({
   const toolCallCount = context?.tool_calls.length ?? 0
   const tokenSummary = formatTokenUsageSummary(
     turn.context_summary.token_usage,
-    turn.context_summary.token_usage || turn.context_summary.total_tokens !== undefined ? 1 : 0,
+    (turn.context_summary.token_usage || turn.context_summary.total_tokens !== undefined) ? 1 : 0,
     1,
     turn.context_summary.total_tokens,
   )

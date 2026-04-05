@@ -159,15 +159,21 @@ export function LinkingView() {
 
   const handleAutoLinkCandidates = async () => {
     const eligibleTurns = candidateTurns.filter((turn) => turn.project_id)
-    for (const turn of eligibleTurns) {
-      await upsertLinkingOverride({
-        target_kind: 'turn',
-        target_ref: turn.id,
-        project_id: turn.project_id,
-        display_name: turn.project_id ? projectRegistry.get(turn.project_id)?.name : undefined,
-      })
-    }
+    const results = await Promise.allSettled(
+      eligibleTurns.map((turn) =>
+        upsertLinkingOverride({
+          target_kind: 'turn',
+          target_ref: turn.id,
+          project_id: turn.project_id,
+          display_name: turn.project_id ? projectRegistry.get(turn.project_id)?.name : undefined,
+        }),
+      ),
+    )
     await refreshLinkingViews()
+    const failed = results.filter((r) => r.status === 'rejected').length
+    if (failed > 0) {
+      console.warn(`[linking] ${failed}/${results.length} auto-link overrides failed`)
+    }
   }
 
   return (

@@ -68,9 +68,13 @@ function MaskedSegment({ segment }: { segment: DisplaySegment }) {
   
   const handleCopy = async () => {
     if (segment.original_content) {
-      await navigator.clipboard.writeText(segment.original_content)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      try {
+        await navigator.clipboard.writeText(segment.original_content)
+        setCopied(true)
+        setTimeout(() => setCopied(false), 2000)
+      } catch {
+        // Clipboard API unavailable (non-HTTPS or unfocused document)
+      }
     }
   }
   
@@ -80,6 +84,7 @@ function MaskedSegment({ segment }: { segment: DisplaySegment }) {
         {/* Header */}
         <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-surface-hover">
           <button
+            type="button"
             onClick={() => setIsExpanded(false)}
             className="flex items-center gap-1.5 text-xs stamp-text text-muted hover:text-ink"
           >
@@ -92,6 +97,7 @@ function MaskedSegment({ segment }: { segment: DisplaySegment }) {
           
           <div className="flex items-center gap-2">
             <button
+              type="button"
               onClick={handleCopy}
               className="p-1 text-muted hover:text-ink"
               title="Copy content"
@@ -99,6 +105,7 @@ function MaskedSegment({ segment }: { segment: DisplaySegment }) {
               {copied ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
             </button>
             <button
+              type="button"
               onClick={() => setIsExpanded(false)}
               className="p-1 text-muted hover:text-ink"
               title="Collapse"
@@ -120,6 +127,7 @@ function MaskedSegment({ segment }: { segment: DisplaySegment }) {
   
   return (
     <button
+      type="button"
       onClick={() => setIsExpanded(true)}
       className={cn(
         "inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5",

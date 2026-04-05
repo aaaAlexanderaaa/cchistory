@@ -314,9 +314,13 @@ function CopyButton({ text }: { text: string }) {
   
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    await navigator.clipboard.writeText(text)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard API unavailable (non-HTTPS or unfocused document)
+    }
   }
   
   return (
