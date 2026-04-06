@@ -1236,7 +1236,17 @@ function getSearchGroups(browser: LocalTuiBrowser, state: BrowserState): SearchG
 
 function getSelectedSearchTurn(browser: LocalTuiBrowser, state: BrowserState): LocalTuiSearchResult | undefined {
   const groups = getSearchGroups(browser, state);
-  return groups[state.selectedSearchProjectIndex]?.results[state.selectedSearchTurnIndex];
+  const selectedGroup = groups[state.selectedSearchProjectIndex];
+  if (!selectedGroup) return undefined;
+  // Results are re-indexed by groupSearchResultsBySession (session grouping + sort),
+  // so we must look up by the re-assigned originalIndex, not by raw array position.
+  const sessionGroups = groupSearchResultsBySession(selectedGroup.results);
+  for (const sg of sessionGroups) {
+    for (const item of sg.results) {
+      if (item.originalIndex === state.selectedSearchTurnIndex) return item.result;
+    }
+  }
+  return undefined;
 }
 
 function viewportWindow(total: number, selectedIndex: number, size: number): { start: number; end: number } {

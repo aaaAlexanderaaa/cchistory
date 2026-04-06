@@ -14,9 +14,11 @@
     "cchistory-tui": "./dist/index.js"
   },
   "scripts": {
-    "build": "pnpm --filter @cchistory/storage build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/presentation build && tsc -p tsconfig.json",
+    "build": "pnpm --filter @cchistory/storage build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/presentation build && tsc -p tsconfig.json && chmod +x dist/index.js",
     "start": "node dist/index.js",
-    "test": "pnpm run build && node --import ../../scripts/install-node-sqlite-warning-filter.mjs --test dist/index.test.js"
+    "test": "pnpm run build && tsc -p tsconfig.test.json && node --import ../../scripts/install-node-sqlite-warning-filter.mjs --test dist/index.test.js",
+    "test:state": "pnpm run build && tsc -p tsconfig.test.json && node --import ../../scripts/install-node-sqlite-warning-filter.mjs --test dist/state.test.js",
+    "test:layout": "pnpm run build && tsc -p tsconfig.test.json && node --import ../../scripts/install-node-sqlite-warning-filter.mjs --test dist/layout.test.js"
   },
   "dependencies": {
     "@cchistory/presentation": "workspace:*",

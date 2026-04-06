@@ -64,4 +64,5 @@ coverage/
 
 # Review / analysis artifacts
 .reviews/
+.audit/
 .pnpm-store/
