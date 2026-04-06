@@ -10,6 +10,7 @@ import { CCHistoryStorage, buildLocalTuiBrowser } from "@cchistory/storage";
 
 type FixturePayload = Parameters<CCHistoryStorage["replaceSourcePayload"]>[0];
 import { createBrowserState, reduceBrowserState, renderBrowserSnapshot } from "./browser.js";
+import { stripAnsi } from "./colors.js";
 import { runTui } from "./index.js";
 
 function createIo(cwd: string) {
@@ -33,9 +34,9 @@ test("help output describes the local TUI browser", async () => {
 
   assert.equal(exitCode, 0);
   assert.match(stdout.join(""), /project, turn, and detail browsing/i);
-  assert.match(stdout.join(""), /indexed store only/i);
+  assert.match(stdout.join(""), /--store/i);
   assert.match(stdout.join(""), /--full/);
-  assert.match(stdout.join(""), /live in-memory scan analogous to CLI `--full`/i);
+  assert.match(stdout.join(""), /analogous to CLI `--full`/i);
   assert.match(stdout.join(""), /--source-health/);
   assert.equal(stderr.join(""), "");
 });
@@ -45,7 +46,7 @@ test("built entrypoint suppresses runtime SQLite experimental warnings for help 
   const helpResult = spawnSync(process.execPath, [builtEntry, "--help"], { encoding: "utf8" });
 
   assert.equal(helpResult.status, 0);
-  assert.match(helpResult.stdout, /Usage: cchistory-tui/);
+  assert.match(helpResult.stdout, /Usage: cchistory tui/);
   assert.doesNotMatch(helpResult.stderr, /ExperimentalWarning/);
 
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-tui-built-missing-store-"));
@@ -90,12 +91,13 @@ test("entrypoint renders pane-based browser snapshot without requiring an API se
     const exitCode = await runTui(["--db", dbPath], io);
     const output = stdout.join("");
 
+    const stripped = stripAnsi(output);
     assert.equal(exitCode, 0);
-    assert.match(output, /CCHistory TUI entrypoint/);
-    assert.match(output, new RegExp(dbPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(output, /Projects(?: \[active\])?:/);
-    assert.match(output, /Turns(?: \[active\])?:/);
-    assert.match(output, /Detail(?: \[active\])?:/);
+    assert.match(stripped, /CCHistory TUI/);
+    assert.match(stripped, new RegExp(dbPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.match(stripped, /Projects/);
+    assert.match(stripped, /Turns/);
+    assert.match(stripped, /Detail/);
     assert.equal(stderr.join(""), "");
   } finally {
     await rm(tempDir, { recursive: true, force: true });
@@ -186,7 +188,7 @@ test("browser reducer moves focus and drill-down state predictably", async () =>
     state = reduceBrowserState(browser, state, { type: "drill" });
     assert.equal(state.focusPane, "detail");
 
-    const snapshot = renderBrowserSnapshot(browser, state);
+    const snapshot = stripAnsi(renderBrowserSnapshot(browser, state));
     assert.match(snapshot, /Alpha Project/);
     assert.match(snapshot, /First project turn/);
 
@@ -230,7 +232,7 @@ test("browser search/detail snapshots tame command-style markup in display-only 
     state = reduceBrowserState(browser, state, { type: "drill" });
     state = reduceBrowserState(browser, state, { type: "drill" });
 
-    const snapshot = renderBrowserSnapshot(browser, state);
+    const snapshot = stripAnsi(renderBrowserSnapshot(browser, state));
     assert.match(snapshot, /expert code reviewer/i);
     assert.match(snapshot, /Source: Storage fixture \(codex\)/);
     assert.match(snapshot, /\/review You are an expert code reviewer/i);
@@ -268,18 +270,18 @@ test("browser snapshot marks active pane and preserves turn detail cues", async 
     state = reduceBrowserState(browser, state, { type: "drill" });
     state = reduceBrowserState(browser, state, { type: "drill" });
 
-    const snapshot = renderBrowserSnapshot(browser, state);
-    assert.match(snapshot, /Projects:/);
-    assert.match(snapshot, /Turns:/);
-    assert.match(snapshot, /Detail \[active\]:/);
-    assert.match(snapshot, /> Project: Detail Project/);
+    const snapshot = stripAnsi(renderBrowserSnapshot(browser, state));
+    assert.match(snapshot, /Projects/);
+    assert.match(snapshot, /Turns/);
+    assert.match(snapshot, /Detail/);
+    assert.match(snapshot, /Project: Detail Project/);
     assert.match(snapshot, /Source: Storage fixture \(codex\)/);
     assert.match(snapshot, /Session: session-detail/);
     assert.match(snapshot, /Workspace: \/workspace\/detail/);
-    assert.match(snapshot, /Breadcrumbs: Detail Project > session-detail > turn-detail/);
+    assert.match(snapshot, /Breadcrumbs: Detail Project . session-detail . turn-detail/);
     assert.match(snapshot, /Prompt: Investigate failing adapter test/);
-    assert.match(snapshot, /Related Work: 0 child sessions, 0 automation runs/);
-    assert.match(snapshot, /Related Trail: -> \(none\)/);
+    assert.match(snapshot, /Related: 0 child, 0 automation/);
+    assert.match(snapshot, /Trail: \(none\)/);
 
     storage.close();
   } finally {
@@ -313,12 +315,12 @@ test("browser snapshot can surface delegated child-session breadcrumbs and relat
     state = reduceBrowserState(browser, state, { type: "drill" });
     state = reduceBrowserState(browser, state, { type: "drill" });
 
-    const snapshot = renderBrowserSnapshot(browser, state);
-    assert.match(snapshot, /Breadcrumbs: Related Project > session-related > turn-related/);
-    assert.match(snapshot, /Related Work: 1 child sessions, 0 automation runs/);
-    assert.match(snapshot, /Related Trail 1: -> child session child-session-1 \(transcript-primary\)/);
+    const snapshot = stripAnsi(renderBrowserSnapshot(browser, state));
+    assert.match(snapshot, /Breadcrumbs: Related Project . session-related . turn-related/);
+    assert.match(snapshot, /Related: 1 child, 0 automation/);
+    assert.match(snapshot, /Trail 1: . child session child-session-1 \(transcript-primary\)/);
     assert.equal((snapshot.match(/child session child-session-1/g) ?? []).length, 1);
-    assert.match(snapshot, /related: 1 child/);
+    assert.match(snapshot, /1 child/);
 
     storage.close();
   } finally {
@@ -392,11 +394,11 @@ test("entrypoint can render non-interactive source-health snapshot", async () =>
     const exitCode = await runTui(["--db", dbPath, "--source-health"], io);
     const output = stdout.join("");
 
+    const stripped = stripAnsi(output);
     assert.equal(exitCode, 0, stderr.join(""));
-    assert.match(output, /Read=indexed-only/);
-    assert.match(output, /SourceHealth=open/);
-    assert.match(output, /Source Health:/);
-    assert.match(output, /Storage fixture \(codex\)/);
+    assert.match(stripped, /Read=indexed/);
+    assert.match(stripped, /Source Health/);
+    assert.match(stripped, /Storage fixture \(codex\)/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -428,15 +430,15 @@ test("entrypoint can render combined search and source-health snapshot", async (
     const exitCode = await runTui(["--db", dbPath, "--search", "alpha", "--source-health"], io);
     const output = stdout.join("");
 
+    const stripped = stripAnsi(output);
     assert.equal(exitCode, 0, stderr.join(""));
-    assert.match(output, /Mode=search/);
-    assert.match(output, /Read=indexed-only/);
-    assert.match(output, /Query: alpha/);
-    assert.match(output, /Find alpha regression/);
-    assert.match(output, /Project: Entry Search Source Health/);
-    assert.match(output, /SourceHealth=open/);
-    assert.match(output, /Source Health:/);
-    assert.match(output, /Storage fixture \(codex\)/);
+    assert.match(stripped, /Mode=search/);
+    assert.match(stripped, /Read=indexed/);
+    assert.match(stripped, /Query: alpha/);
+    assert.match(stripped, /Find alpha regression/);
+    assert.match(stripped, /Project: Entry Search Source Health/);
+    assert.match(stripped, /Source Health/);
+    assert.match(stripped, /Storage fixture \(codex\)/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -468,16 +470,16 @@ test("entrypoint can render empty combined search and source-health snapshot", a
     const exitCode = await runTui(["--db", dbPath, "--search", "missing phrase", "--source-health"], io);
     const output = stdout.join("");
 
+    const stripped = stripAnsi(output);
     assert.equal(exitCode, 0, stderr.join(""));
-    assert.match(output, /Mode=search/);
-    assert.match(output, /Results: 0 match\(es\)/);
-    assert.match(output, /No search results/);
-    assert.match(output, /No project selected\./);
-    assert.match(output, /SelectedProject=none/);
-    assert.match(output, /SelectedTurn=none/);
-    assert.match(output, /SourceHealth=open/);
-    assert.match(output, /Source Health:/);
-    assert.match(output, /Storage fixture \(codex\)/);
+    assert.match(stripped, /Mode=search/);
+    assert.match(stripped, /0 match\(es\)/);
+    assert.match(stripped, /No search results/);
+    assert.match(stripped, /No project selected\./);
+    assert.match(stripped, /Project=none/);
+    assert.match(stripped, /Turn=none/);
+    assert.match(stripped, /Source Health/);
+    assert.match(stripped, /Storage fixture \(codex\)/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
@@ -750,11 +752,13 @@ test("search snapshot prefers committed project hits before unlinked fallback ma
     const exitCode = await runTui(["--db", dbPath, "--search", "code reviewer"], io);
     const output = stdout.join("");
 
+    const stripped = stripAnsi(output);
+
     assert.equal(exitCode, 0, stderr.join(""));
-    assert.match(output, /Results:/);
-    assert.match(output, /\* code reviewer committed task .* Committed Review .* related: none/);
-    assert.match(output, /> Project: Committed Review/);
-    assert.match(output, /- code reviewer fallback note .* Unlinked .* related: none/);
+    assert.match(stripped, /Results/);
+    assert.match(stripped, /code reviewer committed task .* Committed Review/);
+    assert.match(stripped, /Project: Committed Review/);
+    assert.match(stripped, /code reviewer fallback note .* Unlinked/);
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

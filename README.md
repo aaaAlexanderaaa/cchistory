@@ -77,15 +77,32 @@ CCHistory ingests, parses, and projects your AI coding assistant conversations i
 └──────────┬──────────────────────┬───────────────────┬────────────────┘
            │                      │                   │
            ▼                      ▼                   ▼
-┌──────────────────┐  ┌───────────────────┐  ┌─────────────────────┐  ┌──────────────────┐
-│  CLI (apps/cli)  │  │  API (apps/api)   │  │   Web (apps/web)    │  │  TUI (apps/tui)  │
-│  Local operator  │  │  Fastify REST     │  │   Next.js 16        │  │  Ink local       │
-│  tool: sync,     │  │  server on :8040  │  │   React 19 on :8085 │  │  browser for     │
-│  search, stats,  │  │  CORS, auth,      │  │   SWR, Tailwind,    │  │  browse/search   │
-│  export/import   │  │  probe, replay    │  │   Recharts           │  │  and source      │
-│                  │  │                   │  │                     │  │  health summary  │
-└──────────────────┘  └───────────────────┘  └─────────────────────┘  └──────────────────┘
+                         End-user surfaces
+           ┌───────────────────┐  ┌─────────────────────┐
+           │  TUI (apps/tui)   │  │   Web (apps/web)    │
+           │  Terminal browser  │  │   Next.js 16        │
+           │  Browse, search,  │  │   React 19 on :8085 │
+           │  drill into full  │  │   SWR, Tailwind,    │
+           │  conversations    │  │   Recharts           │
+           └───────────────────┘  └─────────────────────┘
+                    Admin / AI agent surfaces
+┌──────────────────┐  ┌───────────────────┐
+│  CLI (apps/cli)  │  │  API (apps/api)   │
+│  Sync, health,   │  │  Fastify REST     │
+│  export/import,  │  │  server on :8040  │
+│  backup, GC,     │  │  CORS, auth,      │
+│  agent ops       │  │  probe, replay    │
+└──────────────────┘  └───────────────────┘
 ```
+
+### Surface Roles
+
+| Surface | Target | Purpose |
+|---------|--------|---------|
+| **TUI** | End-user (developer) | Browse conversation history like a file manager — projects, sessions, full conversations, search, stats |
+| **Web** | End-user (developer) | Same as TUI but richer — charts, filters, inbox triage, mouse-first |
+| **CLI** | Admin / AI agent | Data management — sync, export/import, backup, health check, GC, remote agent ops, scriptable `--json` output |
+| **API** | Programmatic access | REST endpoints powering Web UI and external integrations |
 
 ## Quick Start
 

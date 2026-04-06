@@ -596,8 +596,22 @@ export class CCHistoryStorage {
     link_states?: LinkState[];
     value_axes?: ValueAxis[];
     limit?: number;
+    offset?: number;
   } = {}): TurnSearchResult[] {
+    return this.searchTurnsPaginated(options).results;
+  }
+
+  searchTurnsPaginated(options: {
+    query?: string;
+    project_id?: string;
+    source_ids?: string[];
+    link_states?: LinkState[];
+    value_axes?: ValueAxis[];
+    limit?: number;
+    offset?: number;
+  } = {}): { results: TurnSearchResult[]; total: number } {
     const limit = options.limit ?? 50;
+    const offset = options.offset ?? 0;
     const query = options.query?.trim() ?? "";
     const turnsById = this.getTurnsById();
     let candidateTurnIds: string[];
@@ -609,7 +623,7 @@ export class CCHistoryStorage {
         db: this.db,
         searchIndexReady: this.searchIndexReady,
         query,
-        limit: limit * 3,
+        limit: (offset + limit) * 5,
         listResolvedTurns: () => this.listResolvedTurns(),
       });
     }
@@ -660,14 +674,18 @@ export class CCHistoryStorage {
       });
     }
 
-    return results
+    const sorted = results
       .sort((left, right) => {
         if (left.relevance_score !== right.relevance_score) {
           return right.relevance_score - left.relevance_score;
         }
         return right.turn.submission_started_at.localeCompare(left.turn.submission_started_at);
-      })
-      .slice(0, limit);
+      });
+
+    return {
+      results: sorted.slice(offset, offset + limit),
+      total: sorted.length,
+    };
   }
 
   getUsageOverview(filters: Stats.UsageFilters = {}): UsageStatsOverview {

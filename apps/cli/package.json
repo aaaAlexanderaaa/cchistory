@@ -15,7 +15,8 @@
     "@cchistory/domain": "workspace:*",
     "@cchistory/presentation": "workspace:*",
     "@cchistory/source-adapters": "workspace:*",
-    "@cchistory/storage": "workspace:*"
+    "@cchistory/storage": "workspace:*",
+    "@cchistory/tui": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.2.0",

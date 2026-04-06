@@ -7,6 +7,7 @@ import type { LocalTuiBrowser } from "@cchistory/storage";
 import type { BrowserAction, BrowserState } from "./browser.js";
 import type { StoreLayout } from "./store.js";
 
+
 installRuntimeWarningFilter();
 
 const tuiModulePromise = Promise.all([
@@ -33,7 +34,7 @@ interface TuiIo {
 interface SnapshotHelpers {
   createBrowserState: (browser: LocalTuiBrowser) => BrowserState;
   reduceBrowserState: (browser: LocalTuiBrowser, state: BrowserState, action: BrowserAction) => BrowserState;
-  renderBrowserSnapshot: (browser: LocalTuiBrowser, state: BrowserState) => string;
+  renderBrowserSnapshot: (browser: LocalTuiBrowser, state: BrowserState, dims?: { width?: number; height?: number }) => string;
 }
 
 export async function runTui(argv: string[], io: TuiIo = defaultIo()): Promise<number> {
@@ -78,8 +79,32 @@ export async function runTui(argv: string[], io: TuiIo = defaultIo()): Promise<n
       const browser = buildLocalTuiBrowser(opened.storage, { readMode: opened.readMode });
 
       if (io.isInteractiveTerminal ?? false) {
-        const app = render(React.createElement(TuiApp, { browser }));
-        await app.waitUntilExit();
+        // Enter alternate screen + alternate scroll mode BEFORE Ink renders.
+        // Alternate screen gives us a clean full-screen canvas and restores
+        // the original terminal content on exit.
+        // 1007h converts scroll-wheel into arrow key sequences (works only
+        // inside alternate screen) — no mouse capture, text selection works.
+        process.stdout.write("\x1b[?1049h"); // enter alternate screen
+        process.stdout.write("\x1b[?1007h"); // alternate scroll mode
+
+        const leaveAlternateScreen = () => {
+          process.stdout.write("\x1b[?1007l");
+          process.stdout.write("\x1b[?1049l");
+        };
+
+        // Safety: ensure we leave alternate screen even on unexpected exit
+        const onSignal = () => { leaveAlternateScreen(); process.exit(); };
+        process.on("SIGINT", onSignal);
+        process.on("SIGTERM", onSignal);
+
+        try {
+          const app = render(React.createElement(TuiApp, { browser }));
+          await app.waitUntilExit();
+        } finally {
+          process.off("SIGINT", onSignal);
+          process.off("SIGTERM", onSignal);
+          leaveAlternateScreen();
+        }
       } else {
         io.stdout(`${renderSnapshot(opened.layout, browser, {
           searchQuery: getFlag(parsed, "search"),
@@ -103,7 +128,7 @@ export async function runTui(argv: string[], io: TuiIo = defaultIo()): Promise<n
 }
 
 function renderSnapshot(
-  layout: StoreLayout,
+  _layout: StoreLayout,
   browser: LocalTuiBrowser,
   options: {
     searchQuery?: string;
@@ -111,19 +136,9 @@ function renderSnapshot(
   },
   helpers: SnapshotHelpers,
 ): string {
-  return [
-    "CCHistory TUI entrypoint",
-    "",
-    `Store DB: ${layout.dbPath}`,
-    `Asset Dir: ${layout.assetDir}`,
-    `Raw Dir: ${layout.rawDir}`,
-    `Schema: ${browser.overview.schema.schema_version} (${browser.overview.schema.migrations.length} migration record(s))`,
-    `Read Mode: ${browser.overview.read_mode === "full" ? "live full scan in memory" : "indexed store only (no live `--full` scan)"}`,
-    `Search Mode: ${browser.overview.search_mode}`,
-    `Counts: ${browser.overview.counts.projects} project(s), ${browser.overview.counts.sessions} session(s), ${browser.overview.counts.turns} turn(s), ${browser.overview.counts.sources} source(s)`,
-    "",
-    helpers.renderBrowserSnapshot(browser, buildSnapshotState(browser, options, helpers)),
-  ].join("\n");
+  const cols = process.stdout.columns || Number(process.env["COLUMNS"]) || 120;
+  const rows = process.stdout.rows || Number(process.env["LINES"]) || 40;
+  return helpers.renderBrowserSnapshot(browser, buildSnapshotState(browser, options, helpers), { width: cols, height: rows });
 }
 
 function buildSnapshotState(
@@ -158,14 +173,19 @@ function buildSnapshotState(
 
 function renderHelp(): string {
   return [
-    "Usage: cchistory-tui [--store <dir> | --db <path>] [--search <query>] [--source-health] [--full] [--source <slot-or-id>] [--limit-files <n>] [--help]",
+    "Usage: cchistory tui [options]",
     "",
-    "Starts the canonical local TUI entrypoint for project, turn, and detail browsing, search drill-down, and source-health summary.",
-    "The current TUI reads the indexed store only and does not yet expose a CLI-style live `--full` scan mode.",
-    "Interactive mode runs on a TTY and does not require a managed API service.",
-    "Non-interactive mode can accept `--search <query>` to render a search drill-down snapshot.",
-    "Use `--source-health` in non-interactive mode to include the source-health summary section.",
-    "Use `--full` in non-interactive mode to perform a live in-memory scan analogous to CLI `--full`.",
+    "Interactive and snapshot TUI for local project, turn, and detail browsing.",
+    "",
+    "Options:",
+    "  --store <dir>         Local indexed store directory (default: ~/.cchistory/store)",
+    "  --db <path>            Specific SQLite database path",
+    "  --search <query>       Initial search query",
+    "  --full                 Run a live in-memory scan analogous to CLI `--full`",
+    "  --source <slot-or-id>   Source slot or id for live scan (when using --full)",
+    "  --limit-files <n>      Limit the number of files scanned (when using --full)",
+    "  --source-health        Include a source-health summary section (snapshot mode only)",
+    "  --help                 Show this help output",
   ].join("\n");
 }
 

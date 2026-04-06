@@ -21,6 +21,8 @@ import {
   renderKeyValue,
   renderSection,
   shortId,
+  formatCompactDate,
+  colorizeStatus,
 } from "../renderers.js";
 import {
   openStorage,
@@ -70,7 +72,7 @@ export async function handleSync(parsed: ParsedArgs, io: CliIo): Promise<Command
       shortId(entry.source.host_id),
       String(entry.counts.sessions),
       String(entry.counts.turns),
-      entry.source.sync_status,
+      colorizeStatus(entry.source.sync_status),
     ]);
     return {
       text: [
@@ -320,16 +322,16 @@ export function createSourcesListOutput(layout: StoreLayout, storage: CCHistoryS
     .sort((left, right) => (right.last_sync ?? "").localeCompare(left.last_sync ?? ""));
   return {
     text: renderTable(
-      ["Source", "Handle", "Platform", "Sessions", "Turns", "Last Sync", "Status"],
+      ["Source", "Platform", "Sessions", "Turns", "Last Sync", "Status"],
       sources.map((source) => [
         source.display_name,
-        formatSourceHandle(source),
         source.platform,
         String(source.total_sessions),
         String(source.total_turns),
-        source.last_sync ?? "never",
-        source.sync_status,
+        source.last_sync ? formatCompactDate(source.last_sync) : "never",
+        colorizeStatus(source.sync_status),
       ]),
+      { align: ["left", "left", "right", "right", "left", "left"] },
     ),
     json: { kind: "sources", db_path: layout.dbPath, sources },
   };

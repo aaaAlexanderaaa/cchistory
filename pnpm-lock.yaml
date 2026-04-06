@@ -63,6 +63,9 @@ importers:
       '@cchistory/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@cchistory/tui':
+        specifier: workspace:*
+        version: link:../tui
     devDependencies:
       '@types/node':
         specifier: ^24.2.0

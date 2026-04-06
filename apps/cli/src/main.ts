@@ -152,9 +152,43 @@ async function dispatchCommand(command: string, parsed: ParsedArgs, io: CliIo): 
       return handleTemplates();
     case "agent":
       return handleAgent(parsed, io);
+    case "tui":
+      return handleTui(parsed, io);
     default:
       throw new Error(`Unknown command: ${command}`);
   }
+}
+
+async function handleTui(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
+  const { runTui } = await import("@cchistory/tui");
+  const forwardedArgs = rebuildArgs(parsed);
+  const exitCode = await runTui(forwardedArgs, {
+    cwd: io.cwd,
+    stdout: io.stdout,
+    stderr: io.stderr,
+    isInteractiveTerminal: Boolean(process.stdout.isTTY && process.stdin.isTTY),
+  });
+  if (exitCode !== 0) {
+    throw new Error(`TUI exited with code ${exitCode}`);
+  }
+  return { text: "", json: null };
+}
+
+function rebuildArgs(parsed: ParsedArgs): string[] {
+  const args: string[] = [];
+  for (const pos of parsed.positionals) {
+    args.push(pos);
+  }
+  for (const [key, values] of parsed.flags) {
+    for (const value of values) {
+      if (value === "true") {
+        args.push(`--${key}`);
+      } else {
+        args.push(`--${key}`, value);
+      }
+    }
+  }
+  return args;
 }
 
 function normalizeCommand(value: string | undefined): string | undefined {

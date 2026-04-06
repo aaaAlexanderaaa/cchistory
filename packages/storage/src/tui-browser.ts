@@ -6,6 +6,9 @@ import {
   type SessionRelatedWorkProjection,
   type SourceStatus,
   type TurnContextProjection,
+  type UsageStatsDimension,
+  type UsageStatsOverview,
+  type UsageStatsRollup,
   type UserTurnProjection,
 } from "@cchistory/domain";
 import type { CCHistoryStorage } from "./internal/storage.js";
@@ -47,13 +50,21 @@ export interface LocalTuiBrowser {
   projects: LocalTuiBrowserProject[];
   sourceHealth: LocalTuiSourceHealth;
   search: (query: string, limit?: number) => LocalTuiSearchResult[];
+  getUsageOverview: (afterDate?: string) => UsageStatsOverview;
+  getUsageRollup: (dimension: UsageStatsDimension, afterDate?: string) => UsageStatsRollup;
 }
 
 export function buildLocalTuiBrowser(storage: CCHistoryStorage, options: { readMode?: "index" | "full" } = {}): LocalTuiBrowser {
   const projects = storage
     .listProjects()
     .slice()
-    .sort((left, right) => (right.project_last_activity_at ?? "").localeCompare(left.project_last_activity_at ?? ""));
+    .filter((project) => project.committed_turn_count + project.candidate_turn_count > 0)
+    .sort((left, right) => {
+      const leftTurns = left.committed_turn_count + left.candidate_turn_count;
+      const rightTurns = right.committed_turn_count + right.candidate_turn_count;
+      if (rightTurns !== leftTurns) return rightTurns - leftTurns;
+      return (right.project_last_activity_at ?? "").localeCompare(left.project_last_activity_at ?? "");
+    });
   const sources = storage
     .listSources()
     .slice()
@@ -61,12 +72,10 @@ export function buildLocalTuiBrowser(storage: CCHistoryStorage, options: { readM
 
   return {
     overview: buildLocalReadOverview(storage, { readMode: options.readMode }),
-    projects: projects.map((project) => ({
-      project,
-      turns: storage
+    projects: projects.map((project) => {
+      const rawTurns = storage
         .listProjectTurns(project.project_id, "all")
         .slice()
-        .sort((left, right) => right.submission_started_at.localeCompare(left.submission_started_at))
         .map((turn) => {
           const session = storage.getResolvedSession(turn.session_id) ?? storage.getSession(turn.session_id)
           return {
@@ -75,8 +84,32 @@ export function buildLocalTuiBrowser(storage: CCHistoryStorage, options: { readM
             context: storage.getTurnContext(turn.id),
             related_work: session ? storage.getSessionRelatedWork(session.id) : [],
           }
-        }),
-    })),
+        });
+      // Group by session, sort sessions by created_at DESC, turns within session by time DESC
+      const sessionMap = new Map<string, LocalTuiBrowserTurn[]>();
+      const sessionOrder = new Map<string, string>(); // session_id -> created_at
+      for (const t of rawTurns) {
+        const sid = t.turn.session_id;
+        if (!sessionMap.has(sid)) {
+          sessionMap.set(sid, []);
+          sessionOrder.set(sid, t.session?.created_at ?? t.turn.submission_started_at);
+        }
+        sessionMap.get(sid)!.push(t);
+      }
+      // Sort turns within each session by time ASC (chronological order within session)
+      for (const turns of sessionMap.values()) {
+        turns.sort((a, b) => a.turn.submission_started_at.localeCompare(b.turn.submission_started_at));
+      }
+      // Sort sessions by created_at DESC
+      const sortedSessionIds = [...sessionOrder.entries()]
+        .sort((a, b) => b[1].localeCompare(a[1]))
+        .map(e => e[0]);
+      const orderedTurns: LocalTuiBrowserTurn[] = [];
+      for (const sid of sortedSessionIds) {
+        orderedTurns.push(...sessionMap.get(sid)!);
+      }
+      return { project, turns: orderedTurns };
+    }).filter((entry) => entry.turns.length > 0),
     sourceHealth: {
       counts: {
         healthy: sources.filter((source) => source.sync_status === "healthy").length,
@@ -85,7 +118,9 @@ export function buildLocalTuiBrowser(storage: CCHistoryStorage, options: { readM
       },
       sources,
     },
-    search: (query, limit = 25) => storage.searchTurns({ query, limit }).map((result) => ({
+    getUsageOverview: (afterDate) => storage.getUsageOverview(afterDate ? { after_date: afterDate } : {}),
+    getUsageRollup: (dimension, afterDate) => storage.listUsageRollup(dimension, afterDate ? { after_date: afterDate } : {}),
+    search: (query, limit = 500) => storage.searchTurns({ query, limit }).map((result) => ({
       turn: result.turn,
       session: result.session,
       context: storage.getTurnContext(result.turn.id),

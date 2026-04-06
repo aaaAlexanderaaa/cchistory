@@ -16,6 +16,7 @@ export interface UsageFilters {
   project_id?: string;
   source_ids?: string[];
   host_ids?: string[];
+  after_date?: string; // YYYY-MM-DD — only include turns on or after this date
   include_known_zero_token?: boolean;
 }
 
@@ -164,6 +165,7 @@ export function buildUsageRows(params: {
       };
     })
     .filter((row) => (filters.host_ids && filters.host_ids.length > 0 ? filters.host_ids.includes(row.host_id) : true))
+    .filter((row) => (filters.after_date ? row.day >= filters.after_date : true))
     .filter((row) => (filters.include_known_zero_token ? true : !row.zero_token_reason || row.has_token_usage));
 }
 
