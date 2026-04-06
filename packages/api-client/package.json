@@ -11,8 +11,11 @@
       "default": "./dist/index.js"
     }
   },
+  "dependencies": {
+    "@cchistory/domain": "workspace:*"
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "pnpm --filter @cchistory/domain build && tsc -p tsconfig.json",
     "test": "pnpm --filter @cchistory/api build && pnpm run build && node --import ../../scripts/install-node-sqlite-warning-filter.mjs --test dist/index.test.js"
   }
 }
