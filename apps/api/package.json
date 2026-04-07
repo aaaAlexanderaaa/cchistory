@@ -7,7 +7,7 @@
     "build": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && pnpm --filter @cchistory/storage build && tsc -p tsconfig.json",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "test": "pnpm run build && node --import ../../scripts/install-node-sqlite-warning-filter.mjs --test dist/app.test.js"
+    "test": "pnpm run build && tsc -p tsconfig.test.json && node --import ../../scripts/install-node-sqlite-warning-filter.mjs --test dist/app.test.js"
   },
   "dependencies": {
     "@cchistory/domain": "workspace:*",

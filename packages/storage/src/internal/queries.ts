@@ -117,6 +117,18 @@ export function selectPayloadsBySession<T>(
     .map((row) => fromJson<T>((row as { payload_json: string }).payload_json));
 }
 
+export function* iterateRawJsonBySource(
+  db: DatabaseSync,
+  tableName: string,
+  sourceId: string,
+  orderBy = "ORDER BY id",
+): Generator<string> {
+  assertTableName(tableName);
+  for (const row of db.prepare(`SELECT payload_json FROM ${tableName} WHERE source_id = ? ${orderBy}`).iterate(sourceId)) {
+    yield (row as { payload_json: string }).payload_json;
+  }
+}
+
 export function countRowsBySource(db: DatabaseSync, tableName: string, sourceId: string): number {
   assertTableName(tableName);
   const row = db.prepare(`SELECT COUNT(*) AS count FROM ${tableName} WHERE source_id = ?`).get(sourceId) as {

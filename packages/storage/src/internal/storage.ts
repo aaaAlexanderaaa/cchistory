@@ -43,6 +43,7 @@ import { assignProjectRevisions } from "../linking/revisions.js";
 import {
   computeRelevanceScore,
   findHighlights,
+  matchesSearchCandidateQuery,
   querySearchIndex,
   replaceSearchIndex,
 } from "../queries/search.js";
@@ -187,6 +188,79 @@ export class CCHistoryStorage {
   getSourcePayload(sourceId: string): SourceSyncPayload | undefined {
     const source = this.listSources().find((entry) => entry.id === sourceId);
     return source ? this.buildSourcePayload(source.id) : undefined;
+  }
+
+  /**
+   * Stream a source payload as JSON to a writer callback, one row at a time.
+   * This avoids loading the entire payload into memory.
+   * The `transformBlob` callback, if provided, is called for each blob's parsed JSON
+   * to allow mutation (e.g. rewriting `captured_path`) before serialization.
+   *
+   * Returns lightweight counts for manifest generation.
+   */
+  streamSourcePayloadJson(
+    sourceId: string,
+    write: (chunk: string) => void,
+    options?: {
+      transformBlob?: (blob: CapturedBlob) => CapturedBlob;
+    },
+  ): { sessions: number; turns: number; blobs: number } | undefined {
+    const source = this.listSources().find((entry) => entry.id === sourceId);
+    if (!source) return undefined;
+
+    const counts = { sessions: 0, turns: 0, blobs: 0 };
+
+    // Table configs matching buildSourcePayload field order
+    const arrayFields: Array<{
+      key: string;
+      table: string;
+      orderBy?: string;
+      countKey?: keyof typeof counts;
+      transform?: (json: string) => string;
+    }> = [
+      { key: "stage_runs", table: "stage_runs" },
+      { key: "loss_audits", table: "loss_audits" },
+      {
+        key: "blobs",
+        table: "captured_blobs",
+        countKey: "blobs",
+        transform: options?.transformBlob
+          ? (json) => {
+              const blob = fromJson<CapturedBlob>(json);
+              return JSON.stringify(options.transformBlob!(blob));
+            }
+          : undefined,
+      },
+      { key: "records", table: "raw_records" },
+      { key: "fragments", table: "source_fragments" },
+      { key: "atoms", table: "conversation_atoms", orderBy: "ORDER BY time_key ASC, seq_no ASC" },
+      { key: "edges", table: "atom_edges" },
+      { key: "candidates", table: "derived_candidates" },
+      { key: "sessions", table: "sessions", orderBy: "ORDER BY created_at ASC, updated_at ASC", countKey: "sessions" },
+      { key: "turns", table: "user_turns", orderBy: "ORDER BY submission_started_at DESC, created_at DESC", countKey: "turns" },
+      { key: "contexts", table: "turn_contexts", orderBy: "ORDER BY turn_id" },
+    ];
+
+    write(`{"source":${JSON.stringify(source)}`);
+
+    for (const field of arrayFields) {
+      write(`,"${field.key}":[`);
+      let first = true;
+      for (const rawJson of Queries.iterateRawJsonBySource(this.db, field.table, sourceId, field.orderBy)) {
+        if (!first) write(",");
+        first = false;
+        if (field.transform) {
+          write(field.transform(rawJson));
+        } else {
+          write(rawJson);
+        }
+        if (field.countKey) counts[field.countKey]++;
+      }
+      write("]");
+    }
+
+    write("}");
+    return counts;
   }
 
   listImportedBundles(): ImportedBundleRecord[] {
@@ -545,21 +619,13 @@ export class CCHistoryStorage {
   }
 
   private sessionMatchesSearchQuery(session: SessionProjection | undefined, query: string): boolean {
-    if (!session) {
-      return false;
-    }
-    const searchableText = [session.title, session.working_directory]
-      .filter((value): value is string => Boolean(value))
-      .join("\n");
-    if (!searchableText) {
-      return false;
-    }
-    const normalizedQuery = query.trim().toLowerCase();
-    if (!normalizedQuery) {
-      return true;
-    }
-    const loweredSearchableText = searchableText.toLowerCase();
-    return normalizedQuery.split(/\s+/u).every((segment) => loweredSearchableText.includes(segment));
+    return matchesSearchCandidateQuery(
+      {
+        session_title: session?.title,
+        session_working_directory: session?.working_directory,
+      },
+      query,
+    );
   }
 
   getTurnLineage(turnId: string): PipelineLineage | undefined {

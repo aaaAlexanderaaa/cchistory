@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createWriteStream, openSync, writeSync, closeSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile, copyFile } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -53,7 +54,6 @@ export interface BundleReadResult {
 export interface BundleExportResult {
   manifest: ImportBundleManifest;
   checksums: BundleChecksums;
-  payloads: SourceSyncPayload[];
 }
 
 export interface BundleImportPlanEntry {
@@ -91,9 +91,9 @@ export async function exportBundle(options: {
   sourceIds?: string[];
   includeRawBlobs: boolean;
 }): Promise<BundleExportResult> {
-  const payloads = options.storage
-    .listSourcePayloads()
-    .filter((payload) => (options.sourceIds && options.sourceIds.length > 0 ? options.sourceIds.includes(payload.source.id) : true));
+  const sources = options.storage
+    .listSources()
+    .filter((source) => (options.sourceIds && options.sourceIds.length > 0 ? options.sourceIds.includes(source.id) : true));
   const bundleDir = path.resolve(options.bundleDir);
   await ensureEmptyDirectory(bundleDir);
   await mkdir(path.join(bundleDir, "payloads"), { recursive: true });
@@ -103,39 +103,68 @@ export async function exportBundle(options: {
 
   const payloadChecksums: Record<string, string> = {};
   const rawChecksums: Record<string, string> = {};
-  const serializedPayloads = payloads.map(serializePayloadForBundle);
+  const sourceInstanceIds: string[] = [];
+  const hostIds: string[] = [];
+  let totalCounts: BundleObjectCounts = { sources: 0, sessions: 0, turns: 0, blobs: 0 };
 
-  for (const payload of serializedPayloads) {
-    assertSafePathComponent(payload.source.id, "source_id");
-    const payloadJson = JSON.stringify(payload, null, 2);
-    payloadChecksums[payload.source.id] = computePayloadChecksum(payload);
-    await writeFile(path.join(bundleDir, "payloads", `${payload.source.id}.json`), payloadJson, "utf8");
+  // Stream each source payload to disk one row at a time — constant memory per source
+  for (const source of sources) {
+    assertSafePathComponent(source.id, "source_id");
 
-    if (!options.includeRawBlobs) {
-      continue;
-    }
+    // Collect blob source paths during streaming for raw blob materialization
+    const blobSourcePaths: Array<{ captured_path?: string; origin_path?: string }> = [];
 
-    for (const [index, blob] of payload.blobs.entries()) {
-      const sourceBlob = payloads.find((entry) => entry.source.id === payload.source.id)?.blobs[index];
-      const sourcePath = sourceBlob?.captured_path ?? sourceBlob?.origin_path;
-      const relativePath = bundleRawRelativePath(payload.source.id, blob);
-      const targetPath = path.join(bundleDir, relativePath);
-      await mkdir(path.dirname(targetPath), { recursive: true });
-      await materializeBlobSnapshot(targetPath, payloads.find((entry) => entry.source.id === payload.source.id) ?? payload, blob, sourcePath);
-      rawChecksums[relativePath] = sha256(await readFile(targetPath));
+    const payloadPath = path.join(bundleDir, "payloads", `${source.id}.json`);
+    const hash = createHash("sha256");
+    const fd = openSync(payloadPath, "w");
+    const writeChunk = (chunk: string) => {
+      writeSync(fd, chunk);
+      hash.update(chunk);
+    };
+
+    const counts = options.storage.streamSourcePayloadJson(source.id, writeChunk, {
+      transformBlob: (blob) => {
+        blobSourcePaths.push({ captured_path: blob.captured_path, origin_path: blob.origin_path });
+        return { ...blob, captured_path: bundleRawRelativePath(source.id, blob) };
+      },
+    });
+    closeSync(fd);
+
+    if (!counts) continue;
+
+    payloadChecksums[source.id] = hash.digest("hex");
+    sourceInstanceIds.push(source.id);
+    hostIds.push(source.host_id);
+    totalCounts = {
+      sources: totalCounts.sources + 1,
+      sessions: totalCounts.sessions + counts.sessions,
+      turns: totalCounts.turns + counts.turns,
+      blobs: totalCounts.blobs + counts.blobs,
+    };
+
+    if (options.includeRawBlobs) {
+      // Re-read the written payload to materialize raw blob files
+      const serializedPayload = JSON.parse(await readFile(payloadPath, "utf8")) as SourceSyncPayload;
+      for (const [index, blob] of serializedPayload.blobs.entries()) {
+        const sourcePath = blobSourcePaths[index]?.captured_path ?? blobSourcePaths[index]?.origin_path;
+        const relativePath = bundleRawRelativePath(source.id, blob);
+        const targetPath = path.join(bundleDir, relativePath);
+        await mkdir(path.dirname(targetPath), { recursive: true });
+        await materializeBlobSnapshot(targetPath, serializedPayload, blob, sourcePath);
+        rawChecksums[relativePath] = sha256(await readFile(targetPath));
+      }
     }
   }
 
   const exportedAt = new Date().toISOString();
-  const counts = computeBundleCounts(serializedPayloads);
   const manifest: ImportBundleManifest = {
     bundle_id: `bundle-${sha256(JSON.stringify({ exportedAt, payloadChecksums })).slice(0, 12)}`,
     bundle_version: BUNDLE_VERSION,
     exported_at: exportedAt,
-    exported_from_host_ids: uniqueStrings(serializedPayloads.map((payload) => payload.source.host_id)),
+    exported_from_host_ids: uniqueStrings(hostIds),
     schema_version: BUNDLE_SCHEMA_VERSION,
-    source_instance_ids: serializedPayloads.map((payload) => payload.source.id).sort(),
-    counts,
+    source_instance_ids: sourceInstanceIds.sort(),
+    counts: totalCounts,
     includes_raw_blobs: options.includeRawBlobs,
     created_by: "cchistory-cli",
   };
@@ -152,7 +181,6 @@ export async function exportBundle(options: {
   return {
     manifest,
     checksums,
-    payloads: serializedPayloads,
   };
 }
 

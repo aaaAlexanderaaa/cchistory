@@ -137,10 +137,17 @@ export async function encodeBundleForRemoteUpload(bundleDir: string, exportResul
     ),
   );
 
+  // Re-read serialized payloads from disk instead of holding them in memory
+  const payloads: SourceSyncPayload[] = [];
+  for (const sourceId of exportResult.manifest.source_instance_ids) {
+    const payloadJson = await readFile(path.join(bundleDir, "payloads", `${sourceId}.json`), "utf8");
+    payloads.push(JSON.parse(payloadJson) as SourceSyncPayload);
+  }
+
   return {
     manifest: exportResult.manifest,
     checksums: exportResult.checksums,
-    payloads: exportResult.payloads,
+    payloads,
     raw_blobs_base64_by_path: rawBlobsBase64ByPath,
   };
 }

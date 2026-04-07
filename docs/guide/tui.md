@@ -45,7 +45,7 @@ When stdout and stdin are attached to a TTY, the TUI starts the full Ink interfa
 
 ### Non-interactive mode
 
-When launched without an interactive terminal, the same entrypoint prints a textual snapshot instead of opening the full UI. This is useful for quick inspection in scripts, logs, or remote command output. Passing `--search <query>` renders the snapshot in search mode and drills into the first matching result when one exists. Passing `--full` switches that snapshot into a live in-memory scan analogous to CLI `--full`, and the snapshot explicitly labels that read mode so operators can distinguish indexed versus live output.
+When launched without an interactive terminal, the same entrypoint prints a textual snapshot instead of opening the full UI. This is useful for quick inspection in scripts, logs, or remote command output. Passing `--search <query>` renders the snapshot in search mode. Queries of four or more characters execute immediately and drill into the first matching result when one exists; shorter queries stay in the same pending state shown by the interactive TUI and are not executed until explicitly committed. Passing `--full` switches that snapshot into a live in-memory scan analogous to CLI `--full`, and the snapshot explicitly labels that read mode so operators can distinguish indexed versus live output.
 
 ## Store Resolution
 
@@ -88,6 +88,7 @@ Search and overlays:
 
 - `/` — enter search mode
 - printable characters — append to the active search query
+- `Enter` — commit a short `1-3` character query
 - `Backspace` / `Delete` — remove the previous search character while editing
 - `s` — toggle the source-health summary
 - `?` — toggle help

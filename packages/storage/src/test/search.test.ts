@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CCHistoryStorage } from "../index.js";
+import { CCHistoryStorage, matchesSearchCandidateQuery } from "../index.js";
 import { createFixturePayload } from "./helpers.js";
 
 // Edge-case tests: search
@@ -84,6 +84,20 @@ test("searchTurns with unicode and emoji text matches correctly", async () => {
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
+});
+
+test("matchesSearchCandidateQuery preserves session metadata matches for extended queries", () => {
+  const candidate = {
+    canonical_text: "unrelated prompt body",
+    raw_text: "unrelated prompt body",
+    session_title: "Session for metadata target",
+    session_working_directory: "/workspace/metadata-target",
+  };
+
+  assert.equal(matchesSearchCandidateQuery(candidate, "meta"), true);
+  assert.equal(matchesSearchCandidateQuery(candidate, "metad"), true);
+  assert.equal(matchesSearchCandidateQuery(candidate, "metadata target"), true);
+  assert.equal(matchesSearchCandidateQuery(candidate, "alpha"), false);
 });
 
 test("searchTurns does not broaden session metadata matches on partial multi-term overlap", async () => {

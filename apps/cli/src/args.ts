@@ -76,6 +76,12 @@ export function parseNumberFlag(parsed: ParsedArgs, key: string): number | undef
 
 export function renderHelp(): string {
   return [
+    "Usage: cchistory <command> [options]",
+    "",
+    "Examples:",
+    "  cchistory sync",
+    "  cchistory search <query>",
+    "",
     "CCHistory — Evidence-preserving history for AI coding assistants",
     "",
     "Browse & Inspect:",

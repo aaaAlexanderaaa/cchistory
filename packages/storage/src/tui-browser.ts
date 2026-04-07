@@ -46,6 +46,7 @@ export interface LocalTuiSourceHealth {
 }
 
 export interface LocalTuiBrowser {
+  searchMode: "fts5" | "fallback";
   overview: LocalReadOverview;
   projects: LocalTuiBrowserProject[];
   sourceHealth: LocalTuiSourceHealth;
@@ -71,6 +72,7 @@ export function buildLocalTuiBrowser(storage: CCHistoryStorage, options: { readM
     .sort((left, right) => compareSourceHealth(left, right));
 
   return {
+    searchMode: storage.searchMode,
     overview: buildLocalReadOverview(storage, { readMode: options.readMode }),
     projects: projects.map((project) => {
       const rawTurns = storage

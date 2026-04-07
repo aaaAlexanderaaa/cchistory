@@ -34,7 +34,11 @@ interface TuiIo {
 interface SnapshotHelpers {
   createBrowserState: (browser: LocalTuiBrowser) => BrowserState;
   reduceBrowserState: (browser: LocalTuiBrowser, state: BrowserState, action: BrowserAction) => BrowserState;
-  renderBrowserSnapshot: (browser: LocalTuiBrowser, state: BrowserState, dims?: { width?: number; height?: number }) => string;
+  renderBrowserSnapshot: (
+    browser: LocalTuiBrowser,
+    state: BrowserState,
+    dims?: { width?: number; height?: number; headerLines?: string[] },
+  ) => string;
 }
 
 export async function runTui(argv: string[], io: TuiIo = defaultIo()): Promise<number> {
@@ -109,6 +113,7 @@ export async function runTui(argv: string[], io: TuiIo = defaultIo()): Promise<n
         io.stdout(`${renderSnapshot(opened.layout, browser, {
           searchQuery: getFlag(parsed, "search"),
           showSourceHealth: hasFlag(parsed, "source-health"),
+          readMode: opened.readMode,
         }, {
           createBrowserState,
           reduceBrowserState,
@@ -128,17 +133,22 @@ export async function runTui(argv: string[], io: TuiIo = defaultIo()): Promise<n
 }
 
 function renderSnapshot(
-  _layout: StoreLayout,
+  layout: StoreLayout,
   browser: LocalTuiBrowser,
   options: {
     searchQuery?: string;
     showSourceHealth?: boolean;
+    readMode: "index" | "full";
   },
   helpers: SnapshotHelpers,
 ): string {
   const cols = process.stdout.columns || Number(process.env["COLUMNS"]) || 120;
   const rows = process.stdout.rows || Number(process.env["LINES"]) || 40;
-  return helpers.renderBrowserSnapshot(browser, buildSnapshotState(browser, options, helpers), { width: cols, height: rows });
+  return helpers.renderBrowserSnapshot(browser, buildSnapshotState(browser, options, helpers), {
+    width: cols,
+    height: rows,
+    headerLines: buildSnapshotProvenanceLines(layout, options.readMode),
+  });
 }
 
 function buildSnapshotState(
@@ -146,6 +156,7 @@ function buildSnapshotState(
   options: {
     searchQuery?: string;
     showSourceHealth?: boolean;
+    readMode: "index" | "full";
   },
   helpers: SnapshotHelpers,
 ) {
@@ -187,6 +198,19 @@ function renderHelp(): string {
     "  --source-health        Include a source-health summary section (snapshot mode only)",
     "  --help                 Show this help output",
   ].join("\n");
+}
+
+function buildSnapshotProvenanceLines(
+  layout: StoreLayout,
+  readMode: "index" | "full",
+): string[] {
+  const readCode = readMode === "full" ? "live-full" : "indexed-only";
+  const readLabel = readMode === "full" ? "live full scan in memory" : "indexed store only";
+  return [
+    `Store DB: ${layout.dbPath}`,
+    `Read Mode: ${readLabel}`,
+    `Read=${readCode}`,
+  ];
 }
 
 function parseArgs(argv: string[]): ParsedArgs {

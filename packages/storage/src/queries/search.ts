@@ -2,6 +2,13 @@ import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { SearchHighlight, UserTurnProjection } from "@cchistory/domain";
 
+export interface SearchCandidateFields {
+  canonical_text?: string;
+  raw_text?: string;
+  session_title?: string;
+  session_working_directory?: string;
+}
+
 interface SearchPlan {
   normalizedQuery: string;
   terms: SearchTerm[];
@@ -234,15 +241,32 @@ function matchesSearchPlan(text: string, plan: SearchPlan): boolean {
 }
 
 function matchesTurnSearchPlan(
-  turn: Pick<UserTurnProjection, "canonical_text" | "raw_text">,
+  turn: Pick<SearchCandidateFields, "canonical_text" | "raw_text">,
   plan: SearchPlan,
 ): boolean {
   return matchesSearchPlan(turn.canonical_text ?? "", plan) || matchesSearchPlan(turn.raw_text ?? "", plan);
 }
 
-function findMatchingTurnIds(turns: UserTurnProjection[], query: string): string[] {
+function matchesSessionSearchPlan(
+  candidate: Pick<SearchCandidateFields, "session_title" | "session_working_directory">,
+  plan: SearchPlan,
+): boolean {
+  const searchableText = [candidate.session_title, candidate.session_working_directory]
+    .filter((value): value is string => Boolean(value))
+    .join("\n");
+  if (!searchableText) {
+    return false;
+  }
+  return matchesSearchPlan(searchableText, plan);
+}
+
+export function matchesSearchCandidateQuery(candidate: SearchCandidateFields, query: string): boolean {
   const plan = buildSearchPlan(query);
-  return turns.filter((turn) => matchesTurnSearchPlan(turn, plan)).map((turn) => turn.id);
+  return matchesTurnSearchPlan(candidate, plan) || matchesSessionSearchPlan(candidate, plan);
+}
+
+function findMatchingTurnIds(turns: UserTurnProjection[], query: string): string[] {
+  return turns.filter((turn) => matchesSearchCandidateQuery(turn, query)).map((turn) => turn.id);
 }
 
 function mergeHighlights(highlights: SearchHighlight[]): SearchHighlight[] {

@@ -1,4 +1,9 @@
-import type { LocalTuiBrowser, LocalTuiBrowserTurn, LocalTuiSearchResult } from "@cchistory/storage";
+import {
+  matchesSearchCandidateQuery,
+  type LocalTuiBrowser,
+  type LocalTuiBrowserTurn,
+  type LocalTuiSearchResult,
+} from "@cchistory/storage";
 import { tameBrowseMarkup, compactText as compact } from "@cchistory/presentation";
 import {
   bold, dim, cyan, green, yellow, blue, magenta, gray,
@@ -63,6 +68,7 @@ export type BrowserAction =
 export interface RenderDimensions {
   width?: number;
   height?: number;
+  headerLines?: string[];
 }
 
 // ── Constants ──
@@ -314,12 +320,17 @@ function handleJump(browser: LocalTuiBrowser, state: BrowserState, target: "firs
 export function renderBrowserSnapshot(browser: LocalTuiBrowser, state: BrowserState, dims?: RenderDimensions): string {
   const width = dims?.width ?? DEFAULT_WIDTH;
   const height = dims?.height ?? DEFAULT_HEIGHT;
+  const headerLines = [
+    ...(dims?.headerLines ?? []),
+    ...buildSnapshotMetadataLines(browser, state),
+  ];
+  const headerSectionHeight = headerLines.length > 0 ? headerLines.length + 1 : 0;
 
   const leftColWidth = Math.max(MIN_LEFT_COL, Math.min(MAX_LEFT_COL, Math.floor(width * LEFT_COL_RATIO)));
   const rightColWidth = Math.max(30, width - leftColWidth - 3); // 3 = " │ "
 
   // Reserve: title(1) + blank(1) + status(1) + blank(1) = 4 lines chrome
-  const contentHeight = Math.max(height - 4, 10);
+  const contentHeight = Math.max(height - 4 - headerSectionHeight, 10);
   const turnsViewportSize = Math.max(Math.floor((contentHeight - 4) / 2), 5);
   const detailMaxLines = Math.max(contentHeight - turnsViewportSize - 4, 4);
   const projectViewportSize = Math.max(contentHeight - 2, 5);
@@ -357,6 +368,8 @@ export function renderBrowserSnapshot(browser: LocalTuiBrowser, state: BrowserSt
     return [
       heading("CCHistory TUI"),
       "",
+      ...headerLines,
+      ...(headerLines.length > 0 ? [""] : []),
       ...mergedRows.slice(0, contentHeight),
       "",
       renderStatusLine(browser, state, width),
@@ -388,11 +401,46 @@ export function renderBrowserSnapshot(browser: LocalTuiBrowser, state: BrowserSt
   const parts = [
     heading("CCHistory TUI"),
     "",
+    ...headerLines,
+    ...(headerLines.length > 0 ? [""] : []),
     ...bodyLines.slice(0, contentHeight),
     "",
     renderStatusLine(browser, state, width),
   ];
   return parts.join("\n");
+}
+
+function buildSnapshotMetadataLines(browser: LocalTuiBrowser, state: BrowserState): string[] {
+  const lines = [dim(`Mode=${state.mode}`)];
+  if (state.mode === "search") {
+    const groups = getSearchGroups(browser, state);
+    const total = groups.reduce((sum, group) => sum + group.results.length, 0);
+    lines.push(dim(`Query: ${state.searchQuery || "(empty)"}`));
+    lines.push(dim(`Results: ${total} match(es)`));
+  }
+
+  if (state.showSourceHealth) {
+    lines.push(dim("SourceHealth=open"));
+    lines.push(dim("Source Health: open"));
+  }
+
+  const selection = getSnapshotSelection(browser, state);
+  if (!selection.projectName) {
+    lines.push(dim("No project selected."));
+    lines.push(dim("Project=none"));
+    lines.push(dim("Turn=none"));
+    lines.push(dim("SelectedProject=none"));
+    lines.push(dim("SelectedTurn=none"));
+    return lines;
+  }
+
+  lines.push(dim(`Project: ${selection.projectName}`));
+  lines.push(dim(`SelectedProject=${selection.projectName}`));
+  if (selection.turnId) {
+    lines.push(dim(`Turn=${selection.turnId}`));
+    lines.push(dim(`SelectedTurn=${selection.turnId}`));
+  }
+  return lines;
 }
 
 // ── Layout renderers ──
@@ -1127,6 +1175,31 @@ function renderStatusLine(browser: LocalTuiBrowser, state: BrowserState, width: 
   return dim(parts.join(" │ "));
 }
 
+function getSnapshotSelection(
+  browser: LocalTuiBrowser,
+  state: BrowserState,
+): { projectName?: string; turnId?: string } {
+  if (state.mode === "search") {
+    const selectedTurn = getSelectedSearchTurn(browser, state);
+    if (selectedTurn) {
+      return {
+        projectName: selectedTurn.project?.display_name ?? "Unlinked",
+        turnId: selectedTurn.turn.id,
+      };
+    }
+    const groups = getSearchGroups(browser, state);
+    const group = groups[state.selectedSearchProjectIndex];
+    return group ? { projectName: group.projectName } : {};
+  }
+
+  const project = browser.projects[state.selectedProjectIndex]?.project;
+  const selectedTurn = getSelectedTurn(browser, state);
+  return {
+    projectName: project?.display_name,
+    turnId: selectedTurn?.turn.id,
+  };
+}
+
 // ── State helpers ──
 
 function clampState(state: BrowserState, browser: LocalTuiBrowser): BrowserState {
@@ -1189,25 +1262,39 @@ function shouldRunSearch(state: BrowserState): boolean {
   return state.searchCommitted;
 }
 
-// Search cache: store the initial FTS results at the anchor query and filter locally for extensions.
-// The cache is never mutated — appending chars filters from the original anchor results.
+// Search cache: on fallback hosts, store the anchor results and refine locally for query extensions.
 // Backspace past the anchor or exiting search invalidates the cache.
-let _searchCache: { anchorQuery: string; anchorResults: LocalTuiSearchResult[] } | null = null;
+// On FTS5 hosts we rerun the query because SQLite token-prefix semantics are richer than the local predicate.
+let _searchCache:
+  | { browser: LocalTuiBrowser; anchorQuery: string; anchorResults: LocalTuiSearchResult[] }
+  | null = null;
 
 function getCachedOrFreshResults(browser: LocalTuiBrowser, query: string): LocalTuiSearchResult[] {
   if (!query) { _searchCache = null; return []; }
   const q = query.toLowerCase();
-  // If current query extends the anchor, filter from the immutable anchor results
-  if (_searchCache && q.startsWith(_searchCache.anchorQuery.toLowerCase()) && _searchCache.anchorQuery.length > 0) {
+  if (_searchCache && _searchCache.browser !== browser) {
+    _searchCache = null;
+  }
+  if (browser.searchMode === "fallback"
+    && _searchCache
+    && q.startsWith(_searchCache.anchorQuery.toLowerCase())
+    && _searchCache.anchorQuery.length > 0) {
     if (q === _searchCache.anchorQuery.toLowerCase()) return _searchCache.anchorResults;
     return _searchCache.anchorResults.filter(r => {
-      const text = (r.turn.canonical_text ?? "").toLowerCase();
-      return text.includes(q);
+      return matchesSearchCandidateQuery(
+        {
+          canonical_text: r.turn.canonical_text,
+          raw_text: r.turn.raw_text,
+          session_title: r.session?.title,
+          session_working_directory: r.session?.working_directory,
+        },
+        query,
+      );
     });
   }
-  // Full FTS query — store as new anchor (cache is immutable after this)
+  // Full query against storage — store as the next anchor.
   const results = browser.search(query);
-  _searchCache = { anchorQuery: query, anchorResults: results };
+  _searchCache = { browser, anchorQuery: query, anchorResults: results };
   return results;
 }
 

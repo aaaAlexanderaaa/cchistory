@@ -139,20 +139,27 @@ export async function executeExportCommand(
   const { layout, storage } = await openExistingStore(parsed, io);
   try {
     const selectedSourceIds = sourceRefs.length > 0 ? sourceRefs.map((ref) => resolveSourceRef(storage, ref).id) : undefined;
-    const selectedPayloads = storage
-      .listSourcePayloads()
-      .filter((payload) => (selectedSourceIds && selectedSourceIds.length > 0 ? selectedSourceIds.includes(payload.source.id) : true));
+    const selectedSources = storage
+      .listSources()
+      .filter((source) => (selectedSourceIds && selectedSourceIds.length > 0 ? selectedSourceIds.includes(source.id) : true));
 
     if (dryRun) {
-      const counts = selectedPayloads.reduce(
-        (totals, payload) => ({
-          sources: totals.sources + 1,
-          sessions: totals.sessions + payload.sessions.length,
-          turns: totals.turns + payload.turns.length,
-          blobs: totals.blobs + payload.blobs.length,
-        }),
-        { sources: 0, sessions: 0, turns: 0, blobs: 0 },
-      );
+      const counts = { sources: 0, sessions: 0, turns: 0, blobs: 0 };
+      const planRows: Array<{ source: SourceSyncPayload["source"]; sessions: number; turns: number; blobs: number }> = [];
+      for (const source of selectedSources) {
+        const payload = storage.getSourcePayload(source.id);
+        if (!payload) continue;
+        counts.sources += 1;
+        counts.sessions += payload.sessions.length;
+        counts.turns += payload.turns.length;
+        counts.blobs += payload.blobs.length;
+        planRows.push({
+          source: payload.source,
+          sessions: payload.sessions.length,
+          turns: payload.turns.length,
+          blobs: payload.blobs.length,
+        });
+      }
       return {
         text: [
           renderKeyValue([
@@ -165,7 +172,7 @@ export async function executeExportCommand(
             ["Includes Raw", String(includeRawBlobs)],
           ]),
           "",
-          renderExportPlanTable(selectedPayloads),
+          renderExportPlanTableFromRows(planRows),
         ].join("\n"),
         json: {
           kind: "export-dry-run",
@@ -173,7 +180,7 @@ export async function executeExportCommand(
           bundle_dir: path.resolve(io.cwd, outDir),
           includes_raw_blobs: includeRawBlobs,
           counts,
-          sources: selectedPayloads.map((payload) => payload.source),
+          sources: planRows.map((row) => row.source),
         },
       };
     }
@@ -396,16 +403,18 @@ export async function handleGc(parsed: ParsedArgs, io: CliIo): Promise<CommandOu
   }
 }
 
-function renderExportPlanTable(payloads: SourceSyncPayload[]): string {
+function renderExportPlanTableFromRows(
+  rows: Array<{ source: SourceSyncPayload["source"]; sessions: number; turns: number; blobs: number }>,
+): string {
   return renderTable(
     ["Source", "Slot", "Platform", "Sessions", "Turns", "Blobs"],
-    payloads.map((payload) => [
-      payload.source.display_name,
-      payload.source.slot_id,
-      payload.source.platform,
-      String(payload.sessions.length),
-      String(payload.turns.length),
-      String(payload.blobs.length),
+    rows.map((row) => [
+      row.source.display_name,
+      row.source.slot_id,
+      row.source.platform,
+      String(row.sessions),
+      String(row.turns),
+      String(row.blobs),
     ]),
   );
 }
