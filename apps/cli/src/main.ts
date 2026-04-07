@@ -19,7 +19,7 @@ import {
   renderHelp,
   type ParsedArgs,
 } from "./args.js";
-import { red, yellow } from "./colors.js";
+import { dim, red, yellow } from "./colors.js";
 
 const errorStyle = red;
 const hintStyle = yellow;
@@ -111,6 +111,16 @@ export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<n
     if (message.includes("Store not found")) {
       io.stderr(`\n${hintStyle("Hint:")} Run \`cchistory sync\` first to ingest data from AI coding tools on this machine.\n`);
       io.stderr(`${hintStyle("     ")} Run \`cchistory discover\` to see what sources are available.\n`);
+    }
+    const hint = getErrorHint(error);
+    if (hint) {
+      io.stderr(`${hintStyle("Hint:")} ${hint}\n`);
+    }
+    if (error instanceof Error && error.stack) {
+      const stackLines = error.stack.split("\n").slice(1);
+      if (stackLines.length > 0) {
+        io.stderr(`\n${dim(stackLines.join("\n"))}\n`);
+      }
     }
     return 1;
   }
@@ -325,6 +335,21 @@ function printOutput(output: CommandOutput, jsonMode: boolean, io: CliIo): void 
 
 export function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function getErrorHint(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const msg = error.message;
+  if (msg === "Invalid string length" || msg.includes("heap out of memory") || msg.includes("Allocation failed")) {
+    return "Data too large for a single operation. Try exporting fewer sources with --source.";
+  }
+  if (msg.includes("ENOSPC")) {
+    return "Disk full. Free up space and retry.";
+  }
+  if (msg.includes("EACCES") || msg.includes("EPERM")) {
+    return "Permission denied. Check file/directory permissions.";
+  }
+  return undefined;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) {
