@@ -129,6 +129,13 @@ export function* iterateRawJsonBySource(
   }
 }
 
+export function selectRecordsByBlobId(db: DatabaseSync, blobId: string): RawRecord[] {
+  return db
+    .prepare("SELECT payload_json FROM raw_records WHERE json_extract(payload_json, '$.blob_id') = ? ORDER BY json_extract(payload_json, '$.ordinal')")
+    .all(blobId)
+    .map((row) => fromJson<RawRecord>((row as { payload_json: string }).payload_json));
+}
+
 export function countRowsBySource(db: DatabaseSync, tableName: string, sourceId: string): number {
   assertTableName(tableName);
   const row = db.prepare(`SELECT COUNT(*) AS count FROM ${tableName} WHERE source_id = ?`).get(sourceId) as {

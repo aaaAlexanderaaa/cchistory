@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createWriteStream, openSync, writeSync, closeSync } from "node:fs";
+import { openSync, writeSync, closeSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile, copyFile } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -8,6 +8,7 @@ import type {
   CapturedBlob,
   ImportBundleManifest,
   ImportedBundleRecord,
+  RawRecord,
   SourcePlatform,
   SourceSyncPayload,
 } from "@cchistory/domain";
@@ -111,8 +112,9 @@ export async function exportBundle(options: {
   for (const source of sources) {
     assertSafePathComponent(source.id, "source_id");
 
-    // Collect blob source paths during streaming for raw blob materialization
+    // Collect blob info during streaming for raw blob materialization
     const blobSourcePaths: Array<{ captured_path?: string; origin_path?: string }> = [];
+    const collectedBlobs: CapturedBlob[] = [];
 
     const payloadPath = path.join(bundleDir, "payloads", `${source.id}.json`);
     const hash = createHash("sha256");
@@ -125,7 +127,9 @@ export async function exportBundle(options: {
     const counts = options.storage.streamSourcePayloadJson(source.id, writeChunk, {
       transformBlob: (blob) => {
         blobSourcePaths.push({ captured_path: blob.captured_path, origin_path: blob.origin_path });
-        return { ...blob, captured_path: bundleRawRelativePath(source.id, blob) };
+        const serialized = { ...blob, captured_path: bundleRawRelativePath(source.id, blob) };
+        collectedBlobs.push(serialized);
+        return serialized;
       },
     });
     closeSync(fd);
@@ -143,14 +147,12 @@ export async function exportBundle(options: {
     };
 
     if (options.includeRawBlobs) {
-      // Re-read the written payload to materialize raw blob files
-      const serializedPayload = JSON.parse(await readFile(payloadPath, "utf8")) as SourceSyncPayload;
-      for (const [index, blob] of serializedPayload.blobs.entries()) {
+      for (const [index, blob] of collectedBlobs.entries()) {
         const sourcePath = blobSourcePaths[index]?.captured_path ?? blobSourcePaths[index]?.origin_path;
         const relativePath = bundleRawRelativePath(source.id, blob);
         const targetPath = path.join(bundleDir, relativePath);
         await mkdir(path.dirname(targetPath), { recursive: true });
-        await materializeBlobSnapshot(targetPath, serializedPayload, blob, sourcePath);
+        await materializeBlobSnapshot(targetPath, blob, sourcePath, () => options.storage.getRecordsByBlobId(blob.id));
         rawChecksums[relativePath] = sha256(await readFile(targetPath));
       }
     }
@@ -368,7 +370,9 @@ export async function snapshotPayloadRawBlobs(rawDir: string, payload: SourceSyn
     const sourcePath = blob.origin_path;
     const targetPath = path.join(rawDir, payload.source.id, path.basename(bundleRawRelativePath(payload.source.id, blob)));
     await mkdir(path.dirname(targetPath), { recursive: true });
-    await materializeBlobSnapshot(targetPath, payload, blob, sourcePath);
+    await materializeBlobSnapshot(targetPath, blob, sourcePath, () =>
+      payload.records.filter((r) => r.blob_id === blob.id),
+    );
     blob.captured_path = targetPath;
     blob.size_bytes = (await stat(targetPath)).size;
   }
@@ -440,18 +444,16 @@ function bundleRawRelativePath(sourceId: string, blob: CapturedBlob): string {
 
 async function materializeBlobSnapshot(
   targetPath: string,
-  payload: SourceSyncPayload,
   blob: CapturedBlob,
   sourcePath: string | undefined,
+  getRecords: () => RawRecord[],
 ): Promise<void> {
   if (sourcePath && !isVirtualBlobPath(sourcePath)) {
     await copyFile(sourcePath, targetPath);
     return;
   }
 
-  const records = payload.records
-    .filter((record) => record.blob_id === blob.id)
-    .sort((left, right) => left.ordinal - right.ordinal);
+  const records = getRecords().sort((left, right) => left.ordinal - right.ordinal);
   if (records.length === 0) {
     throw new Error(`Missing raw source path and record snapshot for blob ${blob.id}`);
   }

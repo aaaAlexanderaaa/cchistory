@@ -263,6 +263,10 @@ export class CCHistoryStorage {
     return counts;
   }
 
+  getRecordsByBlobId(blobId: string): RawRecord[] {
+    return Queries.selectRecordsByBlobId(this.db, blobId);
+  }
+
   listImportedBundles(): ImportedBundleRecord[] {
     return Queries.listImportedBundles(this.db);
   }
