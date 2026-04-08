@@ -17,6 +17,7 @@ export type SourcePlatformDto =
   | "gemini"
   | "lobechat"
   | "codebuddy"
+  | "accio"
   | "other";
 
 export type SourceFamilyDto =

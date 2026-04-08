@@ -16,7 +16,7 @@
 
 ---
 
-CCHistory ingests, parses, and projects your AI coding assistant conversations into a unified, evidence-preserving model. It collects local session data from **11 AI coding assistant platforms including Claude Code, Cursor, Codex, AMP, Gemini CLI, and more** (see [Supported Platforms](#supported-platforms)), then organizes them by project identity — so you can search, review, and analyze everything you've asked across every tool.
+CCHistory ingests, parses, and projects your AI coding assistant conversations into a unified, evidence-preserving model. It collects local session data from **12 AI coding assistant platforms including Claude Code, Cursor, Codex, AMP, Gemini CLI, Accio Work, and more** (see [Supported Platforms](#supported-platforms)), then organizes them by project identity — so you can search, review, and analyze everything you've asked across every tool.
 
 <p align="center">
   <img src="docs/screenshots/web-all-turns.webp" alt="CCHistory Web — All Turns view" width="800" />
@@ -47,6 +47,7 @@ CCHistory ingests, parses, and projects your AI coding assistant conversations i
 | Gemini CLI | **Stable** | `~/.gemini/` |
 | LobeChat | Experimental | `~/.config/lobehub-storage/` |
 | CodeBuddy | **Stable** | `~/.codebuddy/` |
+| Accio Work | Experimental | `~/.accio/accounts/` |
 
 > `Stable` means real-world validated for the self-host v1 support bar. `Experimental` means the adapter is registered in code but is not yet validated enough for self-host v1 support claims.
 > For `lobechat`, the listed `~/.config/lobehub-storage/` path is still the current root candidate from the experimental slice, not a real-sample-verified canonical location; that review remains blocked under `R17`.

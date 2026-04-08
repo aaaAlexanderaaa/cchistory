@@ -1,4 +1,5 @@
 import type { SourcePlatform } from "@cchistory/domain";
+import { accioAdapter } from "./accio.js";
 import { ampAdapter } from "./amp.js";
 import { antigravityAdapter } from "./antigravity.js";
 import { codebuddyAdapter } from "./codebuddy.js";
@@ -25,6 +26,7 @@ const adapters = [
   opencodeAdapter,
   lobechatAdapter,
   codebuddyAdapter,
+  accioAdapter,
 ] as const satisfies readonly PlatformAdapter[];
 
 const adapterRegistry = Object.fromEntries(

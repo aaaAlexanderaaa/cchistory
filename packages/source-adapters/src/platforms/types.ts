@@ -13,7 +13,8 @@ export type SupportedSourcePlatform =
   | "openclaw"
   | "opencode"
   | "lobechat"
-  | "codebuddy";
+  | "codebuddy"
+  | "accio";
 
 export interface DefaultSourceResolutionOptions {
   homeDir?: string;
@@ -47,6 +48,7 @@ export function isSupportedSourcePlatform(platform: SourcePlatform): platform is
     platform === "openclaw" ||
     platform === "opencode" ||
     platform === "lobechat" ||
-    platform === "codebuddy"
+    platform === "codebuddy" ||
+    platform === "accio"
   );
 }

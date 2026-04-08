@@ -152,6 +152,14 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     description: "CodeBuddy project JSONL transcripts with providerData metadata and companion settings/local_storage evidence.",
     capabilities: ["session_meta", ...COMMON_PARSER_CAPABILITIES],
   },
+  accio: {
+    id: "accio:jsonl:v1",
+    family: DEFAULT_SOURCE_FAMILY,
+    platform: "accio",
+    parser_version: "accio-parser@2026-04-08.1",
+    description: "Accio Work agent session JSONL transcripts with subagent session evidence and companion conversation metadata.",
+    capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
+  },
 };
 
 const DEFAULT_SOURCE_SPECS: ReadonlyArray<
@@ -222,6 +230,12 @@ const DEFAULT_SOURCE_SPECS: ReadonlyArray<
     family: DEFAULT_SOURCE_FAMILY,
     platform: "codebuddy",
     display_name: "CodeBuddy",
+  },
+  {
+    slot_id: "accio",
+    family: DEFAULT_SOURCE_FAMILY,
+    platform: "accio",
+    display_name: "Accio Work",
   },
 ];
 

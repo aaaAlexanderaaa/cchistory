@@ -16,7 +16,7 @@
 
 ---
 
-CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对话，汇聚为统一的、证据保全的数据模型。它从 **11 个 AI 编程助手平台（包括 Claude Code、Cursor、Codex、AMP、Gemini CLI 等）** 的本地会话数据中收集信息（详见[支持平台](#支持平台)），然后按照项目身份进行组织，让你能够跨工具搜索、回顾和分析所有对话内容。
+CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对话，汇聚为统一的、证据保全的数据模型。它从 **12 个 AI 编程助手平台（包括 Claude Code、Cursor、Codex、AMP、Gemini CLI、Accio Work 等）** 的本地会话数据中收集信息（详见[支持平台](#支持平台)），然后按照项目身份进行组织，让你能够跨工具搜索、回顾和分析所有对话内容。
 
 <p align="center">
   <img src="docs/screenshots/web-all-turns.webp" alt="CCHistory Web — 所有对话轮次视图" width="800" />
@@ -47,6 +47,7 @@ CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对
 | Gemini CLI | **Stable** | `~/.gemini/` |
 | LobeChat | Experimental | `~/.config/lobehub-storage/` |
 | CodeBuddy | **Stable** | `~/.codebuddy/` |
+| Accio Work | Experimental | `~/.accio/accounts/` |
 
 > `Stable` 表示已经达到 self-host v1 的真实世界验证门槛。`Experimental` 表示 adapter 已经注册到代码里，但还没有足够的真实样本验证，不能作为 self-host v1 的正式支持承诺。
 > 对 `lobechat` 来说，表里列出的 `~/.config/lobehub-storage/` 仍只是当前 experimental slice 使用的 root candidate，不应视为已经由真实样本验证过的 canonical location；这项评审仍阻塞在 `R17`。

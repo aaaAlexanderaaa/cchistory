@@ -11,6 +11,7 @@ import type {
   SourceFormatProfile,
   SourcePlatform,
 } from "@cchistory/domain";
+import { parseAccioRecord as parseAccioRuntimeRecord } from "../platforms/accio/runtime.js";
 import { parseAmpRecord as parseAmpRuntimeRecord } from "../platforms/amp/runtime.js";
 import { isAntigravityBrainSourceFile, isAntigravityHistoryIndexFile } from "../platforms/antigravity.js";
 import {
@@ -182,7 +183,14 @@ export async function extractRecords(
                 pointer: "settings",
               },
             ]
-          : undefined,
+          : context.source.platform === "accio"
+            ? [
+                {
+                  filePath: context.filePath.replace(/\.messages\.jsonl$/u, ".meta.jsonc"),
+                  pointer: "meta",
+                },
+              ]
+            : undefined,
     },
     {
       createRecordId: baseRecordId,
@@ -291,6 +299,12 @@ export function parseRecord(
       });
     }
     return parseGenericConversationRuntimeRecord(context, record, parsed, draft, {
+      ...buildCommonParseRuntimeHelpers(),
+      safeJsonParse,
+    });
+  }
+  if (context.source.platform === "accio") {
+    return parseAccioRuntimeRecord(context, record, parsed, draft, {
       ...buildCommonParseRuntimeHelpers(),
       safeJsonParse,
     });

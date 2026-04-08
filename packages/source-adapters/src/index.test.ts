@@ -6,6 +6,7 @@
 import "./core/registry.test.js";
 import "./core/discovery.test.js";
 import "./core/tokens.test.js";
+import "./core/utils.test.js";
 import "./platforms/cursor.test.js";
 import "./platforms/antigravity.test.js";
 import "./platforms/openclaw.test.js";
@@ -17,3 +18,4 @@ import "./platforms/amp.test.js";
 import "./platforms/lobechat.test.js";
 import "./platforms/factory-droid.test.js";
 import "./platforms/codebuddy.test.js";
+import "./platforms/accio.test.js";

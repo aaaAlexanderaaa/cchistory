@@ -11,6 +11,7 @@ test("platform adapter registry provides exactly one adapter per supported platf
   const platforms = adapters.map((adapter) => adapter.platform).sort();
 
   assert.deepEqual(platforms, [
+    "accio",
     "amp",
     "antigravity",
     "claude_code",
@@ -46,7 +47,7 @@ test("platform adapter registry distinguishes stable and experimental support ti
     "openclaw",
     "opencode",
   ]);
-  assert.deepEqual(experimentalPlatforms, ["lobechat"]);
+  assert.deepEqual(experimentalPlatforms, ["accio", "lobechat"]);
 });
 
 test("stable support tier is backed by documented real-world validation assets", async () => {

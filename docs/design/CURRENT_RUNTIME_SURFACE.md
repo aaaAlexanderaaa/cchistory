@@ -41,6 +41,7 @@ The repository currently registers eleven source adapters, spanning both local c
 | `opencode` | `local_coding_agent` | `stable` | real-archive-backed storage/session/message/part layout is fixture-covered and regression-validated for self-host v1 support claims |
 | `lobechat` | `conversational_export` | `experimental` | registered parser and discovery path, but not yet real-world validated enough for self-host v1 support claims |
 | `codebuddy` | `local_coding_agent` | `stable` | real-archive-backed `.codebuddy/projects/**/*.jsonl` intake with `settings.json` and `local_storage/*.info` preserved as companion evidence; `providerData.skipRun` noise stays evidence-only and zero-byte sibling JSONL files do not become standalone sessions |
+| `accio` | `local_runtime_sessions` | `experimental` | Accio Work agent session JSONL under `~/.accio/accounts/<id>/agents/<did>/sessions/` with subagent sessions from `subagent-sessions/`; meta.jsonc sidecars provide session titles and parent-child linkage |
 
 The adapter registry is defined in [`packages/source-adapters/src/platforms/registry.ts`](../../packages/source-adapters/src/platforms/registry.ts).
 

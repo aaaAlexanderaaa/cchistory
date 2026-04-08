@@ -628,5 +628,20 @@
     "paths": [
       ".openclaw/cron/runs/44444444-5555-4666-8777-888888888888.jsonl"
     ]
+  },
+  {
+    "id": "accio-multi-agent",
+    "apps": [
+      "Accio Work"
+    ],
+    "visible_cue": "An Accio Work main agent session has user/assistant turns with tool calls and token usage, plus a linked explore subagent session with its own tool-driven conversation.",
+    "tricky": "The adapter must correctly parse both agent-layer messages (with token usage in metadata) and subagent session linkage via parentSessionKey in meta files. Subagent sessions should be recognized as sidechains of the parent conversation.",
+    "visible_roots": [
+      "/workspace/myapp"
+    ],
+    "paths": [
+      "fixtures/accio-multi-agent/agents/DID-MOCK01-A1B2C3/sessions/DID-MOCK01-A1B2C3_CID-MOCK-CONV-001.messages.jsonl",
+      "fixtures/accio-multi-agent/subagent-sessions/agent_agent_DID-MOCK01-A1B2C3_main_cid_CID-MOCK-CONV-001_sub_explore_aabb1122.messages.jsonl"
+    ]
   }
 ]
