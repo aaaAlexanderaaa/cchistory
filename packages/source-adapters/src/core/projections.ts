@@ -406,7 +406,7 @@ export function buildTurnsAndContext(
         tool_call_count: contextProjection.tool_calls.length,
         token_usage: contextTokenUsage,
         total_tokens: contextTokenUsage?.total_tokens,
-        primary_model: summarizeAssistantReplyPrimaryModel(contextProjection.assistant_replies),
+        primary_model: summarizeAssistantReplyPrimaryModel(contextProjection.assistant_replies) ?? draft.model,
         has_errors: contextProjection.assistant_replies.some((reply) => reply.stop_reason === "error"),
         zero_token_reason: hasNoAssistantReply ? "no_assistant_reply" : undefined,
       },

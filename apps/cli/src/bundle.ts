@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { openSync, writeSync, closeSync } from "node:fs";
+import { createReadStream, openSync, writeSync, closeSync } from "node:fs";
 import { mkdir, readFile, readdir, stat, writeFile, copyFile } from "node:fs/promises";
 import path from "node:path";
 import type {
@@ -191,23 +191,31 @@ export async function planBundleImport(options: {
   bundleDir: string;
   onConflict: ConflictMode;
 }): Promise<BundleImportPlanResult> {
-  const bundle = await readBundle(options.bundleDir);
-  return planBundleImportFromBundle({
+  const bundleMeta = await readBundleManifest(options.bundleDir);
+  // For plan we need payload data to show per-source counts and metadata.
+  // Load payloads one at a time (lazy).
+  const payloads: SourceSyncPayload[] = [];
+  for (const sourceId of bundleMeta.manifest.source_instance_ids) {
+    payloads.push(await readSinglePayload(bundleMeta, sourceId));
+  }
+  return planBundleImportFromPayloads({
     storage: options.storage,
-    bundle,
+    bundleMeta,
+    payloads,
     onConflict: options.onConflict,
   });
 }
 
-function planBundleImportFromBundle(options: {
+function planBundleImportFromPayloads(options: {
   storage: CCHistoryStorage;
-  bundle: BundleReadResult;
+  bundleMeta: BundleManifestResult;
+  payloads: SourceSyncPayload[];
   onConflict: ConflictMode;
 }): BundleImportPlanResult {
-  const { bundle } = options;
-  const importedBundle = options.storage.getImportedBundle(bundle.manifest.bundle_id);
-  if (importedBundle && stableStringify(importedBundle.checksums) !== stableStringify(bundle.checksums)) {
-    throw new Error(`Bundle id ${bundle.manifest.bundle_id} already exists with different checksums.`);
+  const { bundleMeta } = options;
+  const importedBundle = options.storage.getImportedBundle(bundleMeta.manifest.bundle_id);
+  if (importedBundle && stableStringify(importedBundle.checksums) !== stableStringify(bundleMeta.checksums)) {
+    throw new Error(`Bundle id ${bundleMeta.manifest.bundle_id} already exists with different checksums.`);
   }
 
   const importedSourceIds: string[] = [];
@@ -216,9 +224,9 @@ function planBundleImportFromBundle(options: {
   const conflictingSourceIds: string[] = [];
   const sourcePlans: BundleImportPlanEntry[] = [];
 
-  for (const payload of bundle.payloads) {
+  for (const payload of options.payloads) {
     const existingPayload = options.storage.getSourcePayload(payload.source.id);
-    const incomingChecksum = bundle.checksums.payload_sha256_by_source_id[payload.source.id];
+    const incomingChecksum = bundleMeta.checksums.payload_sha256_by_source_id[payload.source.id];
     if (!incomingChecksum) {
       throw new Error(`Missing checksum for source ${payload.source.id}`);
     }
@@ -264,8 +272,8 @@ function planBundleImportFromBundle(options: {
   }
 
   return {
-    manifest: bundle.manifest,
-    checksums: bundle.checksums,
+    manifest: bundleMeta.manifest,
+    checksums: bundleMeta.checksums,
     source_plans: sourcePlans,
     imported_source_ids: importedSourceIds,
     replaced_source_ids: replacedSourceIds,
@@ -273,6 +281,354 @@ function planBundleImportFromBundle(options: {
     conflicting_source_ids: conflictingSourceIds,
     would_fail: conflictingSourceIds.length > 0,
   };
+}
+
+/**
+ * Plan import without loading payloads — uses only manifest metadata
+ * and storage source presence to determine actions.
+ * Per-source counts are taken from the manifest-level aggregates.
+ */
+function planBundleImportFromManifest(options: {
+  storage: CCHistoryStorage;
+  bundleMeta: BundleManifestResult;
+  onConflict: ConflictMode;
+}): BundleImportPlanResult {
+  const { bundleMeta } = options;
+  const importedBundle = options.storage.getImportedBundle(bundleMeta.manifest.bundle_id);
+  if (importedBundle && stableStringify(importedBundle.checksums) !== stableStringify(bundleMeta.checksums)) {
+    throw new Error(`Bundle id ${bundleMeta.manifest.bundle_id} already exists with different checksums.`);
+  }
+
+  const importedSourceIds: string[] = [];
+  const replacedSourceIds: string[] = [];
+  const skippedSourceIds: string[] = [];
+  const conflictingSourceIds: string[] = [];
+  const sourcePlans: BundleImportPlanEntry[] = [];
+  const existingSources = options.storage.listSources();
+
+  for (const sourceId of bundleMeta.manifest.source_instance_ids) {
+    const incomingChecksum = bundleMeta.checksums.payload_sha256_by_source_id[sourceId];
+    if (!incomingChecksum) {
+      throw new Error(`Missing checksum for source ${sourceId}`);
+    }
+    const existingSource = existingSources.find((src) => src.id === sourceId);
+
+    let action: BundleImportPlanEntry["action"];
+    let reason: BundleImportPlanEntry["reason"];
+
+    if (!existingSource) {
+      action = "import";
+      reason = "new_source";
+      importedSourceIds.push(sourceId);
+    } else {
+      // Compute existing checksum via streaming to avoid loading huge payloads
+      const existingChecksum = computeStoredPayloadChecksum(options.storage, sourceId);
+      if (existingChecksum === incomingChecksum) {
+        action = "skip";
+        reason = "identical_payload";
+        skippedSourceIds.push(sourceId);
+      } else if (options.onConflict === "skip") {
+        action = "skip";
+        reason = "conflict_skip";
+        skippedSourceIds.push(sourceId);
+      } else if (options.onConflict === "replace") {
+        action = "replace";
+        reason = "conflict_replace";
+        replacedSourceIds.push(sourceId);
+      } else {
+        action = "conflict";
+        reason = "conflict_error";
+        conflictingSourceIds.push(sourceId);
+      }
+    }
+
+    sourcePlans.push({
+      source_id: sourceId,
+      slot_id: existingSource?.slot_id ?? sourceId,
+      display_name: existingSource?.display_name ?? sourceId,
+      platform: existingSource?.platform ?? ("unknown" as SourcePlatform),
+      host_id: existingSource?.host_id ?? "unknown",
+      counts: { sources: 1, sessions: 0, turns: 0, blobs: 0 },
+      action,
+      reason,
+    });
+  }
+
+  return {
+    manifest: bundleMeta.manifest,
+    checksums: bundleMeta.checksums,
+    source_plans: sourcePlans,
+    imported_source_ids: importedSourceIds,
+    replaced_source_ids: replacedSourceIds,
+    skipped_source_ids: skippedSourceIds,
+    conflicting_source_ids: conflictingSourceIds,
+    would_fail: conflictingSourceIds.length > 0,
+  };
+}
+
+/**
+ * Compute checksum of a stored source payload using streaming,
+ * avoiding loading the entire payload into memory.
+ */
+function computeStoredPayloadChecksum(storage: CCHistoryStorage, sourceId: string): string {
+  const hash = createHash("sha256");
+  storage.streamSourcePayloadJson(sourceId, (chunk) => hash.update(chunk), {
+    transformBlob: (blob) => ({
+      ...blob,
+      captured_path: bundleRawRelativePath(sourceId, blob),
+    }),
+  });
+  return hash.digest("hex");
+}
+
+async function sha256FileStream(filePath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash("sha256");
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk: Buffer | string) => hash.update(chunk));
+    stream.on("end", () => resolve(hash.digest("hex")));
+    stream.on("error", reject);
+  });
+}
+
+interface BundleManifestResult {
+  bundleDir: string;
+  manifest: ImportBundleManifest;
+  checksums: BundleChecksums;
+}
+
+async function readBundleManifest(bundleDir: string): Promise<BundleManifestResult> {
+  const resolvedBundleDir = path.resolve(bundleDir);
+  const manifestPath = path.join(resolvedBundleDir, "manifest.json");
+  const checksumsPath = path.join(resolvedBundleDir, "checksums.json");
+  const manifestJson = await readFile(manifestPath, "utf8");
+  const checksumsJson = await readFile(checksumsPath, "utf8");
+  const manifest = JSON.parse(manifestJson) as ImportBundleManifest;
+  const checksums = JSON.parse(checksumsJson) as BundleChecksums;
+
+  if (checksums.manifest_sha256 !== sha256(manifestJson)) {
+    throw new Error(`Manifest checksum mismatch for ${manifestPath}`);
+  }
+
+  return { bundleDir: resolvedBundleDir, manifest, checksums };
+}
+
+async function readSinglePayload(
+  bundleMeta: BundleManifestResult,
+  sourceId: string,
+): Promise<SourceSyncPayload> {
+  assertSafePathComponent(sourceId, "source_instance_id");
+  const payloadPath = path.join(bundleMeta.bundleDir, "payloads", `${sourceId}.json`);
+  assertPathWithinDirectory(payloadPath, bundleMeta.bundleDir, "payload path");
+
+  const expectedChecksum = bundleMeta.checksums.payload_sha256_by_source_id[sourceId];
+  if (!expectedChecksum) {
+    throw new Error(`Missing checksum for source ${sourceId}`);
+  }
+
+  const fileChecksum = await sha256FileStream(payloadPath);
+  if (expectedChecksum !== fileChecksum) {
+    throw new Error(`Payload checksum mismatch for ${payloadPath}`);
+  }
+
+  const fileSize = (await stat(payloadPath)).size;
+  if (fileSize > MAX_INLINE_PAYLOAD_SIZE) {
+    return parsePayloadStreaming(payloadPath);
+  }
+
+  const payloadJson = await readFile(payloadPath, "utf8");
+  return JSON.parse(payloadJson) as SourceSyncPayload;
+}
+
+const MAX_INLINE_PAYLOAD_SIZE = 400 * 1024 * 1024; // 400MB
+
+/**
+ * Parse a large payload JSON file using streaming, avoiding V8 string length limits.
+ *
+ * Exploits the known structure produced by `streamSourcePayloadJson`:
+ *   `{"source":{...},"stage_runs":[{...},{...}],...}`
+ * Each array element is a compact JSON.stringify() output (no internal newlines
+ * outside of string literals), so we can safely buffer one element at a time.
+ *
+ * Strategy: read the file as raw Buffers, scan for top-level structural chars
+ * while tracking string boundaries and nesting depth.  When a complete element
+ * is found, decode only that slice to UTF-8 and JSON.parse() it.
+ */
+async function parsePayloadStreaming(payloadPath: string): Promise<SourceSyncPayload> {
+  const ARRAY_FIELD_NAMES = new Set([
+    "stage_runs", "loss_audits", "blobs", "records", "fragments",
+    "atoms", "edges", "candidates", "sessions", "turns", "contexts",
+  ]);
+
+  return new Promise<SourceSyncPayload>((resolve, reject) => {
+    const result: Record<string, unknown[]> = {};
+    let source: unknown = undefined;
+
+    // State machine
+    let phase: "top" | "key" | "colon" | "value_start" | "source_value" | "array_body" | "element" | "done" = "top";
+    let currentKey = "";
+    let depth = 0;
+    let inString = false;
+    let escape = false;
+
+    // Accumulator for the current value being parsed (one element or source obj).
+    // We accumulate raw Buffer slices to avoid creating huge strings.
+    let accBufs: Buffer[] = [];
+    let accLen = 0;
+
+    function flushAcc(): string {
+      const combined = Buffer.concat(accBufs, accLen);
+      accBufs = [];
+      accLen = 0;
+      return combined.toString("utf8");
+    }
+
+    function pushAcc(buf: Buffer, start: number, end: number): void {
+      if (start < end) {
+        const slice = buf.subarray(start, end);
+        accBufs.push(Buffer.from(slice)); // copy to avoid retaining the large chunk
+        accLen += slice.length;
+      }
+    }
+
+    const stream = createReadStream(payloadPath, { highWaterMark: 4 * 1024 * 1024 });
+
+    stream.on("data", (rawChunk: Buffer | string) => {
+      const chunk = Buffer.isBuffer(rawChunk) ? rawChunk : Buffer.from(rawChunk);
+      // If we're mid-value from a previous chunk, start accumulating from byte 0
+      const midValue = phase === "source_value" || phase === "element";
+      let accStart = midValue ? 0 : -1;
+
+      for (let i = 0; i < chunk.length; i++) {
+        const byte = chunk[i];
+
+        // Handle string literal tracking
+        if (escape) {
+          escape = false;
+          continue;
+        }
+        if (byte === 0x5C /* \\ */ && inString) {
+          escape = true;
+          continue;
+        }
+        if (byte === 0x22 /* " */) {
+          if (inString) {
+            inString = false;
+            // If we're collecting a key name
+            if (phase === "key") {
+              pushAcc(chunk, accStart, i);
+              currentKey = flushAcc();
+              phase = "colon";
+              accStart = -1;
+            }
+            continue;
+          }
+          inString = true;
+          if (phase === "key") {
+            accStart = i + 1; // start collecting key chars
+          }
+          continue;
+        }
+        if (inString) continue;
+
+        // Outside string — structural chars only
+        switch (phase) {
+          case "top":
+            // Expect opening `{` of the top-level object
+            if (byte === 0x7B /* { */) {
+              phase = "key";
+            }
+            break;
+
+          case "key":
+            // Waiting for opening `"` of key — handled above in quote logic
+            break;
+
+          case "colon":
+            if (byte === 0x3A /* : */) {
+              phase = "value_start";
+            }
+            break;
+
+          case "value_start":
+            if (byte === 0x7B /* { */) {
+              // source value (object)
+              phase = "source_value";
+              depth = 1;
+              accStart = i;
+            } else if (byte === 0x5B /* [ */) {
+              // array value
+              if (!result[currentKey]) result[currentKey] = [];
+              phase = "array_body";
+            }
+            break;
+
+          case "source_value":
+            if (byte === 0x7B || byte === 0x5B) depth++;
+            else if (byte === 0x7D || byte === 0x5D) {
+              depth--;
+              if (depth === 0) {
+                pushAcc(chunk, accStart, i + 1);
+                source = JSON.parse(flushAcc());
+                accStart = -1;
+                phase = "key"; // back to looking for next key (after comma)
+              }
+            }
+            break;
+
+          case "array_body":
+            if (byte === 0x5D /* ] */) {
+              // empty array
+              phase = "key";
+            } else if (byte === 0x7B /* { */ || byte === 0x5B /* [ */) {
+              // start of first element
+              phase = "element";
+              depth = 1;
+              accStart = i;
+            }
+            break;
+
+          case "element":
+            if (byte === 0x7B || byte === 0x5B) {
+              depth++;
+            } else if (byte === 0x7D || byte === 0x5D) {
+              depth--;
+              if (depth === 0) {
+                // Complete element
+                pushAcc(chunk, accStart, i + 1);
+                (result[currentKey] as unknown[]).push(JSON.parse(flushAcc()));
+                accStart = -1;
+                // Now expect comma or closing `]`
+                phase = "array_body";
+              }
+            }
+            break;
+
+          case "done":
+            break;
+        }
+      }
+
+      // Carry over accumulated bytes for incomplete values
+      if (accStart >= 0 && (phase === "source_value" || phase === "element")) {
+        pushAcc(chunk, accStart, chunk.length);
+      }
+    });
+
+    stream.on("end", () => {
+      for (const key of ARRAY_FIELD_NAMES) {
+        if (!(key in result)) {
+          result[key] = [];
+        }
+      }
+      resolve({
+        source: source as SourceSyncPayload["source"],
+        ...result,
+      } as unknown as SourceSyncPayload);
+    });
+
+    stream.on("error", reject);
+  });
 }
 
 export async function readBundle(bundleDir: string): Promise<BundleReadResult> {
@@ -315,37 +671,44 @@ export async function importBundleIntoStore(options: {
   rawDir: string;
   onConflict: ConflictMode;
 }): Promise<BundleImportResult> {
-  const bundle = await readBundle(options.bundleDir);
-  const plan = planBundleImportFromBundle({
+  const bundleMeta = await readBundleManifest(options.bundleDir);
+
+  // Plan without loading payloads — uses manifest + storage presence only
+  const plan = planBundleImportFromManifest({
     storage: options.storage,
-    bundle,
+    bundleMeta,
     onConflict: options.onConflict,
   });
   if (plan.would_fail) {
     throw new Error(`Source conflict detected for ${plan.conflicting_source_ids[0]}`);
   }
 
+  const projectCountBefore = options.storage.listProjects().length;
+
+  // Validate and materialize every payload before mutating the target store.
+  // This preserves the previous all-or-nothing store import behavior even
+  // though payload loading now happens lazily.
   const preparedPayloads: SourceSyncPayload[] = [];
-  for (const payload of bundle.payloads) {
-    const sourcePlan = plan.source_plans.find((entry) => entry.source_id === payload.source.id);
-    if (!sourcePlan || sourcePlan.action === "skip" || sourcePlan.action === "conflict") {
+  for (const sourcePlan of plan.source_plans) {
+    if (sourcePlan.action === "skip" || sourcePlan.action === "conflict") {
       continue;
     }
-    preparedPayloads.push(await materializePayloadRawBlobs(payload, bundle, options.rawDir));
+    const payload = await readSinglePayload(bundleMeta, sourcePlan.source_id);
+    const prepared = await materializePayloadRawBlobsFromMeta(payload, bundleMeta, options.rawDir);
+    preparedPayloads.push(prepared);
   }
 
-  const projectCountBefore = options.storage.listProjects().length;
   for (const payload of preparedPayloads) {
     options.storage.replaceSourcePayload(payload);
   }
 
   const importedRecord: ImportedBundleRecord = {
-    bundle_id: bundle.manifest.bundle_id,
-    bundle_version: bundle.manifest.bundle_version,
+    bundle_id: bundleMeta.manifest.bundle_id,
+    bundle_version: bundleMeta.manifest.bundle_version,
     imported_at: new Date().toISOString(),
-    source_instance_ids: bundle.manifest.source_instance_ids,
-    manifest: bundle.manifest,
-    checksums: bundle.checksums,
+    source_instance_ids: bundleMeta.manifest.source_instance_ids,
+    manifest: bundleMeta.manifest,
+    checksums: bundleMeta.checksums,
   };
   options.storage.upsertImportedBundle(importedRecord);
 
@@ -400,6 +763,41 @@ function computeBundleCounts(payloads: SourceSyncPayload[]): BundleObjectCounts 
     }),
     { sources: 0, sessions: 0, turns: 0, blobs: 0 },
   );
+}
+
+async function materializePayloadRawBlobsFromMeta(
+  payload: SourceSyncPayload,
+  bundleMeta: BundleManifestResult,
+  rawDir: string,
+): Promise<SourceSyncPayload> {
+  const nextPayload = {
+    ...payload,
+    blobs: payload.blobs.map((blob) => ({ ...blob })),
+  };
+
+  if (!bundleMeta.manifest.includes_raw_blobs) {
+    for (const blob of nextPayload.blobs) {
+      blob.captured_path = undefined;
+    }
+    return nextPayload;
+  }
+
+  for (const blob of nextPayload.blobs) {
+    const relativePath = blob.captured_path ?? bundleRawRelativePath(payload.source.id, blob);
+    const bundleRawPath = path.join(bundleMeta.bundleDir, relativePath);
+    assertPathWithinDirectory(bundleRawPath, bundleMeta.bundleDir, "bundle raw path");
+    if (bundleMeta.checksums.raw_sha256_by_path[relativePath] !== sha256(await readFile(bundleRawPath))) {
+      throw new Error(`Raw checksum mismatch for ${relativePath}`);
+    }
+    const targetPath = path.join(rawDir, payload.source.id, path.basename(relativePath));
+    assertPathWithinDirectory(targetPath, rawDir, "raw target path");
+    await mkdir(path.dirname(targetPath), { recursive: true });
+    await copyFile(bundleRawPath, targetPath);
+    blob.captured_path = targetPath;
+    blob.size_bytes = (await stat(targetPath)).size;
+  }
+
+  return nextPayload;
 }
 
 async function materializePayloadRawBlobs(

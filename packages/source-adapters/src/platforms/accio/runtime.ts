@@ -90,6 +90,42 @@ export function parseAccioRecord(
     return { fragments, lossAudits };
   }
 
+  // Conversation metadata records (from conversations/dm/CID-xxx.jsonc)
+  if (parsed.id && helpers.asString(parsed.id)?.startsWith("CID-") && !parsed.role) {
+    const title = helpers.asString(parsed.title);
+    const sessionModel = helpers.asString(parsed.sessionModel);
+    const workspacePath = helpers.asString(parsed.path);
+
+    if (title && title !== "Session") {
+      draft.title = title;
+      fragments.push(
+        helpers.createFragment(context, record, fragments.length, "title_signal", timeKey, {
+          title,
+        }),
+      );
+    }
+
+    if (sessionModel) {
+      draft.model = sessionModel;
+      fragments.push(
+        helpers.createFragment(context, record, fragments.length, "model_signal", timeKey, {
+          model: sessionModel,
+        }),
+      );
+    }
+
+    if (workspacePath) {
+      draft.working_directory = workspacePath;
+      fragments.push(
+        helpers.createFragment(context, record, fragments.length, "workspace_signal", timeKey, {
+          working_directory: workspacePath,
+        }),
+      );
+    }
+
+    return { fragments, lossAudits };
+  }
+
   const role = helpers.asString(parsed.role) ?? "system";
   const actorKind = helpers.mapRoleToActor(role);
   const content = helpers.asString(parsed.content);

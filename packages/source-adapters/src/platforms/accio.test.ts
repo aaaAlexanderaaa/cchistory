@@ -182,6 +182,79 @@ test("runSourceProbe ingests Accio subagent session with parent linkage via meta
   }
 });
 
+test("runSourceProbe reads Accio conversation metadata for model, title, and workspace path", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-accio-convmeta-"));
+
+  try {
+    const agentDir = path.join(tempRoot, "agents", "DID-TEST01-AABB", "sessions");
+    await mkdir(agentDir, { recursive: true });
+
+    // Main session file
+    await writeFile(
+      path.join(agentDir, "DID-TEST01-AABB_CID-CONV-META-001.messages.jsonl"),
+      [
+        { id: "m1", timestamp: 1775400000000, role: "user", content: "Fix the bug.", messageType: "normal" },
+        {
+          id: "m2",
+          timestamp: 1775400005000,
+          role: "assistant",
+          content: "Fixed.",
+          messageType: "normal",
+          metadata: { usage: { prompt_tokens: 100, completion_tokens: 10, total_tokens: 110 } },
+        },
+      ]
+        .map((l) => JSON.stringify(l))
+        .join("\n"),
+      "utf8",
+    );
+
+    // Conversation metadata (conversations/dm/CID-xxx.jsonc)
+    const convDir = path.join(tempRoot, "conversations", "dm");
+    await mkdir(convDir, { recursive: true });
+    await writeFile(
+      path.join(convDir, "CID-CONV-META-001.jsonc"),
+      JSON.stringify({
+        id: "CID-CONV-META-001",
+        path: "/workspace/my-project",
+        title: "Fix critical bug in parser",
+        sessionModel: "claude-opus-4-6",
+        agentId: "DID-TEST01-AABB",
+        createdAt: 1775400000000,
+      }),
+      "utf8",
+    );
+
+    const [payload] = (
+      await runSourceProbe(
+        { source_ids: ["src-accio-convmeta"] },
+        [createSourceDefinition("src-accio-convmeta", "accio", path.join(tempRoot, "agents"))],
+      )
+    ).sources;
+
+    assert.ok(payload, "Expected source payload");
+    assert.equal(payload.sessions.length, 1);
+
+    const session = payload.sessions[0]!;
+    assert.equal(session.title, "Fix critical bug in parser", "Title should come from conversation metadata");
+    assert.equal(session.model, "claude-opus-4-6", "Model should come from conversation metadata sessionModel");
+    assert.equal(
+      session.working_directory,
+      "/workspace/my-project",
+      "Working directory should come from conversation metadata path",
+    );
+
+    // Turn should have model from session
+    assert.equal(payload.turns.length, 1);
+    assert.equal(
+      payload.turns[0]?.context_summary?.primary_model,
+      "claude-opus-4-6",
+      "Turn primary_model should fall back to session model from conversation metadata",
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("runSourceProbe handles empty Accio messages gracefully", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-accio-empty-"));
 

@@ -86,6 +86,22 @@ import { atomizeFragments, hydrateDraftFromAtoms, deriveSourceNativeProjectRef }
 
 let vscodeStateExtractorPromise: Promise<typeof import("./vscode-state.js").extractVscodeStateSeeds> | undefined;
 
+/**
+ * Derive the conversation metadata file path from an Accio session file path.
+ *
+ * Session file:  .../agents/DID-xxx/sessions/DID-xxx_CID-yyy.messages.jsonl
+ * Conversation:  .../conversations/dm/CID-yyy.jsonc
+ */
+function deriveAccioConversationMetaPath(sessionFilePath: string): string {
+  const basename = path.basename(sessionFilePath, ".messages.jsonl");
+  const cidIdx = basename.indexOf("_CID-");
+  if (cidIdx < 0) return "";
+  const cid = basename.slice(cidIdx + 1);
+  // Walk up: sessions/ → <agentId>/ → agents/ → <accountRoot>/
+  const accountRoot = path.resolve(path.dirname(sessionFilePath), "..", "..", "..");
+  return path.join(accountRoot, "conversations", "dm", `${cid}.jsonc`);
+}
+
 export async function extractRecords(
   context: FragmentBuildContext,
   blobId: string,
@@ -188,6 +204,10 @@ export async function extractRecords(
                 {
                   filePath: context.filePath.replace(/\.messages\.jsonl$/u, ".meta.jsonc"),
                   pointer: "meta",
+                },
+                {
+                  filePath: deriveAccioConversationMetaPath(context.filePath),
+                  pointer: "conversation_meta",
                 },
               ]
             : undefined,

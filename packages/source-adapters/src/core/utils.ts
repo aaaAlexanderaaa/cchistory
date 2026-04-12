@@ -218,6 +218,10 @@ export function splitUserText(
     return [{ originKind: "injected_user_shaped", text: normalized, displayPolicy: "collapse" }];
   }
 
+  if (isSyntheticUserShapedText(normalized)) {
+    return [{ originKind: "injected_user_shaped", text: normalized, displayPolicy: "collapse" }];
+  }
+
   return [{ originKind: "user_authored", text: normalized }];
 }
 
@@ -413,6 +417,21 @@ export function deriveSessionId(platform: SourcePlatform, filePath: string, file
     }
   }
 
+  if (platform === "claude_code") {
+    const firstLine = firstNonEmptyTrimmedLineFromBuffer(fileBuffer);
+    if (firstLine) {
+      try {
+        const parsed = JSON.parse(firstLine) as Record<string, unknown>;
+        const sessionId = asString(parsed.sessionId);
+        if (sessionId) {
+          return `sess:${platform}:${sessionId}`;
+        }
+      } catch {
+        /* fall through to basename */
+      }
+    }
+  }
+
   return `sess:${platform}:${path.basename(filePath, path.extname(filePath))}`;
 }
 
@@ -580,6 +599,32 @@ export function isDelegatedInstructionUserText(
 
 export function isAutomationTriggerUserText(text: string): boolean {
   return text.startsWith("[cron:");
+}
+
+const SYNTHETIC_USER_SHAPED_PREFIXES = [
+  "<user_action>",
+  "<task-notification>",
+  "<turn_aborted>",
+  "<local-command-caveat>",
+  "<local-command-stdout>",
+  "<bash-input>",
+  "<bash-stdout>",
+] as const;
+
+const CONTINUATION_PREFIX = "This session is being continued from a previous conversation";
+
+/**
+ * Detects messages that are structurally `role: user` in the raw data but
+ * are system-injected rather than human-authored.  Covers patterns from
+ * Codex (review actions, turn_aborted) and Claude Code (sub-agent
+ * callbacks, compact-continuation summaries, local-command wrappers).
+ */
+export function isSyntheticUserShapedText(text: string): boolean {
+  for (const prefix of SYNTHETIC_USER_SHAPED_PREFIXES) {
+    if (text.startsWith(prefix)) return true;
+  }
+  if (text.startsWith(CONTINUATION_PREFIX)) return true;
+  return false;
 }
 
 export function isClaudeInterruptionMarker(text: string): boolean {
