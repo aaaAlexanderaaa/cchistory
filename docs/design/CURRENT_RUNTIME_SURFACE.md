@@ -26,7 +26,7 @@ The current product runtime is a four-entrypoint TypeScript workspace with share
 
 # Registered Source Adapters
 
-The repository currently registers eleven source adapters, spanning both local coding-agent and conversational-export families. For self-host v1 support claims, registration and support are distinct concepts.
+The repository currently registers 12 source adapters, spanning local coding-agent, conversational-export, and local-runtime-session families. For self-host v1 support claims, registration and support are distinct concepts.
 
 | Platform | Family | Self-host v1 tier | Notes |
 | --- | --- | --- | --- |
@@ -66,6 +66,7 @@ As of 2026-03-27, Windows default-root policy is intentionally split between ver
 | `opencode` | manual configuration required | Stable on validated local-disk layouts, but still do not rely on Windows auto-discovery without an explicit source override. |
 | `lobechat` | manual configuration required | Experimental adapter; do not rely on Windows auto-discovery without an explicit source override. |
 | `codebuddy` | manual configuration required | Stable adapter for the reviewed local `.codebuddy` layout, but current code still probes `%USERPROFILE%\.codebuddy` without real Windows-host validation; operators should confirm or override `base_dir` manually. |
+| `accio` | manual configuration required | Experimental adapter; do not rely on Windows auto-discovery without an explicit source override. |
 
 Manual overrides are managed through the web `Sources` view or the API endpoints under `/api/admin/source-config`.
 
@@ -146,7 +147,8 @@ Current install and verification surfaces:
 - standalone CLI artifact verification: `pnpm run verify:cli-artifact` unpacks generated artifacts, verifies first install plus replacement-style upgrade semantics, and now runs the installed `cchistory` command through skeptical local restore/conflict, multi-source browse/search, store-scoped admin, and structured retrieval workflows (`sync -> backup preview/write -> import -> restore-check -> search/show -> conflict dry-run/replace`, plus `ls projects --long`, `ls sessions --long`, `show session`, `tree session --long`, `health --store-only`, `ls sources`, `stats`, `query session --id`, and `query turn --id`)
 - grouped local full-read bundle: `pnpm run verify:local-full-read-bundle` performs one higher-level local confidence pass by building the canonical local CLI/TUI entrypoints once, then running standalone artifact verification plus skeptical built-TUI `--full` verification in sequence
 - offline web-build verification: `pnpm run verify:web-build-offline` proves the canonical web production build works without public-network fetches during build time
-- support-status verification: `pnpm run verify:support-status` checks README/runtime/release-gate/source-reference support claims against the adapter registry
+- support-status verification: `pnpm run verify:support-status` checks README/runtime/release-gate/source-reference support claims and Web manual-source inventory against the adapter registry
+- runtime-inventory verification: `pnpm run verify:runtime-inventory` checks API route registrations against the OpenAPI path summary
 - seeded CLI/API/TUI acceptance verification: `pnpm run verify:v1-seeded-acceptance` proves one canonical multi-source recall, source-summary, and restore-readability journey across the shipped local entrypoints
 - read-only admin verification: `pnpm run verify:read-only-admin` proves CLI store-scoped health plus source reads, TUI source-health and missing-store truthfulness, and API read-side admin visibility without mutating the seeded store
 - fixture-backed sync-to-recall verification: `pnpm run verify:fixture-sync-recall` proves a clean store can sync from repo `mock_data/` default roots and then expose one canonical project recall/search/drill-down path through CLI, API, and TUI
@@ -176,14 +178,14 @@ Current route groups:
 
 - health and OpenAPI: `/health`, `/openapi.json`
 - remote-agent control plane: `/api/agent/pair`, `/api/agent/heartbeat`, `/api/agent/jobs/lease`, `/api/agent/uploads`, `/api/agent/jobs/{jobId}/complete`, `/api/admin/agents`, `/api/admin/agents/{agentId}/labels`, `/api/admin/agent-jobs`
-- recall: `/api/sources`, `/api/turns`, `/api/turns/search`, `/api/turns/{turnId}`, `/api/turns/{turnId}/context`, `/api/sessions`, `/api/sessions/{sessionId}`
+- recall: `/api/sources`, `/api/turns`, `/api/turns/summary`, `/api/turns/search`, `/api/turns/{turnId}`, `/api/turns/{turnId}/context`, `/api/sessions`, `/api/sessions/{sessionId}`
 - projects and artifacts: `/api/projects`, `/api/projects/{projectId}`, `/api/projects/{projectId}/turns`, `/api/projects/{projectId}/revisions`, `/api/artifacts`, `/api/artifacts/{artifactId}/coverage`
 - linking and lifecycle admin: `/api/admin/linking`, `/api/admin/linking/overrides`, `/api/admin/sessions/{sessionId}/related-work`, `/api/admin/projects/lineage-events`, `/api/admin/projects/{projectId}/delete`, `/api/admin/lifecycle/candidate-gc`
 - source config and probe/replay: `/api/admin/source-config`, `/api/admin/source-config/{sourceId}`, `/api/admin/source-config/{sourceId}/reset`, `/api/admin/probe/sources`, `/api/admin/probe/runs`, `/api/admin/pipeline/replay`
 - pipeline diagnostics: `/api/admin/pipeline/runs`, `/api/admin/pipeline/blobs`, `/api/admin/pipeline/records`, `/api/admin/pipeline/fragments`, `/api/admin/pipeline/atoms`, `/api/admin/pipeline/edges`, `/api/admin/pipeline/candidates`, `/api/admin/pipeline/loss-audits`, `/api/admin/pipeline/lineage/{turnId}`
 - masks, drift, and tombstones: `/api/admin/masks`, `/api/admin/drift`, `/api/tombstones/{logicalId}`
 
-The OpenAPI path summary is generated in [`apps/api/src/app.ts`](../../apps/api/src/app.ts).
+The OpenAPI path summary is defined in [`apps/api/src/utils/openapi.ts`](../../apps/api/src/utils/openapi.ts) and checked against route registration by `pnpm run verify:runtime-inventory`.
 
 # Build, Memory, And Document Constraints
 

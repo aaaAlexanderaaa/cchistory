@@ -126,9 +126,9 @@ Configure and monitor ingestion sources:
 - Override directories or reset to defaults
 - Save & Rescan individual sources
 
-Supported platforms for manual addition: Codex, Claude Code, Factory Droid, AMP, Cursor, Antigravity, Gemini CLI, OpenClaw, OpenCode, LobeChat, CodeBuddy.
+Supported platforms for manual addition: Codex, Claude Code, Factory Droid, AMP, Cursor, Antigravity, Gemini CLI, OpenClaw, OpenCode, LobeChat, CodeBuddy, and Accio Work.
 
-Windows note (2026-03-27): verified default-root auto-discovery currently exists for `Cursor` and `Antigravity`. For `Codex`, `Claude Code`, `Factory Droid`, `AMP`, `Gemini CLI`, `OpenClaw`, `OpenCode`, `CodeBuddy`, and `LobeChat`, use the `Sources` view to confirm or override `base_dir` explicitly on Windows before treating the path as authoritative. Several of these adapters are now `stable`, but their Windows default roots are still not host-verified.
+Windows note (2026-03-27): verified default-root auto-discovery currently exists for `Cursor` and `Antigravity`. For `Codex`, `Claude Code`, `Factory Droid`, `AMP`, `Gemini CLI`, `OpenClaw`, `OpenCode`, `CodeBuddy`, `LobeChat`, and `Accio Work`, use the `Sources` view to confirm or override `base_dir` explicitly on Windows before treating the path as authoritative. Several of these adapters are now `stable`, but their Windows default roots are still not host-verified.
 
 ![Sources — Admin configuration](../screenshots/web-sources.webp)
 

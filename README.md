@@ -51,6 +51,7 @@ CCHistory ingests, parses, and projects your AI coding assistant conversations i
 
 > `Stable` means real-world validated for the self-host v1 support bar. `Experimental` means the adapter is registered in code but is not yet validated enough for self-host v1 support claims.
 > For `lobechat`, the listed `~/.config/lobehub-storage/` path is still the current root candidate from the experimental slice, not a real-sample-verified canonical location; that review remains blocked under `R17`.
+> For `accio`, the adapter is registered as an experimental local-runtime session source while its real-world support boundary is still being validated.
 > Run `pnpm run verify:support-status` to verify these documentation claims against the adapter registry.
 
 > Antigravity note: CCHistory uses two complementary paths for Antigravity. The running desktop app's local language-server trajectory API provides actual conversation content (user inputs, assistant replies, tool calls). Offline files (`workspaceStorage`, `History`, `brain`) are always scanned for project paths and workspace signals. If the desktop app is not running, only the offline path executes, which means no raw conversation content will be recovered — only project metadata and evidence artifacts.
@@ -153,6 +154,7 @@ pnpm run verify:clean-install
 pnpm run verify:cli-artifact
 pnpm run verify:web-build-offline
 pnpm run verify:support-status
+pnpm run verify:runtime-inventory
 
 # Operator-style local read-path verification
 pnpm run verify:v1-seeded-acceptance

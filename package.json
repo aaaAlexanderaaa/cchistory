@@ -27,6 +27,7 @@
     "verify:cli-artifact": "node scripts/verify-cli-artifact.mjs",
     "verify:web-build-offline": "node scripts/verify-web-build-offline.mjs",
     "verify:support-status": "node scripts/verify-support-status.mjs",
+    "verify:runtime-inventory": "node scripts/verify-runtime-inventory.mjs",
     "verify:v1-seeded-acceptance": "pnpm --filter @cchistory/api build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && node scripts/verify-v1-seeded-acceptance.mjs",
     "verify:read-only-admin": "pnpm --filter @cchistory/api build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && node scripts/verify-read-only-admin.mjs",
     "verify:fixture-sync-recall": "pnpm --filter @cchistory/api build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && node scripts/verify-fixture-sync-to-recall.mjs",

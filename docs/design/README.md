@@ -17,7 +17,7 @@
 
 | 文档 | 内容 |
 |------|------|
-| [CURRENT_RUNTIME_SURFACE.md](CURRENT_RUNTIME_SURFACE.md) | 当前运行时全貌：入口点、11 个 adapter 状态、CLI/API/Web/TUI 功能清单 |
+| [CURRENT_RUNTIME_SURFACE.md](CURRENT_RUNTIME_SURFACE.md) | 当前运行时全貌：入口点、12 个 adapter 状态、CLI/API/Web/TUI 功能清单 |
 | [FIXTURE_CORPUS_MANIFEST.md](FIXTURE_CORPUS_MANIFEST.md) | 测试 fixture 的覆盖模型和采样规则 |
 | [R17 — LobeChat Export Validation](R17_LOBECHAT_EXPORT_VALIDATION.md) | LobeChat 导出格式的验证调研和 promotion 决策 |
 

@@ -15,6 +15,10 @@ before starting non-trivial corrective work.
 **3 active objectives, all blocked on user-started services or external data.**
 No executable tasks are currently available for autonomous agent work.
 
+Documentation drift guardrail work from `R36` was completed in-place on
+2026-05-14 and is kept below as the current ownership record for support/runtime
+inventory drift.
+
 | Objective | Status | Blocker |
 |-----------|--------|---------|
 | R17 - LobeChat Real-Sample Validation | active | Waiting for user-provided real LobeChat data |
@@ -22,6 +26,68 @@ No executable tasks are currently available for autonomous agent work.
 | R35 - Managed Remote-Agent Manual Review | active | Waiting for user to start canonical API service |
 
 231 completed objectives were archived and subsequently removed during repository cleanup.
+
+---
+
+## Objective: R36 - Documentation Drift Guardrails
+Status: done
+Priority: P1
+Source: user direction on 2026-05-14
+
+The project had accumulated drift between the adapter registry, support-tier
+docs, Web manual source inventory, OpenAPI route inventory, and AI-facing agent
+instructions. This objective owns the corrective slice that keeps current
+runtime facts machine-checkable instead of relying on hand-synchronized prose.
+
+### KR: R36-KR1 Adapter support surfaces are aligned with Accio
+Status: done
+Acceptance: README surfaces, runtime surface, release gate, source-reference
+docs, fixture manifest, and Web manual source inventory all agree with the
+adapter registry: 12 registered adapters, 10 stable, and 2 experimental
+(`lobechat`, `accio`), with `pnpm run verify:support-status` passing.
+
+- Task: update adapter/support documentation for Accio and current counts
+  Status: done
+  Acceptance: user-facing and design docs name Accio as experimental without
+  widening stable self-host support claims.
+  Artifact: `README.md`, `README_CN.md`, `docs/design/CURRENT_RUNTIME_SURFACE.md`,
+  `docs/design/SELF_HOST_V1_RELEASE_GATE.md`, `docs/sources/README.md`,
+  `docs/design/FIXTURE_CORPUS_MANIFEST.md`, `docs/guide/web.md`,
+  `docs/guide/cli.md`
+
+- Task: extend support-status verification to cover drift-prone counts and Web manual source inventory
+  Status: done
+  Acceptance: `node scripts/verify-support-status.mjs` passes and checks support
+  tables, prose counts, source-reference exclusions, and Web manual-source
+  options against the registry.
+  Artifact: `scripts/verify-support-status.mjs`,
+  `apps/web/components/views/sources-view.tsx`
+
+### KR: R36-KR2 Runtime route inventory is machine-checkable
+Status: done
+Acceptance: a lightweight verifier compares API route registrations against the
+OpenAPI path summary, and the OpenAPI summary includes the previously missing
+`/openapi.json`, `/api/turns/summary`, and `/api/sessions` entries.
+
+- Task: add runtime inventory verification
+  Status: done
+  Acceptance: `node scripts/verify-runtime-inventory.mjs` passes and
+  `pnpm run verify:runtime-inventory` is available as the repository command.
+  Artifact: `scripts/verify-runtime-inventory.mjs`, `package.json`,
+  `apps/api/src/utils/openapi.ts`
+
+### KR: R36-KR3 AI-facing development rules are profile-based and less drift-prone
+Status: done
+Acceptance: `AGENTS.md` separates always-on repository rules from local Codex
+desktop and Cursor Cloud environment profiles, keeps command names without
+hard-coded test counts, and records the new drift verifiers.
+
+- Task: refactor AI-facing repository guidelines
+  Status: done
+  Acceptance: `AGENTS.md` retains source-of-truth, safety, runtime, memory, and
+  validation constraints while removing stale count claims and clarifying which
+  profile applies on which host.
+  Artifact: `AGENTS.md`
 
 ---
 
@@ -173,4 +239,3 @@ user-started API service.
   Artifact: future remote-agent manual review note aligned with `docs/design/R29_REMOTE_AGENT_VALIDATION_CONTRACT.md`
 
 ---
-

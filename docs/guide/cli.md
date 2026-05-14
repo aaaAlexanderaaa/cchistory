@@ -53,7 +53,7 @@ Cursor (cursor)  host-e336320  2         1      healthy
 | `--limit-files <n>` | Max files per source |
 | `--dry-run` | Show which supported sources are currently discoverable and which path each would sync from |
 
-> Windows note (2026-03-27): `sync --dry-run` and `discover` only prove that a candidate path is being probed. On Windows, `Cursor` and `Antigravity` have verified default roots; for `Codex`, `Claude Code`, `Factory Droid`, `AMP`, `Gemini CLI`, `OpenClaw`, `OpenCode`, `CodeBuddy`, and `LobeChat`, confirm or override `base_dir` through the web `Sources` view or `/api/admin/source-config` before treating the path as authoritative. Several of these adapters are now `stable`, but their Windows default roots are still not host-verified.
+> Windows note (2026-03-27): `sync --dry-run` and `discover` only prove that a candidate path is being probed. On Windows, `Cursor` and `Antigravity` have verified default roots; for `Codex`, `Claude Code`, `Factory Droid`, `AMP`, `Gemini CLI`, `OpenClaw`, `OpenCode`, `CodeBuddy`, `LobeChat`, and `Accio Work`, confirm or override `base_dir` through the web `Sources` view or `/api/admin/source-config` before treating the path as authoritative. Several of these adapters are now `stable`, but their Windows default roots are still not host-verified.
 
 ### discover
 

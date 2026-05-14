@@ -35,6 +35,7 @@ const MANUAL_SOURCE_OPTIONS: Array<{ platform: SourcePlatform; label: string }> 
   { platform: 'opencode', label: 'OpenCode' },
   { platform: 'lobechat', label: 'LobeChat' },
   { platform: 'codebuddy', label: 'CodeBuddy' },
+  { platform: 'accio', label: 'Accio Work' },
 ]
 
 export function SourcesView() {

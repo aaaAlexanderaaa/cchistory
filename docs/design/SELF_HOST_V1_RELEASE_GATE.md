@@ -78,7 +78,7 @@ Current self-host v1 support tiers:
 | Tier | Platforms | Meaning |
 | --- | --- | --- |
 | `stable` | `codex`, `claude_code`, `factory_droid`, `amp`, `cursor`, `antigravity`, `gemini`, `openclaw`, `opencode`, `codebuddy` | real-world validated and expected to be covered by regression tests |
-| `experimental` | `lobechat` | registered in code, but not yet validated enough for self-host v1 support claims |
+| `experimental` | `lobechat`, `accio` | registered in code, but not yet validated enough for self-host v1 support claims |
 
 ## Out Of Scope For Self-Host V1
 
@@ -97,6 +97,7 @@ Use the smallest targeted command that proves the changed layer:
 - `pnpm run verify:clean-install`
 - `pnpm run verify:web-build-offline`
 - `pnpm run verify:support-status`
+- `pnpm run verify:runtime-inventory`
 - `pnpm --filter @cchistory/source-adapters test`
 - `pnpm run mock-data:validate`
 

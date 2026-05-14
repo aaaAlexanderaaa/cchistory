@@ -51,6 +51,7 @@ CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对
 
 > `Stable` 表示已经达到 self-host v1 的真实世界验证门槛。`Experimental` 表示 adapter 已经注册到代码里，但还没有足够的真实样本验证，不能作为 self-host v1 的正式支持承诺。
 > 对 `lobechat` 来说，表里列出的 `~/.config/lobehub-storage/` 仍只是当前 experimental slice 使用的 root candidate，不应视为已经由真实样本验证过的 canonical location；这项评审仍阻塞在 `R17`。
+> `accio` 目前是已注册的 experimental local-runtime session source，真实世界支持边界仍在验证中。
 > 可运行 `pnpm run verify:support-status`，把这些文档声明与 adapter registry 做一致性校验。
 
 > Antigravity 说明：CCHistory 对 Antigravity 采用两条互补的采集链路。运行中的桌面应用通过本地 language server trajectory API 提供实际对话内容（用户输入、助手回复、工具调用）。离线文件（`workspaceStorage`、`History`、`brain`）始终会被扫描，用于获取项目路径和 workspace 信号。如果桌面应用未运行，则只有离线链路会执行，此时不会恢复原始对话内容，只能获取项目元数据和证据工件。
@@ -132,6 +133,7 @@ pnpm run verify:clean-install
 pnpm run verify:cli-artifact
 pnpm run verify:web-build-offline
 pnpm run verify:support-status
+pnpm run verify:runtime-inventory
 
 # 面向 operator workflow 的本地读路径验证
 pnpm run verify:v1-seeded-acceptance

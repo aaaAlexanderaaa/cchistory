@@ -2,7 +2,7 @@
 
 本 roadmap 记录 CCHistory 接下来的主要工作方向，分为以下六个部分。各部分之间没有严格的先后依赖，可以并行推进。
 
-> 当前已注册的适配器请参见 `packages/source-adapters/src/registry.ts` 或运行 `pnpm run verify:support-status` 查看完整列表与状态。
+> 当前已注册的适配器请参见 `packages/source-adapters/src/platforms/registry.ts` 或运行 `pnpm run verify:support-status` 查看完整列表与状态。
 >
 > 自 2026-03-20 起，self-host v1 的发布门槛以 [`docs/design/SELF_HOST_V1_RELEASE_GATE.md`](./design/SELF_HOST_V1_RELEASE_GATE.md) 为准。各 adapter 的 `stable` / `experimental` 分级同样以 registry 和 `verify:support-status` 输出为准。
 >

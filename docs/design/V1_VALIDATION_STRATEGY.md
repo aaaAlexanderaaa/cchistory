@@ -56,7 +56,8 @@
 
 | Command | Coverage |
 | --- | --- |
-| `pnpm run verify:support-status` | README/runtime/release-gate support claims vs adapter registry |
+| `pnpm run verify:support-status` | README/runtime/release-gate support claims and Web manual-source inventory vs adapter registry |
+| `pnpm run verify:runtime-inventory` | API route registrations vs OpenAPI path summary |
 | `pnpm run verify:clean-install` | Documented clean-install path on a fresh repository copy |
 | `pnpm run verify:web-build-offline` | Offline web production build gate |
 

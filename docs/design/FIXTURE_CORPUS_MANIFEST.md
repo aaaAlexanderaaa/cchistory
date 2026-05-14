@@ -14,7 +14,7 @@ Each fixture corresponds to one representative source shape or one explicit pars
 - Real sampled sessions may inform fixture design, but repository fixtures must stay synthetic and redactable.
 
 # Source Families
-The current fixture set covers all eleven registered adapters across both `local_coding_agent` and `conversational_export` families.
+The current fixture set covers all 12 registered adapters across `local_coding_agent`, `conversational_export`, and `local_runtime_sessions` families.
 
 | Source family | Happy-path structural coverage | Malformed / edge coverage | Current repository location |
 | --- | --- | --- | --- |
@@ -29,6 +29,7 @@ The current fixture set covers all eleven registered adapters across both `local
 | `OpenCode` | storage session/message/part tree, workspace JSON | multi-session tree, config-only roots excluded | `platforms/opencode.test.ts`, `mock_data/` |
 | `LobeChat` | exported JSON bundle with messages, single and multi-conversation array | non-JSON files excluded by matchesSourceFile | `platforms/lobechat.test.ts`, `core/discovery.test.ts` |
 | `CodeBuddy` | JSONL transcript with `type:user`/`assistant`, skipRun echoes, empty siblings | empty user messages excluded, skipRun audit emitted | `platforms/codebuddy.test.ts` |
+| `Accio Work` | agent session JSONL plus subagent sessions and conversation metadata sidecars | JSONC metadata and parent-child linkage preserved without promoting companion files into standalone turns | `platforms/accio.test.ts`, `mock_data/fixtures/accio-multi-agent/` |
 
 # Sampled Shape Rules
 Real local samples should be mined only for structure and parser invariants, not for content.

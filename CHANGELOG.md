@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Platforms
+
+- Added **Accio Work** as a registered `experimental` adapter for local-runtime session evidence while its support boundary remains under validation.
+
 ## [0.1.0] — 2026-04-04
 
 First tagged release — self-host v1 for single-user localhost / trusted-LAN deployment.
@@ -9,7 +15,7 @@ First tagged release — self-host v1 for single-user localhost / trusted-LAN de
 ### Platforms
 
 - **10 stable adapters**: Codex, Claude Code, Cursor, AMP, Factory Droid, Antigravity, Gemini CLI, OpenClaw, OpenCode, CodeBuddy
-- **1 experimental adapter**: LobeChat (registered, not yet real-world validated)
+- **Experimental at release time**: LobeChat (registered, not yet real-world validated)
 
 ### Entry Points
 

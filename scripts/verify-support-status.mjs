@@ -18,7 +18,10 @@ const platformLabelToId = new Map([
   ['OpenCode', 'opencode'],
   ['LobeChat', 'lobechat'],
   ['CodeBuddy', 'codebuddy'],
+  ['Accio Work', 'accio'],
+  ['Accio', 'accio'],
   ['codebuddy', 'codebuddy'],
+  ['accio', 'accio'],
   ['codex', 'codex'],
   ['claude_code', 'claude_code'],
   ['cursor', 'cursor'],
@@ -56,6 +59,39 @@ async function main() {
       await readSourcesExperimentalSet(),
       getRegistryPlatformsByTier(registryTiers, 'experimental'),
     ),
+    ...compareCountAssertions('README.md', await readRepoText('README.md'), registryTiers, [
+      { pattern: /from \*\*(\d+) AI coding assistant platforms/u, kind: 'total' },
+    ]),
+    ...compareCountAssertions('README_CN.md', await readRepoText('README_CN.md'), registryTiers, [
+      { pattern: /从 \*\*(\d+) 个 AI 编程助手平台/u, kind: 'total' },
+    ]),
+    ...compareCountAssertions(
+      'docs/design/CURRENT_RUNTIME_SURFACE.md',
+      await readRepoText('docs/design/CURRENT_RUNTIME_SURFACE.md'),
+      registryTiers,
+      [{ pattern: /currently registers (\d+) source adapters/u, kind: 'total' }],
+    ),
+    ...compareCountAssertions('docs/sources/README.md', await readRepoText('docs/sources/README.md'), registryTiers, [
+      { pattern: /registry 中有 (\d+) 个 source adapter/u, kind: 'total' },
+      { pattern: /其中 (\d+) 个达到 `stable`/u, kind: 'stable' },
+      { pattern: /其余 (\d+) 个仍为 `experimental`/u, kind: 'experimental' },
+    ]),
+    ...compareCountAssertions(
+      'docs/design/FIXTURE_CORPUS_MANIFEST.md',
+      await readRepoText('docs/design/FIXTURE_CORPUS_MANIFEST.md'),
+      registryTiers,
+      [{ pattern: /covers all (\d+) registered adapters/u, kind: 'total' }],
+    ),
+    ...compareSet(
+      'apps/web Sources manual platform options',
+      await readWebManualSourceOptionSet(),
+      new Set(registryTiers.keys()),
+    ),
+    ...compareSet(
+      'docs/guide/web.md manual platform list',
+      await readWebGuideManualPlatformSet(),
+      new Set(registryTiers.keys()),
+    ),
   ];
 
   if (findings.length > 0) {
@@ -68,7 +104,7 @@ async function main() {
   }
 
   console.log('[cchistory] support-status verification passed');
-  console.log('[cchistory] verified README.md, README_CN.md, docs/design/CURRENT_RUNTIME_SURFACE.md, docs/design/SELF_HOST_V1_RELEASE_GATE.md, docs/sources/README.md');
+  console.log('[cchistory] verified README.md, README_CN.md, runtime/source docs, release gate, and web manual source inventory');
 }
 
 async function readRegistryTiers() {
@@ -170,6 +206,34 @@ async function readSourcesExperimentalSet() {
   return new Set(experimental);
 }
 
+async function readWebManualSourceOptionSet() {
+  const relPath = 'apps/web/components/views/sources-view.tsx';
+  const text = await readRepoText(relPath);
+  const platforms = [...text.matchAll(/\{\s*platform:\s*'([^']+)',\s*label:\s*'([^']+)'\s*\}/g)]
+    .map((match) => normalizePlatformLabel(match[2], relPath));
+  if (platforms.length === 0) {
+    throw new Error(`${relPath}: could not find MANUAL_SOURCE_OPTIONS entries`);
+  }
+  return new Set(platforms);
+}
+
+async function readWebGuideManualPlatformSet() {
+  const relPath = 'docs/guide/web.md';
+  const text = await readRepoText(relPath);
+  const match = text.match(/Supported platforms for manual addition:\s*([^\n]+)\./u);
+  if (!match) {
+    throw new Error(`${relPath}: could not find manual source platform list`);
+  }
+  return new Set(
+    match[1]
+      .replace(/\band\b/gu, ',')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
+      .map((value) => normalizePlatformLabel(value, relPath)),
+  );
+}
+
 async function readRepoText(relPath) {
   return readFile(path.join(repoRoot, relPath), 'utf8');
 }
@@ -260,6 +324,30 @@ function compareBucketMap(label, buckets, registryTiers) {
   const findings = [];
   findings.push(...compareSet(`${label} stable bucket`, buckets.get('stable') ?? new Set(), getRegistryPlatformsByTier(registryTiers, 'stable')));
   findings.push(...compareSet(`${label} experimental bucket`, buckets.get('experimental') ?? new Set(), getRegistryPlatformsByTier(registryTiers, 'experimental')));
+  return findings;
+}
+
+function compareCountAssertions(label, text, registryTiers, assertions) {
+  const findings = [];
+  const expectedCounts = {
+    total: registryTiers.size,
+    stable: getRegistryPlatformsByTier(registryTiers, 'stable').size,
+    experimental: getRegistryPlatformsByTier(registryTiers, 'experimental').size,
+  };
+
+  for (const assertion of assertions) {
+    const match = text.match(assertion.pattern);
+    if (!match) {
+      findings.push(`${label}: missing ${assertion.kind} count assertion ${assertion.pattern}`);
+      continue;
+    }
+    const actual = Number(match[1]);
+    const expected = expectedCounts[assertion.kind];
+    if (actual !== expected) {
+      findings.push(`${label}: expected ${assertion.kind} count ${expected}, found ${actual}`);
+    }
+  }
+
   return findings;
 }
 
