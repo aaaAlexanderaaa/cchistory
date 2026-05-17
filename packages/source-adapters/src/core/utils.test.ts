@@ -124,6 +124,35 @@ Let me chronologically analyze the conversation...`;
     assert.equal(chunks[0]!.originKind, "injected_user_shaped");
   });
 
+  test("Claude Code /clear command envelope → injected_user_shaped only", () => {
+    const text = "<command-name>/clear</command-name>\n<command-message>clear</command-message>\n<command-args></command-args>";
+    const chunks = splitUserText(text);
+    assert.equal(chunks.length, 1);
+    assert.equal(chunks[0]!.originKind, "injected_user_shaped");
+  });
+
+  test("Claude Code command envelope with args preserves only the user args as authored text", () => {
+    const text = [
+      "<command-message>review</command-message>",
+      "<command-name>/review</command-name>",
+      "<command-args>Audit the command parser regression.</command-args>",
+    ].join("\n");
+    const chunks = splitUserText(text);
+    assert.equal(chunks.length, 2);
+    assert.equal(chunks[0]!.originKind, "injected_user_shaped");
+    assert.equal(chunks[1]!.originKind, "user_authored");
+    assert.equal(chunks[1]!.text, "Audit the command parser regression.");
+  });
+
+  test("Claude Code command envelope without args preserves the command message without XML wrappers", () => {
+    const text = "<command-message>review</command-message>\n<command-name>/review</command-name>";
+    const chunks = splitUserText(text);
+    assert.equal(chunks.length, 2);
+    assert.equal(chunks[0]!.originKind, "injected_user_shaped");
+    assert.equal(chunks[1]!.originKind, "user_authored");
+    assert.equal(chunks[1]!.text, "review");
+  });
+
   // --- Genuine user messages must NOT be affected ---
 
   test("plain user text → user_authored (unchanged)", () => {

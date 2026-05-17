@@ -17,6 +17,9 @@ ALLOWED_FILE_PATTERNS = [
     re.compile(r"stable-adapter-validation\.json"),
     re.compile(r"fixtures/antigravity-live/trajectory-summaries\.json"),
     re.compile(r"fixtures/antigravity-live/steps/[0-9a-f-]+\.json"),
+    re.compile(r"fixtures/accio-multi-agent/agents/[^/]+/sessions/[^/]+\.(?:messages\.jsonl|meta\.jsonc)"),
+    re.compile(r"fixtures/accio-multi-agent/conversations/dm/[^/]+\.jsonc"),
+    re.compile(r"fixtures/accio-multi-agent/subagent-sessions/[^/]+\.(?:messages\.jsonl|meta\.jsonc)"),
     re.compile(r"\.codex/history\.jsonl"),
     re.compile(r"\.codex/sessions/\d{4}/\d{2}/\d{2}/rollout-[^/]+\.jsonl"),
     re.compile(r"\.codebuddy/settings\.json"),
@@ -118,7 +121,9 @@ def validate_scenarios() -> list[str]:
                 findings.append(f"{scenario_id}: missing scenario path {rel_path}")
 
         for visible_root in row.get("visible_roots", []):
-            if not isinstance(visible_root, str) or not visible_root.startswith("/Users/mock_user/"):
+            if not isinstance(visible_root, str) or not (
+                visible_root.startswith("/Users/mock_user/") or visible_root.startswith("/workspace/")
+            ):
                 findings.append(f"{scenario_id}: visible root is not sanitized: {visible_root!r}")
 
     return findings

@@ -46,9 +46,9 @@ async function main() {
     assert.doesNotMatch(searchText.stdout, /tree session .* --long/);
     assert.doesNotMatch(searchText.stdout, /\d+ delegated/);
     assert.match(searchText.stdout, /Claude Code .* claude-opus-4-6 .* chat-ui-kit/);
-    assert.match(searchText.stdout, /\/clear \/review|\/review You are an expert code reviewer/i);
+    assert.match(searchText.stdout, /Audit local-command wrapper handling|You are an expert code reviewer/i);
     assert.doesNotMatch(searchText.stdout, /<command-name>|<command-message>|<local-command-caveat>/);
-    assert.doesNotMatch(searchText.stdout, /\/clear clear|review \/review/);
+    assert.doesNotMatch(searchText.stdout, /\/clear/);
     assert.equal(searchText.stderr.trim(), "");
 
     const searchLongText = await runBuiltCliCapture(["search", "expert code reviewer", "--store", storeDir, "--long"], tempRoot, childEnv);
@@ -102,8 +102,9 @@ async function main() {
     assert.ok(projectTreeLong.stdout.includes(chosenHit.session.id));
     assert.match(projectTreeLong.stdout, /related=\d+ delegated/);
     assert.match(projectTreeLong.stdout, /Claude Code \(claude_code\)/);
-    assert.match(projectTreeLong.stdout, /\/clear \/review|\/review You are an expert code reviewer/i);
+    assert.match(projectTreeLong.stdout, /Audit local-command wrapper handling|You are an expert code reviewer/i);
     assert.doesNotMatch(projectTreeLong.stdout, /<command-name>|<command-message>|<local-command-caveat>/);
+    assert.doesNotMatch(projectTreeLong.stdout, /\/clear/);
     assert.equal(projectTreeLong.stderr.trim(), "");
 
     const showTurn = await runBuiltCliCapture(["show", "turn", chosenHit.turn.id, "--store", storeDir], tempRoot, childEnv);
@@ -118,8 +119,9 @@ async function main() {
     assert.match(sessionTree.stdout, /Related Work/);
     assert.match(sessionTree.stdout, /transcript-primary/);
     assert.match(sessionTree.stdout, /Claude Code \(claude_code\)/);
-    assert.match(sessionTree.stdout, /\/clear \/review|\/review You are an expert code reviewer/i);
+    assert.match(sessionTree.stdout, /Audit local-command wrapper handling|You are an expert code reviewer/i);
     assert.doesNotMatch(sessionTree.stdout, /<command-name>|<command-message>|<local-command-caveat>/);
+    assert.doesNotMatch(sessionTree.stdout, /\/clear/);
     assert.equal(sessionTree.stderr.trim(), "");
 
     const showSession = await runBuiltCliCapture(["show", "session", chosenHit.session.id, "--store", storeDir], tempRoot, childEnv);
@@ -150,8 +152,9 @@ async function main() {
     assert.match(tuiSearch.stdout, /Search: expert code reviewer/);
     assert.match(tuiSearch.stdout, /Project: chat-ui-kit/);
     assert.match(tuiSearch.stdout, /Claude Code \(claude_code\)/);
-    assert.match(tuiSearch.stdout, /Related: \d+ child/);
+    assert.match(tuiSearch.stdout, /Related: \d+ (?:child|parent)/);
     assert.doesNotMatch(tuiSearch.stdout, /<command-name>|<command-message>|<local-command-caveat>/);
+    assert.doesNotMatch(tuiSearch.stdout, /\/clear/);
     assert.doesNotMatch(tuiSearch.stderr, /ExperimentalWarning/);
 
     const tuiMissing = await runBuiltTuiCapture(["--store", missingStoreDir], tempRoot, childEnv);

@@ -161,6 +161,11 @@ export function splitUserText(
     return [{ originKind: "automation_trigger", text: normalized }];
   }
 
+  const commandEnvelope = splitLocalCommandEnvelope(normalized);
+  if (commandEnvelope) {
+    return commandEnvelope;
+  }
+
   const requestMarker = "[User Request]";
   const requestIndex = normalized.indexOf(requestMarker);
   if (requestIndex >= 0) {
@@ -599,6 +604,61 @@ export function isDelegatedInstructionUserText(
 
 export function isAutomationTriggerUserText(text: string): boolean {
   return text.startsWith("[cron:");
+}
+
+export function splitLocalCommandEnvelope(text: string): UserTextChunk[] | undefined {
+  if (
+    !text.startsWith("<command-name>") &&
+    !text.startsWith("<command-message>") &&
+    !text.startsWith("<command-args>")
+  ) {
+    return undefined;
+  }
+
+  if (text.replace(/<command-(name|message|args)>[\s\S]*?<\/command-\1>/gu, "").trim()) {
+    return undefined;
+  }
+
+  const commandName = extractCommandEnvelopeField(text, "name");
+  const commandMessage = extractCommandEnvelopeField(text, "message");
+  const commandArgs = extractCommandEnvelopeField(text, "args");
+  const commandKey = normalizeCommandKey(commandName) ?? normalizeCommandKey(commandMessage);
+  const chunks: UserTextChunk[] = [
+    {
+      originKind: "injected_user_shaped",
+      text,
+      displayPolicy: "collapse",
+    },
+  ];
+
+  if (commandKey === "clear" && !commandArgs) {
+    return chunks;
+  }
+
+  const authoredText = commandArgs || commandMessage || stripLeadingSlash(commandName);
+  if (authoredText) {
+    chunks.push({
+      originKind: "user_authored",
+      text: authoredText,
+    });
+  }
+  return chunks;
+}
+
+function extractCommandEnvelopeField(text: string, field: "name" | "message" | "args"): string | undefined {
+  const match = text.match(new RegExp(`<command-${field}>([\\s\\S]*?)<\\/command-${field}>`, "u"));
+  const value = match?.[1]?.replace(/\r\n/g, "\n").trim();
+  return value || undefined;
+}
+
+function normalizeCommandKey(value: string | undefined): string | undefined {
+  const stripped = stripLeadingSlash(value);
+  return stripped?.toLowerCase();
+}
+
+function stripLeadingSlash(value: string | undefined): string | undefined {
+  const stripped = value?.trim().replace(/^\/+/u, "").trim();
+  return stripped || undefined;
 }
 
 const SYNTHETIC_USER_SHAPED_PREFIXES = [

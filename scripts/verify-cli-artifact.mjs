@@ -577,7 +577,7 @@ async function main() {
 
     const searchText = await runInstalledCli(installedCli, ['search', 'expert code reviewer', '--store', browseStoreDir], browseEnv);
     assertQuietResult(searchText, 'browse search text');
-    if (!/Use show turn <id> to inspect, --long for full detail\./.test(searchText.stdout) || /tree session .* --long/.test(searchText.stdout) || /\d+ delegated/.test(searchText.stdout) || !/Claude Code .* claude-opus-4-6 .* chat-ui-kit/.test(searchText.stdout) || !/\/clear \/review|\/review You are an expert code reviewer/i.test(searchText.stdout) || /<command-name>|<command-message>|<local-command-caveat>/.test(searchText.stdout) || /\/clear clear|review \/review/.test(searchText.stdout)) {
+    if (!/Use show turn <id> to inspect, --long for full detail\./.test(searchText.stdout) || /tree session .* --long/.test(searchText.stdout) || /\d+ delegated/.test(searchText.stdout) || !/Claude Code .* claude-opus-4-6 .* chat-ui-kit/.test(searchText.stdout) || !/Audit local-command wrapper handling|You are an expert code reviewer/i.test(searchText.stdout) || /<command-name>|<command-message>|<local-command-caveat>/.test(searchText.stdout) || /\/clear/.test(searchText.stdout)) {
       throw new Error(`Installed CLI browse search text output was unexpected: ${searchText.stdout}`);
     }
 
@@ -624,13 +624,13 @@ async function main() {
 
     const treeProject = await runInstalledCli(installedCli, ['tree', 'project', chosenHit.turn.project_id, '--store', browseStoreDir, '--long'], browseEnv);
     assertQuietResult(treeProject, 'browse tree project --long');
-    if (!/chat-ui-kit/.test(treeProject.stdout) || !/Status\s+: active/.test(treeProject.stdout) || !/related=\d+ delegated/.test(treeProject.stdout) || !/Claude Code \(claude_code\)/.test(treeProject.stdout) || !/\/clear \/review|\/review You are an expert code reviewer/i.test(treeProject.stdout) || /<command-name>|<command-message>|<local-command-caveat>/.test(treeProject.stdout)) {
+    if (!/chat-ui-kit/.test(treeProject.stdout) || !/Status\s+: active/.test(treeProject.stdout) || !/related=\d+ delegated/.test(treeProject.stdout) || !/Claude Code \(claude_code\)/.test(treeProject.stdout) || !/Audit local-command wrapper handling|You are an expert code reviewer/i.test(treeProject.stdout) || /<command-name>|<command-message>|<local-command-caveat>|\/clear/.test(treeProject.stdout)) {
       throw new Error(`Installed CLI browse tree project output was unexpected: ${treeProject.stdout}`);
     }
 
     const treeSession = await runInstalledCli(installedCli, ['tree', 'session', chosenHit.session.id, '--store', browseStoreDir, '--long'], browseEnv);
     assertQuietResult(treeSession, 'browse tree session --long');
-    if (!/Related Work/.test(treeSession.stdout) || !/transcript-primary/.test(treeSession.stdout) || !/Claude Code \(claude_code\)/.test(treeSession.stdout) || !/\/clear \/review|\/review You are an expert code reviewer/i.test(treeSession.stdout) || /<command-name>|<command-message>|<local-command-caveat>/.test(treeSession.stdout)) {
+    if (!/Related Work/.test(treeSession.stdout) || !/transcript-primary/.test(treeSession.stdout) || !/Claude Code \(claude_code\)/.test(treeSession.stdout) || !/Audit local-command wrapper handling|You are an expert code reviewer/i.test(treeSession.stdout) || /<command-name>|<command-message>|<local-command-caveat>|\/clear/.test(treeSession.stdout)) {
       throw new Error(`Installed CLI browse tree session output was unexpected: ${treeSession.stdout}`);
     }
 

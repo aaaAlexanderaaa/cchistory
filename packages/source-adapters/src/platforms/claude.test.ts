@@ -72,6 +72,39 @@ test("[claude] sidechain subagent fixtures stay as delegated evidence instead of
   assert.equal(payload.candidates.some((candidate) => candidate.candidate_kind === "turn"), false);
 });
 
+test("[claude] local command envelopes do not anchor slash-command control noise", async () => {
+  const mockDataRoot = getRepoMockDataRoot();
+  const baseDir = path.join(
+    mockDataRoot,
+    ".claude",
+    "projects",
+    "-Users-mock-user-workspace-chat-ui-kit",
+  );
+  const source = createSourceDefinition("src-claude-local-command-mock-data", "claude_code", baseDir);
+
+  const result = await runSourceProbe({ source_ids: [source.id] }, [source]);
+  const payload = result.sources[0];
+  assert.ok(payload);
+
+  const sessionTurns = payload.turns
+    .filter((turn) => turn.session_id === "sess:claude_code:b98095d7-b7ee-4d23-9d4c-beb9725d1dc5")
+    .sort((left, right) => left.submission_started_at.localeCompare(right.submission_started_at));
+  const firstTurn = sessionTurns[0];
+  assert.ok(firstTurn);
+  assert.match(firstTurn.canonical_text, /Audit local-command wrapper handling/u);
+  assert.doesNotMatch(firstTurn.canonical_text, /\/clear|<command-/u);
+  assert.ok(
+    firstTurn.user_messages.some(
+      (message) => message.is_injected && message.raw_text.includes("<command-name>/clear</command-name>"),
+    ),
+  );
+  assert.ok(
+    firstTurn.user_messages.some(
+      (message) => !message.is_injected && message.raw_text === "Audit local-command wrapper handling.",
+    ),
+  );
+});
+
 
 test("[claude] synthetic user-shaped messages do not produce user turns", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-claude-synthetic-"));
@@ -236,4 +269,3 @@ test("[claude] root history jsonl stays out of default capture when scanning the
   assert.ok(payload.sessions.length >= 2);
   assert.ok(payload.turns.every((turn) => !turn.canonical_text.startsWith("/")));
 });
-
