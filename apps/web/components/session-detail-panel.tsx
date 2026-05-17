@@ -29,7 +29,10 @@ export function SessionDetailPanel({
   className,
 }: SessionDetailPanelProps) {
   const { data: relatedWork = [] } = useSessionRelatedWorkQuery(session.id)
-  const childSessions = relatedWork.filter((entry) => entry.relation_kind === 'delegated_session')
+  const parentSessions = relatedWork.filter((entry) => entry.relation_kind === 'delegated_session' && entry.direction === 'inbound')
+  const childSessions = relatedWork.filter(
+    (entry) => entry.relation_kind === 'delegated_session' && entry.direction !== 'inbound',
+  )
   const automationRuns = relatedWork.filter((entry) => entry.relation_kind === 'automation_run')
 
   return (
@@ -122,6 +125,7 @@ export function SessionDetailPanel({
           <div className="mb-3 flex items-center justify-between">
             <div className="text-[10px] stamp-text text-muted">RELATED WORK</div>
             <div className="flex flex-wrap items-center gap-2 text-[10px] stamp-text text-muted">
+              <span>{parentSessions.length} parent sessions</span>
               <span>{childSessions.length} child sessions</span>
               <span>{automationRuns.length} automation runs</span>
             </div>
@@ -131,6 +135,7 @@ export function SessionDetailPanel({
             <div className="border border-dashed border-border px-4 py-6 text-sm text-muted">No related work captured for this session.</div>
           ) : (
             <div className="space-y-4">
+              <RelatedWorkGroup label="Parent Sessions" items={parentSessions} emptyLabel="No parent sessions" />
               <RelatedWorkGroup label="Child Sessions" items={childSessions} emptyLabel="No child sessions" />
               <RelatedWorkGroup label="Automation Runs" items={automationRuns} emptyLabel="No automation runs" />
             </div>
@@ -218,6 +223,9 @@ function RelatedWorkGroup({
             <div className="flex flex-wrap items-center gap-2 text-[10px] stamp-text">
               <span className="border border-border bg-card px-1.5 py-0.5 text-muted">{item.relation_kind}</span>
               <span className="border border-border bg-card px-1.5 py-0.5 text-muted">{item.target_kind}</span>
+              {item.direction && (
+                <span className="border border-border bg-card px-1.5 py-0.5 text-muted">{item.direction}</span>
+              )}
               <span className="border border-border bg-card px-1.5 py-0.5 text-muted">
                 {item.transcript_primary ? 'transcript-primary' : 'evidence-only'}
               </span>
@@ -228,6 +236,9 @@ function RelatedWorkGroup({
                 <div className="font-medium">{item.title || item.target_session_ref || item.automation_job_ref || item.id}</div>
                 <div className="mt-1 space-y-1 text-xs text-muted">
                   {item.target_session_ref && <div className="mono-text">target_session_ref: {item.target_session_ref}</div>}
+                  {item.parent_session_ref && <div className="mono-text">parent_session_ref: {item.parent_session_ref}</div>}
+                  {item.child_session_ref && <div className="mono-text">child_session_ref: {item.child_session_ref}</div>}
+                  {item.evidence_session_ref && <div className="mono-text">evidence_session_ref: {item.evidence_session_ref}</div>}
                   {item.automation_job_ref && <div className="mono-text">automation_job_ref: {item.automation_job_ref}</div>}
                   {item.automation_run_key && <div className="mono-text">automation_run_key: {item.automation_run_key}</div>}
                   {item.parent_event_ref && <div className="mono-text">parent_event_ref: {item.parent_event_ref}</div>}

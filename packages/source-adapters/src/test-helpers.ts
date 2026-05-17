@@ -1513,6 +1513,129 @@ export async function seedCodexCumulativeTokenFixture(tempRoot: string): Promise
   return createSourceDefinition("src-codex-token-cumulative", "codex", codexDir);
 }
 
+export async function seedCodexDelayedInterleavedTokenFixture(tempRoot: string): Promise<SourceDefinition> {
+  const codexDir = path.join(tempRoot, "codex-token-delayed-interleaved");
+  await mkdir(codexDir, { recursive: true });
+  const largeReply = Array.from({ length: 500 }, () => "Large token reply segment.").join(" ");
+
+  await writeFile(
+    path.join(codexDir, "rollout-2026-03-09T00-00-00-codex-fixture.jsonl"),
+    [
+      {
+        timestamp: "2026-03-10T07:00:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-token-delayed-interleaved-session",
+          cwd: "/workspace/codex-token-delayed-interleaved",
+          model: "gpt-5",
+        },
+      },
+      {
+        timestamp: "2026-03-10T07:00:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Exercise delayed token signals around tool work." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T07:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          stop_reason: "tool_use",
+          content: [{ type: "output_text", text: "I need to inspect the workspace first." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T07:00:02.500Z",
+        type: "response_item",
+        payload: {
+          type: "function_call",
+          call_id: "delayed-token-tool",
+          name: "shell",
+          arguments: JSON.stringify({ cmd: "pwd" }),
+        },
+      },
+      {
+        timestamp: "2026-03-10T07:00:03.000Z",
+        type: "response_item",
+        payload: {
+          type: "function_call_output",
+          call_id: "delayed-token-tool",
+          output: "/workspace/codex-token-delayed-interleaved",
+        },
+      },
+      {
+        timestamp: "2026-03-10T07:00:03.500Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 70,
+              cached_input_tokens: 20,
+              output_tokens: 5,
+              total_tokens: 75,
+            },
+            last_token_usage: {
+              input_tokens: 70,
+              cached_input_tokens: 20,
+              output_tokens: 5,
+              total_tokens: 75,
+            },
+          },
+        },
+      },
+      {
+        timestamp: "2026-03-10T07:00:04.000Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 100,
+              cached_input_tokens: 40,
+              output_tokens: 10,
+              total_tokens: 110,
+            },
+            last_token_usage: {
+              input_tokens: 100,
+              cached_input_tokens: 40,
+              output_tokens: 10,
+              total_tokens: 110,
+            },
+          },
+        },
+      },
+      {
+        timestamp: "2026-03-10T07:00:05.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          stop_reason: "end_turn",
+          usage: {
+            input_tokens: 200,
+            cache_read_input_tokens: 60,
+            cache_creation_input_tokens: 10,
+            output_tokens: 200,
+            total_tokens: 470,
+          },
+          content: [{ type: "output_text", text: largeReply }],
+        },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n"),
+    "utf8",
+  );
+
+  return createSourceDefinition("src-codex-token-delayed-interleaved", "codex", codexDir);
+}
+
 export async function seedExpandedSourceFixtures(tempRoot: string): Promise<SourceDefinition[]> {
   const cursorDir = path.join(tempRoot, "cursor", "workspaceStorage", "cursor-workspace");
   const antigravityDir = path.join(tempRoot, "antigravity", "User");

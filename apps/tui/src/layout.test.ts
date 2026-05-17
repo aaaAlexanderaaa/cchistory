@@ -38,6 +38,29 @@ function displayWidth(str: string): number {
   return w;
 }
 
+interface RenderedTwoColumnRow {
+  lineNo: number;
+  separatorColumn: number;
+  left: string;
+  right: string;
+}
+
+function renderedTwoColumnRows(snapshot: string): RenderedTwoColumnRow[] {
+  return stripAnsi(snapshot)
+    .split("\n")
+    .map((line, lineNo) => ({ line, lineNo }))
+    .filter(({ line }) => line.includes("│"))
+    .map(({ line, lineNo }) => {
+      const separatorColumn = line.indexOf("│");
+      return {
+        lineNo,
+        separatorColumn,
+        left: line.slice(0, separatorColumn),
+        right: line.slice(separatorColumn + 1),
+      };
+    });
+}
+
 // ── Layout constants (matching browser.ts) ──
 
 const MIN_LEFT_COL = 24;
@@ -652,9 +675,10 @@ test("two-column layout integrity", async () => {
     const lines = snapshot.split("\n");
     const strippedLines = stripAnsi(snapshot).split("\n");
 
-    // Content lines (between title row and status bar) should have separator
-    // Layout: line 0 = title, line 1 = blank, lines 2..height-3 = content, line height-2 = blank, line height-1 = status
-    const contentStart = 2;
+    // Content lines start after snapshot metadata headers and should have the
+    // two-column separator through the body area.
+    const contentStart = strippedLines.findIndex((line) => line.includes("│"));
+    assert.ok(contentStart >= 0, "No two-column body start found");
     const contentEnd = lines.length - 2;
     let separatorCount = 0;
     const leftWidths: number[] = [];
@@ -684,6 +708,49 @@ test("two-column layout integrity", async () => {
     // Right column widths should be consistent
     const uniqueRightWidths = [...new Set(rightWidths)];
     assert.equal(uniqueRightWidths.length, 1, `Right column widths inconsistent: ${JSON.stringify(uniqueRightWidths)}`);
+  });
+});
+
+test("rendered search layout matrix preserves regions across narrow and wide terminals", async () => {
+  await withTempStorage((storage) => {
+    setupSingleProject(storage);
+    const browser = buildLocalTuiBrowser(storage);
+    let state = createBrowserState(browser);
+    state = reduceBrowserState(browser, state, { type: "enter-search-mode" });
+    for (const ch of "Single project") {
+      state = reduceBrowserState(browser, state, { type: "append-search-char", value: ch });
+    }
+
+    for (const dims of [{ width: 80, height: 24 }, { width: 120, height: 40 }]) {
+      const snapshot = renderBrowserSnapshot(browser, state, dims);
+      const lines = stripAnsi(snapshot).split("\n");
+      assert.equal(lines.length, dims.height, `Expected fixed viewport height at ${dims.width}x${dims.height}`);
+      for (let i = 0; i < lines.length; i++) {
+        assert.ok(
+          displayWidth(lines[i]!) <= dims.width,
+          `Line ${i} overflows ${dims.width} columns: ${displayWidth(lines[i]!)} > ${dims.width}`,
+        );
+      }
+
+      const rows = renderedTwoColumnRows(snapshot).filter((row) => row.lineNo < lines.length - 2);
+      assert.ok(rows.length >= Math.floor(dims.height / 2), `Expected a substantial two-column body at ${dims.width}x${dims.height}`);
+      const separatorColumns = new Set(rows.map((row) => row.separatorColumn));
+      assert.equal(separatorColumns.size, 1, `Separator should stay in one column at ${dims.width}x${dims.height}`);
+
+      const leftText = rows.map((row) => row.left).join("\n");
+      const rightText = rows.map((row) => row.right).join("\n");
+      assert.match(leftText, /\/ Single project/, `Search query should stay in left region at ${dims.width}x${dims.height}`);
+      assert.doesNotMatch(leftText, /Results/, `Results heading leaked into left region at ${dims.width}x${dims.height}`);
+      assert.match(rightText, /Results/, `Results heading missing from right region at ${dims.width}x${dims.height}`);
+      assert.match(rightText, /Single project turn/, `Matched ask should appear in right region at ${dims.width}x${dims.height}`);
+      assert.match(rightText, /Detail/, `Detail pane should appear in right region at ${dims.width}x${dims.height}`);
+
+      const resultRow = rows.find((row) => row.right.includes("Results"));
+      const detailRow = rows.find((row) => row.right.includes("Detail"));
+      assert.ok(resultRow, `No rendered results row at ${dims.width}x${dims.height}`);
+      assert.ok(detailRow, `No rendered detail row at ${dims.width}x${dims.height}`);
+      assert.ok(detailRow.lineNo > resultRow.lineNo, `Detail pane should render below results at ${dims.width}x${dims.height}`);
+    }
   });
 });
 
@@ -738,7 +805,7 @@ test("empty project handling", async () => {
     const stripped = stripAnsi(snapshot);
 
     assert.match(stripped, /No projects/, "Missing 'No projects' message");
-    assert.match(stripped, /No turns/, "Missing 'No turns' message");
+    assert.match(stripped, /No asks/, "Missing 'No asks' message");
 
     // Layout should still be valid: separator present
     const lines = stripped.split("\n");
@@ -786,8 +853,8 @@ test("session grouping display", async () => {
     const stripped = stripAnsi(snapshot);
     const lines = stripped.split("\n");
 
-    // Verify Turns title is visible
-    assert.match(stripped, /Turns/, "Missing Turns pane title");
+    // Verify Asks title is visible
+    assert.match(stripped, /Asks/, "Missing Asks pane title");
 
     // Right column should show turn text from our sessions
     // Session A has 2 turns, Session B has 1 turn
@@ -1099,7 +1166,7 @@ test("status bar content validation in browse and search modes", async () => {
     assert.match(browseStatusLine, /projects/, "Browse status bar should show focusPane 'projects'");
     // Status bar shows project/turn counts (overview counts from storage include
     // the override project + potential inferred project, so 2P is expected)
-    assert.match(browseStatusLine, /\dP \d+T/, "Browse status bar should show project/turn counts");
+    assert.match(browseStatusLine, /\dP \d+A/, "Browse status bar should show project/ask counts");
     // Status bar shows help hint
     assert.match(browseStatusLine, /\? help/, "Browse status bar should show '? help'");
 
@@ -1240,9 +1307,9 @@ test("projects are listed in reverse chronological order", async () => {
     const stripped = stripAnsi(snapshot);
 
     // Project names are truncated in the left column, so use partial matching
-    const alphaIdx = stripped.indexOf("Alpha P");
-    const betaIdx = stripped.indexOf("Beta P");
-    const gammaIdx = stripped.indexOf("Gamma P");
+    const alphaIdx = stripped.indexOf("Alpha");
+    const betaIdx = stripped.indexOf("Beta");
+    const gammaIdx = stripped.indexOf("Gamma");
 
     // All three projects should appear in the left column
     assert.ok(alphaIdx >= 0, "Alpha Project not found in snapshot");

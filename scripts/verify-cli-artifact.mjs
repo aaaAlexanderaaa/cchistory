@@ -223,7 +223,7 @@ async function main() {
     assertQuietResult(fullShowSession, 'full show session');
     if (
       !/Title\s+: Count the newly scanned session\./.test(fullShowSession.stdout)
-      || !/Project\s+: artifact-review \[ready\]/.test(fullShowSession.stdout)
+      || !/Project\s+: artifact-review \[active\]/.test(fullShowSession.stdout)
       || !/Source\s+: Codex \(codex\)/.test(fullShowSession.stdout)
       || !/Turns\s+: 1/.test(fullShowSession.stdout)
       || !/Count the newly scanned session\./.test(fullShowSession.stdout)
@@ -269,9 +269,9 @@ async function main() {
     const indexedShowProject = await runInstalledCli(installedCli, ['show', 'project', liveProjectId, '--store', sourceStoreDir], skepticalEnv);
     assertQuietResult(indexedShowProject, 'indexed show project');
     if (
-      !/Status\s+: tentative/.test(indexedShowProject.stdout)
+      !/Status\s+: active/.test(indexedShowProject.stdout)
       || !/Sessions\s+: 1/.test(indexedShowProject.stdout)
-      || !/Turns\s+: 1/.test(indexedShowProject.stdout)
+      || !/Asks\s+: 1/.test(indexedShowProject.stdout)
       || /Count the newly scanned session\./.test(indexedShowProject.stdout)
     ) {
       throw new Error(`Installed CLI indexed show project output was unexpected: ${indexedShowProject.stdout}`);
@@ -280,9 +280,9 @@ async function main() {
     const fullShowProject = await runInstalledCli(installedCli, ['show', 'project', liveProjectId, '--store', sourceStoreDir, '--full', '--source', 'codex'], skepticalEnv);
     assertQuietResult(fullShowProject, 'full show project');
     if (
-      !/Status\s+: ready/.test(fullShowProject.stdout)
+      !/Status\s+: active/.test(fullShowProject.stdout)
       || !/Sessions\s+: 2/.test(fullShowProject.stdout)
-      || !/Turns\s+: 2/.test(fullShowProject.stdout)
+      || !/Asks\s+: 2/.test(fullShowProject.stdout)
       || !/Count the newly scanned session\./.test(fullShowProject.stdout)
     ) {
       throw new Error(`Installed CLI full show project output was unexpected: ${fullShowProject.stdout}`);
@@ -291,9 +291,9 @@ async function main() {
     const indexedShowProjectAfterFull = await runInstalledCli(installedCli, ['show', 'project', liveProjectId, '--store', sourceStoreDir], skepticalEnv);
     assertQuietResult(indexedShowProjectAfterFull, 'indexed show project after full');
     if (
-      !/Status\s+: tentative/.test(indexedShowProjectAfterFull.stdout)
+      !/Status\s+: active/.test(indexedShowProjectAfterFull.stdout)
       || !/Sessions\s+: 1/.test(indexedShowProjectAfterFull.stdout)
-      || !/Turns\s+: 1/.test(indexedShowProjectAfterFull.stdout)
+      || !/Asks\s+: 1/.test(indexedShowProjectAfterFull.stdout)
       || /Count the newly scanned session\./.test(indexedShowProjectAfterFull.stdout)
     ) {
       throw new Error(`Installed CLI indexed show project after full output was unexpected: ${indexedShowProjectAfterFull.stdout}`);
@@ -302,8 +302,10 @@ async function main() {
     const indexedTreeProject = await runInstalledCli(installedCli, ['tree', 'project', liveProjectId, '--store', sourceStoreDir, '--long'], skepticalEnv);
     assertQuietResult(indexedTreeProject, 'indexed tree project');
     if (
-      !/artifact-review \[tentative\]/.test(indexedTreeProject.stdout)
-      || !/sessions=1 turns=1/.test(indexedTreeProject.stdout)
+      !/artifact-review/.test(indexedTreeProject.stdout)
+      || !/Status\s+: active/.test(indexedTreeProject.stdout)
+      || !/Sessions\s+: 1/.test(indexedTreeProject.stdout)
+      || !/Asks\s+: 1/.test(indexedTreeProject.stdout)
       || /Count the newly scanned session\./.test(indexedTreeProject.stdout)
     ) {
       throw new Error(`Installed CLI indexed tree project output was unexpected: ${indexedTreeProject.stdout}`);
@@ -312,8 +314,10 @@ async function main() {
     const fullTreeProject = await runInstalledCli(installedCli, ['tree', 'project', liveProjectId, '--store', sourceStoreDir, '--full', '--source', 'codex', '--long'], skepticalEnv);
     assertQuietResult(fullTreeProject, 'full tree project');
     if (
-      !/artifact-review \[ready\]/.test(fullTreeProject.stdout)
-      || !/sessions=2 turns=2/.test(fullTreeProject.stdout)
+      !/artifact-review/.test(fullTreeProject.stdout)
+      || !/Status\s+: active/.test(fullTreeProject.stdout)
+      || !/Sessions\s+: 2/.test(fullTreeProject.stdout)
+      || !/Asks\s+: 2/.test(fullTreeProject.stdout)
       || !/sess:codex:codex-artifact-session-2/.test(fullTreeProject.stdout)
       || !/Count the newly scanned session\./.test(fullTreeProject.stdout)
     ) {
@@ -323,8 +327,10 @@ async function main() {
     const indexedTreeProjectAfterFull = await runInstalledCli(installedCli, ['tree', 'project', liveProjectId, '--store', sourceStoreDir, '--long'], skepticalEnv);
     assertQuietResult(indexedTreeProjectAfterFull, 'indexed tree project after full');
     if (
-      !/artifact-review \[tentative\]/.test(indexedTreeProjectAfterFull.stdout)
-      || !/sessions=1 turns=1/.test(indexedTreeProjectAfterFull.stdout)
+      !/artifact-review/.test(indexedTreeProjectAfterFull.stdout)
+      || !/Status\s+: active/.test(indexedTreeProjectAfterFull.stdout)
+      || !/Sessions\s+: 1/.test(indexedTreeProjectAfterFull.stdout)
+      || !/Asks\s+: 1/.test(indexedTreeProjectAfterFull.stdout)
       || /Count the newly scanned session\./.test(indexedTreeProjectAfterFull.stdout)
     ) {
       throw new Error(`Installed CLI indexed tree project after full output was unexpected: ${indexedTreeProjectAfterFull.stdout}`);
@@ -571,8 +577,14 @@ async function main() {
 
     const searchText = await runInstalledCli(installedCli, ['search', 'expert code reviewer', '--store', browseStoreDir], browseEnv);
     assertQuietResult(searchText, 'browse search text');
-    if (!/show turn/.test(searchText.stdout) || !/tree session .* --long/.test(searchText.stdout) || !/related=\d+ delegated/.test(searchText.stdout) || !/source=Claude Code \(claude_code\)/.test(searchText.stdout) || !/\/clear \/review|\/review You are an expert code reviewer/i.test(searchText.stdout) || /<command-name>|<command-message>|<local-command-caveat>/.test(searchText.stdout) || /\/clear clear|review \/review/.test(searchText.stdout)) {
+    if (!/Use show turn <id> to inspect, --long for full detail\./.test(searchText.stdout) || /tree session .* --long/.test(searchText.stdout) || /\d+ delegated/.test(searchText.stdout) || !/Claude Code .* claude-opus-4-6 .* chat-ui-kit/.test(searchText.stdout) || !/\/clear \/review|\/review You are an expert code reviewer/i.test(searchText.stdout) || /<command-name>|<command-message>|<local-command-caveat>/.test(searchText.stdout) || /\/clear clear|review \/review/.test(searchText.stdout)) {
       throw new Error(`Installed CLI browse search text output was unexpected: ${searchText.stdout}`);
+    }
+
+    const searchLongText = await runInstalledCli(installedCli, ['search', 'expert code reviewer', '--store', browseStoreDir, '--long'], browseEnv);
+    assertQuietResult(searchLongText, 'browse search long text');
+    if (!/tree session .* --long/.test(searchLongText.stdout) || !/\d+ delegated/.test(searchLongText.stdout) || !/Claude Code .* claude-opus-4-6 .* chat-ui-kit/.test(searchLongText.stdout)) {
+      throw new Error(`Installed CLI browse search long text output was unexpected: ${searchLongText.stdout}`);
     }
 
     const searchJson = await runInstalledCliJson(installedCli, ['search', 'expert code reviewer', '--store', browseStoreDir], browseEnv);
@@ -606,13 +618,13 @@ async function main() {
 
     const showSession = await runInstalledCli(installedCli, ['show', 'session', chosenHit.session.id, '--store', browseStoreDir], browseEnv);
     assertQuietResult(showSession, 'browse show session');
-    if (!/Project\s*:\s*chat-ui-kit \[ready\]/.test(showSession.stdout) || !/Source\s*:\s*Claude Code \(claude_code\)/.test(showSession.stdout)) {
+    if (!/Project\s*:\s*chat-ui-kit/.test(showSession.stdout) || !/Source\s*:\s*Claude Code \(claude_code\)/.test(showSession.stdout)) {
       throw new Error(`Installed CLI browse show session output was unexpected: ${showSession.stdout}`);
     }
 
     const treeProject = await runInstalledCli(installedCli, ['tree', 'project', chosenHit.turn.project_id, '--store', browseStoreDir, '--long'], browseEnv);
     assertQuietResult(treeProject, 'browse tree project --long');
-    if (!/chat-ui-kit \[ready\]/.test(treeProject.stdout) || !/related=\d+ delegated/.test(treeProject.stdout) || !/Claude Code \(claude_code\)/.test(treeProject.stdout) || !/\/clear \/review|\/review You are an expert code reviewer/i.test(treeProject.stdout) || /<command-name>|<command-message>|<local-command-caveat>/.test(treeProject.stdout)) {
+    if (!/chat-ui-kit/.test(treeProject.stdout) || !/Status\s+: active/.test(treeProject.stdout) || !/related=\d+ delegated/.test(treeProject.stdout) || !/Claude Code \(claude_code\)/.test(treeProject.stdout) || !/\/clear \/review|\/review You are an expert code reviewer/i.test(treeProject.stdout) || /<command-name>|<command-message>|<local-command-caveat>/.test(treeProject.stdout)) {
       throw new Error(`Installed CLI browse tree project output was unexpected: ${treeProject.stdout}`);
     }
 

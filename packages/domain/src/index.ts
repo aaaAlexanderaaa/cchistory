@@ -635,14 +635,21 @@ export interface SessionProjection {
 
 export type SessionRelatedWorkKind = "delegated_session" | "automation_run";
 export type SessionRelatedWorkTargetKind = "session" | "automation_run";
+export type SessionRelatedWorkDirection = "outbound" | "inbound" | "self";
 
 export interface SessionRelatedWorkProjection {
   id: string;
   source_id: string;
   source_platform: SourcePlatform;
   source_session_ref: string;
+  evidence_session_ref?: string;
+  parent_session_ref?: string;
+  child_session_ref?: string;
+  automation_session_ref?: string;
+  automation_owner_session_ref?: string;
   relation_kind: SessionRelatedWorkKind;
   target_kind: SessionRelatedWorkTargetKind;
+  direction?: SessionRelatedWorkDirection;
   target_session_ref?: string;
   target_run_ref?: string;
   transcript_primary: boolean;

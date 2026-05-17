@@ -186,7 +186,7 @@ function renderHelp(): string {
   return [
     "Usage: cchistory tui [options]",
     "",
-    "Interactive and snapshot TUI for local project, turn, and detail browsing.",
+    "Interactive and snapshot TUI for local project, ask, and detail browsing.",
     "",
     "Options:",
     "  --store <dir>         Local indexed store directory (default: ~/.cchistory/store)",

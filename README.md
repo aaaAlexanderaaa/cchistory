@@ -27,6 +27,7 @@ CCHistory ingests, parses, and projects your AI coding assistant conversations i
 - **Multi-platform ingestion** — Collects conversations from multiple AI coding assistant platforms via local file parsing and app-local live probes where required
 - **Evidence-preserving** — Raw evidence is retained and traceable; every `UserTurn` is derived, never authored directly
 - **Project-based linking** — Turns are linked to projects via repo fingerprints, workspace paths, and manual overrides
+- **AI-ready project context** — `cchistory context project <ref>` gives an agent recent asks, session threads, and next inspection commands across sessions
 - **Full-text search** — Search across all canonical turn text with project and source filters
 - **Token usage analytics** — Track tokens across models, projects, sources, and time periods
 - **Export / Import / Merge** — Portable bundles for backup, migration, and multi-host merging
@@ -157,6 +158,7 @@ pnpm run verify:support-status
 pnpm run verify:runtime-inventory
 
 # Operator-style local read-path verification
+pnpm run verify:cli-tui-read-side
 pnpm run verify:v1-seeded-acceptance
 pnpm run verify:read-only-admin
 pnpm run verify:fixture-sync-recall
@@ -164,14 +166,33 @@ pnpm run verify:bundle-conflict-recovery
 pnpm run verify:real-layout-sync-recall
 pnpm run verify:related-work-recall
 pnpm run verify:local-full-read-bundle
+node scripts/verify-scale-recall.mjs
 
 # User-started or archive-truthfulness review helpers
 pnpm run prepare:v1-seeded-web-review -- --store <dir>
 pnpm run verify:real-archive-probes
 ```
 
+Use `pnpm run verify:cli-tui-read-side` as the local quality gate for CLI/TUI
+read-side changes. It runs the focused CLI/TUI package regressions, true E2E
+journeys, skeptical browse/search verifier, and all-stable real-layout parity
+without starting persistent API or Web services.
+
 `docs/design/CURRENT_RUNTIME_SURFACE.md` remains the canonical current-state
 inventory for what each verifier proves.
+
+For development work, keep these validation surfaces distinct:
+
+- Runtime-critical ingestion flows through `packages/source-adapters` and
+  `runSourceProbe`, then lands in storage through `sync` or
+  `replaceSourcePayload`.
+- Projection fixtures built with `replaceSourcePayload` are useful for focused
+  storage, CLI, TUI, and API assertions, but they do not prove parser truth.
+- `mock_data/` contains redacted source-shaped layouts for stable adapters;
+  generated verifiers such as `scripts/verify-scale-recall.mjs` cover temporary
+  high-volume stores without expanding the default package-test path.
+- Managed Web/API and remote-agent service reviews remain user-started manual
+  slices; local automated checks must not start persistent dev services.
 
 These local verifiers and review helpers do **not** mean every manual review gap
 is already closed: the user-started managed-runtime web/API diaries tracked under
@@ -234,6 +255,7 @@ pnpm run cli:link
 # Now you can use `cchistory` from anywhere
 cchistory sync
 cchistory ls projects
+cchistory context project <project-ref>
 cchistory search "refactor"
 cchistory stats
 ```

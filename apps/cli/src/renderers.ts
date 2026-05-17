@@ -266,6 +266,9 @@ export function relatedWorkTargetRef(entry: SessionRelatedWorkProjection): strin
 export function formatRelatedWorkEntry(entry: SessionRelatedWorkProjection): string {
   const relationLabel = entry.relation_kind === "automation_run" ? "automation run" : "delegated session";
   const details = [entry.transcript_primary ? "transcript-primary" : "evidence-only"];
+  if (entry.direction) {
+    details.push(entry.direction);
+  }
   if (entry.child_agent_key) {
     details.push(`agent=${entry.child_agent_key}`);
   }

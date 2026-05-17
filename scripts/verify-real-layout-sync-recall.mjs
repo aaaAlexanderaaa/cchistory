@@ -13,7 +13,7 @@ async function main() {
   const originalHome = process.env.HOME;
 
   try {
-    await seedRealLayoutHome(tempRoot);
+    await seedStableRealLayoutHome(tempRoot);
     process.env.HOME = tempRoot;
 
     const storeDir = path.join(tempRoot, "store");
@@ -26,31 +26,48 @@ async function main() {
   }
 }
 
+const STABLE_REAL_LAYOUT_SOURCES = [
+  "codex",
+  "claude_code",
+  "factory_droid",
+  "amp",
+  "cursor",
+  "antigravity",
+  "gemini",
+  "openclaw",
+  "opencode",
+  "codebuddy",
+];
+
 async function verifyRealLayoutSyncAndRead(storeDir, cwd) {
   const syncResult = await runCliCapture(
-    ["sync", "--store", storeDir, "--source", "gemini", "--source", "opencode", "--source", "openclaw", "--source", "codebuddy", "--source", "cursor"],
+    ["sync", "--store", storeDir, ...STABLE_REAL_LAYOUT_SOURCES.flatMap((source) => ["--source", source])],
     cwd,
   );
   assert.equal(syncResult.exitCode, 0, syncResult.stderr);
-  assert.match(syncResult.stdout, /Synced 5 source\(s\)/);
+  assert.match(syncResult.stdout, /Synced 10 source\(s\)/);
 
   const cliSources = await runCliJson(["ls", "sources", "--store", storeDir], cwd);
   assert.equal(cliSources.kind, "sources");
-  assert.equal(cliSources.sources.length, 5);
+  assert.equal(cliSources.sources.length, 10);
   assert.deepEqual(
     cliSources.sources.map((source) => source.platform).sort(),
-    ["codebuddy", "cursor", "gemini", "openclaw", "opencode"],
+    [...STABLE_REAL_LAYOUT_SOURCES].sort(),
   );
   assert.ok(cliSources.sources.some((source) => source.platform === "openclaw" && source.total_sessions === 2 && source.total_turns === 0));
-  assert.ok(cliSources.sources.some((source) => source.platform === "cursor" && source.total_sessions === 3 && source.total_turns === 3));
+  assert.ok(cliSources.sources.some((source) => source.platform === "cursor" && source.total_sessions === 5 && source.total_turns === 4));
 
   const projectsResult = await runCliJson(["ls", "projects", "--store", storeDir], cwd);
   const opencodeProject = projectsResult.projects.find((project) => project.display_name === "esql-lab");
   const geminiProject = projectsResult.projects.find((project) => project.display_name === "agentresearch");
   const codebuddyProject = projectsResult.projects.find((project) => project.display_name === "config-workspace-ai_learning");
+  const chatUiProject = projectsResult.projects.find((project) => project.display_name === "chat-ui-kit" && project.linkage_state === "committed");
+  const historyLabProject = projectsResult.projects.find((project) => project.display_name === "history-lab" && project.linkage_state === "committed");
   assert.ok(opencodeProject, "expected committed OpenCode project after real-layout sync");
   assert.ok(geminiProject, "expected Gemini candidate project after real-layout sync");
   assert.ok(codebuddyProject, "expected CodeBuddy candidate project after real-layout sync");
+  assert.ok(chatUiProject, "expected committed chat-ui-kit project after stable real-layout sync");
+  assert.ok(historyLabProject, "expected committed history-lab project after stable real-layout sync");
   assert.equal(opencodeProject.linkage_state, "committed");
   assert.equal(geminiProject.linkage_state, "candidate");
   assert.equal(codebuddyProject.linkage_state, "candidate");
@@ -85,6 +102,20 @@ async function verifyRealLayoutSyncAndRead(storeDir, cwd) {
   assert.ok(cursorHit, "expected Cursor chat-store search hit from real-layout fixture sync");
   assert.equal(cursorHit.session.title, "MCP Service Guide");
 
+  const addedStableCases = [
+    { platform: "codex", query: "optimization plan", project: "chat-ui-kit" },
+    { platform: "claude_code", query: "expert code reviewer", project: "chat-ui-kit" },
+    { platform: "factory_droid", query: "history lab", project: "history-lab" },
+    { platform: "amp", query: "AMP ingestion gaps", project: "history-lab" },
+    { platform: "antigravity", query: "history-lab", project: "history-lab" },
+  ];
+  for (const entry of addedStableCases) {
+    const search = await runCliJson(["search", entry.query, "--store", storeDir], cwd);
+    const hit = search.results.find((result) => result.session.source_platform === entry.platform);
+    assert.ok(hit, `expected ${entry.platform} search hit from stable real-layout fixture sync`);
+    assert.equal(hit.project.display_name, entry.project);
+  }
+
   const opencodeTurn = await runCliJson(["show", "turn", opencodeHit.turn.id, "--store", storeDir], cwd);
   assert.equal(opencodeTurn.turn.project_id, opencodeProject.project_id);
   assert.equal(opencodeTurn.turn.session_id, opencodeHit.session.id);
@@ -105,13 +136,12 @@ async function verifyRealLayoutSyncAndRead(storeDir, cwd) {
   assert.equal(openclawSessionDetail.turns.length, 0);
 
   const tui = createIo(cwd);
-  const tuiExitCode = await runTui(["--store", storeDir, "--search", "Requirement Review"], tui.io);
+  const tuiExitCode = await runTui(["--store", storeDir, "--search", "ESQL notes"], tui.io);
   assert.equal(tuiExitCode, 0, tui.stderr.join(""));
   const tuiOutput = tui.stdout.join("");
-  assert.match(tuiOutput, /Mode=search/);
+  assert.match(tuiOutput, /Search: ESQL notes/);
   assert.match(tuiOutput, /esql-lab/);
   assert.match(tuiOutput, /opencode/);
-  assert.match(tuiOutput, /cursor/);
 
   const runtime = await createApiRuntime({ dataDir: storeDir, sources: [] });
   try {
@@ -121,6 +151,8 @@ async function verifyRealLayoutSyncAndRead(storeDir, cwd) {
     assert.ok(projectsBody.projects.some((project) => project.display_name === "esql-lab"));
     assert.ok(projectsBody.projects.some((project) => project.display_name === "agentresearch"));
     assert.ok(projectsBody.projects.some((project) => project.display_name === "config-workspace-ai_learning"));
+    assert.ok(projectsBody.projects.some((project) => project.display_name === "chat-ui-kit"));
+    assert.ok(projectsBody.projects.some((project) => project.display_name === "history-lab"));
 
     const opencodeSearchResponse = await runtime.app.inject({ method: "GET", url: `/api/turns/search?q=${encodeURIComponent("Requirement Review")}` });
     assert.equal(opencodeSearchResponse.statusCode, 200);
@@ -142,6 +174,11 @@ async function verifyRealLayoutSyncAndRead(storeDir, cwd) {
     const cursorSearchBody = JSON.parse(cursorSearchResponse.body);
     assert.ok(cursorSearchBody.results.some((result) => result.session.source_platform === "cursor"));
 
+    const factorySearchResponse = await runtime.app.inject({ method: "GET", url: `/api/turns/search?q=${encodeURIComponent("history lab")}` });
+    assert.equal(factorySearchResponse.statusCode, 200);
+    const factorySearchBody = JSON.parse(factorySearchResponse.body);
+    assert.ok(factorySearchBody.results.some((result) => result.session.source_platform === "factory_droid"));
+
     const openclawSessionResponse = await runtime.app.inject({ method: "GET", url: `/api/sessions/${encodeURIComponent(openclawCronSession.id)}` });
     assert.equal(openclawSessionResponse.statusCode, 200);
     const openclawSessionBody = JSON.parse(openclawSessionResponse.body);
@@ -159,15 +196,44 @@ async function verifyRealLayoutSyncAndRead(storeDir, cwd) {
   }
 }
 
-async function seedRealLayoutHome(tempRoot) {
+async function seedStableRealLayoutHome(tempRoot) {
   const mockDataRoot = path.resolve("mock_data");
+  await cp(path.join(mockDataRoot, ".codex"), path.join(tempRoot, ".codex"), { recursive: true });
+  await cp(path.join(mockDataRoot, ".claude"), path.join(tempRoot, ".claude"), { recursive: true });
+  await cp(path.join(mockDataRoot, ".factory"), path.join(tempRoot, ".factory"), { recursive: true });
+  await cp(path.join(mockDataRoot, ".local", "share", "amp"), path.join(tempRoot, ".local", "share", "amp"), { recursive: true });
+  await cp(
+    path.join(mockDataRoot, "Library", "Application Support", "antigravity"),
+    path.join(tempRoot, "Library", "Application Support", "Antigravity"),
+    { recursive: true },
+  );
+  await cp(
+    path.join(mockDataRoot, "Library", "Application Support", "antigravity"),
+    path.join(tempRoot, ".config", "Antigravity"),
+    { recursive: true },
+  );
+  await cp(
+    path.join(mockDataRoot, "Library", "Application Support", "Cursor"),
+    path.join(tempRoot, "Library", "Application Support", "Cursor"),
+    { recursive: true },
+  );
+  await cp(
+    path.join(mockDataRoot, "Library", "Application Support", "Cursor"),
+    path.join(tempRoot, ".config", "Cursor"),
+    { recursive: true },
+  );
   await cp(path.join(mockDataRoot, ".gemini"), path.join(tempRoot, ".gemini"), { recursive: true });
   await cp(path.join(mockDataRoot, ".codebuddy"), path.join(tempRoot, ".codebuddy"), { recursive: true });
   await cp(path.join(mockDataRoot, ".openclaw"), path.join(tempRoot, ".openclaw"), { recursive: true });
   await cp(path.join(mockDataRoot, ".local", "share", "opencode"), path.join(tempRoot, ".local", "share", "opencode"), {
     recursive: true,
   });
-  await cp(path.join(mockDataRoot, ".cursor", "chats"), path.join(tempRoot, ".config", "Cursor", "chats"), {
+  await cp(
+    path.join(mockDataRoot, ".cursor", "chats"),
+    path.join(tempRoot, "Library", "Application Support", "Cursor", "User", "chats"),
+    { recursive: true },
+  );
+  await cp(path.join(mockDataRoot, ".cursor", "chats"), path.join(tempRoot, ".config", "Cursor", "User", "chats"), {
     recursive: true,
   });
 }

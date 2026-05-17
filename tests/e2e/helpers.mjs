@@ -32,6 +32,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, "../..");
 const CLI_ENTRY = path.join(PROJECT_ROOT, "apps/cli/dist/index.js");
 const TUI_ENTRY = path.join(PROJECT_ROOT, "apps/tui/dist/index.js");
+const API_ENTRY = path.join(PROJECT_ROOT, "apps/api/dist/app.js");
 const MOCK_DATA_ROOT = path.join(PROJECT_ROOT, "mock_data");
 
 // ---------------------------------------------------------------------------
@@ -39,7 +40,7 @@ const MOCK_DATA_ROOT = path.join(PROJECT_ROOT, "mock_data");
 // ---------------------------------------------------------------------------
 
 export function ensureBuilt() {
-  for (const entry of [CLI_ENTRY]) {
+  for (const entry of [CLI_ENTRY, TUI_ENTRY, API_ENTRY]) {
     if (!existsSync(entry)) {
       throw new Error(
         `Build artifact not found: ${entry}\n` +
@@ -147,13 +148,36 @@ let _createApiRuntime;
  */
 export async function startApiServer(storeDir) {
   if (!_createApiRuntime) {
-    const apiModule = await import(
-      path.join(PROJECT_ROOT, "apps/api/dist/app.js")
-    );
+    const apiModule = await import(API_ENTRY);
     _createApiRuntime = apiModule.createApiRuntime;
   }
   const runtime = await _createApiRuntime({ dataDir: storeDir, sources: [] });
   return {
+    app: runtime.app,
+    storage: runtime.storage,
+    rawStoreDir: runtime.rawStoreDir,
+    async close() {
+      await runtime.app.close();
+      runtime.storage.close();
+    },
+  };
+}
+
+/**
+ * Start the API on an ephemeral local TCP port. This is intentionally
+ * short-lived test infrastructure, not a repository dev service.
+ */
+export async function startApiHttpServer(storeDir) {
+  if (!_createApiRuntime) {
+    const apiModule = await import(API_ENTRY);
+    _createApiRuntime = apiModule.createApiRuntime;
+  }
+  const runtime = await _createApiRuntime({ dataDir: storeDir, sources: [] });
+  await runtime.app.listen({ host: "127.0.0.1", port: 0 });
+  const address = runtime.app.server.address();
+  assert.ok(address && typeof address === "object", "expected Fastify server address");
+  return {
+    baseUrl: `http://127.0.0.1:${address.port}`,
     app: runtime.app,
     storage: runtime.storage,
     rawStoreDir: runtime.rawStoreDir,
@@ -171,6 +195,13 @@ export async function apiGet(app, url) {
   const response = await app.inject({ method: "GET", url });
   assert.equal(response.statusCode, 200, `API ${url} returned ${response.statusCode}: ${response.body}`);
   return JSON.parse(response.body);
+}
+
+export async function apiFetchJson(baseUrl, url) {
+  const response = await fetch(`${baseUrl}${url}`);
+  const body = await response.text();
+  assert.equal(response.status, 200, `HTTP API ${url} returned ${response.status}: ${body}`);
+  return JSON.parse(body);
 }
 
 // ---------------------------------------------------------------------------

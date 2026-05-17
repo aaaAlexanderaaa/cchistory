@@ -42,14 +42,21 @@ async function main() {
 
     const searchText = await runBuiltCliCapture(["search", "expert code reviewer", "--store", storeDir], tempRoot, childEnv);
     assert.equal(searchText.exitCode, 0, searchText.stderr);
-    assert.match(searchText.stdout, /Use `cchistory show turn <shown-id>` to inspect a full turn\./);
-    assert.match(searchText.stdout, /tree session .* --long/);
-    assert.match(searchText.stdout, /related=\d+ delegated/);
-    assert.match(searchText.stdout, /source=Claude Code \(claude_code\)/);
+    assert.match(searchText.stdout, /Use show turn <id> to inspect, --long for full detail\./);
+    assert.doesNotMatch(searchText.stdout, /tree session .* --long/);
+    assert.doesNotMatch(searchText.stdout, /\d+ delegated/);
+    assert.match(searchText.stdout, /Claude Code .* claude-opus-4-6 .* chat-ui-kit/);
     assert.match(searchText.stdout, /\/clear \/review|\/review You are an expert code reviewer/i);
     assert.doesNotMatch(searchText.stdout, /<command-name>|<command-message>|<local-command-caveat>/);
     assert.doesNotMatch(searchText.stdout, /\/clear clear|review \/review/);
     assert.equal(searchText.stderr.trim(), "");
+
+    const searchLongText = await runBuiltCliCapture(["search", "expert code reviewer", "--store", storeDir, "--long"], tempRoot, childEnv);
+    assert.equal(searchLongText.exitCode, 0, searchLongText.stderr);
+    assert.match(searchLongText.stdout, /tree session .* --long/);
+    assert.match(searchLongText.stdout, /\d+ delegated/);
+    assert.match(searchLongText.stdout, /Claude Code .* claude-opus-4-6 .* chat-ui-kit/);
+    assert.equal(searchLongText.stderr.trim(), "");
 
     const searchJson = await runBuiltCliJson(["search", "expert code reviewer", "--store", storeDir], tempRoot, childEnv);
     assert.equal(searchJson.kind, "search");
@@ -89,7 +96,9 @@ async function main() {
       childEnv,
     );
     assert.equal(projectTreeLong.exitCode, 0, projectTreeLong.stderr);
-    assert.match(projectTreeLong.stdout, /chat-ui-kit \[ready\]/);
+    assert.match(projectTreeLong.stdout, /chat-ui-kit/);
+    assert.match(projectTreeLong.stdout, /Status\s+: active/);
+    assert.match(projectTreeLong.stdout, /Session Threads/);
     assert.ok(projectTreeLong.stdout.includes(chosenHit.session.id));
     assert.match(projectTreeLong.stdout, /related=\d+ delegated/);
     assert.match(projectTreeLong.stdout, /Claude Code \(claude_code\)/);
@@ -116,7 +125,7 @@ async function main() {
     const showSession = await runBuiltCliCapture(["show", "session", chosenHit.session.id, "--store", storeDir], tempRoot, childEnv);
     assert.equal(showSession.exitCode, 0, showSession.stderr);
     assert.match(showSession.stdout, /Related Work/);
-    assert.match(showSession.stdout, /delegated_session/);
+    assert.match(showSession.stdout, /delegated session/);
     assert.equal(showSession.stderr.trim(), "");
 
     const missingSession = await runBuiltCliCapture(["tree", "session", "missing-session", "--store", storeDir], tempRoot, childEnv);
@@ -131,17 +140,17 @@ async function main() {
 
     const tuiBrowse = await runBuiltTuiCapture(["--store", storeDir], tempRoot, childEnv);
     assert.equal(tuiBrowse.exitCode, 0, tuiBrowse.stderr);
-    assert.match(tuiBrowse.stdout, /Mode=browse/);
-    assert.match(tuiBrowse.stdout, /Projects(?: \[active\])?:/);
+    assert.match(tuiBrowse.stdout, /Browse projects and asks/);
+    assert.match(tuiBrowse.stdout, /Projects/);
     assert.match(tuiBrowse.stdout, /chat-ui-kit/);
     assert.doesNotMatch(tuiBrowse.stderr, /ExperimentalWarning/);
 
     const tuiSearch = await runBuiltTuiCapture(["--store", storeDir, "--search", "expert code reviewer"], tempRoot, childEnv);
     assert.equal(tuiSearch.exitCode, 0, tuiSearch.stderr);
-    assert.match(tuiSearch.stdout, /Mode=search/);
+    assert.match(tuiSearch.stdout, /Search: expert code reviewer/);
     assert.match(tuiSearch.stdout, /Project: chat-ui-kit/);
-    assert.match(tuiSearch.stdout, /Source: Claude Code \(claude_code\)/);
-    assert.match(tuiSearch.stdout, /Related Work: \d+ child sessions, 0 automation runs/);
+    assert.match(tuiSearch.stdout, /Claude Code \(claude_code\)/);
+    assert.match(tuiSearch.stdout, /Related: \d+ child/);
     assert.doesNotMatch(tuiSearch.stdout, /<command-name>|<command-message>|<local-command-caveat>/);
     assert.doesNotMatch(tuiSearch.stderr, /ExperimentalWarning/);
 

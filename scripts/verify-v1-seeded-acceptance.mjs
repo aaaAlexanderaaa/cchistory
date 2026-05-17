@@ -261,29 +261,26 @@ async function verifyTui(storeDir, cwd, seeded) {
   const browseOutput = browseIo.stdout.join("");
 
   assert.equal(browseExitCode, 0, browseIo.stderr.join(""));
-  assert.match(browseOutput, /CCHistory TUI entrypoint/);
-  assert.match(browseOutput, /Projects(?: \[active\])?:/);
-  assert.match(browseOutput, /Turns(?: \[active\])?:/);
-  assert.match(browseOutput, /Detail(?: \[active\])?:/);
+  assert.match(browseOutput, /CCHistory TUI/);
+  assert.match(browseOutput, /Projects/);
+  assert.match(browseOutput, /Asks/);
+  assert.match(browseOutput, /Detail/);
   assert.match(browseOutput, new RegExp(seeded.project.display_name));
   assert.match(browseOutput, /Alpha traceability target/);
-  assert.match(browseOutput, new RegExp(`Session: ${seeded.targetTurn.session_id}`));
-  assert.match(browseOutput, /Assistant: Processing\./);
-  assert.match(browseOutput, /Context counts: 1 replies, 1 tools, 0 system/);
+  assert.match(browseOutput, /Ask \d+\/\d+ in alpha-history/);
+  assert.match(browseOutput, /Prompt:/);
 
   const searchIo = createIo(cwd);
   const searchExitCode = await runTui(["--store", storeDir, "--search", "Alpha traceability target"], searchIo.io);
   const searchOutput = searchIo.stdout.join("");
 
   assert.equal(searchExitCode, 0, searchIo.stderr.join(""));
-  assert.match(searchOutput, /Mode=search/);
-  assert.match(searchOutput, /Search(?: \[active\])?:/);
-  assert.match(searchOutput, /Results(?: \[active\])?:/);
-  assert.match(searchOutput, /Query: Alpha traceability target/);
+  assert.match(searchOutput, /Search: Alpha traceability target/);
+  assert.match(searchOutput, /Matches: 1/);
+  assert.match(searchOutput, /Results/);
   assert.match(searchOutput, /Alpha traceability target/);
-  assert.match(searchOutput, new RegExp(`Session: ${seeded.targetTurn.session_id}`));
-  assert.match(searchOutput, /Assistant: Processing\./);
-  assert.match(searchOutput, /Context counts: 1 replies, 1 tools, 0 system/);
+  assert.match(searchOutput, /Ask 1\/1 in alpha-history/);
+  assert.match(searchOutput, /Prompt:/);
 }
 
 async function verifySourceSummaries(storeDir, cwd) {

@@ -107,6 +107,7 @@ Repository verification:
 - `pnpm run verify:web-build-offline`
 - `pnpm run verify:support-status`
 - `pnpm run verify:runtime-inventory`
+- `pnpm run verify:cli-tui-read-side`
 - `pnpm run verify:v1-seeded-acceptance`
 - `pnpm run verify:read-only-admin`
 - `pnpm run verify:fixture-sync-recall`
@@ -122,6 +123,11 @@ Repository verification:
 
 Use `pnpm run build` and `pnpm run build:all:safe` only when explicit
 full-workspace validation is warranted.
+
+Use `pnpm run verify:cli-tui-read-side` as the repeatable local quality gate
+when work affects CLI/TUI read-side behavior, read/admin command paths, or
+source-shaped E2E parity. It is sequential and does not start persistent
+services.
 
 ## Local Codex Desktop Profile
 

@@ -71,6 +71,185 @@ test("getSessionRelatedWork normalizes delegated factory relations from callingS
     assert.ok(delegated, "should find a delegated_session relation");
     assert.equal(delegated.source_session_ref, childSessionId);
     assert.equal(delegated.target_session_ref, parentSessionId);
+    assert.equal(delegated.direction, "inbound");
+    assert.equal(delegated.evidence_session_ref, childSessionId);
+    assert.equal(delegated.parent_session_ref, parentSessionId);
+    assert.equal(delegated.child_session_ref, childSessionId);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("getSessionRelatedWork projects delegated child sessions in both directions without parent turn pollution", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-related-work-bidir-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+
+    const parentNativeId = "parent-native-session";
+    const parentSessionId = `sess:claude_code:${parentNativeId}`;
+    const childOneSessionId = "sess:claude_code:child-one";
+    const childTwoSessionId = "sess:claude_code:child-two";
+
+    storage.replaceSourcePayload(
+      createFixturePayload("src-parent-bidir", "Parent launch review agents", "sr-parent-bidir", {
+        sessionId: parentSessionId,
+        turnId: "turn-parent-bidir",
+        platform: "claude_code",
+        workingDirectory: "/workspace/relation-bidir",
+        projectObservation: {
+          workspacePath: "/workspace/relation-bidir",
+          repoFingerprint: "relation-bidir-fp",
+        },
+      }),
+    );
+
+    const childOnePayload = createFixturePayload("src-child-one-bidir", "Child one investigates parser", "sr-child-one-bidir", {
+      sessionId: childOneSessionId,
+      turnId: "turn-child-one-bidir",
+      platform: "claude_code",
+      workingDirectory: "/workspace/relation-bidir",
+      projectObservation: {
+        workspacePath: "/workspace/relation-bidir",
+        repoFingerprint: "relation-bidir-fp",
+      },
+    });
+    childOnePayload.fragments.push({
+      id: "fragment-relation-child-one-bidir",
+      source_id: "src-child-one-bidir",
+      session_ref: childOneSessionId,
+      record_id: "turn-child-one-bidir-record",
+      seq_no: 99,
+      fragment_kind: "session_relation",
+      time_key: "2026-03-09T09:00:05.000Z",
+      payload: {
+        parent_uuid: parentNativeId,
+        parent_tool_ref: "tool-parent-one",
+        relation_kind: "delegated_session",
+        agent_id: "reviewer-one",
+        is_sidechain: true,
+      },
+      raw_refs: [],
+      source_format_profile_id: "claude_code:jsonl:v1",
+    });
+    storage.replaceSourcePayload(childOnePayload);
+
+    const childTwoPayload = createFixturePayload("src-child-two-bidir", "Child two checks storage", "sr-child-two-bidir", {
+      sessionId: childTwoSessionId,
+      turnId: "turn-child-two-bidir",
+      platform: "claude_code",
+      workingDirectory: "/workspace/relation-bidir",
+      projectObservation: {
+        workspacePath: "/workspace/relation-bidir",
+        repoFingerprint: "relation-bidir-fp",
+      },
+    });
+    childTwoPayload.fragments.push({
+      id: "fragment-relation-child-two-bidir",
+      source_id: "src-child-two-bidir",
+      session_ref: childTwoSessionId,
+      record_id: "turn-child-two-bidir-record",
+      seq_no: 99,
+      fragment_kind: "session_relation",
+      time_key: "2026-03-09T09:00:06.000Z",
+      payload: {
+        callingSessionId: parentNativeId,
+        callingToolUseId: "tool-parent-two",
+        relation_kind: "delegated_session",
+        childAgentKey: "reviewer-two",
+      },
+      raw_refs: [],
+      source_format_profile_id: "claude_code:jsonl:v1",
+    });
+    storage.replaceSourcePayload(childTwoPayload);
+
+    const parentRelated = storage.getSessionRelatedWork(parentSessionId).filter((entry) => entry.relation_kind === "delegated_session");
+    assert.equal(parentRelated.length, 2);
+    assert.deepEqual(
+      parentRelated.map((entry) => entry.target_session_ref).sort(),
+      [childOneSessionId, childTwoSessionId],
+    );
+    assert.ok(parentRelated.every((entry) => entry.direction === "outbound"));
+    assert.ok(parentRelated.every((entry) => entry.parent_session_ref === parentSessionId));
+    assert.deepEqual(
+      parentRelated.map((entry) => entry.child_agent_key).sort(),
+      ["reviewer-one", "reviewer-two"],
+    );
+
+    const childOneRelated = storage.getSessionRelatedWork(childOneSessionId).find((entry) => entry.relation_kind === "delegated_session");
+    assert.ok(childOneRelated);
+    assert.equal(childOneRelated.direction, "inbound");
+    assert.equal(childOneRelated.target_session_ref, parentSessionId);
+    assert.equal(childOneRelated.evidence_session_ref, childOneSessionId);
+    assert.equal(childOneRelated.parent_tool_ref, "tool-parent-one");
+
+    const parentSessionTurns = storage.listResolvedTurns().filter((turn) => turn.session_id === parentSessionId);
+    assert.deepEqual(parentSessionTurns.map((turn) => turn.id), ["turn-parent-bidir"]);
+    assert.equal(storage.getResolvedSession(parentSessionId)?.turn_count, 1);
+
+    const parentSearch = storage.searchTurns({ query: "Parent launch review agents", limit: 10 });
+    assert.deepEqual(parentSearch.map((result) => result.turn.id), ["turn-parent-bidir"]);
+    const childSearch = storage.searchTurns({ query: "Child one investigates parser", limit: 10 });
+    assert.deepEqual(childSearch.map((result) => result.turn.id), ["turn-child-one-bidir"]);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("getSessionRelatedWork resolves native session aliases within source or platform before global fallback", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-related-work-alias-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const sharedNativeId = "shared-native-parent";
+    const codexParentSessionId = `sess:codex:${sharedNativeId}`;
+    const claudeParentSessionId = `sess:claude_code:${sharedNativeId}`;
+    const claudeChildSessionId = "sess:claude_code:child-alias";
+
+    storage.replaceSourcePayload(
+      createFixturePayload("src-codex-alias-parent", "Codex parent same native id", "sr-codex-alias-parent", {
+        sessionId: codexParentSessionId,
+        turnId: "turn-codex-alias-parent",
+        platform: "codex",
+      }),
+    );
+    storage.replaceSourcePayload(
+      createFixturePayload("src-claude-alias-parent", "Claude parent same native id", "sr-claude-alias-parent", {
+        sessionId: claudeParentSessionId,
+        turnId: "turn-claude-alias-parent",
+        platform: "claude_code",
+      }),
+    );
+
+    const childPayload = createFixturePayload("src-claude-alias-child", "Claude child alias target", "sr-claude-alias-child", {
+      sessionId: claudeChildSessionId,
+      turnId: "turn-claude-alias-child",
+      platform: "claude_code",
+    });
+    childPayload.fragments.push({
+      id: "fragment-relation-claude-alias-child",
+      source_id: "src-claude-alias-child",
+      session_ref: claudeChildSessionId,
+      record_id: "turn-claude-alias-child-record",
+      seq_no: 99,
+      fragment_kind: "session_relation",
+      time_key: "2026-03-09T09:00:07.000Z",
+      payload: {
+        parent_uuid: sharedNativeId,
+        relation_kind: "delegated_session",
+      },
+      raw_refs: [],
+      source_format_profile_id: "claude_code:jsonl:v1",
+    });
+    storage.replaceSourcePayload(childPayload);
+
+    const childRelated = storage.getSessionRelatedWork(claudeChildSessionId).find((entry) => entry.relation_kind === "delegated_session");
+    assert.ok(childRelated);
+    assert.equal(childRelated.target_session_ref, claudeParentSessionId);
+    assert.equal(childRelated.parent_session_ref, claudeParentSessionId);
+
+    const codexParentRelated = storage.getSessionRelatedWork(codexParentSessionId);
+    assert.equal(codexParentRelated.length, 0);
+    const claudeParentRelated = storage.getSessionRelatedWork(claudeParentSessionId);
+    assert.equal(claudeParentRelated[0]?.target_session_ref, claudeChildSessionId);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

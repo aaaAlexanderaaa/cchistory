@@ -27,6 +27,7 @@ CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对
 - **多平台采集** — 通过本地文件解析以及必要时的本地应用实时探测，从多个 AI 编程助手平台收集对话数据
 - **证据保全** — 原始证据被完整保留并可追溯；每个 `UserTurn` 都从源数据派生，绝不直接手动创建
 - **基于项目的关联** — 通过仓库指纹、工作空间路径和手动覆盖将对话轮次关联到项目
+- **面向 AI 的项目上下文** — `cchistory context project <ref>` 可跨会话给出近期提问、会话线程和下一步检查命令
 - **全文搜索** — 在所有规范化对话文本中搜索，支持按项目和数据源过滤
 - **Token 用量分析** — 跨模型、项目、数据源和时间维度追踪 Token 用量
 - **导出 / 导入 / 合并** — 可移植的数据包，用于备份、迁移和多主机合并
@@ -136,6 +137,7 @@ pnpm run verify:support-status
 pnpm run verify:runtime-inventory
 
 # 面向 operator workflow 的本地读路径验证
+pnpm run verify:cli-tui-read-side
 pnpm run verify:v1-seeded-acceptance
 pnpm run verify:read-only-admin
 pnpm run verify:fixture-sync-recall
@@ -143,13 +145,27 @@ pnpm run verify:bundle-conflict-recovery
 pnpm run verify:real-layout-sync-recall
 pnpm run verify:related-work-recall
 pnpm run verify:local-full-read-bundle
+node scripts/verify-scale-recall.mjs
 
 # 用户启动服务或真实归档审查辅助
 pnpm run prepare:v1-seeded-web-review -- --store <dir>
 pnpm run verify:real-archive-probes
 ```
 
+对于 CLI/TUI 本地读侧改动，优先使用 `pnpm run verify:cli-tui-read-side`
+作为质量门。它会顺序运行聚焦的 CLI/TUI package regression、真实 E2E
+journey、skeptical browse/search verifier，以及覆盖全部 stable fixture 的
+real-layout parity；整个过程不需要启动持久 API 或 Web 服务。
+
 各 verifier 的当前语义边界以 `docs/design/CURRENT_RUNTIME_SURFACE.md` 为准。
+
+做开发验证时需要区分几类数据面：真正的运行时采集路径在
+`packages/source-adapters` / `runSourceProbe`，然后通过 `sync` 或
+`replaceSourcePayload` 进入 storage；`replaceSourcePayload` 构造的
+projection fixture 适合做 storage/CLI/TUI/API 的聚焦断言，但不能证明 parser
+真实；`mock_data/` 保存脱敏的 source-shaped fixture；像
+`scripts/verify-scale-recall.mjs` 这样的 generated verifier 用临时大规模
+store 覆盖高容量场景，不会进入默认轻量 package test 路径。
 
 这些本地 verifier 与审查辅助并不表示所有手工审查缺口都已经关闭：`R31`
 中的用户启动 managed-runtime Web/API diary，以及 `R35` 中依赖服务端运行时
@@ -209,6 +225,7 @@ pnpm run cli:link
 # 现在可以在任何地方使用 cchistory
 cchistory sync
 cchistory ls projects
+cchistory context project <project-ref>
 cchistory search "refactor"
 cchistory stats
 ```

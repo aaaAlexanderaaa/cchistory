@@ -166,14 +166,21 @@ export interface SessionProjectionDto {
 
 export type SessionRelatedWorkKindDto = "delegated_session" | "automation_run";
 export type SessionRelatedWorkTargetKindDto = "session" | "automation_run";
+export type SessionRelatedWorkDirectionDto = "outbound" | "inbound" | "self";
 
 export interface SessionRelatedWorkDto {
   id: string;
   source_id: string;
   source_platform: SourcePlatformDto;
   source_session_ref: string;
+  evidence_session_ref?: string;
+  parent_session_ref?: string;
+  child_session_ref?: string;
+  automation_session_ref?: string;
+  automation_owner_session_ref?: string;
   relation_kind: SessionRelatedWorkKindDto;
   target_kind: SessionRelatedWorkTargetKindDto;
+  direction?: SessionRelatedWorkDirectionDto;
   target_session_ref?: string;
   target_run_ref?: string;
   transcript_primary: boolean;

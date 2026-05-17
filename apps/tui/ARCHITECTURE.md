@@ -4,7 +4,7 @@
 
 ## Overview
 
-CCHistory TUI is an interactive terminal browser for AI coding conversation history. It presents a three-pane file-manager-style interface: **Projects → Turns → Detail**, with full-screen conversation view, search, stats overlay, and source health monitoring.
+CCHistory TUI is an interactive terminal browser for AI coding conversation history. It presents a three-pane file-manager-style interface: **Projects → Asks → Detail**, with full-screen conversation view, search, stats overlay, and source health monitoring. The code still uses `turns` for canonical `UserTurn` data and reducer state; visible read UI uses `asks`.
 
 **Design metaphor**: A file manager for AI conversation history — not "a CLI with borders."
 
@@ -12,14 +12,14 @@ CCHistory TUI is an interactive terminal browser for AI coding conversation hist
 ┌─────────────────────────────────────────────────────────────────┐
 │ CCHistory TUI                                                   │
 │                                                                 │
-│  Projects        │  Turns (session-grouped)                     │
+│  Projects        │  Asks (session-grouped)                      │
 │  ▪ cchistory  259│  SessionTitle            3t · Apr 3 17:39    │
 │  · app_ctrl   112│  ├─❯ turn snippet...     gpt-5.4 · Apr 3    │
 │  · zzexam       5│  ├─· turn snippet...     Apr 3 17:37         │
 │                  │  └─· turn snippet...     Apr 3 17:34         │
 │                  │                                               │
 │                  │  Detail                                       │
-│                  │  Turn 1/259 in cchistory · 137efa99           │
+│                  │  Ask 1/259 in cchistory · 137efa99            │
 │                  │  Model: gpt-5.4 · Codex · Apr 1              │
 │                  │  Prompt: ...                                  │
 │                  │                                               │
@@ -76,7 +76,8 @@ apps/cli ──dynamic import──→ @cchistory/tui (runTui)
 | File | Lines | Responsibility |
 |------|-------|---------------|
 | `browser.ts` | ~1504 | State model, reducer, all renderers, text utilities |
-| `app.tsx` | ~160 | Ink component, keyboard input dispatch, React rendering bridge |
+| `app.tsx` | ~95 | Ink component, latest-state dispatch, React rendering bridge |
+| `input.ts` | ~118 | Pure keyboard-input resolver shared by Ink and state tests |
 | `index.ts` | ~285 | Entry point, CLI arg parsing, snapshot/interactive mode, alternate screen |
 | `store.ts` | ~192 | Storage resolution, DB opening, full-scan support |
 | `colors.ts` | ~62 | Zero-dep ANSI color utilities |
@@ -151,7 +152,7 @@ All state transitions go through `reduceBrowserState(browser, state, action) →
 
 ### Known state invariants
 
-These should hold true at all times but are **not all currently enforced**:
+These should hold true at all times:
 
 | ID | Invariant | Enforced? |
 |----|-----------|-----------|
@@ -159,10 +160,10 @@ These should hold true at all times but are **not all currently enforced**:
 | INV-2 | `selectedTurnIndex` ∈ [0, projects[N].turns.length) | ✅ via `clampState` |
 | INV-3 | `selectedSearchProjectIndex` ∈ [0, searchGroups.length) | ✅ via `clampState` |
 | INV-4 | `selectedSearchTurnIndex` ∈ [0, searchGroup.results.length) | ✅ via `clampState` |
-| INV-5 | `detailScrollOffset` resets on selection change | ⚠️ missing in `handleJump` |
-| INV-6 | `conversationScrollOffset` resets on turn change | ⚠️ only reset on `drill` |
+| INV-5 | `detailScrollOffset` resets on selection change | ✅ via movement, search, and jump reducers |
+| INV-6 | `conversationScrollOffset` resets on turn change | ✅ via selection-changing reducers and conversation drill |
 | INV-7 | Search turn pane & detail pane use same index semantics | ✅ fixed 2026-04-06 |
-| INV-8 | Overlay flags mutually exclusive | ⚠️ `toggle-help` doesn't clear others |
+| INV-8 | Overlay flags mutually exclusive | ✅ overlay toggles clear peer overlays |
 | INV-9 | `_searchCache` invalidated on mode exit | ✅ in `exit-search-mode` |
 
 ### Module-level mutable state
@@ -198,7 +199,7 @@ This ensures the hint bar always fits regardless of session headers/scroll indic
 
 | Mode | Left column | Right column |
 |------|-------------|-------------|
-| **Browse** | Project list | Turns pane + Detail pane |
+| **Browse** | Project list | Asks pane + Detail pane |
 | **Search** | Matched projects + counts | Search results (session-grouped) + Detail |
 | **Conversation** | — (full-width) | Session turns with user/assistant/tool content |
 | **Overlay** | — (full-width) | Stats / Help / Source Health replaces main content |
@@ -214,7 +215,7 @@ Both sides are clipped to column width (CJK-aware) and padded to fill full width
 
 ### Session grouping (critical path)
 
-Turns are displayed grouped by session with tree connectors:
+Asks are displayed grouped by session with tree connectors:
 
 ```
 SessionTitle                                    3t · Apr 3
@@ -290,9 +291,12 @@ Handled in `app.tsx` via Ink's `useInput` hook.
 6. **j/k/PgUp/PgDn/g/G**: movement
 7. **Enter**: drill
 
-### Known issue: stale closure
+### Input state freshness
 
-`useInput` callback checks `state` (render-time snapshot) for mode/overlay flags, but `setState(current => ...)` uses latest state. Fast input sequences could cause the wrong branch to execute.
+`useInput` routes each key through `resolveTuiInputEffect()` using a synchronous
+`stateRef` that is updated before React's next render. This prevents fast input
+sequences from branching on a render-time snapshot; for example, `/` followed
+immediately by a character is resolved as search editing, not browse movement.
 
 ---
 

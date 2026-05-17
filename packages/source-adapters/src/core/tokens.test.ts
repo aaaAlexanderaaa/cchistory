@@ -9,7 +9,8 @@ import {
   seedClaudeModelSwitchFixture, 
   seedMultiTurnCodexTokenFixture, 
   seedMultiReplyCodexTokenFixture, 
-  seedCodexCumulativeTokenFixture 
+  seedCodexCumulativeTokenFixture,
+  seedCodexDelayedInterleavedTokenFixture,
 } from "../test-helpers.js";
 
 test("runSourceProbe projects token usage and stop reasons into turn context", async () => {
@@ -196,3 +197,46 @@ test("runSourceProbe uses cumulative token deltas when one visible reply spans m
   }
 });
 
+test("runSourceProbe attributes delayed interleaved token signals and cache variants to the right replies", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const source = await seedCodexDelayedInterleavedTokenFixture(tempRoot);
+    const [payload] = (await runSourceProbe({ limit_files_per_source: 1 }, [source])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.contexts.length, 1);
+    const context = payload.contexts[0]!;
+    assert.equal(context.assistant_replies.length, 2);
+    assert.equal(context.tool_calls.length, 1);
+
+    const firstReply = context.assistant_replies[0]!;
+    assert.equal(firstReply.stop_reason, "tool_use");
+    assert.equal(firstReply.token_count, 110);
+    assert.equal(firstReply.token_usage?.input_tokens, 60);
+    assert.equal(firstReply.token_usage?.cache_read_input_tokens, 40);
+    assert.equal(firstReply.token_usage?.cached_input_tokens, 40);
+    assert.equal(firstReply.token_usage?.output_tokens, 10);
+    assert.equal(context.tool_calls[0]?.reply_id, firstReply.id);
+
+    const secondReply = context.assistant_replies[1]!;
+    assert.equal(secondReply.stop_reason, "end_turn");
+    assert.ok(secondReply.content.length > 10_000, "fixture should exercise a large assistant reply");
+    assert.equal(secondReply.token_count, 470);
+    assert.equal(secondReply.token_usage?.input_tokens, 200);
+    assert.equal(secondReply.token_usage?.cache_read_input_tokens, 60);
+    assert.equal(secondReply.token_usage?.cache_creation_input_tokens, 10);
+    assert.equal(secondReply.token_usage?.cached_input_tokens, 70);
+    assert.equal(secondReply.token_usage?.output_tokens, 200);
+
+    assert.equal(payload.turns[0]?.context_summary.total_tokens, 580);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.input_tokens, 260);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 100);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.cache_creation_input_tokens, 10);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.cached_input_tokens, 110);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.output_tokens, 210);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

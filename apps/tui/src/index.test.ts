@@ -33,7 +33,7 @@ test("help output describes the local TUI browser", async () => {
   const exitCode = await runTui(["--help"], io);
 
   assert.equal(exitCode, 0);
-  assert.match(stdout.join(""), /project, turn, and detail browsing/i);
+  assert.match(stdout.join(""), /project, ask, and detail browsing/i);
   assert.match(stdout.join(""), /--store/i);
   assert.match(stdout.join(""), /--full/);
   assert.match(stdout.join(""), /analogous to CLI `--full`/i);
@@ -96,7 +96,7 @@ test("entrypoint renders pane-based browser snapshot without requiring an API se
     assert.match(stripped, /CCHistory TUI/);
     assert.match(stripped, new RegExp(dbPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
     assert.match(stripped, /Projects/);
-    assert.match(stripped, /Turns/);
+    assert.match(stripped, /Asks/);
     assert.match(stripped, /Detail/);
     assert.equal(stderr.join(""), "");
   } finally {
@@ -245,16 +245,16 @@ test("browser search/detail snapshots tame command-style markup in display-only 
   }
 });
 
-test("browser incremental search cache preserves session metadata matches for extended queries", async () => {
+test("browser incremental search cache refines canonical ask matches for extended queries", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-tui-search-cache-"));
 
   try {
     const storage = new CCHistoryStorage({ dbPath: path.join(tempDir, "search-cache.sqlite") });
     storage.replaceSourcePayload(
-      createFixturePayload("src-search-cache", "unrelated prompt body", "stage-search-cache", {
+      createFixturePayload("src-search-cache", "metadata target prompt body", "stage-search-cache", {
         sessionId: "session-search-cache",
         turnId: "turn-search-cache",
-        workingDirectory: "/workspace/metadata-target",
+        workingDirectory: "/workspace/unrelated",
         includeProjectObservation: true,
       }),
     );
@@ -274,17 +274,17 @@ test("browser incremental search cache preserves session metadata matches for ex
     }
 
     let snapshot = stripAnsi(renderBrowserSnapshot(browser, state));
-    assert.match(snapshot, /Query: meta/);
-    assert.match(snapshot, /Results: 1 match\(es\)/);
+    assert.match(snapshot, /Search: meta/);
+    assert.match(snapshot, /Matches: 1/);
     assert.match(snapshot, /Project: Metadata Project/);
 
     state = reduceBrowserState(browser, state, { type: "append-search-char", value: "d" });
 
     snapshot = stripAnsi(renderBrowserSnapshot(browser, state));
-    assert.match(snapshot, /Query: metad/);
-    assert.match(snapshot, /Results: 1 match\(es\)/);
+    assert.match(snapshot, /Search: metad/);
+    assert.match(snapshot, /Matches: 1/);
     assert.match(snapshot, /Project: Metadata Project/);
-    assert.match(snapshot, /unrelated prompt body/);
+    assert.match(snapshot, /metadata target prompt body/);
 
     storage.close();
   } finally {
@@ -319,11 +319,11 @@ test("browser snapshot marks active pane and preserves turn detail cues", async 
 
     const snapshot = stripAnsi(renderBrowserSnapshot(browser, state));
     assert.match(snapshot, /Projects/);
-    assert.match(snapshot, /Turns/);
+    assert.match(snapshot, /Asks/);
     assert.match(snapshot, /Detail/);
     assert.match(snapshot, /Project: Detail Project/);
     assert.match(snapshot, /Storage fixture \(codex\)/);
-    assert.match(snapshot, /Turn 1\/1 in Detail Project/);
+    assert.match(snapshot, /Ask 1\/1 in Detail Project/);
     assert.match(snapshot, /Prompt:/);
     assert.match(snapshot, /Investigate failing adapter test/);
 
@@ -333,7 +333,7 @@ test("browser snapshot marks active pane and preserves turn detail cues", async 
   }
 });
 
-test("browser snapshot can surface delegated child-session breadcrumbs and related-work trail cues", async () => {
+test("browser snapshot can surface delegated parent-session breadcrumbs and related-work trail cues", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-tui-related-"));
 
   try {
@@ -362,8 +362,8 @@ test("browser snapshot can surface delegated child-session breadcrumbs and relat
     const snapshot = stripAnsi(renderBrowserSnapshot(browser, state));
     assert.match(snapshot, /Project: Related Project/);
     assert.match(snapshot, /Storage fixture \(codex\)/);
-    assert.match(snapshot, /Related: 1 child/);
-    assert.match(snapshot, /1 child/);
+    assert.match(snapshot, /Related: 1 parent/);
+    assert.match(snapshot, /1 parent/);
 
     storage.close();
   } finally {
@@ -475,10 +475,9 @@ test("entrypoint can render combined search and source-health snapshot", async (
 
     const stripped = stripAnsi(output);
     assert.equal(exitCode, 0, stderr.join(""));
-    assert.match(stripped, /Mode=search/);
+    assert.match(stripped, /Search: alpha/);
     assert.match(stripped, /Read=indexed/);
-    assert.match(stripped, /Query: alpha/);
-    assert.match(stripped, /Results: 1 match\(es\)/);
+    assert.match(stripped, /Matches: 1/);
     assert.match(stripped, /Project: Entry Search Source Health/);
     assert.match(stripped, /Source Health/);
     assert.match(stripped, /Storage fixture \(codex\)/);
@@ -515,11 +514,10 @@ test("entrypoint can render empty combined search and source-health snapshot", a
 
     const stripped = stripAnsi(output);
     assert.equal(exitCode, 0, stderr.join(""));
-    assert.match(stripped, /Mode=search/);
-    assert.match(stripped, /0 match\(es\)/);
+    assert.match(stripped, /Search: missing phrase/);
+    assert.match(stripped, /Matches: 0/);
     assert.match(stripped, /No project selected\./);
-    assert.match(stripped, /Project=none/);
-    assert.match(stripped, /Turn=none/);
+    assert.match(stripped, /No asks match this search\./);
     assert.match(stripped, /Source Health/);
     assert.match(stripped, /Storage fixture \(codex\)/);
   } finally {
@@ -553,10 +551,9 @@ test("entrypoint can render non-interactive search drill-down snapshot", async (
     const output = stdout.join("");
 
     assert.equal(exitCode, 0, stderr.join(""));
-    assert.match(output, /Mode=search/);
     assert.match(output, /Search:/);
-    assert.match(output, /Results:/);
-    assert.match(output, /Query: alpha/);
+    assert.match(output, /Matches:/);
+    assert.match(output, /Search: alpha/);
     assert.match(output, /Find alpha regression/);
     assert.match(output, /Project: Entry Search Alpha/);
   } finally {
@@ -599,7 +596,7 @@ test("entrypoint can render non-interactive full snapshot without mutating the i
     assert.equal(indexedExit, 0, indexed.stderr.join(""));
     assert.match(indexedOutput, /Read Mode: indexed store only/);
     assert.match(indexedOutput, /Read=indexed-only/);
-    assert.match(indexedOutput, /Results: 0 match\(es\)/);
+    assert.match(indexedOutput, /Matches: 0/);
     assert.match(indexedOutput, /No project selected\./);
 
     const full = createIo(process.cwd());
@@ -699,10 +696,10 @@ test("entrypoint can render combined full search and source-health snapshot with
     assert.equal(exitCode, 0, full.stderr.join(""));
     assert.match(output, /Read Mode: live full scan in memory/);
     assert.match(output, /Read=live-full/);
-    assert.match(output, /Mode=search/);
+    assert.match(output, /Search: Live-only combined full prompt/);
     assert.match(output, /Live-only combined full prompt/);
-    assert.match(output, /SourceHealth=open/);
-    assert.match(output, /Source Health:/);
+    assert.match(output, /Sources: open/);
+    assert.match(output, /Source Health/);
     assert.match(output, /Codex/);
 
     const storage = new CCHistoryStorage({ dbPath });
@@ -749,12 +746,10 @@ test("empty search snapshot keeps detail pane and status line coherent", async (
     }
 
     const snapshot = renderBrowserSnapshot(browser, state);
-    assert.match(snapshot, /Results: 0 match\(es\)/);
+    assert.match(snapshot, /Matches: 0/);
     assert.match(snapshot, /No project selected\./);
+    assert.match(snapshot, /No asks match this search\./);
     assert.match(snapshot, /No results in this project/);
-    assert.match(snapshot, /No project selected\./);
-    assert.match(snapshot, /SelectedProject=none/);
-    assert.match(snapshot, /SelectedTurn=none/);
 
     storage.close();
   } finally {
@@ -856,10 +851,9 @@ test("browser search mode preserves result drill-down", async () => {
     state = reduceBrowserState(browser, state, { type: "drill" });
 
     const snapshot = renderBrowserSnapshot(browser, state);
-    assert.match(snapshot, /Mode=search/);
     assert.match(snapshot, /Search:/);
-    assert.match(snapshot, /Results:/);
-    assert.match(snapshot, /Query: alpha/);
+    assert.match(snapshot, /Matches:/);
+    assert.match(snapshot, /Search: alpha/);
     assert.match(snapshot, /Find alpha regression/);
     assert.match(snapshot, /Project: Search Alpha/);
 
@@ -897,7 +891,7 @@ test("browser snapshot can show lightweight source health summary", async () => 
     state = reduceBrowserState(browser, state, { type: "toggle-source-health" });
 
     const snapshot = renderBrowserSnapshot(browser, state);
-    assert.match(snapshot, /Source Health:/);
+    assert.match(snapshot, /Source Health/);
     assert.match(snapshot, /Healthy: 1/);
     assert.match(snapshot, /Stale: 1/);
     assert.match(snapshot, /Error: 0/);

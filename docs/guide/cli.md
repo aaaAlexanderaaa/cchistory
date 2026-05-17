@@ -127,11 +127,14 @@ shared-product-lab     tentative  1      1         1      2026-03-16T16:41:50.98
 
 ### search
 
-Full-text search across all turns. Queries now support partial multi-token
-matching, so you do not need to type one exact phrase. The text output prints a
-turn ID prefix that you can pass directly to `cchistory show turn <shown-id>`,
-and it also prints session / project / `tree session --long` pivots so you can
-expand one hit into nearby context without leaving the turn-first search model.
+Full-text search across canonical ask text. Queries support prefix-oriented
+token matching, so a query such as `back` can match real ask terms like
+`backlog` or `BACKLOG.md`. Default search does not target session titles,
+working directories, raw-only text, assistant replies, or tool output. The text
+output prints a turn ID prefix that you can pass directly to
+`cchistory show turn <shown-id>`, and it also prints session / project /
+`tree session --long` pivots so you can expand one hit into nearby context
+without leaving the turn-first search model.
 
 ```bash
 cchistory search "data security"                        # Global search
@@ -143,7 +146,28 @@ cchistory search "docker" --source codex --limit 5      # Scoped to source
 |------|-------------|
 | `--project <id>` | Filter by project |
 | `--source <id>` | Filter by source (repeatable) |
-| `--limit <n>` | Max results (default: 20) |
+| `--limit <n>` | Max results (default: 50) |
+| `--offset <n>` | Skip first N results for pagination |
+| `--all` | Return all matches, capped at 1000 |
+
+### context
+
+Project-scoped context packet for AI agents and operators. Use this when you
+want the project story first, not a raw object dump.
+
+```bash
+cchistory context project chat-ui-kit
+cchistory context project chat-ui-kit --limit 20
+cchistory context project chat-ui-kit --json
+```
+
+Default text output leads with recent asks across sessions and sources, then
+shows session threads and the next inspection commands. JSON output is designed
+for tool calls: it preserves stable IDs and follow-up commands while avoiding
+raw storage fields like `payload_json` or full evidence lineage by default.
+
+Use this as the first command when an AI needs to understand what has happened
+in a project before continuing work.
 
 ### stats
 
@@ -182,26 +206,38 @@ Total Tokens        : 461,890
 
 ### tree
 
-Hierarchical view of the project-session-turn structure. Add `--long` when you want `ls -l`-style metadata expansion instead of the default compact tree.
+Hierarchical view of project session threads and asks. Add `--long` when you
+need source, host, related-work, and raw session trace details.
 
 ```bash
 cchistory tree projects                             # All projects
-cchistory tree project chat-ui-kit                  # One project with turns
-cchistory tree project chat-ui-kit --long           # Add session metadata and related-work counts
+cchistory tree project chat-ui-kit                  # One project with session threads and asks
+cchistory tree project chat-ui-kit --long           # Add session/source metadata and related-work counts
 cchistory tree session <session-ref>                # Compact hierarchy for one session
 cchistory tree session <session-ref> --long         # Richer nearby-turn + related-work context
 ```
 
+Related-work rows use query-relative directions: `outbound` means this session
+points to child/delegated work, `inbound` means this session traces back to a
+parent, and `self` is used for evidence-only automation runs anchored on the
+queried session.
+
 **Example output:**
 
 ```
-chat-ui-kit [tentative] sessions=3 turns=3
-  host-e336320f / claude_code: 2 session(s)
-  host-e336320f / codex: 1 session(s)
-history-lab [tentative] sessions=2 turns=2
-  host-e336320f / amp: 1 session(s)
-  host-e336320f / factory_droid: 1 session(s)
-Unassigned sessions=4
+chat-ui-kit
+-----------
+Status        : active
+Sessions      : 3
+Asks          : 3
+Last Activity : Mar 09 11:00
+
+Session Threads
+---------------
+- Review the probe output. · 1 ask · Mar 09 11:00
+  Mar 09 11:00 Review the probe output.
+- How do I continue? · 1 ask · Mar 09 09:00
+  Mar 09 09:00 How do I continue?
 ```
 
 ### show
@@ -216,9 +252,9 @@ Detailed view of a single entity.
 - A practical pattern is: use `search` for manual discovery, `show` for human-readable inspection, and `query` when you need stable structured payloads.
 
 ```bash
-cchistory show project chat-ui-kit          # Project details + usage + recent turns
-cchistory show session <ref>                # Session details with turns
-cchistory show turn <turn-id-or-prefix>     # Full turn with prompt, context, lineage
+cchistory show project chat-ui-kit          # Project details + usage + recent asks
+cchistory show session <ref>                # Session details with asks
+cchistory show turn <turn-id-or-prefix>     # Ask with prompt and response; --long adds trace IDs
 cchistory show source codex                 # Source details + resolved sessions
 ```
 

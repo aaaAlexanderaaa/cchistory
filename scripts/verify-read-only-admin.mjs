@@ -68,8 +68,8 @@ async function verifyTuiReadOnlyAdmin(storeDir, cwd, missingStoreDir, seeded) {
     let state = createBrowserState(browser);
     state = reduceBrowserState(browser, state, { type: "toggle-source-health" });
     const snapshot = renderBrowserSnapshot(browser, state);
-    assert.match(snapshot, /Source Health:/);
-    assert.match(snapshot, /Healthy=4/);
+    assert.match(snapshot, /Source Health/);
+    assert.match(snapshot, /Healthy:\s*4/);
     assert.match(snapshot, /amp:turn-alpha-amp/);
     assert.match(snapshot, /factory_droid:turn-beta-factory/);
   } finally {

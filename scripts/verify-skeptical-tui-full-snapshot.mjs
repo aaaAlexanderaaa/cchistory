@@ -45,7 +45,7 @@ async function main() {
     assert.equal(indexedSearch.exitCode, 0, indexedSearch.stderr);
     assert.match(indexedSearch.stdout, /Read Mode: indexed store only/);
     assert.match(indexedSearch.stdout, /Read=indexed-only/);
-    assert.match(indexedSearch.stdout, /Results: 0 match\(es\)/);
+    assert.match(indexedSearch.stdout, /Matches: 0/);
     assertQuietStderr(indexedSearch, 'indexed TUI search');
 
     const fullSearch = await runBuiltTuiCapture(
@@ -62,7 +62,7 @@ async function main() {
 
     const indexedSearchAfterFull = await runBuiltTuiCapture(['--store', storeDir, '--search', 'Live-only full snapshot prompt'], tempRoot, childEnv);
     assert.equal(indexedSearchAfterFull.exitCode, 0, indexedSearchAfterFull.stderr);
-    assert.match(indexedSearchAfterFull.stdout, /Results: 0 match\(es\)/);
+    assert.match(indexedSearchAfterFull.stdout, /Matches: 0/);
     assertQuietStderr(indexedSearchAfterFull, 'indexed TUI search after full snapshot');
 
     const combinedFull = await runBuiltTuiCapture(
@@ -71,10 +71,10 @@ async function main() {
       childEnv,
     );
     assert.equal(combinedFull.exitCode, 0, combinedFull.stderr);
-    assert.match(combinedFull.stdout, /Mode=search/);
+    assert.match(combinedFull.stdout, /Search: Live-only full snapshot prompt/);
     assert.match(combinedFull.stdout, /Read Mode: live full scan in memory/);
     assert.match(combinedFull.stdout, /Read=live-full/);
-    assert.match(combinedFull.stdout, /Source Health:/);
+    assert.match(combinedFull.stdout, /Source Health/);
     assert.match(combinedFull.stdout, /Live-only full snapshot prompt/);
     assertQuietStderr(combinedFull, 'combined full TUI snapshot');
 

@@ -69,7 +69,7 @@ async function verifySyncAndRecall(storeDir, cwd) {
   const tuiExitCode = await runTui(["--store", storeDir, "--search", "Factory"], tuiIo);
   assert.equal(tuiExitCode, 0, tuiStderr.join(""));
   const tuiOutput = tuiStdout.join("");
-  assert.match(tuiOutput, /Mode=search/);
+  assert.match(tuiOutput, /Search: Factory/);
   assert.match(tuiOutput, /Factory Droid sidecar behavior/);
   assert.match(tuiOutput, /Project: history-lab/);
 

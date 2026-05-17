@@ -4,9 +4,6 @@ import type { SearchHighlight, UserTurnProjection } from "@cchistory/domain";
 
 export interface SearchCandidateFields {
   canonical_text?: string;
-  raw_text?: string;
-  session_title?: string;
-  session_working_directory?: string;
 }
 
 interface SearchPlan {
@@ -27,7 +24,7 @@ interface SearchTerm {
 function turnIndexHash(turn: UserTurnProjection): string {
   return createHash("sha1")
     .update(
-      `${turn.project_id ?? ""}\0${turn.source_id}\0${turn.link_state}\0${turn.value_axis}\0${turn.canonical_text ?? ""}\0${turn.raw_text ?? ""}`,
+      `canonical-search-v2\0${turn.project_id ?? ""}\0${turn.source_id}\0${turn.link_state}\0${turn.value_axis}\0${turn.canonical_text ?? ""}`,
     )
     .digest("hex");
 }
@@ -99,7 +96,7 @@ export function replaceSearchIndex(
         turn.link_state,
         turn.value_axis,
         turn.canonical_text,
-        turn.raw_text,
+        "",
       );
       upsertHash.run(turn.id, hash);
     }
@@ -197,6 +194,11 @@ function fallbackTurnIds(turns: UserTurnProjection[], query: string, limit: numb
 
 function buildFtsQuery(query: string): string {
   const plan = buildSearchPlan(query);
+  const queryText = buildFtsQueryText(plan);
+  return `canonical_text : (${queryText})`;
+}
+
+function buildFtsQueryText(plan: SearchPlan): string {
   if (plan.terms.length === 0) {
     return sanitizeFtsPhrase(plan.normalizedQuery);
   }
@@ -241,28 +243,15 @@ function matchesSearchPlan(text: string, plan: SearchPlan): boolean {
 }
 
 function matchesTurnSearchPlan(
-  turn: Pick<SearchCandidateFields, "canonical_text" | "raw_text">,
+  turn: Pick<SearchCandidateFields, "canonical_text">,
   plan: SearchPlan,
 ): boolean {
-  return matchesSearchPlan(turn.canonical_text ?? "", plan) || matchesSearchPlan(turn.raw_text ?? "", plan);
-}
-
-function matchesSessionSearchPlan(
-  candidate: Pick<SearchCandidateFields, "session_title" | "session_working_directory">,
-  plan: SearchPlan,
-): boolean {
-  const searchableText = [candidate.session_title, candidate.session_working_directory]
-    .filter((value): value is string => Boolean(value))
-    .join("\n");
-  if (!searchableText) {
-    return false;
-  }
-  return matchesSearchPlan(searchableText, plan);
+  return matchesSearchPlan(turn.canonical_text ?? "", plan);
 }
 
 export function matchesSearchCandidateQuery(candidate: SearchCandidateFields, query: string): boolean {
   const plan = buildSearchPlan(query);
-  return matchesTurnSearchPlan(candidate, plan) || matchesSessionSearchPlan(candidate, plan);
+  return matchesTurnSearchPlan(candidate, plan);
 }
 
 function findMatchingTurnIds(turns: UserTurnProjection[], query: string): string[] {

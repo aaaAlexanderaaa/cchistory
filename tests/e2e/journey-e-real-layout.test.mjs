@@ -3,9 +3,11 @@
  *
  * Validates: Truthful about adopted experimental slices.
  * Pass conditions:
- * - Fixtures reflect observed real layouts (gemini, opencode, openclaw, codebuddy, cursor)
+ * - Fixtures reflect observed real layouts for all stable adapters
  * - Sync from real-layout mock_data produces expected sources/sessions/projects
  * - Adapter-specific expectations:
+ *   - Codex, Claude Code → committed "chat-ui-kit" project
+ *   - Factory Droid, AMP, Antigravity → committed "history-lab" project
  *   - OpenCode → committed "esql-lab" project
  *   - Gemini → candidate "agentresearch" project
  *   - CodeBuddy → candidate project
@@ -22,12 +24,26 @@ import {
   ensureBuilt,
   createTempRoot,
   removeTempRoot,
+  seedDefaultMockDataHome,
   seedRealLayoutHome,
   runCliJson,
   runCliCapture,
   startApiServer,
   apiGet,
 } from "./helpers.mjs";
+
+const STABLE_REAL_LAYOUT_SOURCES = [
+  "codex",
+  "claude_code",
+  "factory_droid",
+  "amp",
+  "cursor",
+  "antigravity",
+  "gemini",
+  "openclaw",
+  "opencode",
+  "codebuddy",
+];
 
 describe("Journey E — Real-layout truthfulness", () => {
   let tempRoot;
@@ -39,6 +55,7 @@ describe("Journey E — Real-layout truthfulness", () => {
     tempRoot = await createTempRoot("e2e-journey-e-");
     storeDir = path.join(tempRoot, "store");
     childEnv = { ...process.env, HOME: tempRoot };
+    await seedDefaultMockDataHome(tempRoot);
     await seedRealLayoutHome(tempRoot);
   });
 
@@ -48,32 +65,28 @@ describe("Journey E — Real-layout truthfulness", () => {
 
   // ---- Sync ----
 
-  it("CLI sync ingests 5 real-layout sources", async () => {
+  it("CLI sync ingests all stable real-layout sources", async () => {
     const syncResult = await runCliCapture(
       [
         "sync", "--store", storeDir,
-        "--source", "gemini",
-        "--source", "opencode",
-        "--source", "openclaw",
-        "--source", "codebuddy",
-        "--source", "cursor",
+        ...STABLE_REAL_LAYOUT_SOURCES.flatMap((source) => ["--source", source]),
       ],
       tempRoot,
       childEnv,
     );
     assert.equal(syncResult.exitCode, 0, syncResult.stderr);
-    assert.match(syncResult.stdout, /Synced 5 source\(s\)/);
+    assert.match(syncResult.stdout, /Synced 10 source\(s\)/);
   });
 
   // ---- Source verification ----
 
-  it("CLI ls sources shows all 5 platforms", async () => {
+  it("CLI ls sources shows all stable platforms", async () => {
     const sources = await runCliJson(["ls", "sources", "--store", storeDir], tempRoot, childEnv);
     assert.equal(sources.kind, "sources");
-    assert.equal(sources.sources.length, 5);
+    assert.equal(sources.sources.length, 10);
     assert.deepEqual(
       sources.sources.map((s) => s.platform).sort(),
-      ["codebuddy", "cursor", "gemini", "openclaw", "opencode"],
+      [...STABLE_REAL_LAYOUT_SOURCES].sort(),
     );
   });
 
@@ -85,12 +98,12 @@ describe("Journey E — Real-layout truthfulness", () => {
     assert.equal(openclaw.total_turns, 0);
   });
 
-  it("Cursor source has 3 sessions and 3 turns", async () => {
+  it("Cursor source has merged app and chat-store coverage", async () => {
     const sources = await runCliJson(["ls", "sources", "--store", storeDir], tempRoot, childEnv);
     const cursor = sources.sources.find((s) => s.platform === "cursor");
     assert.ok(cursor);
-    assert.equal(cursor.total_sessions, 3);
-    assert.equal(cursor.total_turns, 3);
+    assert.equal(cursor.total_sessions, 5);
+    assert.equal(cursor.total_turns, 4);
   });
 
   // ---- Project verification ----
@@ -116,6 +129,14 @@ describe("Journey E — Real-layout truthfulness", () => {
     );
     assert.ok(codebuddyProject, "expected CodeBuddy candidate project");
     assert.equal(codebuddyProject.linkage_state, "candidate");
+  });
+
+  it("local coding-agent fixtures produce committed chat-ui-kit and history-lab projects", async () => {
+    const projects = await runCliJson(["ls", "projects", "--store", storeDir], tempRoot, childEnv);
+    const chatUiKit = projects.projects.find((p) => p.display_name === "chat-ui-kit" && p.linkage_state === "committed");
+    const historyLab = projects.projects.find((p) => p.display_name === "history-lab" && p.linkage_state === "committed");
+    assert.ok(chatUiKit, "expected committed chat-ui-kit project");
+    assert.ok(historyLab, "expected committed history-lab project");
   });
 
   // ---- Session verification ----
@@ -195,6 +216,27 @@ describe("Journey E — Real-layout truthfulness", () => {
     assert.equal(hit.session.title, "MCP Service Guide");
   });
 
+  it("search finds representative hits for the additional stable adapters", async () => {
+    const cases = [
+      { platform: "codex", query: "optimization plan", project: "chat-ui-kit" },
+      { platform: "claude_code", query: "expert code reviewer", project: "chat-ui-kit" },
+      { platform: "factory_droid", query: "history lab", project: "history-lab" },
+      { platform: "amp", query: "AMP ingestion gaps", project: "history-lab" },
+      { platform: "antigravity", query: "history-lab", project: "history-lab" },
+    ];
+
+    for (const entry of cases) {
+      const results = await runCliJson(
+        ["search", entry.query, "--store", storeDir],
+        tempRoot,
+        childEnv,
+      );
+      const hit = results.results.find((r) => r.session.source_platform === entry.platform);
+      assert.ok(hit, `expected ${entry.platform} search hit for ${entry.query}`);
+      assert.equal(hit.project.display_name, entry.project);
+    }
+  });
+
   // ---- Turn drill-down ----
 
   it("show turn on OpenCode hit returns correct project and session", async () => {
@@ -213,6 +255,24 @@ describe("Journey E — Real-layout truthfulness", () => {
     assert.match(turn.turn.canonical_text, /Review the task requirements/);
   });
 
+  it("show turn on Factory Droid hit returns correct project and session", async () => {
+    const results = await runCliJson(
+      ["search", "history lab", "--store", storeDir],
+      tempRoot,
+      childEnv,
+    );
+    const hit = results.results.find((r) => r.session.source_platform === "factory_droid");
+    assert.ok(hit, "expected Factory Droid search hit");
+    const turn = await runCliJson(
+      ["show", "turn", hit.turn.id, "--store", storeDir],
+      tempRoot,
+      childEnv,
+    );
+    assert.equal(turn.turn.session_id, hit.session.id);
+    assert.equal(turn.project.display_name, "history-lab");
+    assert.match(turn.turn.canonical_text, /Factory Droid/);
+  });
+
   // ---- API agreement ----
 
   it("API lists matching projects from real-layout sync", async () => {
@@ -222,6 +282,8 @@ describe("Journey E — Real-layout truthfulness", () => {
       assert.ok(body.projects.some((p) => p.display_name === "esql-lab"));
       assert.ok(body.projects.some((p) => p.display_name === "agentresearch"));
       assert.ok(body.projects.some((p) => p.display_name === "config-workspace-ai_learning"));
+      assert.ok(body.projects.some((p) => p.display_name === "chat-ui-kit"));
+      assert.ok(body.projects.some((p) => p.display_name === "history-lab"));
     } finally {
       await server.close();
     }
@@ -241,6 +303,12 @@ describe("Journey E — Real-layout truthfulness", () => {
         `/api/turns/search?q=${encodeURIComponent("agentresearch")}`,
       );
       assert.ok(geminiBody.results.some((r) => r.session.source_platform === "gemini"));
+
+      const factoryBody = await apiGet(
+        server.app,
+        `/api/turns/search?q=${encodeURIComponent("history lab")}`,
+      );
+      assert.ok(factoryBody.results.some((r) => r.session.source_platform === "factory_droid"));
     } finally {
       await server.close();
     }

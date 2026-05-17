@@ -1,6 +1,9 @@
 import {
   type ProjectIdentity,
+  type SessionProjection,
+  type SourceStatus,
   type TurnSearchResult,
+  type UserTurnProjection,
 } from "@cchistory/domain";
 import {
   getFlag,
@@ -23,7 +26,6 @@ import {
   formatSessionListTitle,
   formatSessionListWorkspace,
   formatTreeSourceLabel,
-  indentBlock,
   listVisibleProjects,
   mergeRelatedWorkRollups,
   projectLabel,
@@ -42,7 +44,6 @@ import {
   colorizeStatus,
   clusterSearchResults,
   type RelatedWorkRollup,
-  type ClusterOrResult,
 } from "../renderers.js";
 import {
   type CliIo,
@@ -227,27 +228,37 @@ export async function handleTree(parsed: ParsedArgs, io: CliIo): Promise<Command
     if (target === "project" && ref) {
       const project = resolveProjectRef(storage, ref);
       const projectSessions = sessions.filter((session) => session.primary_project_id === project.project_id);
-      const lines: string[] = [
-        `${cyan(project.display_name)} [${projectStatusLabel(project)}]`,
-        `hosts=${project.host_ids.join(", ") || "none"} sessions=${project.session_count} turns=${project.committed_turn_count + project.candidate_turn_count}`,
+      const projectTurns = storage.listProjectTurns(project.project_id, "all");
+      const relatedWorkBySession = new Map(
+        projectSessions.map((session) => [session.id, rollupRelatedWork(storage.getSessionRelatedWork(session.id))] as const),
+      );
+      const relatedWork = [...relatedWorkBySession.values()].reduce<RelatedWorkRollup>(
+        (totals, rollup) => mergeRelatedWorkRollups(totals, rollup),
+        { delegated_sessions: 0, automation_runs: 0 },
+      );
+      const overviewRows: Array<[string, string]> = [
+        ["Status", colorizeStatus(projectStatusLabel(project))],
+        ["Sessions", String(project.session_count)],
+        ["Asks", String(project.committed_turn_count + project.candidate_turn_count)],
+        ["Last Activity", formatCompactDate(project.project_last_activity_at ?? project.updated_at)],
       ];
-
-      for (const session of projectSessions) {
-        const source = sourcesById.get(session.source_id);
-        const relatedWork = rollupRelatedWork(storage.getSessionRelatedWork(session.id));
-        lines.push(
-          longListing
-            ? `  ${magenta(shortId(session.id, 8))} (${formatTreeSourceLabel(source, session)}, ${shortId(session.host_id)}) turns=${session.turn_count} related=${formatRelatedWorkRollup(relatedWork)} updated=${formatCompactDate(session.updated_at)}`
-            : `  ${magenta(shortId(session.id, 8))} (${formatTreeSourceLabel(source, session)}, ${shortId(session.host_id)}) ${formatCompactDate(session.updated_at)}`,
+      if (longListing) {
+        const sourceMix = summarizeLabelCounts(
+          projectSessions.map((session) => sourcesById.get(session.source_id)?.slot_id ?? session.source_platform),
         );
-        if (longListing) {
-          lines.push(`    title=${session.title ?? "(untitled)"}`);
-          lines.push(`    workspace=${session.working_directory ?? "unknown"}`);
-        }
-        for (const turn of turns.filter((entry) => entry.session_id === session.id).slice(0, 3)) {
-          lines.push(`    - ${dim(formatCompactDate(turn.submission_started_at))} ${formatBrowseSnippet(turn.canonical_text, 80)}`);
-        }
+        overviewRows.push(
+          ["Project ID", project.project_id],
+          ["Slug", project.slug],
+          ["Hosts", project.host_ids.join(", ") || "none"],
+          ["Source Mix", sourceMix],
+          ["Related Work", formatRelatedWorkRollup(relatedWork)],
+        );
       }
+      const lines: string[] = [
+        renderSection(project.display_name, renderKeyValue(overviewRows)),
+        "",
+        renderSection("Session Threads", renderProjectSessionThreads(projectSessions, projectTurns, sourcesById, relatedWorkBySession, longListing)),
+      ];
 
       return {
         text: lines.join("\n"),
@@ -261,16 +272,19 @@ export async function handleTree(parsed: ParsedArgs, io: CliIo): Promise<Command
       const relatedWork = storage.getSessionRelatedWork(session.id);
       const relatedRollup = rollupRelatedWork(relatedWork);
       const lines: string[] = [
-        `Session ${magenta(session.id)}`,
+        longListing ? `Session ${magenta(session.id)}` : "Session",
         `  title=${session.title ?? "(untitled)"}`,
         `  project=${cyan(projectLabel(projects.find((p) => p.project_id === session.primary_project_id)))}`,
         `  source=${formatTreeSourceLabel(sourcesById.get(session.source_id), session)}`,
         `  workspace=${session.working_directory ?? "unknown"}`,
-        `  model=${session.model ?? "unknown"} turns=${session.turn_count} related=${formatRelatedWorkRollup(relatedRollup)} updated=${formatCompactDate(session.updated_at)}`,
+        `  model=${session.model ?? "unknown"} asks=${session.turn_count} related=${formatRelatedWorkRollup(relatedRollup)} updated=${formatCompactDate(session.updated_at)}`,
       ];
-      lines.push("  Turns");
+      if (longListing) {
+        lines.push(`  host=${session.host_id}`);
+      }
+      lines.push("  Asks");
       if (sessionTurns.length === 0) {
-        lines.push("    (no turns)");
+        lines.push("    (no asks)");
       } else {
         for (const turn of sessionTurns) {
           lines.push(`    - ${dim(formatCompactDate(turn.submission_started_at))} ${formatBrowseSnippet(turn.canonical_text, longListing ? 120 : 80)}`);
@@ -310,30 +324,36 @@ export async function handleShow(parsed: ParsedArgs, io: CliIo): Promise<Command
       const project = resolveProjectRef(storage, ref);
       const turns = storage.listProjectTurns(project.project_id);
       const usage = storage.getUsageOverview({ project_id: project.project_id });
+      const longListing = wantsLongListing(parsed);
+      const overviewRows: Array<[string, string]> = [
+        ["Status", colorizeStatus(projectStatusLabel(project))],
+        ["Sessions", String(project.session_count)],
+        ["Asks", String(project.committed_turn_count + project.candidate_turn_count)],
+        ["Last Activity", formatCompactDate(project.project_last_activity_at ?? project.updated_at)],
+        ["Total Tokens", formatNumber(usage.total_tokens)],
+        ["Coverage", formatRatio(usage.turn_coverage_ratio)],
+      ];
+      if (longListing) {
+        overviewRows.push(
+          ["Project ID", project.project_id],
+          ["Slug", project.slug],
+          ["Hosts", project.host_ids.join(", ") || "none"],
+        );
+      }
       return {
         text: [
           renderSection(
             project.display_name,
-            renderKeyValue([
-              ["Project ID", project.project_id],
-              ["Slug", project.slug],
-              ["Status", colorizeStatus(projectStatusLabel(project))],
-              ["Hosts", project.host_ids.join(", ") || "none"],
-              ["Sessions", String(project.session_count)],
-              ["Turns", String(project.committed_turn_count + project.candidate_turn_count)],
-              ["Last Activity", formatCompactDate(project.project_last_activity_at ?? project.updated_at)],
-              ["Total Tokens", formatNumber(usage.total_tokens)],
-              ["Coverage", formatRatio(usage.turn_coverage_ratio)],
-            ]),
+            renderKeyValue(overviewRows),
           ),
           "",
           renderSection(
-            "Recent Turns",
+            "Recent Asks",
             turns.length === 0
-              ? "(no turns)"
+              ? "(no asks)"
               : turns
                   .slice(0, 10)
-                  .map((turn) => `${dim(formatCompactDate(turn.submission_started_at))} ${truncateText(turn.canonical_text, 96)}`)
+                  .map((turn) => `${dim(formatCompactDate(turn.submission_started_at))} ${formatBrowseSnippet(turn.canonical_text, 96)}`)
                   .join("\n"),
           ),
         ].join("\n"),
@@ -349,28 +369,36 @@ export async function handleShow(parsed: ParsedArgs, io: CliIo): Promise<Command
         ? storage.listProjects().find((entry) => entry.project_id === session.primary_project_id)
         : undefined;
       const source = storage.listSources().find((entry) => entry.id === session.source_id);
+      const longListing = wantsLongListing(parsed);
+      const sessionRows: Array<[string, string]> = [
+        ["Title", session.title ?? "(untitled)"],
+        ["Workspace", session.working_directory ?? "unknown"],
+        ["Project", projectLabel(project)],
+        ["Source", source ? source.display_name : session.source_platform],
+        ["Model", session.model ?? "unknown"],
+        ["Asks", String(session.turn_count)],
+        ["Updated", formatCompactDate(session.updated_at)],
+      ];
+      if (longListing) {
+        sessionRows.push(
+          ["Session ID", session.id],
+          ...(project ? [["Project ID", project.project_id] as [string, string]] : []),
+          ["Source Platform", session.source_platform],
+          ...(source ? [["Source ID", source.id] as [string, string]] : []),
+          ["Host", session.host_id],
+        );
+      }
       return {
         text: [
           renderSection(
-            `Session ${session.id}`,
-            renderKeyValue([
-              ["Title", session.title ?? "(untitled)"],
-              ["Workspace", session.working_directory ?? "unknown"],
-              ["Project", projectLabel(project)],
-              ...(project ? [["Project ID", project.project_id] as [string, string]] : []),
-              ["Source", source ? `${source.display_name} (${source.platform})` : session.source_id],
-              ...(source ? [["Source ID", source.id] as [string, string]] : []),
-              ["Host", session.host_id],
-              ["Model", session.model ?? "unknown"],
-              ["Turns", String(session.turn_count)],
-              ["Updated", formatCompactDate(session.updated_at)],
-            ]),
+            longListing ? `Session ${session.id}` : "Session",
+            renderKeyValue(sessionRows),
           ),
           "",
           renderSection(
-            "Turns",
+            "Asks",
             turns.length === 0
-              ? "(no turns)"
+              ? "(no asks)"
               : turns
                   .map((turn) => `${dim(formatCompactDate(turn.submission_started_at))} ${truncateText(turn.canonical_text, 96)}`)
                   .join("\n"),
@@ -394,31 +422,42 @@ export async function handleShow(parsed: ParsedArgs, io: CliIo): Promise<Command
       const source = storage.listSources().find((entry) => entry.id === turn.source_id);
       const context = storage.getTurnContext(turn.id);
       const assistantReply = context?.assistant_replies?.[0];
+      const longListing = wantsLongListing(parsed);
+
+      const overviewRows: Array<[string, string]> = [
+        ["Project", projectLabel(project)],
+        ["Source", source ? `${source.display_name} (${source.platform})` : turn.source_id],
+        ["Model", turn.context_summary.primary_model ?? "unknown"],
+        ["Submitted", formatCompactDate(turn.submission_started_at)],
+        ["Tokens", `${formatNumber(turn.context_summary.total_tokens ?? 0)} (in=${formatNumber(turn.context_summary.token_usage?.input_tokens ?? 0)}, out=${formatNumber(turn.context_summary.token_usage?.output_tokens ?? 0)})`],
+      ];
+      if (longListing) {
+        overviewRows.push(["Session ID", turn.session_id]);
+      }
+      const traceability = longListing
+        ? [
+            "",
+            renderSection(
+              "Traceability",
+              renderKeyValue([
+                ["Turn ID", turn.turn_id],
+                ["Revision ID", turn.revision_id],
+                ["Context Ref", turn.context_ref],
+              ]),
+            ),
+          ]
+        : [];
 
       return {
         text: [
           renderSection(
-            `Turn ${turn.id}`,
-            renderKeyValue([
-              ["Session ID", turn.session_id],
-              ["Project", projectLabel(project)],
-              ["Source", source ? `${source.display_name} (${source.platform})` : turn.source_id],
-              ["Model", turn.context_summary.primary_model ?? "unknown"],
-              ["Submitted", formatCompactDate(turn.submission_started_at)],
-              ["Tokens", `${formatNumber(turn.context_summary.total_tokens ?? 0)} (in=${formatNumber(turn.context_summary.token_usage?.input_tokens ?? 0)}, out=${formatNumber(turn.context_summary.token_usage?.output_tokens ?? 0)})`],
-            ]),
+            longListing ? `Ask ${turn.id}` : "Ask",
+            renderKeyValue(overviewRows),
           ),
           "",
-          renderSection("Text", turn.canonical_text),
-          ...(assistantReply ? ["", renderSection("Response", assistantReply.content)] : []),
-          "",
-          renderSection(
-            "Context",
-            renderKeyValue([
-              ["Turn ID", turn.turn_id],
-              ["Revision ID", turn.revision_id],
-            ]),
-          ),
+          renderSection("Prompt", formatTurnPromptForDisplay(turn, longListing)),
+          ...(assistantReply ? ["", renderSection("Response", formatTurnResponseForDisplay(assistantReply.content, longListing))] : []),
+          ...traceability,
         ].join("\n"),
         json: { kind: "turn", db_path: layout.dbPath, turn, session, project, context },
       };
@@ -570,4 +609,89 @@ export function groupSearchResults(results: TurnSearchResult[]): Array<{ label: 
     currentGroup.results.push(result);
   }
   return groups;
+}
+
+function renderProjectSessionThreads(
+  projectSessions: SessionProjection[],
+  projectTurns: UserTurnProjection[],
+  sourcesById: Map<string, SourceStatus>,
+  relatedWorkBySession: Map<string, RelatedWorkRollup>,
+  longListing: boolean,
+): string {
+  if (projectSessions.length === 0) {
+    return "(no sessions)";
+  }
+  const turnsBySession = new Map<string, UserTurnProjection[]>();
+  for (const turn of projectTurns) {
+    const entries = turnsBySession.get(turn.session_id) ?? [];
+    entries.push(turn);
+    turnsBySession.set(turn.session_id, entries);
+  }
+  for (const sessionTurns of turnsBySession.values()) {
+    sessionTurns.sort((left, right) => right.submission_started_at.localeCompare(left.submission_started_at));
+  }
+
+  const lines: string[] = [];
+  const orderedSessions = [...projectSessions].sort((left, right) => right.updated_at.localeCompare(left.updated_at));
+  for (const session of orderedSessions) {
+    const sessionTurns = turnsBySession.get(session.id) ?? [];
+    const title = formatSessionThreadTitle(session, sessionTurns);
+    const askCount = sessionTurns.length || session.turn_count;
+    lines.push(`- ${cyan(title)} ${dim(`· ${askCount} ask${askCount === 1 ? "" : "s"} · ${formatCompactDate(session.updated_at)}`)}`);
+    if (longListing) {
+      const source = sourcesById.get(session.source_id);
+      const relatedWork = formatRelatedWorkRollup(relatedWorkBySession.get(session.id) ?? { delegated_sessions: 0, automation_runs: 0 });
+      lines.push(`  session_id=${session.id}`);
+      lines.push(`  source=${formatTreeSourceLabel(source, session)} host=${shortId(session.host_id)} workspace=${formatSessionListWorkspace(session.working_directory) || "unknown"} related=${relatedWork}`);
+    }
+    if (sessionTurns.length === 0) {
+      lines.push("  (no asks)");
+      continue;
+    }
+    for (const turn of sessionTurns.slice(0, longListing ? 5 : 3)) {
+      lines.push(`  ${dim(formatCompactDate(turn.submission_started_at))} ${formatBrowseSnippet(turn.canonical_text, longListing ? 120 : 88)}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function formatSessionThreadTitle(session: SessionProjection, turns: UserTurnProjection[]): string {
+  const title = session.title?.trim();
+  if (title) {
+    return formatSessionListTitle(title);
+  }
+  const latest = turns[0]?.canonical_text;
+  if (latest) {
+    return formatBrowseSnippet(latest, 56);
+  }
+  return formatSessionListWorkspace(session.working_directory) || "Untitled session";
+}
+
+function formatTurnPromptForDisplay(turn: TurnSearchResult["turn"], longListing: boolean): string {
+  return formatPreviewBlock(longListing ? turn.canonical_text : pickSearchSnippet(turn), {
+    long: longListing,
+    maxChars: 1600,
+  });
+}
+
+function formatTurnResponseForDisplay(content: string, longListing: boolean): string {
+  return formatPreviewBlock(content, {
+    long: longListing,
+    maxChars: 2400,
+  });
+}
+
+function formatPreviewBlock(value: string | null | undefined, options: { long: boolean; maxChars: number }): string {
+  const text = (value ?? "").trim();
+  if (text.length === 0) {
+    return "(empty)";
+  }
+  if (options.long || text.length <= options.maxChars) {
+    return text;
+  }
+  const omitted = text.length - options.maxChars;
+  return [
+    text.slice(0, options.maxChars).trimEnd(),
+    dim(`... (${omitted} more chars, use --long for complete text)`),
+  ].join("\n");
 }

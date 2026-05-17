@@ -27,6 +27,7 @@
 | **C — Read-only admin / source-health** | Health is truthful, reads don't mutate | Health counts match store state; missing-store is explicit and non-mutating; no silent DB creation |
 | **D — Supply / restore readability** | Canonical objects survive export/import | Sources, sessions, turns readable after restore; known recall path survives intact |
 | **E — Real-layout truthfulness** | Truthful about adopted experimental slices | Fixtures reflect observed real layouts; experimental slices clearly bounded |
+| **F — Real HTTP parity** | API behavior crosses a real local HTTP boundary | A short-lived Fastify listener returns the same seeded read semantics as CLI/API injection paths |
 
 ## Automated Verifier Surface
 
@@ -38,19 +39,21 @@
 | `pnpm run verify:read-only-admin` | Store-scoped CLI/TUI/API read-only admin visibility plus missing-store truthfulness |
 | `pnpm run verify:fixture-sync-recall` | Clean-store sync from `mock_data/` default roots into canonical recall/search/drill-down via CLI/API/TUI |
 | `pnpm run verify:bundle-conflict-recovery` | Populated-target conflict visibility, dry-run, skip/replace, restore-check, CLI/API readback |
-| `pnpm run verify:real-layout-sync-recall` | Real-layout fixture slice (gemini, opencode, openclaw, codebuddy, Cursor chat-store) sync-to-read |
-| `pnpm run verify:related-work-recall` | Delegated child-session and automation-run traceability across CLI/API/TUI |
+| `pnpm run verify:real-layout-sync-recall` | Real-layout fixture slice for all stable adapters with fixtures sync-to-read |
+| `pnpm run verify:related-work-recall` | Delegated child-session and automation-run traceability across CLI/API/TUI, including query-relative inbound/outbound fanout |
 | `pnpm run verify:real-archive-probes` | Archive-truthfulness for Gemini, Cursor chat-store, CodeBuddy, OpenCode review assumptions |
 
 ### Skeptical and extended verifiers
 
 | Command | Coverage |
 | --- | --- |
+| `pnpm run verify:cli-tui-read-side` | Default local CLI/TUI/read-side quality gate: package regressions, true E2E, skeptical browse/search, real-layout parity |
 | `pnpm run verify:skeptical-cli-bundle-restore` | Skeptical operator backup/restore/conflict behavior |
 | `pnpm run verify:skeptical-browse-search` | Skeptical CLI/TUI browse/search readability and parameter-scoped search |
 | `pnpm run verify:skeptical-tui-full-snapshot` | TUI `--full` indexed-store, combined-overlay, and missing-store snapshots |
 | `pnpm run verify:local-full-read-bundle` | Grouped local full-read confidence pass (CLI artifact + TUI `--full`) |
 | `pnpm run verify:cli-artifact` | Installed standalone CLI artifact through skeptical workflows |
+| `node scripts/verify-scale-recall.mjs` | Generated source-shaped Codex/Claude scale store: 2400 turns, 24 sessions, CLI browse/search/detail, and TUI browse/search |
 
 ### Infrastructure verifiers
 
@@ -60,6 +63,32 @@
 | `pnpm run verify:runtime-inventory` | API route registrations vs OpenAPI path summary |
 | `pnpm run verify:clean-install` | Documented clean-install path on a fresh repository copy |
 | `pnpm run verify:web-build-offline` | Offline web production build gate |
+
+## CLI/TUI Read-Side Local Quality Gate
+
+`pnpm run verify:cli-tui-read-side` is the default repeatable quality gate for
+changes that affect the local read-side slice: CLI read/admin commands, TUI
+browse/search/detail/conversation behavior, source-shaped E2E recall, or
+CLI/API/TUI read parity.
+
+It runs sequentially for the local Codex desktop memory profile:
+
+1. `pnpm --filter @cchistory/cli test`
+2. `pnpm --filter @cchistory/tui test:state`
+3. `pnpm --filter @cchistory/tui test:layout`
+4. `pnpm --filter @cchistory/api build`
+5. `pnpm run test:e2e`
+6. `node --import ./scripts/install-node-sqlite-warning-filter.mjs scripts/verify-skeptical-browse-search.mjs`
+7. `node --import ./scripts/install-node-sqlite-warning-filter.mjs scripts/verify-real-layout-sync-recall.mjs`
+
+The gate does not start persistent API or Web services. The E2E suite may start
+a short-lived Fastify listener on an ephemeral localhost port for real HTTP API
+parity; in sandboxed agent environments that local bind may require explicit
+approval, but it is not a managed dev service.
+
+Run narrower package commands when a change is obviously isolated. Run this
+gate before closing work that claims CLI/TUI/read-side quality, adapter
+readback parity, or R37-level confidence.
 
 ## Local Manual Test Matrix
 
@@ -76,6 +105,15 @@
 - **Setup**: temp HOME seeded from repo `mock_data/.claude` and `mock_data/.openclaw`
 - **Core commands**: `sync`, `ls projects/sessions --long`, `search` (with `--project`, `--source`, `--limit`), `show turn/session`, `tree project/session --long`, TUI browse/search/`--full`
 - **Automated counterparts**: `verify:skeptical-browse-search`, `verify:skeptical-tui-full-snapshot`, `verify:local-full-read-bundle`
+
+### Generated scale recall workflow
+
+- **Prerequisite**: built CLI and TUI
+- **Setup**: temporary HOME with generated Codex and Claude Code JSONL sources
+- **Core commands**: `sync`, `ls projects/sessions`, `search`, `show turn`, TUI browse/search
+- **Automated counterpart**: `node scripts/verify-scale-recall.mjs`
+- **Boundary**: proves high-volume source-shaped recall behavior without adding a
+  heavy generated corpus to `mock_data/` or the default package-test path.
 
 ## Still-Blocked Manual / Runtime Review Queue
 
@@ -97,7 +135,23 @@ All core and skeptical local verifiers passed on 2026-04-03:
 
 ### Notable fix during test closure
 
-`R41` root cause: multi-term search could append extra turns when only part of the query matched session metadata. The storage-layer session match now requires the full query term set.
+`R41` root cause: multi-term search could append extra turns when only part of
+the query matched session metadata. R39 later closed the remaining design
+drift: default search now targets canonical ask text only; session metadata,
+raw-only text, assistant replies, and tool output are drill-down context rather
+than default recall targets.
+
+## CLI/TUI Read-Side Gate Result (2026-05-15)
+
+`pnpm run verify:cli-tui-read-side` passed on 2026-05-15 after the R37
+CLI/TUI quality expansion. The pass included:
+
+- CLI package tests: 20 tests
+- TUI state tests: 23 tests
+- TUI layout tests: 22 tests
+- E2E journeys A-F: 52 tests
+- `scripts/verify-skeptical-browse-search.mjs`
+- `scripts/verify-real-layout-sync-recall.mjs`
 
 ## Session Execution Rule
 

@@ -421,9 +421,13 @@ test("mapSessionRelatedWork converts temporal fields and preserves raw detail", 
     source_id: "src-1",
     source_platform: "claude_code",
     source_session_ref: "session-1",
+    evidence_session_ref: "session-1",
+    parent_session_ref: "parent-1",
+    child_session_ref: "session-1",
     relation_kind: "delegated_session",
     target_kind: "session",
-    target_session_ref: "session-1",
+    direction: "inbound",
+    target_session_ref: "parent-1",
     transcript_primary: true,
     evidence_confidence: 0.95,
     child_agent_key: "agent-1",
@@ -437,6 +441,9 @@ test("mapSessionRelatedWork converts temporal fields and preserves raw detail", 
   assert.ok(relatedWork.created_at instanceof Date);
   assert.ok(relatedWork.updated_at instanceof Date);
   assert.equal(relatedWork.relation_kind, "delegated_session");
+  assert.equal(relatedWork.direction, "inbound");
+  assert.equal(relatedWork.parent_session_ref, "parent-1");
+  assert.equal(relatedWork.child_session_ref, "session-1");
   assert.equal(relatedWork.raw_detail.parent_uuid, "parent-1");
 });
 

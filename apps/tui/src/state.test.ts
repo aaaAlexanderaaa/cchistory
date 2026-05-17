@@ -8,6 +8,8 @@ import type { LocalTuiBrowser } from "@cchistory/storage";
 import { createBrowserState, reduceBrowserState, renderBrowserSnapshot } from "./browser.js";
 import type { BrowserState, BrowserAction } from "./browser.js";
 import { stripAnsi } from "./colors.js";
+import { resolveTuiInputEffect } from "./input.js";
+import type { TuiInputKey } from "./input.js";
 
 // ── Helpers ──
 
@@ -30,6 +32,14 @@ async function withTempStorage(fn: (storage: CCHistoryStorage, tempDir: string) 
 function dispatch(browser: LocalTuiBrowser, state: BrowserState, ...actions: BrowserAction[]): BrowserState {
   for (const action of actions) {
     state = reduceBrowserState(browser, state, action);
+  }
+  return state;
+}
+
+function dispatchInput(browser: LocalTuiBrowser, state: BrowserState, input: string, key: TuiInputKey = {}): BrowserState {
+  const effect = resolveTuiInputEffect(state, input, key);
+  if (effect.type === "action") {
+    return reduceBrowserState(browser, state, effect.action);
   }
   return state;
 }
@@ -501,7 +511,7 @@ test("detailScrollOffset resets on move-up/move-down selection change", async ()
   });
 });
 
-test("detailScrollOffset does NOT reset on handleJump (known gap)", async () => {
+test("detailScrollOffset resets on jump selection change", async () => {
   await withTempStorage((storage) => {
     storage.replaceSourcePayload(createFixturePayload("src-j1", "Jump turn A " + "x".repeat(300), "stg-j1", {
       sessionId: "sess-j1", turnId: "turn-j1", workingDirectory: "/ws/j", includeProjectObservation: true,
@@ -528,10 +538,37 @@ test("detailScrollOffset does NOT reset on handleJump (known gap)", async () => 
     state = dispatch(browser, state, { type: "retreat" }); // back to turns
     state = dispatch(browser, state, { type: "jump-last" }); // g/G jump
 
-    // Known gap: handleJump doesn't reset detailScrollOffset
-    // This test documents the current behavior (will need updating when fixed)
-    assert.equal(state.detailScrollOffset, scrolledOffset,
-      "KNOWN GAP: handleJump does not reset detailScrollOffset — update this test when fixed");
+    assert.equal(state.detailScrollOffset, 0, "detailScrollOffset should reset after jump selection change");
+  });
+});
+
+test("conversationScrollOffset resets on selection-changing actions", async () => {
+  await withTempStorage((storage) => {
+    storage.replaceSourcePayload(createFixturePayload("src-cr1", "Conversation reset turn A", "stg-cr1", {
+      sessionId: "sess-cr1", turnId: "turn-cr1", workingDirectory: "/ws/cr", includeProjectObservation: true,
+      createdAt: "2026-04-01T10:00:00Z",
+    }));
+    storage.upsertProjectOverride({ target_kind: "turn", target_ref: "turn-cr1", project_id: "proj-cr", display_name: "ConvResetProj" });
+
+    storage.replaceSourcePayload(createFixturePayload("src-cr2", "Conversation reset turn B", "stg-cr2", {
+      sessionId: "sess-cr2", turnId: "turn-cr2", workingDirectory: "/ws/cr", includeProjectObservation: true,
+      createdAt: "2026-04-01T11:00:00Z",
+    }));
+    storage.upsertProjectOverride({ target_kind: "turn", target_ref: "turn-cr2", project_id: "proj-cr", display_name: "ConvResetProj" });
+
+    const browser = buildLocalTuiBrowser(storage);
+    let state = createBrowserState(browser);
+
+    state = dispatch(browser, state, { type: "drill" }, { type: "drill" }, { type: "drill" });
+    assert.equal(state.focusPane, "conversation");
+    state = dispatch(browser, state, { type: "scroll-down", lines: 5 });
+    assert.ok(state.conversationScrollOffset > 0);
+
+    state = dispatch(browser, state, { type: "retreat" }, { type: "retreat" });
+    assert.equal(state.focusPane, "turns");
+    state = dispatch(browser, state, { type: "jump-last" });
+
+    assert.equal(state.conversationScrollOffset, 0, "conversationScrollOffset should reset after selecting another turn");
   });
 });
 
@@ -601,6 +638,136 @@ test("overlay toggles are mutually exclusive for stats and source-health", async
     state = dispatch(browser, state, { type: "toggle-stats" });
     assert.ok(state.showStats);
     assert.ok(!state.showSourceHealth);
+
+    // Toggle help — should clear stats
+    state = dispatch(browser, state, { type: "toggle-help" });
+    assert.ok(state.showHelp);
+    assert.ok(!state.showStats);
+    assert.ok(!state.showSourceHealth);
+
+    // Toggle source health — should clear help
+    state = dispatch(browser, state, { type: "toggle-source-health" });
+    assert.ok(state.showSourceHealth);
+    assert.ok(!state.showHelp);
+    assert.ok(!state.showStats);
+  });
+});
+
+test("realistic keyboard-flow reducer path covers browse search overlays and retreat", async () => {
+  await withTempStorage((storage) => {
+    for (let i = 0; i < 3; i++) {
+      storage.replaceSourcePayload(createFixturePayload(`src-flow-${i}`, `Keyboard flow turn ${i + 1} content`, `stg-flow-${i}`, {
+        sessionId: `sess-flow-${i}`,
+        turnId: `turn-flow-${i}`,
+        workingDirectory: "/ws/keyboard-flow",
+        includeProjectObservation: true,
+        createdAt: `2026-04-01T1${i}:00:00Z`,
+      }));
+      storage.upsertProjectOverride({
+        target_kind: "turn",
+        target_ref: `turn-flow-${i}`,
+        project_id: "proj-flow",
+        display_name: "KeyboardFlowProj",
+      });
+    }
+
+    const browser = buildLocalTuiBrowser(storage);
+    let state = createBrowserState(browser);
+    assert.equal(state.focusPane, "projects");
+
+    state = dispatch(browser, state, { type: "drill" });
+    assert.equal(state.focusPane, "turns");
+    state = dispatch(browser, state, { type: "page-down" }, { type: "jump-last" });
+    assert.equal(state.selectedTurnIndex, browser.projects[0]!.turns.length - 1);
+
+    state = dispatch(browser, state, { type: "drill" }, { type: "drill" });
+    assert.equal(state.focusPane, "conversation");
+    state = dispatch(browser, state, { type: "scroll-down", lines: 3 });
+    assert.ok(state.conversationScrollOffset > 0);
+    state = dispatch(browser, state, { type: "retreat" }, { type: "retreat" });
+    assert.equal(state.focusPane, "turns");
+
+    state = dispatch(browser, state, { type: "toggle-help" });
+    assert.equal(state.showHelp, true);
+    state = dispatch(browser, state, { type: "close-help" }, { type: "toggle-stats" });
+    assert.equal(state.showHelp, false);
+    assert.equal(state.showStats, true);
+    state = dispatch(browser, state, { type: "toggle-source-health" });
+    assert.equal(state.showStats, false);
+    assert.equal(state.showSourceHealth, true);
+    state = dispatch(browser, state, { type: "close-source-health" });
+
+    state = typeSearch(browser, state, "keyboard");
+    assert.equal(state.mode, "search");
+    assert.equal(state.focusPane, "projects");
+    state = dispatch(browser, state, { type: "focus-next" }, { type: "drill" }, { type: "drill" });
+    assert.equal(state.focusPane, "conversation");
+    assert.match(snapshot(browser, state), /Conversation/);
+
+    state = dispatch(browser, state, { type: "retreat" }, { type: "retreat" }, { type: "retreat" });
+    assert.equal(state.mode, "search");
+    assert.equal(state.focusPane, "projects");
+    state = dispatch(browser, state, { type: "retreat" });
+    assert.equal(state.mode, "browse");
+    assert.equal(state.focusPane, "projects");
+  });
+});
+
+test("keyboard input resolver follows latest state through rapid search and overlay input", async () => {
+  await withTempStorage((storage) => {
+    storage.replaceSourcePayload(createFixturePayload("src-input", "Keyboard input resolver content", "stg-input", {
+      sessionId: "sess-input",
+      turnId: "turn-input",
+      workingDirectory: "/ws/input",
+      includeProjectObservation: true,
+    }));
+    storage.upsertProjectOverride({
+      target_kind: "turn",
+      target_ref: "turn-input",
+      project_id: "proj-input",
+      display_name: "InputResolverProj",
+    });
+
+    const browser = buildLocalTuiBrowser(storage);
+    let state = createBrowserState(browser);
+
+    state = dispatchInput(browser, state, "/");
+    assert.equal(state.mode, "search");
+    assert.equal(state.focusPane, "projects");
+
+    state = dispatchInput(browser, state, "k");
+    assert.equal(state.searchQuery, "k");
+    state = dispatchInput(browser, state, "e");
+    assert.equal(state.searchQuery, "ke");
+    state = dispatchInput(browser, state, "", { return: true });
+    assert.equal(state.searchCommitted, true);
+
+    state = dispatchInput(browser, state, "", { tab: true });
+    assert.equal(state.focusPane, "turns");
+    state = dispatchInput(browser, state, "", { return: true });
+    assert.equal(state.focusPane, "detail");
+    state = dispatchInput(browser, state, "", { return: true });
+    assert.equal(state.focusPane, "conversation");
+    state = dispatchInput(browser, state, "", { escape: true });
+    assert.equal(state.focusPane, "detail");
+
+    state = dispatch(browser, state, { type: "retreat" }, { type: "retreat" }, { type: "retreat" });
+    assert.equal(state.mode, "browse");
+    assert.equal(state.focusPane, "projects");
+
+    state = dispatchInput(browser, state, "?");
+    assert.equal(state.showHelp, true);
+    state = dispatchInput(browser, state, "s");
+    assert.equal(state.showHelp, false);
+    assert.equal(state.showSourceHealth, true);
+    state = dispatchInput(browser, state, "", { escape: true });
+    assert.equal(state.showSourceHealth, false);
+
+    state = dispatchInput(browser, state, "i");
+    assert.equal(state.showStats, true);
+    assert.equal(state.showStatsTimeWindow, "all");
+    state = dispatchInput(browser, state, "", { tab: true });
+    assert.equal(state.showStatsTimeWindow, "7d");
   });
 });
 
@@ -669,6 +836,35 @@ test("long query auto-commits and runs search", async () => {
 
     const s = snapshot(browser, state);
     assert.doesNotMatch(s, /Press Enter to search/i, "Auto-committed query should not show commit prompt");
+  });
+});
+
+test("search result rows show text near the match instead of only prompt prefix", async () => {
+  await withTempStorage((storage) => {
+    const longPrefix = Array.from({ length: 30 }, () => "intro").join(" ");
+    storage.replaceSourcePayload(createFixturePayload(
+      "src-search-near-hit",
+      `${longPrefix} near needle marker final`,
+      "stg-search-near-hit",
+      {
+        sessionId: "sess-search-near-hit",
+        turnId: "turn-search-near-hit",
+        workingDirectory: "/ws/search-near-hit",
+        includeProjectObservation: true,
+      },
+    ));
+    storage.upsertProjectOverride({
+      target_kind: "turn",
+      target_ref: "turn-search-near-hit",
+      project_id: "proj-search-near-hit",
+      display_name: "SearchNearHitProj",
+    });
+
+    const browser = buildLocalTuiBrowser(storage);
+    const state = typeSearch(browser, createBrowserState(browser), "needle");
+
+    const s = snapshot(browser, state, 120, 20);
+    assert.match(s, /near needle marker/, "Search result row should expose the matched region");
   });
 });
 

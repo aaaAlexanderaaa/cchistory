@@ -37,6 +37,7 @@
     "verify:skeptical-cli-bundle-restore": "pnpm --filter @cchistory/cli build && node scripts/verify-skeptical-cli-bundle-restore.mjs",
     "verify:skeptical-browse-search": "pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && node scripts/verify-skeptical-browse-search.mjs",
     "verify:skeptical-tui-full-snapshot": "pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && node scripts/verify-skeptical-tui-full-snapshot.mjs",
+    "verify:cli-tui-read-side": "pnpm --filter @cchistory/cli test && pnpm --filter @cchistory/tui test:state && pnpm --filter @cchistory/tui test:layout && pnpm --filter @cchistory/api build && pnpm run test:e2e && node --import ./scripts/install-node-sqlite-warning-filter.mjs scripts/verify-skeptical-browse-search.mjs && node --import ./scripts/install-node-sqlite-warning-filter.mjs scripts/verify-real-layout-sync-recall.mjs",
     "verify:local-full-read-bundle": "node scripts/verify-local-full-read-bundle.mjs",
     "prepare:v1-seeded-web-review": "pnpm --filter @cchistory/api build && pnpm --filter @cchistory/cli build && pnpm --filter @cchistory/tui build && node scripts/verify-v1-seeded-acceptance.mjs --materialize-only",
     "probe:smoke": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/source-adapters build && node scripts/probe-smoke.mjs",

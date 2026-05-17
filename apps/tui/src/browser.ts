@@ -224,12 +224,12 @@ export function reduceBrowserState(browser: LocalTuiBrowser, state: BrowserState
       return state;
 
     case "enter-search-mode":
-      return clampState({ ...state, mode: "search", focusPane: "projects", searchCommitted: false, selectedSearchProjectIndex: 0, selectedSearchTurnIndex: 0 }, browser);
+      return clampState({ ...state, mode: "search", focusPane: "projects", searchCommitted: false, selectedSearchProjectIndex: 0, selectedSearchTurnIndex: 0, detailScrollOffset: 0, conversationScrollOffset: 0 }, browser);
     case "exit-search-mode":
       _searchCache = null;
       return clampState({ ...state, mode: "browse", focusPane: "projects" }, browser);
     case "commit-search":
-      return clampState({ ...state, searchCommitted: true, selectedSearchProjectIndex: 0, selectedSearchTurnIndex: 0 }, browser);
+      return clampState({ ...state, searchCommitted: true, selectedSearchProjectIndex: 0, selectedSearchTurnIndex: 0, detailScrollOffset: 0, conversationScrollOffset: 0 }, browser);
     case "append-search-char": {
       const newQuery = `${state.searchQuery}${action.value}`;
       const autoCommit = newQuery.length >= 4;
@@ -238,6 +238,8 @@ export function reduceBrowserState(browser: LocalTuiBrowser, state: BrowserState
         searchQuery: newQuery,
         searchCommitted: autoCommit,
         selectedSearchProjectIndex: 0, selectedSearchTurnIndex: 0,
+        detailScrollOffset: 0,
+        conversationScrollOffset: 0,
       }, browser);
     }
     case "backspace-search": {
@@ -252,19 +254,21 @@ export function reduceBrowserState(browser: LocalTuiBrowser, state: BrowserState
         searchQuery: newQuery,
         searchCommitted: autoCommit,
         selectedSearchProjectIndex: 0, selectedSearchTurnIndex: 0,
+        detailScrollOffset: 0,
+        conversationScrollOffset: 0,
       }, browser);
     }
 
     case "toggle-source-health":
-      return { ...state, showSourceHealth: !state.showSourceHealth, showStats: false };
+      return { ...state, showSourceHealth: !state.showSourceHealth, showStats: false, showHelp: false };
     case "close-source-health":
       return { ...state, showSourceHealth: false };
     case "toggle-help":
-      return { ...state, showHelp: !state.showHelp };
+      return { ...state, showHelp: !state.showHelp, showSourceHealth: false, showStats: false };
     case "close-help":
       return { ...state, showHelp: false };
     case "toggle-stats":
-      return { ...state, showStats: !state.showStats, showSourceHealth: false };
+      return { ...state, showStats: !state.showStats, showSourceHealth: false, showHelp: false };
     case "close-stats":
       return { ...state, showStats: false };
     case "cycle-stats-time-window": {
@@ -284,18 +288,18 @@ function handleMove(browser: LocalTuiBrowser, state: BrowserState, delta: number
   }
   if (state.mode === "search") {
     if (state.focusPane === "projects") {
-      return clampState({ ...state, selectedSearchProjectIndex: state.selectedSearchProjectIndex + delta, selectedSearchTurnIndex: 0, detailScrollOffset: 0 }, browser);
+      return clampState({ ...state, selectedSearchProjectIndex: state.selectedSearchProjectIndex + delta, selectedSearchTurnIndex: 0, detailScrollOffset: 0, conversationScrollOffset: 0 }, browser);
     }
     if (state.focusPane === "turns") {
-      return clampState({ ...state, selectedSearchTurnIndex: state.selectedSearchTurnIndex + delta, detailScrollOffset: 0 }, browser);
+      return clampState({ ...state, selectedSearchTurnIndex: state.selectedSearchTurnIndex + delta, detailScrollOffset: 0, conversationScrollOffset: 0 }, browser);
     }
     return state;
   }
   if (state.focusPane === "projects") {
-    return clampState({ ...state, selectedProjectIndex: state.selectedProjectIndex + delta, selectedTurnIndex: 0, detailScrollOffset: 0 }, browser);
+    return clampState({ ...state, selectedProjectIndex: state.selectedProjectIndex + delta, selectedTurnIndex: 0, detailScrollOffset: 0, conversationScrollOffset: 0 }, browser);
   }
   if (state.focusPane === "turns") {
-    return clampState({ ...state, selectedTurnIndex: state.selectedTurnIndex + delta, detailScrollOffset: 0 }, browser);
+    return clampState({ ...state, selectedTurnIndex: state.selectedTurnIndex + delta, detailScrollOffset: 0, conversationScrollOffset: 0 }, browser);
   }
   return state;
 }
@@ -306,12 +310,12 @@ function handleJump(browser: LocalTuiBrowser, state: BrowserState, target: "firs
     return { ...state, conversationScrollOffset: target === "first" ? 0 : 999999 };
   }
   if (state.mode === "search") {
-    if (state.focusPane === "projects") return clampState({ ...state, selectedSearchProjectIndex: v, selectedSearchTurnIndex: 0 }, browser);
-    if (state.focusPane === "turns") return clampState({ ...state, selectedSearchTurnIndex: v }, browser);
+    if (state.focusPane === "projects") return clampState({ ...state, selectedSearchProjectIndex: v, selectedSearchTurnIndex: 0, detailScrollOffset: 0, conversationScrollOffset: 0 }, browser);
+    if (state.focusPane === "turns") return clampState({ ...state, selectedSearchTurnIndex: v, detailScrollOffset: 0, conversationScrollOffset: 0 }, browser);
     return state;
   }
-  if (state.focusPane === "projects") return clampState({ ...state, selectedProjectIndex: v, selectedTurnIndex: 0 }, browser);
-  if (state.focusPane === "turns") return clampState({ ...state, selectedTurnIndex: v }, browser);
+  if (state.focusPane === "projects") return clampState({ ...state, selectedProjectIndex: v, selectedTurnIndex: 0, detailScrollOffset: 0, conversationScrollOffset: 0 }, browser);
+  if (state.focusPane === "turns") return clampState({ ...state, selectedTurnIndex: v, detailScrollOffset: 0, conversationScrollOffset: 0 }, browser);
   return state;
 }
 
@@ -411,34 +415,30 @@ export function renderBrowserSnapshot(browser: LocalTuiBrowser, state: BrowserSt
 }
 
 function buildSnapshotMetadataLines(browser: LocalTuiBrowser, state: BrowserState): string[] {
-  const lines = [dim(`Mode=${state.mode}`)];
+  const lines = state.mode === "search" ? [] : [dim("Browse projects and asks")];
   if (state.mode === "search") {
     const groups = getSearchGroups(browser, state);
     const total = groups.reduce((sum, group) => sum + group.results.length, 0);
-    lines.push(dim(`Query: ${state.searchQuery || "(empty)"}`));
-    lines.push(dim(`Results: ${total} match(es)`));
+    lines.push(dim(`Search: ${state.searchQuery || "(empty)"}`));
+    lines.push(dim(`Matches: ${total}`));
   }
 
   if (state.showSourceHealth) {
-    lines.push(dim("SourceHealth=open"));
-    lines.push(dim("Source Health: open"));
+    lines.push(dim("Sources: open"));
   }
 
   const selection = getSnapshotSelection(browser, state);
   if (!selection.projectName) {
     lines.push(dim("No project selected."));
-    lines.push(dim("Project=none"));
-    lines.push(dim("Turn=none"));
-    lines.push(dim("SelectedProject=none"));
-    lines.push(dim("SelectedTurn=none"));
+    if (state.mode === "search") {
+      lines.push(dim("No asks match this search."));
+    }
     return lines;
   }
 
   lines.push(dim(`Project: ${selection.projectName}`));
-  lines.push(dim(`SelectedProject=${selection.projectName}`));
   if (selection.turnId) {
-    lines.push(dim(`Turn=${selection.turnId}`));
-    lines.push(dim(`SelectedTurn=${selection.turnId}`));
+    lines.push(dim(`Ask: ${selection.turnId.slice(0, 12)}`));
   }
   return lines;
 }
@@ -538,11 +538,11 @@ function renderProjectPane(browser: LocalTuiBrowser, state: BrowserState, viewpo
 }
 
 function renderTurnPane(browser: LocalTuiBrowser, state: BrowserState, viewportSize: number, colWidth: number): string[] {
-  const titleLine = state.focusPane === "turns" ? activeSectionTitle("▸ Turns") : sectionTitle("  Turns");
+  const titleLine = state.focusPane === "turns" ? activeSectionTitle("▸ Asks") : sectionTitle("  Asks");
   const lines: string[] = [titleLine];
   const turns = getSelectedTurns(browser, state);
   if (turns.length === 0) {
-    lines.push(emptyRow("No turns"));
+    lines.push(emptyRow("No asks"));
     return lines;
   }
   // Build display items with session headers
@@ -726,7 +726,7 @@ function buildSearchDisplayItems(groups: SearchSessionGroup[], state: BrowserSta
   const items: DisplayItem[] = [];
   for (const group of groups) {
     const dateStr = group.sessionCreatedAt ? formatShortDate(group.sessionCreatedAt) : "";
-    const countStr = `${group.results.length}t`;
+    const countStr = `${group.results.length}a`;
     const headerMeta = [countStr, dateStr].filter(Boolean).join(" · ");
     items.push({ turnIndex: -1, text: `${bold(yellow(group.sessionTitle))} ${dim(headerMeta)}` });
     const lastIdx = group.results.length - 1;
@@ -752,11 +752,25 @@ function formatSearchTurnRow(entry: LocalTuiSearchResult, selected: boolean, foc
   const metaW = displayWidth(metaText);
   const prefixW = displayWidth(prefix);
   const snippetMax = Math.max(colWidth - metaW - prefixW - 2, 8);
-  const snippet = pickUserSnippet(entry.turn, snippetMax);
+  const snippet = pickSearchSnippet(entry, snippetMax);
   const styledSnippet = selected && focused ? activeItem(snippet) : selected ? selectedItem(snippet) : snippet;
   const leftPart = `${prefix} ${styledSnippet}`;
   const gap = Math.max(1, colWidth - displayWidth(leftPart) - metaW);
   return `${leftPart}${" ".repeat(gap)}${metaLabel(metaText)}`;
+}
+
+function pickSearchSnippet(entry: LocalTuiSearchResult, maxCols: number): string {
+  const firstHighlight = entry.highlights[0];
+  const text = entry.turn.canonical_text ?? "";
+  if (!firstHighlight || text.length === 0) {
+    return pickUserSnippet(entry.turn, maxCols);
+  }
+  const contextChars = Math.max(maxCols * 2, 32);
+  const start = Math.max(0, firstHighlight.start - Math.floor(contextChars / 3));
+  const end = Math.min(text.length, firstHighlight.end + contextChars);
+  const prefix = start > 0 ? "... " : "";
+  const suffix = end < text.length ? " ..." : "";
+  return compactByDisplayWidth(tameBrowseMarkup(`${prefix}${text.slice(start, end)}${suffix}`), maxCols);
 }
 
 /** Extract user message snippet — prefer non-injected user message over canonical_text. */
@@ -803,7 +817,7 @@ function buildSessionConversationLines(
   for (let ti = 0; ti < sessionTurns.length; ti++) {
     const turn = sessionTurns[ti]!;
     const isSelected = turn.turn.id === selectedTurn?.turn.id;
-    const turnLabel = isSelected ? bold(cyan(`── Turn ${ti + 1}/${sessionTurns.length} ──`)) : dim(`── Turn ${ti + 1}/${sessionTurns.length} ──`);
+    const turnLabel = isSelected ? bold(cyan(`── Ask ${ti + 1}/${sessionTurns.length} ──`)) : dim(`── Ask ${ti + 1}/${sessionTurns.length} ──`);
     lines.push(turnLabel);
 
     // User prompt — full content, no truncation (viewport handles scrolling)
@@ -872,17 +886,19 @@ function formatDetailRows(browser: LocalTuiBrowser, input: DetailInput): string[
   // Position indicator + Turn ID
   const shortId = t.turn.id.slice(0, 8);
   if (input.turnPosition) {
-    rows.push(`${bold("Turn")} ${cyan(input.turnPosition)} ${dim("in")} ${cyan(input.projectName ?? "?")}${input.sessionTitle ? dim(` · ${compact(input.sessionTitle, 30)}`) : ""} ${magenta(shortId)}`);
+    rows.push(`${bold("Ask")} ${cyan(input.turnPosition)} ${dim("in")} ${cyan(input.projectName ?? "?")}${input.sessionTitle ? dim(` · ${compact(input.sessionTitle, 30)}`) : ""} ${magenta(shortId)}`);
   } else {
     rows.push(`${bold("Project:")} ${cyan(input.projectName ?? "?")} ${magenta(shortId)}`);
   }
   rows.push(`${metaLabel("Model:")} ${blue(model)}${tokens ? ` ${dim("·")} ${tokens}` : ""} ${dim("·")} ${blue(source)} ${dim("·")} ${date}`);
 
   // Related work summary
-  const children = (t.related_work ?? []).filter(e => e.relation_kind === "delegated_session").length;
+  const parents = (t.related_work ?? []).filter(e => e.relation_kind === "delegated_session" && e.direction === "inbound").length;
+  const children = (t.related_work ?? []).filter(e => e.relation_kind === "delegated_session" && e.direction !== "inbound").length;
   const auto = (t.related_work ?? []).filter(e => e.relation_kind === "automation_run").length;
-  if (children > 0 || auto > 0) {
+  if (parents > 0 || children > 0 || auto > 0) {
     const parts: string[] = [];
+    if (parents > 0) parts.push(`${parents} parent`);
     if (children > 0) parts.push(`${children} child`);
     if (auto > 0) parts.push(`${auto} auto`);
     rows.push(`${metaLabel("Related:")} ${parts.join(", ")}`);
@@ -969,7 +985,7 @@ function renderStatsOverlay(browser: LocalTuiBrowser, state: BrowserState, maxWi
   lines.push(bold("  Overview"));
   const col1W = Math.floor(innerW / 2) - 2;
   const col2W = innerW - col1W - 4;
-  lines.push(`  ${padLine(`Turns: ${cyan(String(ov.total_turns))}`, col1W)}  ${padLine(`Total tokens: ${cyan(formatTokenCountRaw(ov.total_tokens))}`, col2W)}`);
+  lines.push(`  ${padLine(`Asks: ${cyan(String(ov.total_turns))}`, col1W)}  ${padLine(`Total tokens: ${cyan(formatTokenCountRaw(ov.total_tokens))}`, col2W)}`);
   lines.push(`  ${padLine(`With usage: ${cyan(String(ov.turns_with_token_usage))}`, col1W)}  ${padLine(`Input: ${cyan(formatTokenCountRaw(ov.total_input_tokens))}`, col2W)}`);
   lines.push(`  ${padLine(`With model: ${cyan(String(ov.turns_with_primary_model))}`, col1W)}  ${padLine(`Output: ${cyan(formatTokenCountRaw(ov.total_output_tokens))}`, col2W)}`);
   if (ov.total_cached_input_tokens > 0) {
@@ -1018,7 +1034,7 @@ function renderRollupTable(
 
   lines.push("");
   lines.push(bold(`  ${title}`));
-  lines.push(dim(`  ${"Name".padEnd(nameColW)} ${"Turns".padStart(6)} ${"Tokens".padStart(9)} ${" %".padStart(6)}  Bar`));
+  lines.push(dim(`  ${"Name".padEnd(nameColW)} ${"Asks".padStart(6)} ${"Tokens".padStart(9)} ${" %".padStart(6)}  Bar`));
   for (const row of sorted.slice(0, maxRows)) {
     const pct = (row.total_tokens / totalTokens) * 100;
     const barLen = Math.max(1, Math.round(pct / 100 * barMaxW));
@@ -1127,7 +1143,7 @@ function renderSourceHealthOverlay(browser: LocalTuiBrowser, maxWidth: number, m
   lines.push("");
   for (const s of sources) {
     const sc = s.sync_status === "healthy" ? green : s.sync_status === "stale" ? yellow : bold;
-    lines.push(`  ${dim("·")} ${s.display_name} ${dim(`(${s.platform})`)} ${sc(s.sync_status)} ${metaLabel(`${s.total_sessions}s ${s.total_turns}t`)}`);
+    lines.push(`  ${dim("·")} ${s.display_name} ${dim(`(${s.platform})`)} ${sc(s.sync_status)} ${metaLabel(`${s.total_sessions}s ${s.total_turns}a`)}`);
   }
   return lines;
 }
@@ -1146,13 +1162,13 @@ function renderHelpOverlay(maxWidth: number, maxHeight: number): string[] {
   lines.push(`    ${bold("Esc")}            Back / close      Mouse wheel: scroll`);
   lines.push("");
   lines.push(bold("  Panes"));
-  lines.push(`    ${bold("p")} projects   ${bold("t")} turns   ${bold("d")} detail`);
+  lines.push(`    ${bold("p")} projects   ${bold("t")} asks   ${bold("d")} detail`);
   lines.push("");
   lines.push(bold("  Actions"));
   lines.push(`    ${bold("/")} search    ${bold("s")} sources    ${bold("i")} stats    ${bold("?")} help    ${bold("q")} quit`);
   lines.push("");
   lines.push(bold("  Conversation View"));
-  lines.push(`    ${bold("Enter")} on Detail pane → browse all turns in session`);
+  lines.push(`    ${bold("Enter")} on Detail pane → browse all asks in session`);
   lines.push(`    ${bold("j/k")} scroll   ${bold("PgUp/PgDn")} page   ${bold("Esc")} back to detail`);
   return lines;
 }
@@ -1166,13 +1182,17 @@ function renderStatusLine(browser: LocalTuiBrowser, state: BrowserState, width: 
     const total = groups.reduce((sum, g) => sum + g.results.length, 0);
     parts.push(`Search: ${total} results`);
   }
-  parts.push(`${state.focusPane}`);
-  parts.push(`${browser.overview.counts.projects}P ${browser.overview.counts.turns}T`);
+  parts.push(focusPaneLabel(state.focusPane));
+  parts.push(`${browser.overview.counts.projects}P ${browser.overview.counts.turns}A`);
   if (state.focusPane === "conversation") {
     parts.push(`scroll: j/k PgUp/PgDn`);
   }
   parts.push("? help");
   return dim(parts.join(" │ "));
+}
+
+function focusPaneLabel(pane: BrowserFocusPane): string {
+  return pane === "turns" ? "asks" : pane;
 }
 
 function getSnapshotSelection(
@@ -1284,9 +1304,6 @@ function getCachedOrFreshResults(browser: LocalTuiBrowser, query: string): Local
       return matchesSearchCandidateQuery(
         {
           canonical_text: r.turn.canonical_text,
-          raw_text: r.turn.raw_text,
-          session_title: r.session?.title,
-          session_working_directory: r.session?.working_directory,
         },
         query,
       );
@@ -1385,7 +1402,7 @@ function buildDisplayItems(groups: SessionGroup[], state: BrowserState, mode: "b
   for (const group of groups) {
     // Session header — always shown, with creation date
     const dateStr = group.sessionCreatedAt ? formatShortDate(group.sessionCreatedAt) : "";
-    const countStr = `${group.turns.length}t`;
+    const countStr = `${group.turns.length}a`;
     const headerMeta = [countStr, dateStr].filter(Boolean).join(" · ");
     items.push({ turnIndex: -1, text: `${bold(yellow(group.sessionTitle))} ${dim(headerMeta)}` });
     // Tree-style turn rows
@@ -1418,7 +1435,7 @@ function formatProjectRow(entry: LocalTuiBrowser["projects"][number], selected: 
   const sessions = project.session_count;
   const turns = project.committed_turn_count + project.candidate_turn_count;
   const dateLabel = formatShortDate(project.project_last_activity_at);
-  const metaText = `${sessions}s ${turns}t ${dateLabel}`;
+  const metaText = `${sessions}s ${turns}a ${dateLabel}`;
   const metaW = displayWidth(metaText);
   // prefix=2, 1 space after prefix, 2 space gap before meta
   const nameMaxW = Math.max(maxWidth - metaW - 5, 6);

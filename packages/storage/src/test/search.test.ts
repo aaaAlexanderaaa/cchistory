@@ -4,7 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { CCHistoryStorage, matchesSearchCandidateQuery } from "../index.js";
-import { createFixturePayload } from "./helpers.js";
+import { combineFixturePayloads, createFixturePayload } from "./helpers.js";
 
 // Edge-case tests: search
 // ---------------------------------------------------------------------------
@@ -86,21 +86,39 @@ test("searchTurns with unicode and emoji text matches correctly", async () => {
   }
 });
 
-test("matchesSearchCandidateQuery preserves session metadata matches for extended queries", () => {
+test("matchesSearchCandidateQuery targets canonical text only", () => {
   const candidate = {
-    canonical_text: "unrelated prompt body",
-    raw_text: "unrelated prompt body",
-    session_title: "Session for metadata target",
-    session_working_directory: "/workspace/metadata-target",
+    canonical_text: "canonical metadata target",
   };
 
   assert.equal(matchesSearchCandidateQuery(candidate, "meta"), true);
   assert.equal(matchesSearchCandidateQuery(candidate, "metad"), true);
   assert.equal(matchesSearchCandidateQuery(candidate, "metadata target"), true);
   assert.equal(matchesSearchCandidateQuery(candidate, "alpha"), false);
+  assert.equal(matchesSearchCandidateQuery({ canonical_text: "unrelated prompt body" }, "metadata target"), false);
+  const rawOnlyCandidate = { canonical_text: "unrelated prompt body", raw_text: "metadata target" };
+  assert.equal(matchesSearchCandidateQuery(rawOnlyCandidate, "metadata target"), false);
 });
 
-test("searchTurns does not broaden session metadata matches on partial multi-term overlap", async () => {
+test("searchTurns does not match raw-only turn text", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-raw-only-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const payload = createFixturePayload("src-search-raw-only", "Canonical visible prompt", "sr-raw-only", {
+      turnId: "turn-raw-only",
+      sessionId: "session-raw-only",
+    });
+    payload.turns[0]!.raw_text = "Raw-only Backlog target";
+    storage.replaceSourcePayload(payload);
+
+    const results = storage.searchTurns({ query: "backlog target" });
+    assert.deepEqual(results.map((result) => result.turn.id), []);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("searchTurns requires all canonical query terms and ignores session metadata partial overlap", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-session-overlap-"));
   try {
     const storage = new CCHistoryStorage(dataDir);
@@ -143,6 +161,66 @@ test("searchTurns does not broaden session metadata matches on partial multi-ter
 
     const results = storage.searchTurns({ query: "Alpha traceability target" });
     assert.deepEqual(results.map((result) => result.turn.id), ["turn-session-target"]);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("searchTurns ignores metadata-only session matches", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-session-meta-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const first = createFixturePayload("src-search-session-meta", "Plan current UI work", "sr-session-meta-a", {
+      sessionId: "session-session-meta",
+      turnId: "turn-session-meta-a",
+    });
+    const second = createFixturePayload("src-search-session-meta", "Review unrelated output", "sr-session-meta-b", {
+      sessionId: "session-session-meta",
+      turnId: "turn-session-meta-b",
+    });
+    storage.replaceSourcePayload(
+      combineFixturePayloads(first, second, {
+        sessionId: "session-session-meta",
+        title: "Backlog planning session",
+      }),
+    );
+
+    const results = storage.searchTurns({ query: "back" });
+    assert.deepEqual(
+      results.map((result) => result.turn.id),
+      [],
+      "Default search should not surface a turn solely because the session title matches",
+    );
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("searchTurns does not add metadata-only siblings when a session has direct canonical hits", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-session-direct-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const direct = createFixturePayload("src-search-session-direct", "Backlog direct prompt", "sr-session-direct-a", {
+      sessionId: "session-session-direct",
+      turnId: "turn-session-direct-a",
+    });
+    const sibling = createFixturePayload("src-search-session-direct", "Review unrelated output", "sr-session-direct-b", {
+      sessionId: "session-session-direct",
+      turnId: "turn-session-direct-b",
+    });
+    storage.replaceSourcePayload(
+      combineFixturePayloads(direct, sibling, {
+        sessionId: "session-session-direct",
+        title: "Backlog planning session",
+      }),
+    );
+
+    const results = storage.searchTurns({ query: "back" });
+    assert.deepEqual(
+      results.map((result) => result.turn.id),
+      ["turn-session-direct-a"],
+      "A direct canonical hit should not drag in sibling turns through matching session metadata",
+    );
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
