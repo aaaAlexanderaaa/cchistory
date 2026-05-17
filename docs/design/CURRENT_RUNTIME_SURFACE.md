@@ -1,8 +1,11 @@
 # Current Runtime Surface
 
-This document records the repository-visible runtime surface as of 2026-04-02. It complements the design freeze and should be consulted when implementation inventory matters more than frozen semantics.
+This document records the repository-visible runtime surface as of 2026-05-17. It complements the design freeze and should be consulted when implementation inventory matters more than frozen semantics.
 
 > [`HIGH_LEVEL_DESIGN_FREEZE.md`](../../HIGH_LEVEL_DESIGN_FREEZE.md) remains the source of truth for product semantics and invariants.
+>
+> The current package/API/Web release marker is `0.2.0`. The `self-host v1`
+> wording below describes deployment and support scope, not semver.
 
 # Entry Points
 

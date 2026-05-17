@@ -3,6 +3,10 @@
 This document freezes the minimum release gate for a `single-user`, `self-host`,
 `localhost-or-trusted-LAN` CCHistory v1 release.
 
+For the `0.2.0` repository release, this document defines the supported
+self-host deployment bar. The phrase `self-host v1` is a support-scope label,
+not the package/API/Web semver.
+
 It is intentionally narrower than a hosted multi-user SaaS bar. It does not add
 requirements for RBAC, tenant isolation, horizontal scaling, or cluster
 operations.

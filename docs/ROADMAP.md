@@ -1,16 +1,19 @@
 # Roadmap
 
-本 roadmap 记录 CCHistory 接下来的主要工作方向，分为以下六个部分。各部分之间没有严格的先后依赖，可以并行推进。
+本 roadmap 记录 CCHistory `0.2.0` 之后的主要工作方向，分为以下六个部分。
+各部分之间没有严格的先后依赖，可以并行推进。
 
 > 当前已注册的适配器请参见 `packages/source-adapters/src/platforms/registry.ts` 或运行 `pnpm run verify:support-status` 查看完整列表与状态。
 >
-> 自 2026-03-20 起，self-host v1 的发布门槛以 [`docs/design/SELF_HOST_V1_RELEASE_GATE.md`](./design/SELF_HOST_V1_RELEASE_GATE.md) 为准。各 adapter 的 `stable` / `experimental` 分级同样以 registry 和 `verify:support-status` 输出为准。
+> 自 2026-03-20 起，self-host v1 的支持门槛以 [`docs/design/SELF_HOST_V1_RELEASE_GATE.md`](./design/SELF_HOST_V1_RELEASE_GATE.md) 为准。各 adapter 的 `stable` / `experimental` 分级同样以 registry 和 `verify:support-status` 输出为准。
 >
 > 本文档是实时里程碑路线图，但不替代设计冻结。
 
-## Self-Host V1 Release Gate `P0`
+## 0.2.0 Baseline / Self-Host Gate
 
-当前 P0 不是继续扩大对外支持面，而是先满足 self-host v1 的 6 条发布门槛：
+`0.2.0` 的公开支持边界仍然是单用户 self-host、本地优先、SQLite-backed
+部署。`self-host v1` 是支持范围，不是 package semver。当前基线要求这些
+事实持续成立：
 
 - 干净机器能按文档装起来。
 - 升级不会破坏已有库。
@@ -18,6 +21,10 @@
 - `apps/web` production build 不依赖外网。
 - `stable` adapters 都有真实样本和回归测试。
 - README、runtime surface、registry 的支持状态一致。
+
+用户启动的 managed-runtime Web/API diary（`R31`）和服务端 remote-agent
+diary（`R35`）仍然属于更宽的手工审查计划，不应被自动化 gate 的通过状态
+隐式视为完成。
 
 ## Bug 修复 `P0`
 

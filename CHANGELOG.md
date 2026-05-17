@@ -4,9 +4,30 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+No changes yet.
+
+## [0.2.0] — 2026-05-17
+
+Release maintenance for the current self-host support baseline.
+
+### Documentation
+
+- Reorganized README and `docs/` entrypoints around reader tasks: operate,
+  understand architecture, validate release/support claims, inspect source data,
+  report issues, and track roadmap work.
+- Added `docs/README.md` as the top-level documentation map and clarified which
+  documents are semantic source-of-truth versus runtime inventory.
+- Clarified that `self-host v1` is a support-scope gate while `0.2.0` is the
+  package/API/Web release marker.
+
 ### Platforms
 
 - Added **Accio Work** as a registered `experimental` adapter for local-runtime session evidence while its support boundary remains under validation.
+
+### Release Metadata
+
+- Bumped workspace package versions, OpenAPI metadata, and the Web UI version
+  label to `0.2.0`.
 
 ## [0.1.0] — 2026-04-04
 

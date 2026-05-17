@@ -7,6 +7,7 @@
   <img src="https://img.shields.io/badge/Node.js-%3E%3D22-brightgreen" alt="Node.js >=22" />
   <img src="https://img.shields.io/badge/pnpm-10.x-orange" alt="pnpm 10.x" />
   <img src="https://img.shields.io/badge/TypeScript-5.9-blue" alt="TypeScript 5.9" />
+  <img src="https://img.shields.io/badge/Version-0.2.0-blue" alt="Version 0.2.0" />
   <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT License" />
 </p>
 
@@ -16,7 +17,11 @@
 
 ---
 
-CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对话，汇聚为统一的、证据保全的数据模型。它从 **12 个 AI 编程助手平台（包括 Claude Code、Cursor、Codex、AMP、Gemini CLI、Accio Work 等）** 的本地会话数据中收集信息（详见[支持平台](#支持平台)），然后按照项目身份进行组织，让你能够跨工具搜索、回顾和分析所有对话内容。
+CCHistory `0.2.0` 是面向 AI 编程助手历史记录的本地优先、证据保全记忆层。它从 **12 个 AI 编程助手平台（包括 Claude Code、Cursor、Codex、AMP、Gemini CLI、Accio Work 等）** 的本地会话数据中收集信息（详见[支持平台](#支持平台)），然后按照项目身份进行组织，让你能够跨工具搜索、回顾和分析自己提出过的问题。
+
+它的核心召回对象是项目范围内的 `UserTurn`：一个用户真实提出的问题，
+并且保留项目关联、会话上下文、源证据和派生生命周期状态。CLI、TUI、Web
+和 API 都是同一份 canonical store 的投影，而不是四套互相分叉的解释。
 
 <p align="center">
   <img src="docs/screenshots/web-all-turns.webp" alt="CCHistory Web — 所有对话轮次视图" width="800" />
@@ -24,14 +29,25 @@ CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对
 
 ## 核心特性
 
-- **多平台采集** — 通过本地文件解析以及必要时的本地应用实时探测，从多个 AI 编程助手平台收集对话数据
+- **多平台采集** — 通过已注册的本地 source adapter、本地文件解析以及必要时的应用内实时探测收集对话数据
 - **证据保全** — 原始证据被完整保留并可追溯；每个 `UserTurn` 都从源数据派生，绝不直接手动创建
 - **基于项目的关联** — 通过仓库指纹、工作空间路径和手动覆盖将对话轮次关联到项目
 - **面向 AI 的项目上下文** — `cchistory context project <ref>` 可跨会话给出近期提问、会话线程和下一步检查命令
 - **全文搜索** — 在所有规范化对话文本中搜索，支持按项目和数据源过滤
+- **四个一致的入口** — TUI 和 Web 是面向用户的读取入口；CLI 和 API 是管理、自动化与集成入口
 - **Token 用量分析** — 跨模型、项目、数据源和时间维度追踪 Token 用量
 - **导出 / 导入 / 合并** — 可移植的数据包，用于备份、迁移和多主机合并
 - **数据健康监控** — 漂移和一致性指标，配有数据源级别的健康矩阵
+
+## 发布范围
+
+`0.2.0` 是当前仓库 package、API 和 Web UI 的发布版本标记。设计文档中的
+`self-host v1` 指的是支持和部署范围：单用户、本地优先、SQLite 存储、
+localhost 或可信 LAN 部署。它不是 package semver。
+
+每个 source adapter 的支持分级以
+[`packages/source-adapters/src/platforms/registry.ts`](packages/source-adapters/src/platforms/registry.ts)
+为准，并由 `pnpm run verify:support-status` 校验。
 
 ## 支持平台
 
@@ -89,6 +105,15 @@ CCHistory 能够采集、解析并投射你与 AI 编程助手之间的所有对
 │                  │  │                   │  │                     │  │                  │
 └──────────────────┘  └───────────────────┘  └─────────────────────┘  └──────────────────┘
 ```
+
+### 入口职责
+
+| 入口 | 面向对象 | 主要职责 |
+|------|----------|----------|
+| **TUI** | 终端用户 | 像文件管理器一样浏览项目、会话、完整对话、搜索结果、统计和 source health |
+| **Web** | 终端用户 | 更丰富的鼠标优先界面：图表、筛选、inbox triage、source 管理和数据健康 |
+| **CLI** | 管理者 / AI agent | 同步、导出/导入、备份、健康检查、GC、remote-agent 操作和脚本化 `--json` 输出 |
+| **API** | 程序化集成 | 为 Web UI 和外部系统提供受管 REST 访问 |
 
 ## 快速开始
 
@@ -321,19 +346,17 @@ cchistory stats
 
 ## 文档
 
-详细指南请查看 `docs/guide/` 目录：
+请先看 **[文档地图](docs/README.md)**，它按读者任务组织了 `docs/`
+目录。
 
-- **[CLI 指南](docs/guide/cli.md)** — 所有命令、参数和输出示例
-- **[API 指南](docs/guide/api.md)** — REST 接口、配置和请求/响应模式
-- **[Web 界面指南](docs/guide/web.md)** — 功能、导航、视图和配置
-- **[检查指南](docs/guide/inspection.md)** — 说明何时使用 `probe:*` 与 `inspect:*` 这类证据/诊断辅助命令
-- **[缺陷报告指南](docs/guide/bug-reporting.md)** — 说明可复现缺陷报告的标准字段与最小证据集
-- **[TUI 指南](docs/guide/tui.md)** — 说明本地 TUI 的启动方式、键盘操作、面板行为与快照输出
-- **[数据源技术说明](docs/sources/README.md)** — 已验证数据源的存储布局与采集路径
-- **[Self-Host V1 发布门槛](docs/design/SELF_HOST_V1_RELEASE_GATE.md)** — 单用户 self-host v1 的最小发布标准
-- **[开发路线图](docs/ROADMAP.md)** — 当前里程碑式开发计划
+核心阅读路径：
 
-设计文档位于 `docs/design/`。
+- **本地使用** — [CLI](docs/guide/cli.md)、[TUI](docs/guide/tui.md)、[Web](docs/guide/web.md)、[API](docs/guide/api.md)
+- **理解架构** — [High-Level Design Freeze](HIGH_LEVEL_DESIGN_FREEZE.md)、[Current Runtime Surface](docs/design/CURRENT_RUNTIME_SURFACE.md)
+- **验证发布或支持声明** — [Self-Host V1 Release Gate](docs/design/SELF_HOST_V1_RELEASE_GATE.md)、[Validation Strategy](docs/design/V1_VALIDATION_STRATEGY.md)
+- **检查源数据** — [Source Notes](docs/sources/README.md)、[Inspection Guide](docs/guide/inspection.md)
+- **报告问题** — [Bug Reporting Guide](docs/guide/bug-reporting.md)、[Bug Report Template](docs/templates/bug-report.md)
+- **查看后续计划** — [Roadmap](docs/ROADMAP.md)
 
 ## 项目结构
 
@@ -354,6 +377,7 @@ cchistory/
 ├── mock_data/                  # 脱敏的夹具数据集
 ├── skills/                     # AI Agent 技能定义与共享契约
 ├── docs/
+│   ├── README.md               # 文档地图与维护规则
 │   ├── guide/                  # 用户指南（CLI、API、Web、TUI、inspection、缺陷报告）
 │   ├── sources/                # 已验证数据源的技术说明
 │   ├── templates/              # 面向运营者与维护者的复用模板

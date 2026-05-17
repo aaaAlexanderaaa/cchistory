@@ -1,6 +1,6 @@
 {
   "name": "@cchistory/web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "scripts": {
     "dev": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=${NODE_MEMORY_MB:-1536}\" next dev --hostname 0.0.0.0 --port 8085",

@@ -7,6 +7,7 @@
   <img src="https://img.shields.io/badge/Node.js-%3E%3D22-brightgreen" alt="Node.js >=22" />
   <img src="https://img.shields.io/badge/pnpm-10.x-orange" alt="pnpm 10.x" />
   <img src="https://img.shields.io/badge/TypeScript-5.9-blue" alt="TypeScript 5.9" />
+  <img src="https://img.shields.io/badge/Version-0.2.0-blue" alt="Version 0.2.0" />
   <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT License" />
 </p>
 
@@ -16,7 +17,12 @@
 
 ---
 
-CCHistory ingests, parses, and projects your AI coding assistant conversations into a unified, evidence-preserving model. It collects local session data from **12 AI coding assistant platforms including Claude Code, Cursor, Codex, AMP, Gemini CLI, Accio Work, and more** (see [Supported Platforms](#supported-platforms)), then organizes them by project identity — so you can search, review, and analyze everything you've asked across every tool.
+CCHistory `0.2.0` is a local-first, evidence-preserving memory layer for AI coding assistant history. It collects local session data from **12 AI coding assistant platforms including Claude Code, Cursor, Codex, AMP, Gemini CLI, Accio Work, and more** (see [Supported Platforms](#supported-platforms)), then organizes it by project identity so you can search, review, and analyze what you asked across tools.
+
+The primary recall object is the project-scoped `UserTurn`: a user-authored ask,
+linked to its project, session context, source evidence, and derived lifecycle
+state. CLI, TUI, Web, and API surfaces are projections of the same canonical
+store rather than separate interpretations.
 
 <p align="center">
   <img src="docs/screenshots/web-all-turns.webp" alt="CCHistory Web — All Turns view" width="800" />
@@ -24,14 +30,26 @@ CCHistory ingests, parses, and projects your AI coding assistant conversations i
 
 ## Key Features
 
-- **Multi-platform ingestion** — Collects conversations from multiple AI coding assistant platforms via local file parsing and app-local live probes where required
+- **Multi-platform ingestion** — Collects conversations from registered local source adapters via local file parsing and app-local live probes where required
 - **Evidence-preserving** — Raw evidence is retained and traceable; every `UserTurn` is derived, never authored directly
 - **Project-based linking** — Turns are linked to projects via repo fingerprints, workspace paths, and manual overrides
 - **AI-ready project context** — `cchistory context project <ref>` gives an agent recent asks, session threads, and next inspection commands across sessions
 - **Full-text search** — Search across all canonical turn text with project and source filters
+- **Four aligned surfaces** — TUI and Web are end-user read surfaces; CLI and API are admin, automation, and integration surfaces
 - **Token usage analytics** — Track tokens across models, projects, sources, and time periods
 - **Export / Import / Merge** — Portable bundles for backup, migration, and multi-host merging
 - **Data health monitoring** — Drift and consistency metrics with source-level health matrix
+
+## Release Scope
+
+`0.2.0` is the current repository package, API, and Web UI release marker. The
+`self-host v1` wording in design documents describes the supported deployment
+scope: a single-user, local-first, localhost-or-trusted-LAN installation backed
+by SQLite. It is not a package version.
+
+The support tier for each source adapter is defined in
+[`packages/source-adapters/src/platforms/registry.ts`](packages/source-adapters/src/platforms/registry.ts)
+and checked by `pnpm run verify:support-status`.
 
 ## Supported Platforms
 
@@ -351,19 +369,16 @@ Drift timeline, consistency metrics, and per-source health diagnostics.
 
 ## Documentation
 
-For detailed guides, see the `docs/guide/` directory:
+Start with **[Documentation Map](docs/README.md)** for the organized docs tree.
 
-- **[CLI Guide](docs/guide/cli.md)** — All commands, flags, and output examples
-- **[API Guide](docs/guide/api.md)** — REST endpoints, configuration, and request/response schemas
-- **[Web UI Guide](docs/guide/web.md)** — Features, navigation, views, and configuration
-- **[Inspection Guide](docs/guide/inspection.md)** — When to use `probe:*` and `inspect:*` evidence/debugging helpers
-- **[Bug Reporting Guide](docs/guide/bug-reporting.md)** — The canonical evidence-preserving contract for reproducible bug reports
-- **[TUI Guide](docs/guide/tui.md)** — Launch modes, keyboard controls, pane behavior, and snapshot output for the local TUI
-- **[Source Notes](docs/sources/README.md)** — Technical notes for validated source storage layouts and ingestion paths
-- **[Self-Host V1 Release Gate](docs/design/SELF_HOST_V1_RELEASE_GATE.md)** — Minimum release bar for a single-user self-hosted v1
-- **[Roadmap](docs/ROADMAP.md)** — Current milestone-oriented development plan
+Core reading paths:
 
-Design documents are in `docs/design/`.
+- **Operate locally** — [CLI](docs/guide/cli.md), [TUI](docs/guide/tui.md), [Web](docs/guide/web.md), [API](docs/guide/api.md)
+- **Understand architecture** — [High-Level Design Freeze](HIGH_LEVEL_DESIGN_FREEZE.md), [Current Runtime Surface](docs/design/CURRENT_RUNTIME_SURFACE.md)
+- **Validate a release or support claim** — [Self-Host V1 Release Gate](docs/design/SELF_HOST_V1_RELEASE_GATE.md), [Validation Strategy](docs/design/V1_VALIDATION_STRATEGY.md)
+- **Inspect source data** — [Source Notes](docs/sources/README.md), [Inspection Guide](docs/guide/inspection.md)
+- **Report issues** — [Bug Reporting Guide](docs/guide/bug-reporting.md), [Bug Report Template](docs/templates/bug-report.md)
+- **Track future work** — [Roadmap](docs/ROADMAP.md)
 
 ## Project Structure
 
@@ -384,6 +399,7 @@ cchistory/
 ├── mock_data/                  # Sanitized fixture corpus
 ├── skills/                     # AI agent skill definitions and shared contracts
 ├── docs/
+│   ├── README.md               # Documentation map and maintenance rules
 │   ├── guide/                  # User-facing guides (CLI, API, Web, TUI, inspection, bug reporting)
 │   ├── sources/                # Technical notes for validated source layouts
 │   ├── templates/              # Reusable report/templates for operators and maintainers

@@ -1,6 +1,6 @@
 # Sources
 
-截至 2026-05-14，CCHistory registry 中有 12 个 source adapter。其中 10 个达到 `stable` 自托管支持分级，本目录覆盖的就是这 10 个已通过真实数据验证的 source reference；其余 2 个仍为 `experimental`。
+截至 2026-05-17，CCHistory registry 中有 12 个 source adapter。其中 10 个达到 `stable` 自托管支持分级，本目录覆盖的就是这 10 个已通过真实数据验证的 source reference；其余 2 个仍为 `experimental`。
 
 > 产品语义、`UserTurn` 定义、以及 project-first 约束，仍然以 `HIGH_LEVEL_DESIGN_FREEZE.md` 为准。
 >
