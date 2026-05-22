@@ -17,43 +17,34 @@ import {
   uploadRemoteAgentBundle,
   writeLocalRemoteAgentState,
 } from "../remote-agent.js";
-import {
-  getFlag,
-  getFlagValues,
-  hasFlag,
-  parseNumberFlag,
-  requireFlag,
-  type ParsedArgs,
-} from "../args.js";
 import { exportBundle } from "../bundle.js";
 import { createStorage } from "../store.js";
-import { formatError, type CliIo, type CommandOutput } from "../main.js";
+import { formatError, type CommandContext, type CommandOutput } from "../main.js";
 import { applySourceSelection } from "./sync.js";
 
-export async function handleAgent(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  const [subcommand, ...rest] = parsed.positionals;
-  const nextParsed: ParsedArgs = { ...parsed, positionals: rest };
+export async function handleAgent(context: CommandContext): Promise<CommandOutput> {
+  const subcommand = context.commandPath[1] ?? context.positionals[0];
   switch (subcommand) {
     case "pair":
-      return handleAgentPair(nextParsed);
+      return handleAgentPair(context);
     case "upload":
-      return handleAgentUpload(nextParsed);
+      return handleAgentUpload(context);
     case "schedule":
-      return handleAgentSchedule(nextParsed);
+      return handleAgentSchedule(context);
     case "pull":
-      return handleAgentPull(nextParsed);
+      return handleAgentPull(context);
     default:
       throw new Error("Usage: cchistory agent pair|upload|schedule|pull ...");
   }
 }
 
-async function handleAgentPair(parsed: ParsedArgs): Promise<CommandOutput> {
-  const serverUrl = requireFlag(parsed, "server");
-  const pairingToken = requireFlag(parsed, "pair-token");
-  const statePath = getFlag(parsed, "state-file") ?? defaultRemoteAgentStatePath();
+async function handleAgentPair(context: CommandContext): Promise<CommandOutput> {
+  const serverUrl = requireOption(context.options.server, "server");
+  const pairingToken = requireOption(context.options.pairToken, "pair-token");
+  const statePath = context.options.stateFile ?? defaultRemoteAgentStatePath();
   const response = await pairRemoteAgent(serverUrl, pairingToken, {
-    displayName: getFlag(parsed, "display-name"),
-    reportedHostname: getFlag(parsed, "reported-hostname") ?? os.hostname(),
+    displayName: context.options.displayName,
+    reportedHostname: context.options.reportedHostname ?? os.hostname(),
   });
   const state = buildLocalRemoteAgentState(serverUrl, response);
   await writeLocalRemoteAgentState(statePath, state);
@@ -73,8 +64,8 @@ async function handleAgentPair(parsed: ParsedArgs): Promise<CommandOutput> {
   };
 }
 
-async function handleAgentUpload(parsed: ParsedArgs): Promise<CommandOutput> {
-  const result = await runAgentUploadCycle(parsed);
+async function handleAgentUpload(context: CommandContext): Promise<CommandOutput> {
+  const result = await runAgentUploadCycle(context);
   return {
     text: [
       `Uploaded remote agent bundle ${result.uploadResult.bundle_id}`,
@@ -97,9 +88,9 @@ async function handleAgentUpload(parsed: ParsedArgs): Promise<CommandOutput> {
   };
 }
 
-async function handleAgentSchedule(parsed: ParsedArgs): Promise<CommandOutput> {
-  const intervalSeconds = parseNumberFlag(parsed, "interval-seconds");
-  const iterations = parseNumberFlag(parsed, "iterations");
+async function handleAgentSchedule(context: CommandContext): Promise<CommandOutput> {
+  const intervalSeconds = context.options.intervalSeconds;
+  const iterations = context.options.iterations;
   if (intervalSeconds === undefined) {
     throw new Error("Missing required --interval-seconds flag.");
   }
@@ -115,10 +106,10 @@ async function handleAgentSchedule(parsed: ParsedArgs): Promise<CommandOutput> {
     skipped: number;
     attempts: number;
   }> = [];
-  let statePath = getFlag(parsed, "state-file") ?? defaultRemoteAgentStatePath();
+  let statePath = context.options.stateFile ?? defaultRemoteAgentStatePath();
 
   for (let iteration = 0; iteration < targetIterations; iteration += 1) {
-    const cycle = await runAgentUploadCycle(parsed);
+    const cycle = await runAgentUploadCycle(context);
     statePath = cycle.statePath;
     cycleResults.push({
       bundle_id: cycle.uploadResult.bundle_id,
@@ -148,8 +139,8 @@ async function handleAgentSchedule(parsed: ParsedArgs): Promise<CommandOutput> {
   };
 }
 
-async function handleAgentPull(parsed: ParsedArgs): Promise<CommandOutput> {
-  const statePath = getFlag(parsed, "state-file") ?? defaultRemoteAgentStatePath();
+async function handleAgentPull(context: CommandContext): Promise<CommandOutput> {
+  const statePath = context.options.stateFile ?? defaultRemoteAgentStatePath();
   const state = await readLocalRemoteAgentState(statePath);
   const leased = await leaseRemoteAgentJob({ state });
   if (!leased.job) {
@@ -167,7 +158,7 @@ async function handleAgentPull(parsed: ParsedArgs): Promise<CommandOutput> {
   }
 
   try {
-    const cycle = await runAgentUploadCycle(parsed, {
+    const cycle = await runAgentUploadCycle(context, {
       sourceRefs: leased.job.source_slots === "all" ? [] : leased.job.source_slots,
       force: leased.job.sync_mode === "force_snapshot",
       limitFiles: leased.job.limit_files_per_source,
@@ -217,7 +208,7 @@ async function handleAgentPull(parsed: ParsedArgs): Promise<CommandOutput> {
   }
 }
 
-export async function runAgentUploadCycle(parsed: ParsedArgs, overrides: {
+export async function runAgentUploadCycle(context: CommandContext, overrides: {
   sourceRefs?: string[];
   limitFiles?: number;
   force?: boolean;
@@ -228,14 +219,14 @@ export async function runAgentUploadCycle(parsed: ParsedArgs, overrides: {
   uploadResult: Awaited<ReturnType<typeof uploadRemoteAgentBundle>>;
   attempts: number;
 }> {
-  const statePath = getFlag(parsed, "state-file") ?? defaultRemoteAgentStatePath();
+  const statePath = context.options.stateFile ?? defaultRemoteAgentStatePath();
   const state = await readLocalRemoteAgentState(statePath);
-  const sourceRefs = overrides.sourceRefs ?? getFlagValues(parsed, "source");
-  const limitFiles = overrides.limitFiles ?? parseNumberFlag(parsed, "limit-files");
-  const includeRawBlobs = !hasFlag(parsed, "no-raw");
-  const force = overrides.force ?? hasFlag(parsed, "force");
-  const retryAttempts = Math.max(0, parseNumberFlag(parsed, "retry-attempts") ?? 0);
-  const retryDelayMs = Math.max(0, parseNumberFlag(parsed, "retry-delay-ms") ?? 250);
+  const sourceRefs = overrides.sourceRefs ?? context.options.source;
+  const limitFiles = overrides.limitFiles ?? context.options.limitFiles;
+  const includeRawBlobs = !context.options.noRaw;
+  const force = overrides.force ?? context.options.force;
+  const retryAttempts = Math.max(0, context.options.retryAttempts ?? 0);
+  const retryDelayMs = Math.max(0, context.options.retryDelayMs ?? 250);
   const selectedSources = applySourceSelection(getDefaultSourcesForHost({ includeMissing: true }), sourceRefs);
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-agent-upload-"));
   const tempStoreDir = path.join(tempRoot, "store");
@@ -325,4 +316,11 @@ export async function runAgentUploadCycle(parsed: ParsedArgs, overrides: {
 
 async function sleep(durationMs: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, durationMs));
+}
+
+function requireOption(value: string | undefined, key: string): string {
+  if (!value) {
+    throw new Error(`Missing required --${key} flag.`);
+  }
+  return value;
 }

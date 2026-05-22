@@ -5,19 +5,13 @@ import type {
   UserTurnProjection,
 } from "@cchistory/domain";
 import {
-  getFlag,
-  parseNumberFlag,
-  type ParsedArgs,
-} from "../args.js";
-import {
-  type CliIo,
+  type CommandContext,
   type CommandOutput,
   openReadStore,
 } from "../main.js";
 import { cyan, dim, magenta } from "../colors.js";
 import { resolveProjectRef } from "../resolvers.js";
 import {
-  formatBrowseSnippet,
   formatCompactDate,
   formatCompactDateRelative,
   formatNumber,
@@ -29,7 +23,6 @@ import {
   shortId,
   summarizeLabelCounts,
   truncatePathMiddle,
-  truncateText,
   type RelatedWorkRollup,
 } from "../renderers.js";
 
@@ -64,19 +57,18 @@ interface ContextSession {
   };
 }
 
-export async function handleContext(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  const [target, ref] = parsed.positionals;
+export async function handleContext(context: CommandContext): Promise<CommandOutput> {
+  const target = context.commandPath[1] ?? context.positionals[0];
+  const ref = context.commandPath[1] ? context.positionals[0] : context.positionals[1];
   if (target !== "project" || !ref) {
     throw new Error("Use `context project <project-ref>`.");
   }
 
-  const readStore = await openReadStore(parsed, io);
+  const readStore = await openReadStore(context);
   try {
     const { layout, storage } = readStore;
     const project = resolveProjectRef(storage, ref);
-    const limit = normalizeLimit(getFlag(parsed, "limit") ? parseNumberFlag(parsed, "limit") : undefined);
-    const longListing = parsed.flags.has("long");
-    const promptWidth = longListing ? 180 : 110;
+    const limit = normalizeLimit(context.options.limit);
 
     const sourcesById = new Map(storage.listSources().map((source) => [source.id, source]));
     const sessionsById = new Map(storage.listResolvedSessions().map((session) => [session.id, session]));
@@ -90,8 +82,8 @@ export async function handleContext(parsed: ParsedArgs, io: CliIo): Promise<Comm
 
     const recentAsks = allProjectTurns
       .slice(0, limit)
-      .map((turn) => buildContextAsk(turn, sessionsById.get(turn.session_id), sourcesById, promptWidth));
-    const sessionThreads = buildContextSessions(allProjectSessions, allProjectTurns, sourcesById, Math.min(limit, 8), promptWidth);
+      .map((turn) => buildContextAsk(turn, sessionsById.get(turn.session_id), sourcesById));
+    const sessionThreads = buildContextSessions(allProjectSessions, allProjectTurns, sourcesById, Math.min(limit, 8));
     const relatedWork = allProjectSessions.reduce<RelatedWorkRollup>(
       (totals, session) => mergeRelatedWorkRollups(totals, rollupRelatedWork(storage.getSessionRelatedWork(session.id))),
       { delegated_sessions: 0, automation_runs: 0 },
@@ -200,7 +192,7 @@ function renderRecentAsks(asks: ContextAsk[]): string {
         .filter((entry): entry is string => Boolean(entry))
         .join(" · ");
       return [
-        `${cyan(String(index + 1).padStart(2, " "))}. ${ask.prompt}`,
+        formatPrefixedMultiline(ask.prompt, `${cyan(String(index + 1).padStart(2, " "))}. `, "    "),
         `    ${dim(details)}`,
       ].join("\n");
     })
@@ -213,7 +205,7 @@ function renderSessionThreads(sessions: ContextSession[]): string {
   }
   return sessions
     .map((session) => {
-      const title = session.title ? truncateText(session.title, 64) : "(untitled session)";
+      const title = session.title || "(untitled session)";
       const details = [
         `${formatNumber(session.asks)} asks`,
         session.source_label,
@@ -223,7 +215,7 @@ function renderSessionThreads(sessions: ContextSession[]): string {
       return [
         `- ${magenta(title)}`,
         `  ${dim(details)}`,
-        session.latest_prompt ? `  Latest: ${session.latest_prompt}` : undefined,
+        session.latest_prompt ? formatPrefixedMultiline(session.latest_prompt, "  Latest: ", "          ") : undefined,
       ]
         .filter((line): line is string => Boolean(line))
         .join("\n");
@@ -235,12 +227,11 @@ function buildContextAsk(
   turn: UserTurnProjection,
   session: SessionProjection | undefined,
   sourcesById: Map<string, SourceStatus>,
-  promptWidth: number,
 ): ContextAsk {
   const source = sourcesById.get(session?.source_id ?? turn.source_id);
   return {
     id: turn.id,
-    prompt: formatBrowseSnippet(turn.canonical_text, promptWidth),
+    prompt: formatContextText(turn.canonical_text),
     submitted_at: turn.submission_started_at,
     session_id: turn.session_id,
     session_title: session?.title,
@@ -262,7 +253,6 @@ function buildContextSessions(
   turns: UserTurnProjection[],
   sourcesById: Map<string, SourceStatus>,
   limit: number,
-  promptWidth: number,
 ): ContextSession[] {
   const turnsBySession = new Map<string, UserTurnProjection[]>();
   for (const turn of turns) {
@@ -278,7 +268,7 @@ function buildContextSessions(
       source_label: sourceLabel(sourcesById.get(session.source_id), session),
       updated_at: session.updated_at,
       asks: sessionTurns.length || session.turn_count,
-      latest_prompt: latestTurn ? formatBrowseSnippet(latestTurn.canonical_text, promptWidth) : undefined,
+      latest_prompt: latestTurn ? formatContextText(latestTurn.canonical_text) : undefined,
       inspect: {
         show_session: `cchistory show session ${session.id}`,
         tree_session: `cchistory tree session ${session.id} --long`,
@@ -296,6 +286,17 @@ function pickWorkspace(project: ProjectIdentity, sessions: SessionProjection[]):
     return project.primary_workspace_path;
   }
   return sessions.find((session) => session.working_directory)?.working_directory;
+}
+
+function formatContextText(value: string | undefined): string {
+  const text = value?.trim();
+  return text && text.length > 0 ? text : "(empty)";
+}
+
+function formatPrefixedMultiline(value: string, firstPrefix: string, continuationPrefix: string): string {
+  const lines = value.split(/\r?\n/u);
+  const [first = "", ...rest] = lines;
+  return [`${firstPrefix}${first}`, ...rest.map((line) => `${continuationPrefix}${line}`)].join("\n");
 }
 
 function normalizeLimit(value: number | undefined): number {

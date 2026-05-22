@@ -1,30 +1,24 @@
 import { getSourceFormatProfiles } from "@cchistory/source-adapters";
-import {
-  getFlag,
-  getFlagValues,
-  parseNumberFlag,
-  requireFlag,
-  type ParsedArgs,
-} from "../args.js";
 import { listVisibleProjects } from "../renderers.js";
 import {
-  type CliIo,
+  type CommandContext,
   type CommandOutput,
   openReadStore,
 } from "../main.js";
-import { resolveSessionRef, resolveTurnRef } from "../resolvers.js";
+import { resolveProjectRef, resolveSessionRef, resolveTurnRef } from "../resolvers.js";
 
-export async function handleQueryAlias(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  const [target] = parsed.positionals;
-  const readStore = await openReadStore(parsed, io);
+export async function handleQueryAlias(context: CommandContext): Promise<CommandOutput> {
+  const target = context.commandPath[1] ?? context.positionals[0];
+  const readStore = await openReadStore(context);
   try {
     const { storage } = readStore;
     switch (target) {
       case "turns": {
-        const query = getFlag(parsed, "search");
-        const projectId = getFlag(parsed, "project");
-        const sourceIds = getFlagValues(parsed, "source");
-        const limit = parseNumberFlag(parsed, "limit") ?? 20;
+        const query = context.options.search;
+        const projectRef = context.options.project;
+        const projectId = projectRef ? resolveProjectRef(storage, projectRef).project_id : undefined;
+        const sourceIds = context.options.source;
+        const limit = context.options.limit ?? 20;
         const json = query
           ? storage.searchTurns({
               query,
@@ -43,7 +37,7 @@ export async function handleQueryAlias(parsed: ParsedArgs, io: CliIo): Promise<C
         };
       }
       case "turn": {
-        const turnRef = requireFlag(parsed, "id");
+        const turnRef = requireOption(context.options.id, "id");
         const turn = resolveTurnRef(storage, turnRef);
         const json = {
           turn,
@@ -53,9 +47,10 @@ export async function handleQueryAlias(parsed: ParsedArgs, io: CliIo): Promise<C
         return { text: JSON.stringify(json, null, 2), json };
       }
       case "sessions": {
-        const projectId = getFlag(parsed, "project");
-        const sourceIds = getFlagValues(parsed, "source");
-        const limit = parseNumberFlag(parsed, "limit") ?? 20;
+        const projectRef = context.options.project;
+        const projectId = projectRef ? resolveProjectRef(storage, projectRef).project_id : undefined;
+        const sourceIds = context.options.source;
+        const limit = context.options.limit ?? 20;
         const json = storage
           .listResolvedSessions()
           .filter((session) => (projectId ? session.primary_project_id === projectId : true))
@@ -64,7 +59,7 @@ export async function handleQueryAlias(parsed: ParsedArgs, io: CliIo): Promise<C
         return { text: JSON.stringify(json, null, 2), json };
       }
       case "session": {
-        const sessionRef = requireFlag(parsed, "id");
+        const sessionRef = requireOption(context.options.id, "id");
         const session = resolveSessionRef(storage, sessionRef);
         const json = {
           session,
@@ -74,14 +69,14 @@ export async function handleQueryAlias(parsed: ParsedArgs, io: CliIo): Promise<C
         return { text: JSON.stringify(json, null, 2), json };
       }
       case "projects": {
-        const json = listVisibleProjects(storage, parsed);
+        const json = listVisibleProjects(storage, context);
         return { text: JSON.stringify(json, null, 2), json };
       }
       case "project": {
-        const projectId = requireFlag(parsed, "id");
+        const project = resolveProjectRef(storage, requireOption(context.options.id, "id"));
         const json = {
-          project: storage.getProject(projectId),
-          turns: storage.listProjectTurns(projectId, (getFlag(parsed, "link-state") as "all" | "committed" | "candidate" | "unlinked" | undefined) ?? "all"),
+          project,
+          turns: storage.listProjectTurns(project.project_id, (context.options.linkState as "all" | "committed" | "candidate" | "unlinked" | undefined) ?? "all"),
         };
         return { text: JSON.stringify(json, null, 2), json };
       }
@@ -91,6 +86,13 @@ export async function handleQueryAlias(parsed: ParsedArgs, io: CliIo): Promise<C
   } finally {
     await readStore.close();
   }
+}
+
+function requireOption(value: string | undefined, key: string): string {
+  if (!value) {
+    throw new Error(`Missing required --${key} flag.`);
+  }
+  return value;
 }
 
 export async function handleTemplates(): Promise<CommandOutput> {

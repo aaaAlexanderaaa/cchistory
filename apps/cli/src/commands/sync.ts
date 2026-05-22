@@ -1,5 +1,4 @@
 import { mkdir } from "node:fs/promises";
-import process from "node:process";
 import {
   getDefaultSources,
   discoverDefaultSourcesForHost,
@@ -9,13 +8,6 @@ import {
 } from "@cchistory/source-adapters";
 import { type SourceDefinition, type SourceStatus } from "@cchistory/domain";
 import type { CCHistoryStorage } from "@cchistory/storage";
-import {
-  getFlag,
-  getFlagValues,
-  hasFlag,
-  parseNumberFlag,
-  type ParsedArgs,
-} from "../args.js";
 import {
   renderTable,
   renderKeyValue,
@@ -30,7 +22,7 @@ import {
   type StoreLayout,
 } from "../store.js";
 import {
-  type CliIo,
+  type CommandContext,
   type CommandOutput,
   type SyncedSourceSummary,
   resolveReadMode,
@@ -41,21 +33,21 @@ import {
 import { formatSourceHandle, resolveSourceRef } from "../resolvers.js";
 import { createStatsOverviewOutput } from "./stats.js";
 
-export async function handleSync(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  if (hasFlag(parsed, "dry-run")) {
-    return handleSyncDryRun(parsed, io);
+export async function handleSync(context: CommandContext): Promise<CommandOutput> {
+  if (context.globals.dryRun) {
+    return handleSyncDryRun(context);
   }
 
   const layout = resolveStoreLayout({
-    cwd: io.cwd,
-    storeArg: getFlag(parsed, "store"),
-    dbArg: getFlag(parsed, "db"),
+    cwd: context.io.cwd,
+    storeArg: context.globals.store,
+    dbArg: context.globals.db,
   });
   await mkdir(layout.assetDir, { recursive: true });
   await mkdir(layout.rawDir, { recursive: true });
 
-  const sourceRefs = getFlagValues(parsed, "source");
-  const limitFiles = parseNumberFlag(parsed, "limit-files");
+  const sourceRefs = context.options.source;
+  const limitFiles = context.options.limitFiles;
   const storage = await openStorage(layout);
 
   try {
@@ -95,8 +87,8 @@ export async function handleSync(parsed: ParsedArgs, io: CliIo): Promise<Command
   }
 }
 
-export async function handleSyncDryRun(parsed: ParsedArgs, io?: CliIo): Promise<CommandOutput> {
-  const sourceRefs = getFlagValues(parsed, "source");
+export async function handleSyncDryRun(context: CommandContext): Promise<CommandOutput> {
+  const sourceRefs = context.options.source;
   const discoveries = applySourceDiscoverySelection(
     discoverDefaultSourcesForHost({ includeMissing: true }),
     sourceRefs,
@@ -104,9 +96,9 @@ export async function handleSyncDryRun(parsed: ParsedArgs, io?: CliIo): Promise<
   const availableCount = discoveries.filter((entry) => entry.selected_exists).length;
 
   const layout = resolveStoreLayout({
-    cwd: io?.cwd ?? process.cwd(),
-    storeArg: getFlag(parsed, "store"),
-    dbArg: getFlag(parsed, "db"),
+    cwd: context.io.cwd,
+    storeArg: context.globals.store,
+    dbArg: context.globals.db,
   });
 
   return {
@@ -134,8 +126,8 @@ export async function handleSyncDryRun(parsed: ParsedArgs, io?: CliIo): Promise<
   };
 }
 
-export async function handleDiscover(parsed: ParsedArgs): Promise<CommandOutput> {
-  const showAll = hasFlag(parsed, "showall");
+export async function handleDiscover(context: CommandContext): Promise<CommandOutput> {
+  const showAll = context.globals.showAll;
   const discoveries = discoverHostToolsForHost({ includeMissing: true });
   const visibleEntries = showAll ? discoveries : discoveries.filter((entry) => entry.discovered_paths.length > 0);
   const rows = visibleEntries.flatMap((entry) =>
@@ -170,16 +162,16 @@ export async function handleDiscover(parsed: ParsedArgs): Promise<CommandOutput>
   };
 }
 
-export async function handleHealth(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  const sourceRefs = getFlagValues(parsed, "source");
-  const showAll = hasFlag(parsed, "showall");
-  const readMode = resolveReadMode(parsed);
-  const explicitStoreSelection = Boolean(getFlag(parsed, "store") || getFlag(parsed, "db"));
-  const storeOnly = hasFlag(parsed, "store-only");
+export async function handleHealth(context: CommandContext): Promise<CommandOutput> {
+  const sourceRefs = context.options.source;
+  const showAll = context.globals.showAll;
+  const readMode = resolveReadMode(context);
+  const explicitStoreSelection = Boolean(context.globals.store || context.globals.db);
+  const storeOnly = context.options.storeOnly;
   const layout = resolveStoreLayout({
-    cwd: io.cwd,
-    storeArg: getFlag(parsed, "store"),
-    dbArg: getFlag(parsed, "db"),
+    cwd: context.io.cwd,
+    storeArg: context.globals.store,
+    dbArg: context.globals.db,
   });
 
   let discoveryOutput: CommandOutput | undefined;
@@ -223,7 +215,7 @@ export async function handleHealth(parsed: ParsedArgs, io: CliIo): Promise<Comma
       },
     };
 
-    syncPreviewOutput = await handleSyncDryRun(parsed);
+    syncPreviewOutput = await handleSyncDryRun(context);
     const syncPreviewJson = syncPreviewOutput.json as {
       kind: "sync-dry-run";
       sources: Array<{ selected_exists: boolean }>;
@@ -239,7 +231,7 @@ export async function handleHealth(parsed: ParsedArgs, io: CliIo): Promise<Comma
   let missingStoreNote: string | undefined;
 
   if (readMode === "full" || storeExists) {
-    const readStore = await openReadStore(parsed, io);
+    const readStore = await openReadStore(context);
     try {
       const selectedSourceIds = sourceRefs.length > 0 ? sourceRefs.map((ref) => resolveSourceRef(readStore.storage, ref).id) : undefined;
       storeSourcesOutput = createSourcesListOutput(readStore.layout, readStore.storage, selectedSourceIds);

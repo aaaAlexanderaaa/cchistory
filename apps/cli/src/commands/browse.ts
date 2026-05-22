@@ -6,13 +6,6 @@ import {
   type UserTurnProjection,
 } from "@cchistory/domain";
 import {
-  getFlag,
-  getFlagValues,
-  hasFlag,
-  parseNumberFlag,
-  type ParsedArgs,
-} from "../args.js";
-import {
   formatBrowseSnippet,
   formatCompactDate,
   formatCompactDateRelative,
@@ -28,6 +21,7 @@ import {
   formatTreeSourceLabel,
   listVisibleProjects,
   mergeRelatedWorkRollups,
+  projectCommandRef,
   projectLabel,
   renderKeyValue,
   renderSection,
@@ -46,7 +40,7 @@ import {
   type RelatedWorkRollup,
 } from "../renderers.js";
 import {
-  type CliIo,
+  type CommandContext,
   type CommandOutput,
   openReadStore,
 } from "../main.js";
@@ -59,29 +53,30 @@ import {
 import { createSourcesListOutput } from "./sync.js";
 import { bold, dim, cyan, magenta, muted } from "../colors.js";
 
-export async function handleLs(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  const [target] = parsed.positionals;
+export async function handleLs(context: CommandContext): Promise<CommandOutput> {
+  const target = context.commandPath[1] ?? context.positionals[0];
   if (!target || !["projects", "sessions", "sources"].includes(target)) {
     throw new Error("Use `ls projects`, `ls sessions`, or `ls sources`.");
   }
 
-  const readStore = await openReadStore(parsed, io);
+  const readStore = await openReadStore(context);
   try {
     const { layout, storage } = readStore;
-    const longListing = wantsLongListing(parsed);
+    const longListing = wantsLongListing(context);
     if (target === "projects") {
-      const projects = listVisibleProjects(storage, parsed);
+      const projects = listVisibleProjects(storage, context);
       const sessions = storage.listResolvedSessions();
       const sourcesById = new Map(storage.listSources().map((source) => [source.id, source]));
       return {
         text: renderTable(
           longListing
-            ? ["Name", "Sessions", "Turns", "Source Mix", "Related Work", "Last Active"]
-            : ["Name", "Sessions", "Turns", "Last Active"],
+            ? ["Name", "Ref", "Sessions", "Turns", "Source Mix", "Related Work", "Last Active"]
+            : ["Name", "Ref", "Sessions", "Turns", "Last Active"],
           projects.map((project) => {
             if (!longListing) {
               return [
                 cyan(project.display_name),
+                projectCommandRef(project),
                 String(project.session_count),
                 String(project.committed_turn_count + project.candidate_turn_count),
                 formatCompactDateRelative(project.project_last_activity_at ?? project.updated_at),
@@ -97,6 +92,7 @@ export async function handleLs(parsed: ParsedArgs, io: CliIo): Promise<CommandOu
             );
             return [
               cyan(project.display_name),
+              projectCommandRef(project),
               String(project.session_count),
               String(project.committed_turn_count + project.candidate_turn_count),
               sourceMix,
@@ -104,7 +100,7 @@ export async function handleLs(parsed: ParsedArgs, io: CliIo): Promise<CommandOu
               formatCompactDateRelative(project.project_last_activity_at ?? project.updated_at),
             ];
           }),
-          { align: longListing ? ["left", "right", "right", "left", "left", "left"] : ["left", "right", "right", "left"] },
+          { align: longListing ? ["left", "left", "right", "right", "left", "left", "left"] : ["left", "left", "right", "right", "left"] },
         ),
         json: { kind: "projects", db_path: layout.dbPath, projects },
       };
@@ -115,8 +111,8 @@ export async function handleLs(parsed: ParsedArgs, io: CliIo): Promise<CommandOu
       const sourcesById = new Map(storage.listSources().map((source) => [source.id, source]));
       const allSessions = storage.listResolvedSessions();
       const defaultLimit = 30;
-      const showAll = hasFlag(parsed, "all");
-      const limit = parseNumberFlag(parsed, "limit") ?? (showAll ? allSessions.length : defaultLimit);
+      const showAll = context.options.all;
+      const limit = context.options.limit ?? (showAll ? allSessions.length : defaultLimit);
       const sessions = allSessions.slice(0, limit);
       const truncated = allSessions.length > sessions.length;
       const table = renderTable(
@@ -167,18 +163,19 @@ export async function handleLs(parsed: ParsedArgs, io: CliIo): Promise<CommandOu
   }
 }
 
-export async function handleTree(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  const [target, ref] = parsed.positionals;
-  const readStore = await openReadStore(parsed, io);
+export async function handleTree(context: CommandContext): Promise<CommandOutput> {
+  const target = context.commandPath[1] ?? context.positionals[0];
+  const ref = context.commandPath[1] ? context.positionals[0] : context.positionals[1];
+  const readStore = await openReadStore(context);
   try {
     const { layout, storage } = readStore;
-    const longListing = wantsLongListing(parsed);
+    const longListing = wantsLongListing(context);
     const projects = storage.listProjects();
     const sessions = storage.listResolvedSessions();
     const turns = storage.listResolvedTurns();
     const sourcesById = new Map(storage.listSources().map((source) => [source.id, source]));
     if (target === "projects") {
-      const visibleProjects = sortProjectsForDisplay(filterProjectsForDisplay(projects, parsed));
+      const visibleProjects = sortProjectsForDisplay(filterProjectsForDisplay(projects, context));
       const lines: string[] = [];
       for (const project of visibleProjects) {
         const lastActive = formatCompactDateRelative(project.project_last_activity_at ?? project.updated_at);
@@ -311,20 +308,21 @@ export async function handleTree(parsed: ParsedArgs, io: CliIo): Promise<Command
   }
 }
 
-export async function handleShow(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  const [target, ref] = parsed.positionals;
+export async function handleShow(context: CommandContext): Promise<CommandOutput> {
+  const target = context.commandPath[1] ?? context.positionals[0];
+  const ref = context.commandPath[1] ? context.positionals[0] : context.positionals[1];
   if (!target || !ref) {
     throw new Error("Use `show project|session|turn|source <ref>`.");
   }
 
-  const readStore = await openReadStore(parsed, io);
+  const readStore = await openReadStore(context);
   try {
     const { layout, storage } = readStore;
     if (target === "project") {
       const project = resolveProjectRef(storage, ref);
       const turns = storage.listProjectTurns(project.project_id);
       const usage = storage.getUsageOverview({ project_id: project.project_id });
-      const longListing = wantsLongListing(parsed);
+      const longListing = wantsLongListing(context);
       const overviewRows: Array<[string, string]> = [
         ["Status", colorizeStatus(projectStatusLabel(project))],
         ["Sessions", String(project.session_count)],
@@ -369,7 +367,7 @@ export async function handleShow(parsed: ParsedArgs, io: CliIo): Promise<Command
         ? storage.listProjects().find((entry) => entry.project_id === session.primary_project_id)
         : undefined;
       const source = storage.listSources().find((entry) => entry.id === session.source_id);
-      const longListing = wantsLongListing(parsed);
+      const longListing = wantsLongListing(context);
       const sessionRows: Array<[string, string]> = [
         ["Title", session.title ?? "(untitled)"],
         ["Workspace", session.working_directory ?? "unknown"],
@@ -420,9 +418,9 @@ export async function handleShow(parsed: ParsedArgs, io: CliIo): Promise<Command
         ? storage.listProjects().find((entry) => entry.project_id === session.primary_project_id)
         : undefined;
       const source = storage.listSources().find((entry) => entry.id === turn.source_id);
-      const context = storage.getTurnContext(turn.id);
-      const assistantReply = context?.assistant_replies?.[0];
-      const longListing = wantsLongListing(parsed);
+      const turnContext = storage.getTurnContext(turn.id);
+      const assistantReply = turnContext?.assistant_replies?.[0];
+      const longListing = wantsLongListing(context);
 
       const overviewRows: Array<[string, string]> = [
         ["Project", projectLabel(project)],
@@ -459,7 +457,7 @@ export async function handleShow(parsed: ParsedArgs, io: CliIo): Promise<Command
           ...(assistantReply ? ["", renderSection("Response", formatTurnResponseForDisplay(assistantReply.content, longListing))] : []),
           ...traceability,
         ].join("\n"),
-        json: { kind: "turn", db_path: layout.dbPath, turn, session, project, context },
+        json: { kind: "turn", db_path: layout.dbPath, turn, session, project, context: turnContext },
       };
     }
 
@@ -488,20 +486,20 @@ export async function handleShow(parsed: ParsedArgs, io: CliIo): Promise<Command
   }
 }
 
-export async function handleSearch(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  const query = parsed.positionals.join(" ").trim();
+export async function handleSearch(context: CommandContext): Promise<CommandOutput> {
+  const query = context.positionals.join(" ").trim();
   if (!query) {
     throw new Error("Search requires a query string.");
   }
 
-  const readStore = await openReadStore(parsed, io);
+  const readStore = await openReadStore(context);
   try {
     const { layout, storage } = readStore;
-    const projectRef = getFlag(parsed, "project");
-    const sourceRefs = getFlagValues(parsed, "source");
-    const wantAll = hasFlag(parsed, "all");
-    const limit = wantAll ? 1000 : (parseNumberFlag(parsed, "limit") ?? 50);
-    const offset = parseNumberFlag(parsed, "offset") ?? 0;
+    const projectRef = context.options.project;
+    const sourceRefs = context.options.source;
+    const wantAll = context.options.all;
+    const limit = wantAll ? 1000 : (context.options.limit ?? 50);
+    const offset = context.options.offset ?? 0;
     const project = projectRef ? resolveProjectRef(storage, projectRef) : undefined;
     const sourceIds = sourceRefs.length > 0 ? sourceRefs.map((ref) => resolveSourceRef(storage, ref).id) : undefined;
     const sourcesById = new Map(storage.listSources().map((source) => [source.id, source]));
@@ -512,7 +510,7 @@ export async function handleSearch(parsed: ParsedArgs, io: CliIo): Promise<Comma
       limit,
       offset,
     });
-    const longListing = wantsLongListing(parsed);
+    const longListing = wantsLongListing(context);
     const snippetMaxLength = longListing ? 120 : 76;
     const groups = groupSearchResults(results);
     const lines: string[] = [];
@@ -586,8 +584,8 @@ export async function handleSearch(parsed: ParsedArgs, io: CliIo): Promise<Comma
   }
 }
 
-export function wantsLongListing(parsed: ParsedArgs): boolean {
-  return hasFlag(parsed, "long");
+export function wantsLongListing(context: CommandContext): boolean {
+  return context.globals.long;
 }
 
 export function projectStatusLabel(project: ProjectIdentity): string {

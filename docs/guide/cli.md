@@ -16,7 +16,13 @@ Options:
   --json           Machine-readable JSON output
   --dry-run        Preview `sync` or `gc` actions without writing
   --showall        Include empty projects in listings and missing discovery candidates
+  --debug          Print stack traces for troubleshooting
+  --no-color       Disable ANSI color output
 ```
+
+Use `cchistory <command> --help`, `cchistory help <command>`, or
+`cchistory help <command> <subcommand>` for command-specific usage without
+opening a store or running discovery.
 
 ## Commands
 
@@ -106,7 +112,7 @@ Behavior notes:
 Browse projects, sessions, and sources.
 
 ```bash
-cchistory ls projects                   # List projects (hides empty by default)
+cchistory ls projects                   # List projects with a copyable Ref (hides empty by default)
 cchistory ls projects --long            # Add source-mix and related-work summaries
 cchistory ls sessions                   # List all sessions with title/workspace hints
 cchistory ls sessions --long            # Add platform, turn-count, and related-work columns
@@ -117,13 +123,16 @@ cchistory ls projects --showall         # Include empty projects
 **Example output:**
 
 ```
-Name                   Status     Hosts  Sessions  Turns  Last Activity
----------------------  ---------  -----  --------  -----  ------------------------
-chat-ui-kit            tentative  1      3         3      2026-03-13T09:11:15.457Z
-history-lab            tentative  1      2         2      2026-03-16T16:42:12.467Z
-shared-product-lab     tentative  1      1         1      2026-03-16T16:41:50.982Z
+Name                   Ref                         Sessions  Turns  Last Active
+---------------------  --------------------------  --------  -----  -----------
+chat-ui-kit            chat-ui-kit-a1b2c3                 3      3  Mar 13
+history-lab            history-lab-d4e5f6                 2      2  Mar 16
+shared-product-lab     shared-product-lab-012abc          1      1  Mar 16
 ...
 ```
+
+Project commands accept the copied `Ref`, the stable `project_id`, a unique
+display name, or a unique workspace path / workspace basename.
 
 ### search
 
@@ -162,12 +171,26 @@ cchistory context project chat-ui-kit --json
 ```
 
 Default text output leads with recent asks across sessions and sources, then
-shows session threads and the next inspection commands. JSON output is designed
-for tool calls: it preserves stable IDs and follow-up commands while avoiding
-raw storage fields like `payload_json` or full evidence lineage by default.
+shows session threads and the next inspection commands. The selected ask text
+is not snippet-truncated: `prompt` and `latest_prompt` carry the full selected
+`UserTurn.canonical_text`. `--limit` controls how many asks/sessions are
+included; it does not shorten the text of included asks.
+
+JSON output is designed for tool calls: it preserves stable IDs and follow-up
+commands while avoiding raw storage fields like `payload_json` or full evidence
+lineage by default.
 
 Use this as the first command when an AI needs to understand what has happened
 in a project before continuing work.
+
+CLI completeness policy:
+
+| Command family | Text completeness |
+|----------------|-------------------|
+| `context project` | Full selected ask prompts and stored session titles; bounded by `--limit` |
+| `query` | Structured projection data, untruncated unless the stored projection field is itself a preview/summary |
+| `show turn --long` / `query turn` | Full turn prompt and assistant context projection |
+| `search`, `ls`, `tree`, default `show` | Browse summaries; snippets and table cells may be truncated |
 
 ### stats
 
@@ -427,17 +450,17 @@ Structured JSON output for programmatic consumption (always outputs JSON).
 ```bash
 cchistory query turns --search "refactor" --limit 5
 cchistory query turn --id <turn-id-or-prefix>
-cchistory query sessions --project <project-id>
+cchistory query sessions --project <project-ref>
 cchistory query session --id <session-id>
 cchistory query projects
-cchistory query project --id <project-id> --link-state committed
+cchistory query project --id <project-ref> --link-state committed
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--id <id>` | Entity ID (for single-entity queries) |
+| `--id <id-or-ref>` | Entity ID or accepted entity reference for single-entity queries |
 | `--search <query>` | Full-text search (for `turns`) |
-| `--project <id>` | Project filter |
+| `--project <ref>` | Project filter; accepts the same project refs as `show/context/search` |
 | `--source <id>` | Source filter |
 | `--limit <n>` | Max items (default: 20) |
 | `--link-state <state>` | Filter: `all`, `committed`, `candidate`, `unlinked` |

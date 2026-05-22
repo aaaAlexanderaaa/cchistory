@@ -15,11 +15,74 @@ export function resolveProjectRef(storage: CCHistoryStorage, ref: string): Proje
   if (direct) {
     return direct;
   }
-  const slugMatches = projects.filter((project) => project.slug === ref);
-  if (slugMatches.length === 1) {
-    return slugMatches[0]!;
+
+  const normalizedRef = normalizeProjectRefToken(ref);
+  const normalizedPathRef = normalizeLocalPathIdentity(ref);
+
+  const exactSlugMatch = resolveUniqueProjectMatch(
+    ref,
+    projects.filter((project) => project.slug === ref),
+    "slug",
+  );
+  if (exactSlugMatch) {
+    return exactSlugMatch;
   }
-  throw new Error(`Unknown project reference: ${ref}`);
+
+  const displayNameMatch = resolveUniqueProjectMatch(
+    ref,
+    projects.filter((project) => normalizeProjectRefToken(project.display_name) === normalizedRef),
+    "display name",
+  );
+  if (displayNameMatch) {
+    return displayNameMatch;
+  }
+
+  const workspaceMatch = resolveUniqueProjectMatch(
+    ref,
+    projects.filter((project) => {
+      const normalizedWorkspace = normalizeLocalPathIdentity(project.primary_workspace_path);
+      const normalizedBasename = normalizeProjectRefToken(getLocalPathBasename(project.primary_workspace_path));
+      return Boolean(
+        (normalizedPathRef && normalizedWorkspace === normalizedPathRef) ||
+          (normalizedBasename && normalizedBasename === normalizedRef),
+      );
+    }),
+    "workspace",
+  );
+  if (workspaceMatch) {
+    return workspaceMatch;
+  }
+
+  const sourceNativeMatch = resolveUniqueProjectMatch(
+    ref,
+    normalizedRef
+      ? projects.filter((project) => normalizeProjectRefToken(project.source_native_project_ref) === normalizedRef)
+      : [],
+    "source-native project reference",
+  );
+  if (sourceNativeMatch) {
+    return sourceNativeMatch;
+  }
+
+  const projectIdPrefixMatch = resolveUniqueProjectMatch(
+    ref,
+    projects.filter((project) => project.project_id.startsWith(ref)),
+    "ID prefix",
+  );
+  if (projectIdPrefixMatch) {
+    return projectIdPrefixMatch;
+  }
+
+  const slugPrefixMatch = resolveUniqueProjectMatch(
+    ref,
+    projects.filter((project) => project.slug.startsWith(ref)),
+    "slug prefix",
+  );
+  if (slugPrefixMatch) {
+    return slugPrefixMatch;
+  }
+
+  throw new Error(formatUnknownProjectRefError(ref, projects));
 }
 
 export function resolveSessionRef(storage: CCHistoryStorage, ref: string): SessionProjection {
@@ -138,6 +201,23 @@ function resolveUniqueSessionMatch(
   throw new Error(`Ambiguous session reference: ${ref}. Matched ${matchKind} ${preview}${remainder}`);
 }
 
+function resolveUniqueProjectMatch(
+  ref: string,
+  matches: ProjectIdentity[],
+  matchKind: string,
+): ProjectIdentity | undefined {
+  const uniqueMatches = dedupeProjects(matches);
+  if (uniqueMatches.length === 0) {
+    return undefined;
+  }
+  if (uniqueMatches.length === 1) {
+    return uniqueMatches[0]!;
+  }
+  const preview = uniqueMatches.slice(0, 3).map(formatProjectRefPreview).join(", ");
+  const remainder = uniqueMatches.length > 3 ? ` (+${uniqueMatches.length - 3} more)` : "";
+  throw new Error(`Ambiguous project reference: ${ref}. Matched ${matchKind} ${preview}${remainder}`);
+}
+
 function resolveUniqueTurnMatch(
   ref: string,
   matches: UserTurnProjection[],
@@ -152,6 +232,39 @@ function resolveUniqueTurnMatch(
   const preview = matches.slice(0, 3).map(formatTurnRefPreview).join(", ");
   const remainder = matches.length > 3 ? ` (+${matches.length - 3} more)` : "";
   throw new Error(`Ambiguous turn reference: ${ref}. Matched ${matchKind} ${preview}${remainder}`);
+}
+
+function dedupeProjects(projects: ProjectIdentity[]): ProjectIdentity[] {
+  const byId = new Map<string, ProjectIdentity>();
+  for (const project of projects) {
+    byId.set(project.project_id, project);
+  }
+  return [...byId.values()];
+}
+
+function normalizeProjectRefToken(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  return trimmed.toLowerCase().replace(/\s+/g, " ");
+}
+
+function formatUnknownProjectRefError(ref: string, projects: ProjectIdentity[]): string {
+  const knownProjects = projects.slice(0, 5).map(formatProjectRefPreview);
+  const knownSection =
+    knownProjects.length > 0
+      ? ` Known projects: ${knownProjects.join("; ")}${projects.length > knownProjects.length ? `; +${projects.length - knownProjects.length} more` : ""}.`
+      : " No projects are indexed yet.";
+  return `Unknown project reference: ${ref}. Use a project ID, Ref/slug from \`cchistory ls projects\`, display name, or workspace path.${knownSection}`;
+}
+
+function formatProjectRefPreview(project: ProjectIdentity): string {
+  const parts = [`${project.display_name} ref=${project.slug}`, `id=${project.project_id}`];
+  if (project.primary_workspace_path) {
+    parts.push(`workspace=${JSON.stringify(project.primary_workspace_path)}`);
+  }
+  return parts.join(" ");
 }
 
 function formatSessionRefPreview(session: SessionProjection): string {

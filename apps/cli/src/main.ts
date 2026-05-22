@@ -11,15 +11,12 @@ import {
   installRuntimeWarningFilter,
 } from "@cchistory/storage";
 import {
-  getFlag,
-  getFlagValues,
-  hasFlag,
-  parseArgs,
-  parseNumberFlag,
+  commandName,
+  parseCliArgs,
   renderHelp,
-  type ParsedArgs,
+  type ParsedCommand,
 } from "./args.js";
-import { dim, red, yellow } from "./colors.js";
+import { configureColorPolicy, dim, red, yellow } from "./colors.js";
 
 const errorStyle = red;
 const hintStyle = yellow;
@@ -52,6 +49,14 @@ export interface CommandOutput {
 
 export type ReadMode = "index" | "full";
 
+export interface CommandContext {
+  commandPath: string[];
+  positionals: string[];
+  options: ParsedCommand["options"];
+  globals: ParsedCommand["globals"];
+  io: CliIo;
+}
+
 export interface OpenedReadStore {
   layout: StoreLayout;
   storage: CCHistoryStorage;
@@ -71,114 +76,101 @@ export interface SyncedSourceSummary {
 }
 
 export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<number> {
-  const parsed = parseArgs(argv);
-  const jsonMode = hasFlag(parsed, "json");
-
-  // --version / -v
-  if (hasFlag(parsed, "version") || parsed.positionals.includes("-v")) {
-    const _require = createRequire(import.meta.url);
-    const pkg = _require("../package.json") as { version: string };
-    const version = pkg.version;
-    printOutput({ text: `cchistory ${version}`, json: { version } }, jsonMode, io);
-    return 0;
-  }
-
-  // Strip leading "--" (pnpm-style separator) before extracting the command
-  const effectivePositionals = parsed.positionals[0] === "--" ? parsed.positionals.slice(1) : parsed.positionals;
-  const [rawCommand, ...restPositionals] = effectivePositionals;
-  const command = normalizeCommand(rawCommand);
-
-  if (!command) {
-    printOutput(
-      {
-        text: renderHelp(),
-        json: { help: true },
-      },
-      jsonMode,
-      io,
-    );
-    return 0;
-  }
-
   try {
-    const commandArgs = { ...parsed, positionals: restPositionals };
-    const output = await dispatchCommand(command, commandArgs, io);
-    printOutput(output, jsonMode || command === "query" || command === "templates", io);
+    const parsed = parseCliArgs(argv);
+    configureColorPolicy({ color: parsed.globals.color });
+
+    if (parsed.version) {
+      const _require = createRequire(import.meta.url);
+      const pkg = _require("../package.json") as { version: string };
+      const version = pkg.version;
+      printOutput({ text: `cchistory ${version}`, json: { version } }, parsed.globals.json, io);
+      return 0;
+    }
+
+    if (parsed.help) {
+      printOutput(
+        {
+          text: renderHelp(parsed.helpTarget),
+          json: { help: true },
+        },
+        parsed.globals.json,
+        io,
+      );
+      return 0;
+    }
+
+    const context: CommandContext = {
+      commandPath: parsed.commandPath,
+      positionals: parsed.positionals,
+      options: parsed.options,
+      globals: parsed.globals,
+      io,
+    };
+    const output = await dispatchCommand(context);
+    const topCommand = context.commandPath[0];
+    printOutput(output, parsed.globals.json || topCommand === "query" || topCommand === "templates", io);
     return 0;
   } catch (error) {
-    const message = formatError(error);
-    io.stderr(`${errorStyle(`Error: ${message}`)}\n`);
-    // If the store wasn't found, add a helpful hint
-    if (message.includes("Store not found")) {
-      io.stderr(`\n${hintStyle("Hint:")} Run \`cchistory sync\` first to ingest data from AI coding tools on this machine.\n`);
-      io.stderr(`${hintStyle("     ")} Run \`cchistory discover\` to see what sources are available.\n`);
-    }
-    const hint = getErrorHint(error);
-    if (hint) {
-      io.stderr(`${hintStyle("Hint:")} ${hint}\n`);
-    }
-    if (error instanceof Error && error.stack) {
-      const stackLines = error.stack.split("\n").slice(1);
-      if (stackLines.length > 0) {
-        io.stderr(`\n${dim(stackLines.join("\n"))}\n`);
-      }
-    }
+    configureColorPolicy({ color: !argv.includes("--no-color") });
+    printError(error, io, shouldPrintDebug(argv));
     return 1;
   }
 }
 
-async function dispatchCommand(command: string, parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
+async function dispatchCommand(context: CommandContext): Promise<CommandOutput> {
+  const command = context.commandPath[0];
   switch (command) {
     case "sync":
-      return handleSync(parsed, io);
+      return handleSync(context);
     case "discover":
-      return handleDiscover(parsed);
+      return handleDiscover(context);
     case "health":
-      return handleHealth(parsed, io);
+      return handleHealth(context);
     case "ls":
-      return handleLs(parsed, io);
+      return handleLs(context);
     case "tree":
-      return handleTree(parsed, io);
+      return handleTree(context);
     case "show":
-      return handleShow(parsed, io);
+      return handleShow(context);
     case "search":
-      return handleSearch(parsed, io);
+      return handleSearch(context);
     case "context":
-      return handleContext(parsed, io);
+      return handleContext(context);
     case "stats":
-      return handleStats(parsed, io);
+      return handleStats(context);
     case "export":
-      return handleExport(parsed, io);
+      return handleExport(context);
     case "backup":
-      return handleBackup(parsed, io);
+      return handleBackup(context);
     case "restore-check":
-      return handleRestoreCheck(parsed, io);
+      return handleRestoreCheck(context);
     case "import":
-      return handleImport(parsed, io);
+      return handleImport(context);
     case "merge":
-      return handleMergeAlias(parsed, io);
+      return handleMergeAlias(context);
     case "gc":
-      return handleGc(parsed, io);
+      return handleGc(context);
     case "query":
-      return handleQueryAlias(parsed, io);
+      return handleQueryAlias(context);
     case "templates":
       return handleTemplates();
     case "agent":
-      return handleAgent(parsed, io);
+      return handleAgent(context);
     case "tui":
-      return handleTui(parsed, io);
+      return handleTui(context);
     default:
-      throw new Error(`Unknown command: ${command}`);
+      throw new Error(`Unknown command: ${commandName(context.commandPath)}`);
   }
 }
 
-async function handleTui(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
+async function handleTui(context: CommandContext): Promise<CommandOutput> {
   const { runTui } = await import("@cchistory/tui");
-  const forwardedArgs = rebuildArgs(parsed);
+  const forwardedArgs = rebuildTuiArgs(context);
   const exitCode = await runTui(forwardedArgs, {
-    cwd: io.cwd,
-    stdout: io.stdout,
-    stderr: io.stderr,
+    cwd: context.io.cwd,
+    stdout: context.io.stdout,
+    stderr: context.io.stderr,
     isInteractiveTerminal: Boolean(process.stdout.isTTY && process.stdin.isTTY),
   });
   if (exitCode !== 0) {
@@ -187,38 +179,30 @@ async function handleTui(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> 
   return { text: "", json: null };
 }
 
-function rebuildArgs(parsed: ParsedArgs): string[] {
+function rebuildTuiArgs(context: CommandContext): string[] {
   const args: string[] = [];
-  for (const pos of parsed.positionals) {
+  for (const pos of context.positionals) {
     args.push(pos);
   }
-  for (const [key, values] of parsed.flags) {
-    for (const value of values) {
-      if (value === "true") {
-        args.push(`--${key}`);
-      } else {
-        args.push(`--${key}`, value);
-      }
-    }
+  pushOptionalArg(args, "store", context.globals.store);
+  pushOptionalArg(args, "db", context.globals.db);
+  if (context.globals.full) args.push("--full");
+  if (context.globals.index) args.push("--index");
+  for (const source of context.options.source) {
+    pushOptionalArg(args, "source", source);
   }
+  pushOptionalArg(args, "limit-files", context.options.limitFiles);
+  pushOptionalArg(args, "search", context.options.search);
+  if (context.options.sourceHealth) args.push("--source-health");
   return args;
 }
 
-function normalizeCommand(value: string | undefined): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-  const normalized = value.toLowerCase().trim();
-  if (normalized === "restore") {
-    return "restore-check";
-  }
-  if (normalized === "help" || normalized === "-h" || normalized === "--help") {
-    return undefined; // triggers help output
-  }
-  return normalized;
+function pushOptionalArg(args: string[], key: string, value: string | number | undefined): void {
+  if (value === undefined) return;
+  args.push(`--${key}`, String(value));
 }
 
-type ReadStoreFactory = (parsed: ParsedArgs, io: CliIo) => Promise<OpenedReadStore>;
+type ReadStoreFactory = (context: CommandContext) => Promise<OpenedReadStore>;
 
 let readStoreFactory: ReadStoreFactory = openReadStoreDefault;
 
@@ -230,17 +214,17 @@ export function interceptReadStoreFactoryForTests(wrapper: (next: ReadStoreFacto
   };
 }
 
-export async function openReadStore(parsed: ParsedArgs, io: CliIo): Promise<OpenedReadStore> {
-  return readStoreFactory(parsed, io);
+export async function openReadStore(context: CommandContext): Promise<OpenedReadStore> {
+  return readStoreFactory(context);
 }
 
-async function openReadStoreDefault(parsed: ParsedArgs, io: CliIo): Promise<OpenedReadStore> {
+async function openReadStoreDefault(context: CommandContext): Promise<OpenedReadStore> {
   const baseLayout = resolveStoreLayout({
-    cwd: io.cwd,
-    storeArg: getFlag(parsed, "store"),
-    dbArg: getFlag(parsed, "db"),
+    cwd: context.io.cwd,
+    storeArg: context.globals.store,
+    dbArg: context.globals.db,
   });
-  const readMode = resolveReadMode(parsed);
+  const readMode = resolveReadMode(context);
   if (readMode === "index") {
     await requireStoreDatabase(baseLayout.dbPath);
     const storage = await openStorage(baseLayout);
@@ -263,8 +247,8 @@ async function openReadStoreDefault(parsed: ParsedArgs, io: CliIo): Promise<Open
     await syncSelectedSources({
       layout,
       storage,
-      sourceRefs: getFlagValues(parsed, "source"),
-      limitFiles: parseNumberFlag(parsed, "limit-files"),
+      sourceRefs: context.options.source,
+      limitFiles: context.options.limitFiles,
       snapshotRawBlobs: false,
     });
     return {
@@ -280,11 +264,11 @@ async function openReadStoreDefault(parsed: ParsedArgs, io: CliIo): Promise<Open
   }
 }
 
-export async function openExistingStore(parsed: ParsedArgs, io: CliIo): Promise<{ layout: StoreLayout; storage: CCHistoryStorage }> {
+export async function openExistingStore(context: CommandContext): Promise<{ layout: StoreLayout; storage: CCHistoryStorage }> {
   const layout = resolveStoreLayout({
-    cwd: io.cwd,
-    storeArg: getFlag(parsed, "store"),
-    dbArg: getFlag(parsed, "db"),
+    cwd: context.io.cwd,
+    storeArg: context.globals.store,
+    dbArg: context.globals.db,
   });
   return {
     layout,
@@ -303,8 +287,8 @@ export async function requireStoreDatabase(dbPath: string): Promise<void> {
   }
 }
 
-export function resolveReadMode(parsed: ParsedArgs): ReadMode {
-  if (hasFlag(parsed, "full")) {
+export function resolveReadMode(context: CommandContext): ReadMode {
+  if (context.globals.full) {
     return "full";
   }
   return "index";
@@ -338,6 +322,29 @@ function printOutput(output: CommandOutput, jsonMode: boolean, io: CliIo): void 
 
 export function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function printError(error: unknown, io: CliIo, debug: boolean): void {
+  const message = formatError(error);
+  io.stderr(`${errorStyle(`Error: ${message}`)}\n`);
+  if (message.includes("Store not found")) {
+    io.stderr(`\n${hintStyle("Hint:")} Run \`cchistory sync\` first to ingest data from AI coding tools on this machine.\n`);
+    io.stderr(`${hintStyle("     ")} Run \`cchistory discover\` to see what sources are available.\n`);
+  }
+  const hint = getErrorHint(error);
+  if (hint) {
+    io.stderr(`${hintStyle("Hint:")} ${hint}\n`);
+  }
+  if (debug && error instanceof Error && error.stack) {
+    const stackLines = error.stack.split("\n").slice(1);
+    if (stackLines.length > 0) {
+      io.stderr(`\n${dim(stackLines.join("\n"))}\n`);
+    }
+  }
+}
+
+function shouldPrintDebug(argv: string[]): boolean {
+  return argv.includes("--debug") || process.env.CCHISTORY_DEBUG === "1";
 }
 
 function getErrorHint(error: unknown): string | undefined {

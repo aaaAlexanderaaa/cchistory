@@ -16,7 +16,12 @@ import process from "node:process";
 
 type ColorFn = (text: string) => string;
 
-function shouldUseColor(): boolean {
+interface ColorPolicy {
+  color?: boolean;
+}
+
+function shouldUseColor(policy: ColorPolicy = {}): boolean {
+  if (policy.color === false) return false;
   if (process.env.FORCE_COLOR !== undefined) return true;
   if (process.env.NO_COLOR !== undefined) return false;
   if (process.env.TERM === "dumb") return false;
@@ -24,11 +29,14 @@ function shouldUseColor(): boolean {
   return true;
 }
 
-const enabled = shouldUseColor();
+let enabled = shouldUseColor();
+
+export function configureColorPolicy(policy: ColorPolicy = {}): void {
+  enabled = shouldUseColor(policy);
+}
 
 function ansi(open: number, close: number): ColorFn {
-  if (!enabled) return (text: string) => text;
-  return (text: string) => `\x1b[${open}m${text}\x1b[${close}m`;
+  return (text: string) => (enabled ? `\x1b[${open}m${text}\x1b[${close}m` : text);
 }
 
 // ---- Base styles ----
@@ -59,4 +67,6 @@ export const highlight: ColorFn = (text) => bold(yellow(text));
 export const id: ColorFn = magenta;
 export const platform: ColorFn = blue;
 
-export const isColorEnabled = enabled;
+export function isColorEnabled(): boolean {
+  return enabled;
+}

@@ -3,11 +3,6 @@ import {
 } from "@cchistory/domain";
 import type { CCHistoryStorage } from "@cchistory/storage";
 import {
-  getFlag,
-  hasFlag,
-  type ParsedArgs,
-} from "../args.js";
-import {
   formatNumber,
   formatRatio,
   renderBarChart,
@@ -17,17 +12,17 @@ import {
 } from "../renderers.js";
 import { type StoreLayout } from "../store.js";
 import {
-  type CliIo,
+  type CommandContext,
   type CommandOutput,
   openReadStore,
 } from "../main.js";
 
-export async function handleStats(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  const readStore = await openReadStore(parsed, io);
-  const showAll = hasFlag(parsed, "showall");
+export async function handleStats(context: CommandContext): Promise<CommandOutput> {
+  const readStore = await openReadStore(context);
+  const showAll = context.globals.showAll;
 
   try {
-    const dimension = getFlag(parsed, "by") as UsageStatsDimension | undefined;
+    const dimension = context.options.by as UsageStatsDimension | undefined;
     if (dimension) {
       return createStatsUsageOutput(readStore.layout, readStore.storage, dimension, showAll);
     }

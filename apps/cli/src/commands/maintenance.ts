@@ -12,13 +12,6 @@ import {
   planBundleImport,
 } from "../bundle.js";
 import {
-  getFlag,
-  getFlagValues,
-  hasFlag,
-  requireFlag,
-  type ParsedArgs,
-} from "../args.js";
-import {
   decorateImportConflictError,
   formatNumber,
   renderImportTargetArg,
@@ -33,9 +26,8 @@ import {
   resolveStoreLayout,
 } from "../store.js";
 import {
-  type CliIo,
+  type CommandContext,
   type CommandOutput,
-  isMissingPathError,
   openExistingStore,
   pathExists,
   requireStoreDatabase,
@@ -44,15 +36,15 @@ import { resolveSourceRef } from "../resolvers.js";
 import { createSourcesListOutput } from "./sync.js";
 import { createStatsOverviewOutput } from "./stats.js";
 
-export async function handleExport(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  return executeExportCommand(parsed, io);
+export async function handleExport(context: CommandContext): Promise<CommandOutput> {
+  return executeExportCommand(context);
 }
 
-export async function handleBackup(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  const dryRun = hasFlag(parsed, "dry-run");
-  const shouldWrite = hasFlag(parsed, "write") && !dryRun;
+export async function handleBackup(context: CommandContext): Promise<CommandOutput> {
+  const dryRun = context.globals.dryRun;
+  const shouldWrite = context.options.write && !dryRun;
   const mode = shouldWrite ? "write" : "preview";
-  const exportOutput = await executeExportCommand(parsed, io, {
+  const exportOutput = await executeExportCommand(context, {
     dryRun: !shouldWrite,
   });
   return {
@@ -72,30 +64,30 @@ export async function handleBackup(parsed: ParsedArgs, io: CliIo): Promise<Comma
   };
 }
 
-export async function handleRestoreCheck(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  if (parsed.positionals.length > 0) {
+export async function handleRestoreCheck(context: CommandContext): Promise<CommandOutput> {
+  if (context.positionals.length > 0) {
     throw new Error("`restore-check` does not take positional arguments.");
   }
-  if (!hasFlag(parsed, "store") && !hasFlag(parsed, "db")) {
+  if (!context.globals.store && !context.globals.db) {
     throw new Error("`restore-check` requires an explicit --store or --db target.");
   }
-  if (hasFlag(parsed, "full")) {
+  if (context.globals.full) {
     throw new Error("`restore-check` does not support --full; it verifies the indexed restored store only.");
   }
-  if (getFlagValues(parsed, "source").length > 0) {
+  if (context.options.source.length > 0) {
     throw new Error("`restore-check` does not support --source filters; it verifies all restored sources together.");
   }
 
   const layout = resolveStoreLayout({
-    cwd: io.cwd,
-    storeArg: getFlag(parsed, "store"),
-    dbArg: getFlag(parsed, "db"),
+    cwd: context.io.cwd,
+    storeArg: context.globals.store,
+    dbArg: context.globals.db,
   });
   await requireStoreDatabase(layout.dbPath);
   const storage = await openStorage(layout);
 
   try {
-    const showAll = hasFlag(parsed, "showall");
+    const showAll = context.globals.showAll;
     const statsOutput = createStatsOverviewOutput(layout, storage, showAll);
     const sourcesOutput = createSourcesListOutput(layout, storage);
     return {
@@ -126,17 +118,16 @@ export async function handleRestoreCheck(parsed: ParsedArgs, io: CliIo): Promise
 }
 
 export async function executeExportCommand(
-  parsed: ParsedArgs,
-  io: CliIo,
+  context: CommandContext,
   options: {
     dryRun?: boolean;
   } = {},
 ): Promise<CommandOutput> {
-  const outDir = requireFlag(parsed, "out");
-  const includeRawBlobs = !hasFlag(parsed, "no-raw");
-  const sourceRefs = getFlagValues(parsed, "source");
-  const dryRun = options.dryRun ?? hasFlag(parsed, "dry-run");
-  const { layout, storage } = await openExistingStore(parsed, io);
+  const outDir = requireOption(context.options.out, "out");
+  const includeRawBlobs = !context.options.noRaw;
+  const sourceRefs = context.options.source;
+  const dryRun = options.dryRun ?? context.globals.dryRun;
+  const { layout, storage } = await openExistingStore(context);
   try {
     const selectedSourceIds = sourceRefs.length > 0 ? sourceRefs.map((ref) => resolveSourceRef(storage, ref).id) : undefined;
     const selectedSources = storage
@@ -164,7 +155,7 @@ export async function executeExportCommand(
         text: [
           renderKeyValue([
             ["DB", layout.dbPath],
-            ["Bundle", path.resolve(io.cwd, outDir)],
+            ["Bundle", path.resolve(context.io.cwd, outDir)],
             ["Sources", String(counts.sources)],
             ["Sessions", String(counts.sessions)],
             ["Turns", String(counts.turns)],
@@ -177,7 +168,7 @@ export async function executeExportCommand(
         json: {
           kind: "export-dry-run",
           db_path: layout.dbPath,
-          bundle_dir: path.resolve(io.cwd, outDir),
+          bundle_dir: path.resolve(context.io.cwd, outDir),
           includes_raw_blobs: includeRawBlobs,
           counts,
           sources: planRows.map((row) => row.source),
@@ -187,13 +178,13 @@ export async function executeExportCommand(
 
     const result = await exportBundle({
       storage,
-      bundleDir: path.resolve(io.cwd, outDir),
+      bundleDir: path.resolve(context.io.cwd, outDir),
       sourceIds: selectedSourceIds,
       includeRawBlobs,
     });
     return {
       text: renderKeyValue([
-        ["Bundle", path.resolve(io.cwd, outDir)],
+        ["Bundle", path.resolve(context.io.cwd, outDir)],
         ["Bundle ID", result.manifest.bundle_id],
         ["Sources", String(result.manifest.counts.sources)],
         ["Sessions", String(result.manifest.counts.sessions)],
@@ -213,23 +204,23 @@ export async function executeExportCommand(
   }
 }
 
-export async function handleImport(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  const [bundleDir] = parsed.positionals;
+export async function handleImport(context: CommandContext): Promise<CommandOutput> {
+  const [bundleDir] = context.positionals;
   if (!bundleDir) {
     throw new Error("Import requires a bundle directory.");
   }
-  const mode = (getFlag(parsed, "on-conflict") ?? "error") as "error" | "skip" | "replace";
+  const mode = (context.options.onConflict ?? "error") as "error" | "skip" | "replace";
   if (!["error", "skip", "replace"].includes(mode)) {
     throw new Error("`import --on-conflict` must be one of error, skip, replace.");
   }
 
   const layout = resolveStoreLayout({
-    cwd: io.cwd,
-    storeArg: getFlag(parsed, "store"),
-    dbArg: getFlag(parsed, "db"),
+    cwd: context.io.cwd,
+    storeArg: context.globals.store,
+    dbArg: context.globals.db,
   });
-  const resolvedBundleDir = path.resolve(io.cwd, bundleDir);
-  const dryRun = hasFlag(parsed, "dry-run");
+  const resolvedBundleDir = path.resolve(context.io.cwd, bundleDir);
+  const dryRun = context.globals.dryRun;
   const targetStoreExists = await pathExists(layout.dbPath);
   let storage: CCHistoryStorage;
   if (dryRun && !targetStoreExists) {
@@ -286,7 +277,7 @@ export async function handleImport(parsed: ParsedArgs, io: CliIo): Promise<Comma
     } catch (error) {
       throw decorateImportConflictError(error, {
         bundleDir: resolvedBundleDir,
-        targetArg: renderImportTargetArg(parsed, layout),
+        targetArg: renderImportTargetArg(context, layout),
       });
     }
     const rawGc = await pruneOrphanRawSnapshotsSafe({
@@ -317,14 +308,14 @@ export async function handleImport(parsed: ParsedArgs, io: CliIo): Promise<Comma
   }
 }
 
-export async function handleMergeAlias(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  const fromPath = requireFlag(parsed, "from");
-  const toPath = requireFlag(parsed, "to");
+export async function handleMergeAlias(context: CommandContext): Promise<CommandOutput> {
+  const fromPath = requireOption(context.options.from, "from");
+  const toPath = requireOption(context.options.to, "to");
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-merge-"));
-  const fromLayout = resolveStoreLayout({ cwd: io.cwd, dbArg: fromPath });
-  const toLayout = resolveStoreLayout({ cwd: io.cwd, dbArg: toPath });
-  const sourceRefs = getFlagValues(parsed, "source");
-  const conflictMode = (getFlag(parsed, "on-conflict") ?? "replace") as "skip" | "replace";
+  const fromLayout = resolveStoreLayout({ cwd: context.io.cwd, dbArg: fromPath });
+  const toLayout = resolveStoreLayout({ cwd: context.io.cwd, dbArg: toPath });
+  const sourceRefs = context.options.source;
+  const conflictMode = (context.options.onConflict ?? "replace") as "skip" | "replace";
 
   const sourceStorage = await openStorage(fromLayout);
   const targetStorage = await openStorage(toLayout);
@@ -364,12 +355,12 @@ export async function handleMergeAlias(parsed: ParsedArgs, io: CliIo): Promise<C
   }
 }
 
-export async function handleGc(parsed: ParsedArgs, io: CliIo): Promise<CommandOutput> {
-  const dryRun = hasFlag(parsed, "dry-run");
+export async function handleGc(context: CommandContext): Promise<CommandOutput> {
+  const dryRun = context.globals.dryRun;
   const layout = resolveStoreLayout({
-    cwd: io.cwd,
-    storeArg: getFlag(parsed, "store"),
-    dbArg: getFlag(parsed, "db"),
+    cwd: context.io.cwd,
+    storeArg: context.globals.store,
+    dbArg: context.globals.db,
   });
   await requireStoreDatabase(layout.dbPath);
   const storage = await openStorage(layout);
@@ -434,6 +425,13 @@ function renderImportPlanTable(plan: { source_plans: any[] }): string {
   );
 }
 
+function requireOption(value: string | undefined, key: string): string {
+  if (!value) {
+    throw new Error(`Missing required --${key} flag.`);
+  }
+  return value;
+}
+
 // Fixed version of renderImportPlanTable that uses the plan data better
 // Actually, let's just use a simpler version since the ID matching is complex here.
 /*
@@ -463,5 +461,3 @@ export function formatBytes(value: number): string {
   const decimals = unitIndex === 0 ? 0 : size >= 10 ? 1 : 2;
   return `${size.toFixed(decimals)} ${units[unitIndex]}`;
 }
-
-

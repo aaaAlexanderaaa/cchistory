@@ -1,131 +1,881 @@
-export interface ParsedArgs {
+import { parseArgs as parseNodeArgs } from "node:util";
+
+type OptionKind = "boolean" | "string" | "number" | "enum";
+
+interface OptionSpec {
+  kind: OptionKind;
+  description: string;
+  valueName?: string;
+  multiple?: boolean;
+  short?: string;
+  choices?: string[];
+}
+
+interface CommandSpec {
+  path: string[];
+  usage: string;
+  description: string;
+  category?: string;
+  summary?: string;
+  examples?: string[];
+  options?: string[];
+  children?: string[];
+}
+
+export interface CliGlobals {
+  store?: string;
+  db?: string;
+  json: boolean;
+  long: boolean;
+  full: boolean;
+  index: boolean;
+  dryRun: boolean;
+  showAll: boolean;
+  debug: boolean;
+  color: boolean;
+}
+
+export interface CommandOptions {
+  source: string[];
+  limit?: number;
+  offset?: number;
+  all: boolean;
+  limitFiles?: number;
+  storeOnly: boolean;
+  project?: string;
+  by?: string;
+  out?: string;
+  write: boolean;
+  noRaw: boolean;
+  onConflict?: string;
+  from?: string;
+  to?: string;
+  id?: string;
+  search?: string;
+  linkState?: string;
+  server?: string;
+  pairToken?: string;
+  stateFile?: string;
+  displayName?: string;
+  reportedHostname?: string;
+  intervalSeconds?: number;
+  iterations?: number;
+  force: boolean;
+  retryAttempts?: number;
+  retryDelayMs?: number;
+  sourceHealth: boolean;
+}
+
+export interface ParsedCommand {
+  rawArgs: string[];
+  commandPath: string[];
   positionals: string[];
-  flags: Map<string, string[]>;
+  globals: CliGlobals;
+  options: CommandOptions;
+  help: boolean;
+  helpTarget: string[];
+  version: boolean;
 }
 
-export function parseArgs(args: string[]): ParsedArgs {
-  const positionals: string[] = [];
-  const flags = new Map<string, string[]>();
-  let forcePositionals = false;
-  for (let index = 0; index < args.length; index += 1) {
-    const token = args[index];
-    if (!token) {
-      continue;
-    }
-    if (token === "--") {
-      if (index === 0) {
-        continue;
-      }
-      forcePositionals = true;
-      continue;
-    }
-    if (forcePositionals || !token.startsWith("--")) {
-      positionals.push(token);
-      continue;
-    }
-    const body = token.slice(2);
-    const separatorIndex = body.indexOf("=");
-    const key = separatorIndex >= 0 ? body.slice(0, separatorIndex) : body;
-    const inlineValue = separatorIndex >= 0 ? body.slice(separatorIndex + 1) : undefined;
-    let value = inlineValue;
-    if (value === undefined) {
-      const next = args[index + 1];
-      if (next && !next.startsWith("--")) {
-        value = next;
-        index += 1;
-      } else {
-        value = "true";
-      }
-    }
-    flags.set(key, [...(flags.get(key) ?? []), value]);
+const GLOBAL_OPTION_NAMES = [
+  "store",
+  "db",
+  "json",
+  "long",
+  "full",
+  "index",
+  "dry-run",
+  "showall",
+  "debug",
+  "color",
+  "help",
+  "version",
+] as const;
+
+const globalOptions: Record<(typeof GLOBAL_OPTION_NAMES)[number], OptionSpec> = {
+  store: {
+    kind: "string",
+    valueName: "dir",
+    description: "Store directory (db at <dir>/cchistory.sqlite)",
+  },
+  db: {
+    kind: "string",
+    valueName: "file",
+    description: "Explicit SQLite path; sidecar data lives beside it",
+  },
+  json: {
+    kind: "boolean",
+    description: "Machine-readable JSON output",
+  },
+  long: {
+    kind: "boolean",
+    description: "Expanded metadata and hierarchy detail",
+  },
+  full: {
+    kind: "boolean",
+    description: "Re-scan source roots into temporary in-memory store",
+  },
+  index: {
+    kind: "boolean",
+    description: "Read from existing store only",
+  },
+  "dry-run": {
+    kind: "boolean",
+    description: "Preview actions without writing",
+  },
+  showall: {
+    kind: "boolean",
+    description: "Include empty/missing items in listings",
+  },
+  debug: {
+    kind: "boolean",
+    description: "Print stack traces for troubleshooting",
+  },
+  color: {
+    kind: "boolean",
+    description: "Control ANSI color output; use --no-color to disable",
+  },
+  help: {
+    kind: "boolean",
+    short: "h",
+    description: "Show help",
+  },
+  version: {
+    kind: "boolean",
+    short: "v",
+    description: "Show version",
+  },
+};
+
+const commandOptions: Record<string, OptionSpec> = {
+  source: {
+    kind: "string",
+    valueName: "slot-or-id",
+    multiple: true,
+    description: "Limit to a source slot or source ID",
+  },
+  "limit-files": {
+    kind: "number",
+    valueName: "n",
+    description: "Limit files per source",
+  },
+  "store-only": {
+    kind: "boolean",
+    description: "Suppress host discovery and inspect only the selected store",
+  },
+  all: {
+    kind: "boolean",
+    description: "Return all matches or rows allowed by the command",
+  },
+  limit: {
+    kind: "number",
+    valueName: "n",
+    description: "Maximum result count",
+  },
+  offset: {
+    kind: "number",
+    valueName: "n",
+    description: "Skip the first N results",
+  },
+  project: {
+    kind: "string",
+    valueName: "ref",
+    description: "Project ID, Ref, display name, or workspace path",
+  },
+  by: {
+    kind: "enum",
+    valueName: "dimension",
+    choices: ["model", "project", "source", "host", "day", "month"],
+    description: "Usage rollup dimension",
+  },
+  out: {
+    kind: "string",
+    valueName: "dir",
+    description: "Output bundle directory",
+  },
+  write: {
+    kind: "boolean",
+    description: "Execute a preview-first write workflow",
+  },
+  raw: {
+    kind: "boolean",
+    description: "Include raw blobs; use --no-raw to omit them",
+  },
+  "on-conflict": {
+    kind: "enum",
+    valueName: "mode",
+    choices: ["error", "skip", "replace"],
+    description: "Conflict behavior",
+  },
+  from: {
+    kind: "string",
+    valueName: "path",
+    description: "Source store or database",
+  },
+  to: {
+    kind: "string",
+    valueName: "path",
+    description: "Target store or database",
+  },
+  id: {
+    kind: "string",
+    valueName: "id-or-ref",
+    description: "Entity ID or accepted entity reference",
+  },
+  search: {
+    kind: "string",
+    valueName: "query",
+    description: "Structured query search text or initial TUI search",
+  },
+  "link-state": {
+    kind: "enum",
+    valueName: "state",
+    choices: ["all", "committed", "candidate", "unlinked"],
+    description: "Project turn link-state filter",
+  },
+  server: {
+    kind: "string",
+    valueName: "url",
+    description: "Remote CCHistory server URL",
+  },
+  "pair-token": {
+    kind: "string",
+    valueName: "token",
+    description: "Server-issued remote-agent pairing token",
+  },
+  "state-file": {
+    kind: "string",
+    valueName: "file",
+    description: "Remote-agent local state file",
+  },
+  "display-name": {
+    kind: "string",
+    valueName: "name",
+    description: "Operator-facing remote-agent display name",
+  },
+  "reported-hostname": {
+    kind: "string",
+    valueName: "host",
+    description: "Hostname reported to the remote service",
+  },
+  "interval-seconds": {
+    kind: "number",
+    valueName: "n",
+    description: "Delay between scheduled remote-agent cycles",
+  },
+  iterations: {
+    kind: "number",
+    valueName: "n",
+    description: "Number of scheduled remote-agent cycles",
+  },
+  force: {
+    kind: "boolean",
+    description: "Force upload even when the source fingerprint is unchanged",
+  },
+  "retry-attempts": {
+    kind: "number",
+    valueName: "n",
+    description: "Remote upload retry attempts",
+  },
+  "retry-delay-ms": {
+    kind: "number",
+    valueName: "ms",
+    description: "Delay between remote upload retries",
+  },
+  "source-health": {
+    kind: "boolean",
+    description: "Include source-health summary in TUI snapshot output",
+  },
+};
+
+const readOptions = ["source", "limit-files"];
+const remoteUploadOptions = ["state-file", "source", "limit-files", "raw", "force", "retry-attempts", "retry-delay-ms"];
+
+const commandSpecs: CommandSpec[] = [
+  {
+    path: ["sync"],
+    category: "Data Management",
+    usage: "cchistory sync [--source <slot-or-id>] [--limit-files <n>] [--dry-run]",
+    summary: "Ingest data from local AI tool directories",
+    description: "Ingest local source files into the selected store.",
+    options: ["source", "limit-files"],
+    examples: ["cchistory sync", "cchistory sync --source codex", "cchistory sync --dry-run"],
+  },
+  {
+    path: ["discover"],
+    category: "Data Management",
+    usage: "cchistory discover [--showall]",
+    summary: "Scan this host for supported AI tools",
+    description: "Inspect host-level source and tool discovery without touching the store.",
+    examples: ["cchistory discover", "cchistory discover --showall"],
+  },
+  {
+    path: ["health"],
+    category: "Data Management",
+    usage: "cchistory health [--source <slot-or-id>] [--full] [--store-only]",
+    summary: "Source health and store integrity check",
+    description: "Read-only operator overview combining host discovery, sync preview, and store summary.",
+    options: ["source", "store-only"],
+    examples: ["cchistory health", "cchistory health --store ./.cchistory --store-only"],
+  },
+  {
+    path: ["ls"],
+    category: "Browse & Inspect",
+    usage: "cchistory ls projects|sessions|sources [--long] [--all] [--limit <n>]",
+    summary: "List entities; projects include copyable Ref",
+    description: "Browse projects, sessions, or sources.",
+    children: ["projects", "sessions", "sources"],
+    options: ["all", "limit", ...readOptions],
+    examples: ["cchistory ls projects", "cchistory ls sessions --long", "cchistory ls sources"],
+  },
+  {
+    path: ["ls", "projects"],
+    usage: "cchistory ls projects [--long] [--showall]",
+    description: "List projects with copyable refs.",
+    options: readOptions,
+  },
+  {
+    path: ["ls", "sessions"],
+    usage: "cchistory ls sessions [--long] [--all] [--limit <n>]",
+    description: "List sessions with compact default output.",
+    options: ["all", "limit", ...readOptions],
+  },
+  {
+    path: ["ls", "sources"],
+    usage: "cchistory ls sources",
+    description: "List configured sources.",
+    options: readOptions,
+  },
+  {
+    path: ["tree"],
+    category: "Browse & Inspect",
+    usage: "cchistory tree projects|project|session <ref> [--long]",
+    summary: "Hierarchical view",
+    description: "Show project or session hierarchy.",
+    children: ["projects", "project", "session"],
+    options: readOptions,
+    examples: ["cchistory tree projects", "cchistory tree project chat-ui-kit", "cchistory tree session <session-ref> --long"],
+  },
+  { path: ["tree", "projects"], usage: "cchistory tree projects [--long]", description: "Show all projects as a hierarchy.", options: readOptions },
+  { path: ["tree", "project"], usage: "cchistory tree project <project-ref> [--long]", description: "Show one project with session threads.", options: readOptions },
+  { path: ["tree", "session"], usage: "cchistory tree session <session-ref> [--long]", description: "Show one session hierarchy.", options: readOptions },
+  {
+    path: ["show"],
+    category: "Browse & Inspect",
+    usage: "cchistory show project|session|turn|source <ref> [--long]",
+    summary: "Detail view of a single entity",
+    description: "Show a project, session, turn, or source.",
+    children: ["project", "session", "turn", "source"],
+    options: readOptions,
+    examples: ["cchistory show project chat-ui-kit", "cchistory show turn <turn-id-or-prefix> --long"],
+  },
+  { path: ["show", "project"], usage: "cchistory show project <project-ref> [--long]", description: "Show project detail.", options: readOptions },
+  { path: ["show", "session"], usage: "cchistory show session <session-ref> [--long]", description: "Show session detail.", options: readOptions },
+  { path: ["show", "turn"], usage: "cchistory show turn <turn-id-or-prefix> [--long]", description: "Show ask and response detail.", options: readOptions },
+  { path: ["show", "source"], usage: "cchistory show source <source-ref>", description: "Show source detail.", options: readOptions },
+  {
+    path: ["search"],
+    category: "Browse & Inspect",
+    usage: "cchistory search <query> [--project <ref>] [--source <slot-or-id>] [--limit <n>] [--offset <n>] [--all]",
+    summary: "Full-text search across asks",
+    description: "Search canonical ask text and print drill-down pivots.",
+    options: ["project", "source", "limit", "offset", "all", "limit-files"],
+    examples: ["cchistory search \"data security\"", "cchistory search refactor --project chat-ui-kit"],
+  },
+  {
+    path: ["context"],
+    category: "Browse & Inspect",
+    usage: "cchistory context project <ref> [--limit <n>] [--json]",
+    summary: "AI-ready project context packet (ref/name/path)",
+    description: "Build a project-scoped context packet for operators and AI agents.",
+    children: ["project"],
+    options: ["limit", ...readOptions],
+    examples: ["cchistory context project chat-ui-kit", "cchistory context project chat-ui-kit --json"],
+  },
+  { path: ["context", "project"], usage: "cchistory context project <ref> [--limit <n>] [--json]", description: "Show project context.", options: ["limit", ...readOptions] },
+  {
+    path: ["stats"],
+    category: "Browse & Inspect",
+    usage: "cchistory stats [usage --by <dimension>]",
+    summary: "Token usage statistics",
+    description: "Show overview and usage analytics.",
+    children: ["usage"],
+    options: ["by", ...readOptions],
+    examples: ["cchistory stats", "cchistory stats usage --by model"],
+  },
+  { path: ["stats", "usage"], usage: "cchistory stats usage --by model|project|source|host|day|month", description: "Show usage rollups.", options: ["by", ...readOptions] },
+  {
+    path: ["export"],
+    category: "Backup & Transfer",
+    usage: "cchistory export --out <dir> [--source <slot-or-id>] [--no-raw] [--dry-run]",
+    summary: "Export store to a portable bundle",
+    description: "Export the store to a portable bundle.",
+    options: ["out", "source", "raw"],
+    examples: ["cchistory export --out ./my-backup", "cchistory export --out ./my-backup --dry-run"],
+  },
+  {
+    path: ["backup"],
+    category: "Backup & Transfer",
+    usage: "cchistory backup --out <dir> [--write] [--source <slot-or-id>] [--no-raw]",
+    summary: "Preview-first export (--write to execute)",
+    description: "Preview-first portable backup shortcut.",
+    options: ["out", "source", "raw", "write"],
+    examples: ["cchistory backup --out ./my-backup", "cchistory backup --out ./my-backup --write"],
+  },
+  {
+    path: ["restore-check"],
+    category: "Backup & Transfer",
+    usage: "cchistory restore-check --store <dir>|--db <file>",
+    summary: "Validate a store can be restored",
+    description: "Read-only post-restore verification.",
+    examples: ["cchistory restore-check --store ./restored-store"],
+  },
+  {
+    path: ["import"],
+    category: "Backup & Transfer",
+    usage: "cchistory import <bundle-dir> [--dry-run] [--on-conflict error|skip|replace]",
+    summary: "Import a previously exported bundle",
+    description: "Import a bundle into the selected store.",
+    options: ["on-conflict"],
+    examples: ["cchistory import ./my-backup", "cchistory import ./my-backup --dry-run"],
+  },
+  {
+    path: ["merge"],
+    category: "Backup & Transfer",
+    usage: "cchistory merge --from <db> --to <db> [--source <slot-or-id>] [--on-conflict skip|replace]",
+    summary: "Merge two stores via bundle exchange",
+    description: "Merge between two stores through the bundle compatibility path.",
+    options: ["from", "to", "source", "on-conflict"],
+    examples: ["cchistory merge --from /host-a/.cchistory --to /host-b/.cchistory"],
+  },
+  {
+    path: ["gc"],
+    category: "Data Management",
+    usage: "cchistory gc [--dry-run]",
+    summary: "Clean orphaned raw snapshots (--dry-run to preview)",
+    description: "Prune raw snapshot files no longer referenced by the current SQLite index.",
+    examples: ["cchistory gc --dry-run"],
+  },
+  {
+    path: ["query"],
+    category: "Advanced (experimental)",
+    usage: "cchistory query turns|turn|sessions|session|projects|project ...",
+    summary: "Scriptable JSON-only interface",
+    description: "Structured JSON output for programmatic consumption.",
+    children: ["turns", "turn", "sessions", "session", "projects", "project"],
+    options: readOptions,
+    examples: ["cchistory query turns --search refactor --limit 5", "cchistory query turn --id <turn-id>"],
+  },
+  { path: ["query", "turns"], usage: "cchistory query turns [--search <query>] [--project <ref>] [--source <slot-or-id>] [--limit <n>]", description: "Query turns.", options: ["search", "project", "source", "limit", "limit-files"] },
+  { path: ["query", "turn"], usage: "cchistory query turn --id <turn-id-or-prefix>", description: "Query one turn.", options: ["id", ...readOptions] },
+  { path: ["query", "sessions"], usage: "cchistory query sessions [--project <ref>] [--source <slot-or-id>] [--limit <n>]", description: "Query sessions.", options: ["project", "source", "limit", "limit-files"] },
+  { path: ["query", "session"], usage: "cchistory query session --id <session-ref>", description: "Query one session.", options: ["id", ...readOptions] },
+  { path: ["query", "projects"], usage: "cchistory query projects", description: "Query projects.", options: readOptions },
+  { path: ["query", "project"], usage: "cchistory query project --id <project-ref> [--link-state all|committed|candidate|unlinked]", description: "Query one project.", options: ["id", "link-state", ...readOptions] },
+  {
+    path: ["templates"],
+    category: "Advanced (experimental)",
+    usage: "cchistory templates",
+    summary: "List available query templates",
+    description: "List source format profiles as JSON.",
+  },
+  {
+    path: ["agent"],
+    category: "Advanced (experimental)",
+    usage: "cchistory agent pair|upload|schedule|pull ...",
+    summary: "Remote agent synchronization",
+    description: "Remote-agent workflows using canonical source probe and bundle upload paths.",
+    children: ["pair", "upload", "schedule", "pull"],
+    examples: ["cchistory agent pair --server https://history.example --pair-token <token>", "cchistory agent pull --state-file ~/.cchistory-agent/agent-state.json"],
+  },
+  { path: ["agent", "pair"], usage: "cchistory agent pair --server <url> --pair-token <token> [--state-file <file>]", description: "Pair this host with a remote service.", options: ["server", "pair-token", "state-file", "display-name", "reported-hostname"] },
+  { path: ["agent", "upload"], usage: "cchistory agent upload [--state-file <file>] [--source <slot-or-id>] [--force]", description: "Upload changed source payloads.", options: remoteUploadOptions },
+  { path: ["agent", "schedule"], usage: "cchistory agent schedule --interval-seconds <n> [--iterations <n>]", description: "Run repeated local upload cycles.", options: [...remoteUploadOptions, "interval-seconds", "iterations"] },
+  { path: ["agent", "pull"], usage: "cchistory agent pull [--state-file <file>]", description: "Lease one typed collection job and upload the result.", options: remoteUploadOptions },
+  {
+    path: ["tui"],
+    category: "Interactive",
+    usage: "cchistory tui [--store <dir>|--db <file>] [--search <query>] [--full] [--source-health]",
+    summary: "Launch terminal UI browser (projects -> sessions -> conversations)",
+    description: "Launch the local terminal UI browser.",
+    options: ["search", "source", "limit-files", "source-health"],
+  },
+];
+
+const commandSpecsByKey = new Map(commandSpecs.map((spec) => [commandKey(spec.path), spec]));
+const commandChildren = new Map<string, Set<string>>();
+for (const spec of commandSpecs) {
+  if (spec.path.length <= 1) continue;
+  const parent = commandKey(spec.path.slice(0, -1));
+  const entries = commandChildren.get(parent) ?? new Set<string>();
+  entries.add(spec.path[spec.path.length - 1]!);
+  commandChildren.set(parent, entries);
+}
+
+const allOptionSpecs: Record<string, OptionSpec> = { ...globalOptions, ...commandOptions };
+
+export function parseCliArgs(args: string[]): ParsedCommand {
+  const rawArgs = args[0] === "--" ? args.slice(1) : [...args];
+  const nodeOptions = buildNodeOptionConfig();
+  const parsed = parseNodeArgs({
+    args: rawArgs,
+    options: nodeOptions,
+    allowPositionals: true,
+    allowNegative: true,
+    strict: true,
+    tokens: true,
+  });
+  const tokens = parsed.tokens ?? [];
+  assertNoDuplicateSingletonOptions(tokens);
+  const values = parsed.values as Record<string, string | string[] | boolean | undefined>;
+  const positionals = [...parsed.positionals];
+
+  const version = readBoolean(values, "version");
+  const wantsHelp = readBoolean(values, "help") || positionals[0] === "help";
+  const helpTarget = positionals[0] === "help" ? normalizeHelpTarget(positionals.slice(1)) : [];
+  const commandPositionals = positionals[0] === "help" ? [] : positionals;
+  const { commandPath, restPositionals } = resolveCommandPath(commandPositionals, wantsHelp ? helpTarget : undefined);
+  const globals = normalizeGlobals(values);
+  const options = normalizeCommandOptions(values);
+
+  if (!wantsHelp && !version) {
+    validateCommand(commandPath, tokens);
+    validateOptionChoices(options);
+  } else if (wantsHelp && helpTarget.length > 0) {
+    validateHelpTarget(helpTarget);
   }
-  return { positionals, flags };
+
+  return {
+    rawArgs,
+    commandPath,
+    positionals: restPositionals,
+    globals,
+    options,
+    help: wantsHelp || commandPath.length === 0,
+    helpTarget: wantsHelp ? (helpTarget.length > 0 ? helpTarget : commandPath) : [],
+    version,
+  };
 }
 
-export function getFlag(parsed: ParsedArgs, key: string): string | undefined {
-  return parsed.flags.get(key)?.[0];
-}
-
-export function getFlagValues(parsed: ParsedArgs, key: string): string[] {
-  return parsed.flags.get(key) ?? [];
-}
-
-export function hasFlag(parsed: ParsedArgs, key: string): boolean {
-  return parsed.flags.has(key);
-}
-
-export function requireFlag(parsed: ParsedArgs, key: string): string {
-  const value = getFlag(parsed, key);
-  if (!value || value === "true") {
-    throw new Error(`Missing required --${key} flag.`);
+export function renderHelp(targetPath: string[] = []): string {
+  if (targetPath.length > 0) {
+    return renderCommandHelp(targetPath);
   }
-  return value;
+  return renderGlobalHelp();
 }
 
-export function parseNumberFlag(parsed: ParsedArgs, key: string): number | undefined {
-  const value = getFlag(parsed, key);
-  if (!value || value === "true") {
+export function commandName(path: string[]): string {
+  return path.join(" ");
+}
+
+function getCommandSpec(path: string[]): CommandSpec | undefined {
+  return commandSpecsByKey.get(commandKey(path));
+}
+
+function buildNodeOptionConfig(): Record<string, { type: "boolean" | "string"; multiple?: boolean; short?: string; default?: boolean }> {
+  const config: Record<string, { type: "boolean" | "string"; multiple?: boolean; short?: string; default?: boolean }> = {};
+  for (const [name, spec] of Object.entries(allOptionSpecs)) {
+    const entry: { type: "boolean" | "string"; multiple?: boolean; short?: string; default?: boolean } = {
+      type: spec.kind === "boolean" ? "boolean" : "string",
+    };
+    if (spec.multiple) {
+      entry.multiple = true;
+    }
+    if (spec.short) {
+      entry.short = spec.short;
+    }
+    if (name === "color" || name === "raw") {
+      entry.default = true;
+    }
+    config[name] = entry;
+  }
+  return config;
+}
+
+function normalizeGlobals(values: Record<string, string | string[] | boolean | undefined>): CliGlobals {
+  return {
+    store: readString(values, "store"),
+    db: readString(values, "db"),
+    json: readBoolean(values, "json"),
+    long: readBoolean(values, "long"),
+    full: readBoolean(values, "full"),
+    index: readBoolean(values, "index"),
+    dryRun: readBoolean(values, "dry-run"),
+    showAll: readBoolean(values, "showall"),
+    debug: readBoolean(values, "debug"),
+    color: values.color !== false,
+  };
+}
+
+function normalizeCommandOptions(values: Record<string, string | string[] | boolean | undefined>): CommandOptions {
+  return {
+    source: readStringArray(values, "source"),
+    limit: readNumber(values, "limit"),
+    offset: readNumber(values, "offset"),
+    all: readBoolean(values, "all"),
+    limitFiles: readNumber(values, "limit-files"),
+    storeOnly: readBoolean(values, "store-only"),
+    project: readString(values, "project"),
+    by: readString(values, "by"),
+    out: readString(values, "out"),
+    write: readBoolean(values, "write"),
+    noRaw: values.raw === false,
+    onConflict: readString(values, "on-conflict"),
+    from: readString(values, "from"),
+    to: readString(values, "to"),
+    id: readString(values, "id"),
+    search: readString(values, "search"),
+    linkState: readString(values, "link-state"),
+    server: readString(values, "server"),
+    pairToken: readString(values, "pair-token"),
+    stateFile: readString(values, "state-file"),
+    displayName: readString(values, "display-name"),
+    reportedHostname: readString(values, "reported-hostname"),
+    intervalSeconds: readNumber(values, "interval-seconds"),
+    iterations: readNumber(values, "iterations"),
+    force: readBoolean(values, "force"),
+    retryAttempts: readNumber(values, "retry-attempts"),
+    retryDelayMs: readNumber(values, "retry-delay-ms"),
+    sourceHealth: readBoolean(values, "source-health"),
+  };
+}
+
+function resolveCommandPath(
+  positionals: string[],
+  explicitHelpTarget?: string[],
+): { commandPath: string[]; restPositionals: string[] } {
+  if (explicitHelpTarget && explicitHelpTarget.length > 0) {
+    return { commandPath: explicitHelpTarget, restPositionals: [] };
+  }
+  const [rawCommand, ...rest] = positionals;
+  const command = normalizeCommand(rawCommand);
+  if (!command) {
+    return { commandPath: [], restPositionals: [] };
+  }
+  const basePath = [command];
+  const children = commandChildren.get(commandKey(basePath));
+  if (children && rest[0] && children.has(rest[0])) {
+    return { commandPath: [command, rest[0]], restPositionals: rest.slice(1) };
+  }
+  return { commandPath: basePath, restPositionals: rest };
+}
+
+function normalizeCommand(value: string | undefined): string | undefined {
+  if (!value) {
     return undefined;
   }
-  const parsedNumber = Number(value);
-  if (!Number.isFinite(parsedNumber)) {
-    throw new Error(`Invalid numeric value for --${key}: ${value}`);
+  const normalized = value.toLowerCase().trim();
+  if (normalized === "restore") {
+    return "restore-check";
   }
-  return parsedNumber;
+  return normalized;
 }
 
-export function renderHelp(): string {
-  return [
+function normalizeHelpTarget(values: string[]): string[] {
+  const [first, ...rest] = values;
+  const normalized = normalizeCommand(first);
+  return normalized ? [normalized, ...rest] : [];
+}
+
+function validateCommand(commandPath: string[], tokens: Array<{ kind: string; name?: string }>): void {
+  if (commandPath.length === 0) {
+    return;
+  }
+  const spec = getCommandSpec(commandPath);
+  if (!spec) {
+    throw new Error(`Unknown command: ${commandName(commandPath)}`);
+  }
+  const allowed = allowedOptionNamesForCommand(commandPath);
+  for (const token of tokens) {
+    if (token.kind !== "option" || !token.name) continue;
+    if (GLOBAL_OPTION_NAMES.includes(token.name as (typeof GLOBAL_OPTION_NAMES)[number])) continue;
+    if (!allowed.has(token.name)) {
+      throw new Error(`Unknown option for \`${commandName(commandPath)}\`: --${token.name}`);
+    }
+  }
+}
+
+function validateHelpTarget(path: string[]): void {
+  if (path.length === 0) {
+    return;
+  }
+  if (!getCommandSpec(path)) {
+    throw new Error(`Unknown help topic: ${commandName(path)}`);
+  }
+}
+
+function allowedOptionNamesForCommand(path: string[]): Set<string> {
+  const names = new Set<string>();
+  for (let index = 1; index <= path.length; index += 1) {
+    const spec = getCommandSpec(path.slice(0, index));
+    for (const name of spec?.options ?? []) {
+      names.add(name);
+    }
+  }
+  return names;
+}
+
+function validateOptionChoices(options: CommandOptions): void {
+  validateChoice("by", options.by);
+  validateChoice("on-conflict", options.onConflict);
+  validateChoice("link-state", options.linkState);
+}
+
+function validateChoice(name: string, value: string | undefined): void {
+  if (!value) return;
+  const spec = commandOptions[name];
+  if (!spec?.choices) return;
+  if (!spec.choices.includes(value)) {
+    throw new Error(`Invalid value for --${name}: ${value}. Expected one of ${spec.choices.join(", ")}.`);
+  }
+}
+
+function assertNoDuplicateSingletonOptions(tokens: Array<{ kind: string; name?: string }>): void {
+  const seen = new Set<string>();
+  for (const token of tokens) {
+    if (token.kind !== "option" || !token.name) continue;
+    const spec = allOptionSpecs[token.name];
+    if (!spec || spec.multiple) continue;
+    if (seen.has(token.name)) {
+      throw new Error(`Option --${token.name} can only be provided once.`);
+    }
+    seen.add(token.name);
+  }
+}
+
+function renderGlobalHelp(): string {
+  const commandGroups = groupTopLevelCommands();
+  const lines = [
     "Usage: cchistory <command> [options]",
     "",
     "Examples:",
     "  cchistory sync",
     "  cchistory search <query>",
     "",
-    "CCHistory — Evidence-preserving history for AI coding assistants",
+    "CCHistory - Evidence-preserving history for AI coding assistants",
     "",
-    "Browse & Inspect:",
-    "  ls projects|sessions|sources       List entities (--long for detail, --all for full list)",
-    "  tree projects|project|session <ref> Hierarchical view",
-    "  show project|session|turn|source    Detail view of a single entity",
-    "  search <query>                      Full-text search across asks",
-    "    --limit <n>                        Max results (default 50)",
-    "    --offset <n>                       Skip first N results for pagination",
-    "    --all                              Return all matches (up to 1000)",
-    "  context project <ref>               AI-ready project context packet",
-    "    --limit <n>                        Max recent asks/sessions for context",
-    "  stats [usage --by <dimension>]      Token usage statistics",
+  ];
+  for (const [category, specs] of commandGroups) {
+    lines.push(`${category}:`);
+    for (const spec of specs) {
+      lines.push(`  ${formatCommandSummary(spec)}`);
+      if (spec.path[0] === "search") {
+        lines.push("    --limit <n>                        Max results (default 50)");
+        lines.push("    --offset <n>                       Skip first N results for pagination");
+        lines.push("    --all                              Return all matches (up to 1000)");
+      }
+      if (spec.path[0] === "context") {
+        lines.push("    --limit <n>                        Max recent asks/sessions for context");
+      }
+    }
+    lines.push("");
+  }
+  lines.push("Global flags:");
+  for (const name of ["store", "db", "json", "long", "full", "dry-run", "showall"] as const) {
+    lines.push(`  ${formatOptionUsage(name, globalOptions[name])}`);
+  }
+  lines.push("");
+  lines.push("Store resolution: nearest .cchistory/ in cwd or ancestors; fallback ~/.cchistory");
+  return lines.join("\n");
+}
+
+function renderCommandHelp(path: string[]): string {
+  const spec = getCommandSpec(path);
+  if (!spec) {
+    throw new Error(`Unknown help topic: ${commandName(path)}`);
+  }
+  const lines = [
+    `Usage: ${spec.usage}`,
     "",
-    "Data Management:",
-    "  sync             Ingest data from local AI tool directories",
-    "  discover         Scan this host for supported AI tools",
-    "  health           Source health and store integrity check",
-    "  gc               Clean orphaned raw snapshots (--dry-run to preview)",
-    "",
-    "Backup & Transfer:",
-    "  export --out <dir>                  Export store to a portable bundle",
-    "  import <bundle-dir>                 Import a previously exported bundle",
-    "  backup --out <dir>                  Preview-first export (--write to execute)",
-    "  restore-check                       Validate a store can be restored",
-    "  merge --from <db> --to <db>         Merge two stores via bundle exchange",
-    "",
-    "Interactive:",
-    "  tui              Launch terminal UI browser (projects → sessions → conversations)",
-    "",
-    "Advanced (experimental):",
-    "  agent pair|upload|schedule|pull     Remote agent synchronization",
-    "  query <entity>                      Scriptable JSON-only interface",
-    "  templates                           List available query templates",
-    "",
-    "Global flags:",
-    "  --store <dir>    Store directory (db at <dir>/cchistory.sqlite)",
-    "  --db <file>      Explicit SQLite path; sidecar data lives beside it",
-    "  --json           Machine-readable JSON output",
-    "  --long           Expanded metadata and hierarchy detail",
-    "  --full           Re-scan source roots into temporary in-memory store",
-    "  --dry-run        Preview actions without writing",
-    "  --showall        Include empty/missing items in listings",
-    "",
-    "Store resolution: nearest .cchistory/ in cwd or ancestors; fallback ~/.cchistory",
-  ].join("\n");
+    spec.description,
+  ];
+  const childNames = spec.children ?? [];
+  if (childNames.length > 0) {
+    lines.push("", "Commands:");
+    for (const childName of childNames) {
+      const child = getCommandSpec([...path, childName]);
+      if (!child) continue;
+      lines.push(`  ${childName.padEnd(12)} ${child.description}`);
+    }
+  }
+  const localOptions = [...allowedOptionNamesForCommand(path)]
+    .filter((name) => commandOptions[name])
+    .sort((left, right) => left.localeCompare(right));
+  if (localOptions.length > 0) {
+    lines.push("", "Command options:");
+    for (const name of localOptions) {
+      lines.push(`  ${formatOptionUsage(name, commandOptions[name]!)}`);
+    }
+  }
+  lines.push("", "Global flags:");
+  for (const name of ["store", "db", "json", "long", "full", "dry-run", "showall", "debug", "color"] as const) {
+    lines.push(`  ${formatOptionUsage(name, globalOptions[name])}`);
+  }
+  if (spec.examples && spec.examples.length > 0) {
+    lines.push("", "Examples:");
+    for (const example of spec.examples) {
+      lines.push(`  ${example}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+function groupTopLevelCommands(): Map<string, CommandSpec[]> {
+  const groups = new Map<string, CommandSpec[]>();
+  for (const spec of commandSpecs.filter((entry) => entry.path.length === 1 && entry.category)) {
+    const entries = groups.get(spec.category!) ?? [];
+    entries.push(spec);
+    groups.set(spec.category!, entries);
+  }
+  return groups;
+}
+
+function formatCommandSummary(spec: CommandSpec): string {
+  const command = spec.usage.replace(/^cchistory\s+/u, "").replace(/\s+\[.*$/u, "");
+  return `${command.padEnd(36)} ${spec.summary ?? spec.description}`;
+}
+
+function formatOptionUsage(name: string, spec: OptionSpec): string {
+  const renderedName = name === "raw" ? "--no-raw" : name === "color" ? "--no-color" : `--${name}`;
+  const value = spec.kind === "boolean" ? "" : ` <${spec.valueName ?? "value"}>`;
+  return `${`${renderedName}${value}`.padEnd(18)} ${spec.description}`;
+}
+
+function readBoolean(values: Record<string, string | string[] | boolean | undefined>, key: string): boolean {
+  return values[key] === true;
+}
+
+function readString(values: Record<string, string | string[] | boolean | undefined>, key: string): string | undefined {
+  const value = values[key];
+  if (typeof value === "string") {
+    return value;
+  }
+  return undefined;
+}
+
+function readStringArray(values: Record<string, string | string[] | boolean | undefined>, key: string): string[] {
+  const value = values[key];
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return [value];
+  }
+  return [];
+}
+
+function readNumber(values: Record<string, string | string[] | boolean | undefined>, key: string): number | undefined {
+  const value = readString(values, key);
+  if (value === undefined) {
+    return undefined;
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Invalid numeric value for --${key}: ${value}`);
+  }
+  return parsed;
+}
+
+function commandKey(path: string[]): string {
+  return path.join(" ");
 }

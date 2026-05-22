@@ -8,8 +8,8 @@ import {
 } from "@cchistory/domain";
 import type { CCHistoryStorage } from "@cchistory/storage";
 import { tameBrowseMarkup } from "@cchistory/presentation";
-import { type ParsedArgs, getFlag, hasFlag } from "./args.js";
 import { bold, dim, cyan, green, yellow, magenta, red, blue, heading, muted, id as idColor } from "./colors.js";
+import type { CommandContext } from "./main.js";
 import type { StoreLayout } from "./store.js";
 
 export interface RelatedWorkRollup {
@@ -402,14 +402,12 @@ export function decorateImportConflictError(
   );
 }
 
-export function renderImportTargetArg(parsed: ParsedArgs, layout: StoreLayout): string {
-  const storeArg = getFlag(parsed, "store");
-  if (storeArg && storeArg !== "true") {
-    return `--store ${quoteCliArg(storeArg)}`;
+export function renderImportTargetArg(context: CommandContext, layout: StoreLayout): string {
+  if (context.globals.store) {
+    return `--store ${quoteCliArg(context.globals.store)}`;
   }
-  const dbArg = getFlag(parsed, "db");
-  if (dbArg && dbArg !== "true") {
-    return `--db ${quoteCliArg(dbArg)}`;
+  if (context.globals.db) {
+    return `--db ${quoteCliArg(context.globals.db)}`;
   }
   return `--db ${quoteCliArg(layout.dbPath)}`;
 }
@@ -438,12 +436,16 @@ export function projectLabel(project: ProjectIdentity | undefined): string {
   return project.display_name;
 }
 
-export function listVisibleProjects(storage: CCHistoryStorage, parsed: ParsedArgs): ProjectIdentity[] {
-  return sortProjectsForDisplay(filterProjectsForDisplay(storage.listProjects(), parsed));
+export function projectCommandRef(project: ProjectIdentity): string {
+  return project.slug || project.project_id;
 }
 
-export function filterProjectsForDisplay(projects: ProjectIdentity[], parsed: ParsedArgs): ProjectIdentity[] {
-  if (hasFlag(parsed, "showall")) {
+export function listVisibleProjects(storage: CCHistoryStorage, context: CommandContext): ProjectIdentity[] {
+  return sortProjectsForDisplay(filterProjectsForDisplay(storage.listProjects(), context));
+}
+
+export function filterProjectsForDisplay(projects: ProjectIdentity[], context: CommandContext): ProjectIdentity[] {
+  if (context.globals.showAll) {
     return projects;
   }
   return projects.filter((project) => !isEmptyProject(project));
