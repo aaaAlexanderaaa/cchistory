@@ -359,13 +359,16 @@ export async function listSourceFiles(
   return typeof limit === "number" ? filtered.slice(0, limit) : filtered;
 }
 
-export async function walkFiles(rootDir: string): Promise<string[]> {
+export async function walkFiles(rootDir: string, limit?: number): Promise<string[]> {
   const entries = await fs.readdir(rootDir, { withFileTypes: true });
   const results: string[] = [];
   for (const entry of entries) {
+    if (limit && results.length >= limit) {
+      break;
+    }
     const fullPath = path.join(rootDir, entry.name);
     if (entry.isDirectory()) {
-      results.push(...(await walkFiles(fullPath)));
+      results.push(...(await walkFiles(fullPath, limit ? limit - results.length : undefined)));
     } else if (entry.isFile()) {
       results.push(fullPath);
     }

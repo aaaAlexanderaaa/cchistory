@@ -1,9 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runCliCapture, runCliJson, seedCliDiscoveryFixtures, seedCliFixtures } from "./helpers.js";
+import { fileExists, runCliCapture, runCliJson, seedCliDiscoveryFixtures, seedCliFixtures } from "./helpers.js";
 
 test("discover lists Gemini CLI sync roots alongside discovery-only auxiliary paths", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-discover-"));
@@ -50,6 +51,145 @@ test("health combines discovery, sync preview, and indexed store summary in one 
     assert.match(result.stdout, /Indexed Store/);
   } finally {
     process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync --detail reports source, file, write, and reindex progress on stderr", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-detail-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+    const storeDir = path.join(tempRoot, "store");
+
+    const result = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--detail"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(result.stdout, /Synced 1 source\(s\)/);
+    assert.match(result.stderr, /\[sync:codex:source_start\]/);
+    assert.match(result.stderr, /\[sync:codex:file_start\]/);
+    assert.match(result.stderr, /\[sync:codex:write_store_start\]/);
+    assert.match(result.stderr, /\[sync:codex:reindex_done\]/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync --progress jsonl emits machine-readable progress without corrupting stdout JSON", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-jsonl-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+    const storeDir = path.join(tempRoot, "store");
+
+    const result = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--json", "--progress", "jsonl"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.command, "sync");
+    const progress = result.stderr.trim().split("\n").map((line) => JSON.parse(line));
+    assert.ok(progress.some((entry) => entry.kind === "sync-progress" && entry.stage === "source_start"));
+    assert.ok(progress.some((entry) => entry.kind === "sync-progress" && entry.stage === "reindex_done"));
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync records an unavailable selected source as an error and continues with healthy sources", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-partial-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+    const storeDir = path.join(tempRoot, "store");
+    await rm(path.join(tempRoot, ".claude"), { recursive: true, force: true });
+
+    const result = await runCliCapture([
+      "sync",
+      "--store",
+      storeDir,
+      "--source",
+      "codex",
+      "--source",
+      "claude_code",
+      "--json",
+    ], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.command, "sync");
+    assert.equal(payload.sources.length, 2);
+    assert.ok(payload.sources.some((entry: { source: { slot_id: string; sync_status: string } }) =>
+      entry.source.slot_id === "codex" && entry.source.sync_status === "healthy"));
+    assert.ok(payload.failures.some((failure: { slot_id: string; error_message: string }) =>
+      failure.slot_id === "claude_code" && /Source path not found/.test(failure.error_message)));
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("doctor reports store compatibility and source diagnostics without creating a store", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-doctor-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+    const storeDir = path.join(tempRoot, "store");
+    const payload = await runCliJson<{
+      kind: string;
+      store: { status: string; future_schema: boolean };
+      adapters: Array<{ platform: string; support_tier: string }>;
+      capped_probes: Array<{ slot_id: string; status: string }>;
+    }>(["doctor", "--store", storeDir, "--source", "codex"], tempRoot);
+
+    assert.equal(payload.kind, "doctor");
+    assert.equal(payload.store.status, "missing");
+    assert.equal(payload.store.future_schema, false);
+    assert.ok(payload.adapters.some((adapter) => adapter.platform === "codex" && adapter.support_tier === "stable"));
+    assert.ok(payload.capped_probes.some((probe) => probe.slot_id === "codex"));
+    assert.equal(await fileExists(path.join(storeDir, "cchistory.sqlite")), false);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("doctor reports future store schemas read-only instead of migrating them", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-doctor-future-"));
+
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    await mkdir(storeDir, { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec(`
+        CREATE TABLE schema_meta (
+          key TEXT PRIMARY KEY,
+          value_text TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+      db.prepare("INSERT INTO schema_meta (key, value_text, updated_at) VALUES (?, ?, ?)")
+        .run("schema_version", "2999-01-01.1", "2999-01-01T00:00:00.000Z");
+    } finally {
+      db.close();
+    }
+
+    const payload = await runCliJson<{
+      store: { status: string; schema_version: string; future_schema: boolean };
+    }>(["doctor", "--store", storeDir, "--store-only"], tempRoot);
+
+    assert.equal(payload.store.status, "future_schema");
+    assert.equal(payload.store.schema_version, "2999-01-01.1");
+    assert.equal(payload.store.future_schema, true);
+  } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

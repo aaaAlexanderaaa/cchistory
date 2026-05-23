@@ -58,6 +58,9 @@ cchistory sync                          # Sync all default sources
 cchistory sync --source codex           # Sync only Codex
 cchistory sync --source antigravity     # Sync only Antigravity
 cchistory sync --limit-files 10         # Limit files per source (for testing)
+cchistory sync --detail                 # Print source/file/write/reindex progress to stderr
+cchistory sync --progress jsonl --json  # Keep stdout JSON clean; stream progress JSONL to stderr
+cchistory sync --safe                   # Conservative scan: skip live probes and companion evidence
 cchistory sync --dry-run                # Preview discovered sync roots without writing
 ```
 
@@ -80,7 +83,14 @@ Cursor (cursor)  host-e336320  2         1      healthy
 |------|-------------|
 | `--source <slot>` | Source slot or ID (repeatable). If omitted, syncs all default sources |
 | `--limit-files <n>` | Max files per source |
+| `--detail` / `--verbose` | Print operator progress to stderr while preserving the final stdout result |
+| `--progress text\|jsonl\|none` | Select progress format; `jsonl` is useful with `--json` when diagnosing hangs |
+| `--safe` | Disable live probes, companion evidence capture, and git evidence reads for a conservative local scan |
 | `--dry-run` | Show which supported sources are currently discoverable and which path each would sync from |
+
+If one source fails during `sync`, CCHistory records that source as `error`
+when possible and continues with the remaining selected sources. The final
+summary includes the failed source and its error message in JSON output.
 
 > Windows note (2026-03-27): `sync --dry-run` and `discover` only prove that a candidate path is being probed. On Windows, `Cursor` and `Antigravity` have verified default roots; for `Codex`, `Claude Code`, `Factory Droid`, `AMP`, `Gemini CLI`, `OpenClaw`, `OpenCode`, `CodeBuddy`, `LobeChat`, and `Accio Work`, confirm or override `base_dir` through the web `Sources` view or `/api/admin/source-config` before treating the path as authoritative. Several of these adapters are now `stable`, but their Windows default roots are still not host-verified.
 
@@ -129,6 +139,24 @@ Behavior notes:
 - If no indexed store exists, `health` reports that explicitly instead of silently creating one.
 - `health --full` performs one live in-memory scan and does not create `cchistory.sqlite`.
 - `health --store-only` suppresses ambient host discovery and sync preview when you want store-scoped review of a seeded, restored, or pinned indexed store.
+
+### doctor
+
+Read-only diagnostics for a sync or store that appears stuck or stale.
+
+```bash
+cchistory doctor                         # Store compatibility + source roots + capped probes
+cchistory doctor --source codex          # Diagnose one source slot
+cchistory doctor --store ./.cchistory --store-only
+cchistory doctor --json                  # Machine-readable diagnostic payload
+```
+
+`doctor` does not create or migrate a store. It reports the CLI version,
+supported storage schema, selected store state, future-schema detection,
+directory access, approximate available disk, WAL/SHM sidecar presence,
+source-root file-count estimates, largest/recent files, adapter support tiers,
+recent indexed `stage_runs` and `loss_audits`, and a capped safe probe using
+`--limit-files` (default `1`).
 
 ### ls
 

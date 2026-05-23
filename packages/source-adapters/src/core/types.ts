@@ -62,6 +62,37 @@ export type {
 export interface ProbeOptions {
   source_ids?: string[];
   limit_files_per_source?: number;
+  safe_mode?: boolean;
+  max_file_bytes?: number;
+  on_progress?: (event: SourceProbeProgressEvent) => void;
+}
+
+export type SourceProbeProgressStage =
+  | "source_start"
+  | "source_missing"
+  | "live_probe_start"
+  | "live_probe_done"
+  | "list_files_start"
+  | "list_files_done"
+  | "file_start"
+  | "file_done"
+  | "file_error"
+  | "derive_start"
+  | "derive_done"
+  | "source_done";
+
+export interface SourceProbeProgressEvent {
+  stage: SourceProbeProgressStage;
+  source_id: string;
+  slot_id: string;
+  platform: SourcePlatform;
+  display_name: string;
+  message?: string;
+  file_path?: string;
+  file_index?: number;
+  file_count?: number;
+  count?: number;
+  elapsed_ms?: number;
 }
 
 export interface HostDiscoveryCandidate {

@@ -35,7 +35,6 @@ import type {
 } from "@cchistory/domain";
 import { initializeStorageSchema, readStorageSchemaInfo, type StorageSchemaInfo } from "../db/schema.js";
 import {
-  replaceSourcePayload as replacePersistedSourcePayload,
   replaceSourcePayloadWithOptions as replacePersistedSourcePayloadWithOptions,
 } from "../ingest/source-payload.js";
 import { buildFallbackProjectObservationCandidates } from "../linking/fallback.js";
@@ -109,6 +108,7 @@ export class CCHistoryStorage {
     payload: SourceSyncPayload,
     options: {
       allow_host_rekey?: boolean;
+      onProgress?: (event: { stage: "write_store_done" | "reindex_start" | "reindex_done"; source_id: string }) => void;
     } = {},
   ): {
     sessions: number;
@@ -127,13 +127,21 @@ export class CCHistoryStorage {
       blobs: number;
     };
     if (options.allow_host_rekey) {
-      result = replacePersistedSourcePayloadWithOptions(this.db, payload, { allow_host_rekey: true });
+      result = replacePersistedSourcePayloadWithOptions(this.db, payload, {
+        allow_host_rekey: true,
+        on_progress: options.onProgress,
+      });
     } else {
-      result = replacePersistedSourcePayload(this.db, payload);
+      result = replacePersistedSourcePayloadWithOptions(this.db, payload, {
+        allow_host_rekey: false,
+        on_progress: options.onProgress,
+      });
     }
 
     this.invalidateProjectLinkSnapshot();
+    options.onProgress?.({ stage: "reindex_start", source_id: payload.source.id });
     this.refreshDerivedState();
+    options.onProgress?.({ stage: "reindex_done", source_id: payload.source.id });
     return result;
   }
 

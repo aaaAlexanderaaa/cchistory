@@ -32,7 +32,7 @@ import { handleContext } from "./commands/context.js";
 import { handleBackup, handleExport, handleGc, handleImport, handleMergeAlias, handleRestoreCheck } from "./commands/maintenance.js";
 import { handleQueryAlias, handleTemplates } from "./commands/query.js";
 import { handleStats } from "./commands/stats.js";
-import { handleDiscover, handleHealth, handleSync, syncSelectedSources } from "./commands/sync.js";
+import { handleDiscover, handleDoctor, handleHealth, handleSync, syncSelectedSources } from "./commands/sync.js";
 
 installRuntimeWarningFilter();
 
@@ -127,6 +127,8 @@ async function dispatchCommand(context: CommandContext): Promise<CommandOutput> 
       return handleDiscover(context);
     case "health":
       return handleHealth(context);
+    case "doctor":
+      return handleDoctor(context);
     case "ls":
       return handleLs(context);
     case "tree":

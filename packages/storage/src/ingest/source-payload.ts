@@ -22,7 +22,10 @@ export function replaceSourcePayload(db: DatabaseSync, payload: SourceSyncPayloa
 export function replaceSourcePayloadWithOptions(
   db: DatabaseSync,
   payload: SourceSyncPayload,
-  options: { allow_host_rekey: boolean },
+  options: {
+    allow_host_rekey: boolean;
+    on_progress?: (event: { stage: "write_store_done" | "reindex_start" | "reindex_done"; source_id: string }) => void;
+  },
 ): {
   sessions: number;
   turns: number;
@@ -123,6 +126,7 @@ export function replaceSourcePayloadWithOptions(
     }
 
     db.exec("COMMIT;");
+    options.on_progress?.({ stage: "write_store_done", source_id: normalizedPayload.source.id });
 
     return {
       sessions: normalizedPayload.sessions.length,

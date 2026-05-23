@@ -33,6 +33,7 @@ export interface CliGlobals {
   showAll: boolean;
   debug: boolean;
   color: boolean;
+  verbose: boolean;
 }
 
 export interface CommandOptions {
@@ -64,6 +65,9 @@ export interface CommandOptions {
   retryAttempts?: number;
   retryDelayMs?: number;
   sourceHealth: boolean;
+  detail: boolean;
+  progress?: string;
+  safe: boolean;
 }
 
 export interface ParsedCommand {
@@ -87,6 +91,7 @@ const GLOBAL_OPTION_NAMES = [
   "dry-run",
   "showall",
   "debug",
+  "verbose",
   "color",
   "help",
   "version",
@@ -130,6 +135,10 @@ const globalOptions: Record<(typeof GLOBAL_OPTION_NAMES)[number], OptionSpec> = 
   debug: {
     kind: "boolean",
     description: "Print stack traces for troubleshooting",
+  },
+  verbose: {
+    kind: "boolean",
+    description: "Print operator progress for long-running commands",
   },
   color: {
     kind: "boolean",
@@ -286,6 +295,20 @@ const commandOptions: Record<string, OptionSpec> = {
     kind: "boolean",
     description: "Include source-health summary in TUI snapshot output",
   },
+  detail: {
+    kind: "boolean",
+    description: "Print sync/doctor progress details to stderr",
+  },
+  progress: {
+    kind: "enum",
+    valueName: "mode",
+    choices: ["text", "jsonl", "none"],
+    description: "Progress output mode for long-running diagnostics.",
+  },
+  safe: {
+    kind: "boolean",
+    description: "Use conservative source probing without live probes or companion evidence.",
+  },
 };
 
 const readOptions = ["source", "limit-files"];
@@ -295,11 +318,11 @@ const commandSpecs: CommandSpec[] = [
   {
     path: ["sync"],
     category: "Data Management",
-    usage: "cchistory sync [--source <slot-or-id>] [--limit-files <n>] [--dry-run]",
+    usage: "cchistory sync [--source <slot-or-id>] [--limit-files <n>] [--detail] [--safe] [--dry-run]",
     summary: "Ingest data from local AI tool directories",
     description: "Ingest local source files into the selected store.",
-    options: ["source", "limit-files"],
-    examples: ["cchistory sync", "cchistory sync --source codex", "cchistory sync --dry-run"],
+    options: ["source", "limit-files", "detail", "progress", "safe"],
+    examples: ["cchistory sync", "cchistory sync --source codex --detail", "cchistory sync --progress jsonl --safe"],
   },
   {
     path: ["discover"],
@@ -317,6 +340,15 @@ const commandSpecs: CommandSpec[] = [
     description: "Read-only operator overview combining host discovery, sync preview, and store summary.",
     options: ["source", "store-only"],
     examples: ["cchistory health", "cchistory health --store ./.cchistory --store-only"],
+  },
+  {
+    path: ["doctor"],
+    category: "Data Management",
+    usage: "cchistory doctor [--source <slot-or-id>] [--limit-files <n>] [--store-only] [--json]",
+    summary: "Read-only sync and store diagnostics",
+    description: "Inspect store compatibility, source roots, adapters, recent pipeline diagnostics, and capped source probes without writing.",
+    options: ["source", "limit-files", "store-only", "detail", "progress"],
+    examples: ["cchistory doctor", "cchistory doctor --source codex --json", "cchistory doctor --store ./.cchistory --store-only"],
   },
   {
     path: ["ls"],
@@ -612,6 +644,7 @@ function normalizeGlobals(values: Record<string, string | string[] | boolean | u
     showAll: readBoolean(values, "showall"),
     debug: readBoolean(values, "debug"),
     color: values.color !== false,
+    verbose: readBoolean(values, "verbose"),
   };
 }
 
@@ -645,6 +678,9 @@ function normalizeCommandOptions(values: Record<string, string | string[] | bool
     retryAttempts: readNumber(values, "retry-attempts"),
     retryDelayMs: readNumber(values, "retry-delay-ms"),
     sourceHealth: readBoolean(values, "source-health"),
+    detail: readBoolean(values, "detail"),
+    progress: readString(values, "progress"),
+    safe: readBoolean(values, "safe"),
   };
 }
 
@@ -727,6 +763,7 @@ function validateOptionChoices(path: string[], options: CommandOptions): void {
   validateChoice("by", options.by);
   validateChoice("on-conflict", options.onConflict, commandOptionsForValidation(path));
   validateChoice("link-state", options.linkState);
+  validateChoice("progress", options.progress);
 }
 
 function commandOptionsForValidation(path: string[]): Record<string, OptionSpec> {

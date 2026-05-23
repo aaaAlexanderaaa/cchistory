@@ -34,6 +34,13 @@ const STORAGE_SCHEMA_MIGRATIONS: ReadonlyArray<{
 ];
 
 export function initializeStorageSchema(db: DatabaseSync): boolean {
+  const existingSchemaVersion = readExistingSchemaVersion(db);
+  if (existingSchemaVersion && compareStorageSchemaVersions(existingSchemaVersion, STORAGE_SCHEMA_VERSION) > 0) {
+    throw new Error(
+      `Store schema version ${existingSchemaVersion} is newer than this CCHistory build supports (${STORAGE_SCHEMA_VERSION}). Upgrade CCHistory before writing to this store.`,
+    );
+  }
+
   ensureSchemaMetadataTables(db);
 
   db.exec(`
@@ -222,6 +229,10 @@ export function initializeStorageSchema(db: DatabaseSync): boolean {
   }
 }
 
+export function isFutureStorageSchemaVersion(version: string): boolean {
+  return compareStorageSchemaVersions(version, STORAGE_SCHEMA_VERSION) > 0;
+}
+
 export function readStorageSchemaInfo(db: DatabaseSync): StorageSchemaInfo {
   const versionRow = db.prepare("SELECT value_text FROM schema_meta WHERE key = ?").get("schema_version") as
     | { value_text: string }
@@ -257,6 +268,33 @@ function ensureSchemaMetadataTables(db: DatabaseSync): void {
       applied_at TEXT NOT NULL
     );
   `);
+}
+
+function readExistingSchemaVersion(db: DatabaseSync): string | undefined {
+  const hasSchemaMeta = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get("schema_meta") as { 1: number } | undefined;
+  if (!hasSchemaMeta) {
+    return undefined;
+  }
+
+  const row = db.prepare("SELECT value_text FROM schema_meta WHERE key = ?").get("schema_version") as
+    | { value_text: string }
+    | undefined;
+  return row?.value_text;
+}
+
+function compareStorageSchemaVersions(left: string, right: string): number {
+  const leftParts = left.split(/[^0-9]+/u).filter(Boolean).map(Number);
+  const rightParts = right.split(/[^0-9]+/u).filter(Boolean).map(Number);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const delta = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (delta !== 0) {
+      return delta;
+    }
+  }
+  return left.localeCompare(right);
 }
 
 function recordSchemaMigration(

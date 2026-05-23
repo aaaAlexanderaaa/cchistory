@@ -1,4 +1,5 @@
 import { mkdtemp, rm } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -36,6 +37,34 @@ test("fresh storage is empty", async () => {
   try {
     const storage = new CCHistoryStorage(dataDir);
     assert.equal(storage.isEmpty(), true);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("storage refuses to write stores with a future schema version", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-future-schema-"));
+  try {
+    const dbPath = path.join(dataDir, "cchistory.sqlite");
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec(`
+        CREATE TABLE schema_meta (
+          key TEXT PRIMARY KEY,
+          value_text TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+      db.prepare("INSERT INTO schema_meta (key, value_text, updated_at) VALUES (?, ?, ?)")
+        .run("schema_version", "2999-01-01.1", "2999-01-01T00:00:00.000Z");
+    } finally {
+      db.close();
+    }
+
+    assert.throws(
+      () => new CCHistoryStorage({ dbPath }),
+      /Store schema version 2999-01-01\.1 is newer than this CCHistory build supports/,
+    );
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
