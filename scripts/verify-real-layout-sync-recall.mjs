@@ -87,7 +87,7 @@ async function verifyRealLayoutSyncAndRead(storeDir, cwd) {
   assert.ok(opencodeHit, "expected OpenCode search hit from real-layout fixture sync");
   assert.equal(opencodeHit.project.display_name, "esql-lab");
 
-  const geminiSearch = await runCliJson(["search", "agentresearch", "--store", storeDir], cwd);
+  const geminiSearch = await runCliJson(["search", "noteworthy AI agent frameworks", "--store", storeDir], cwd);
   const geminiHit = geminiSearch.results.find((result) => result.session.source_platform === "gemini");
   assert.ok(geminiHit, "expected Gemini search hit from real-layout fixture sync");
   assert.equal(geminiHit.project.display_name, "agentresearch");
@@ -97,7 +97,7 @@ async function verifyRealLayoutSyncAndRead(storeDir, cwd) {
   assert.ok(codebuddyHit, "expected CodeBuddy search hit from real-layout fixture sync");
   assert.equal(codebuddyHit.project.display_name, "config-workspace-ai_learning");
 
-  const cursorSearch = await runCliJson(["search", "MCP Service Guide", "--store", storeDir], cwd);
+  const cursorSearch = await runCliJson(["search", "Research stable MCP servers", "--store", storeDir], cwd);
   const cursorHit = cursorSearch.results.find((result) => result.session.source_platform === "cursor");
   assert.ok(cursorHit, "expected Cursor chat-store search hit from real-layout fixture sync");
   assert.equal(cursorHit.session.title, "MCP Service Guide");
@@ -107,7 +107,7 @@ async function verifyRealLayoutSyncAndRead(storeDir, cwd) {
     { platform: "claude_code", query: "expert code reviewer", project: "chat-ui-kit" },
     { platform: "factory_droid", query: "history lab", project: "history-lab" },
     { platform: "amp", query: "AMP ingestion gaps", project: "history-lab" },
-    { platform: "antigravity", query: "history-lab", project: "history-lab" },
+    { platform: "antigravity", query: "启动方式", project: "history-lab" },
   ];
   for (const entry of addedStableCases) {
     const search = await runCliJson(["search", entry.query, "--store", storeDir], cwd);
@@ -136,10 +136,10 @@ async function verifyRealLayoutSyncAndRead(storeDir, cwd) {
   assert.equal(openclawSessionDetail.turns.length, 0);
 
   const tui = createIo(cwd);
-  const tuiExitCode = await runTui(["--store", storeDir, "--search", "ESQL notes"], tui.io);
+  const tuiExitCode = await runTui(["--store", storeDir, "--search", "task requirements"], tui.io);
   assert.equal(tuiExitCode, 0, tui.stderr.join(""));
   const tuiOutput = tui.stdout.join("");
-  assert.match(tuiOutput, /Search: ESQL notes/);
+  assert.match(tuiOutput, /Search: task requirements/);
   assert.match(tuiOutput, /esql-lab/);
   assert.match(tuiOutput, /opencode/);
 
@@ -159,7 +159,7 @@ async function verifyRealLayoutSyncAndRead(storeDir, cwd) {
     const opencodeSearchBody = JSON.parse(opencodeSearchResponse.body);
     assert.ok(opencodeSearchBody.results.some((result) => result.session.source_platform === "opencode"));
 
-    const geminiSearchResponse = await runtime.app.inject({ method: "GET", url: `/api/turns/search?q=${encodeURIComponent("agentresearch")}` });
+    const geminiSearchResponse = await runtime.app.inject({ method: "GET", url: `/api/turns/search?q=${encodeURIComponent("noteworthy AI agent frameworks")}` });
     assert.equal(geminiSearchResponse.statusCode, 200);
     const geminiSearchBody = JSON.parse(geminiSearchResponse.body);
     assert.ok(geminiSearchBody.results.some((result) => result.session.source_platform === "gemini"));
@@ -169,7 +169,7 @@ async function verifyRealLayoutSyncAndRead(storeDir, cwd) {
     const codebuddySearchBody = JSON.parse(codebuddySearchResponse.body);
     assert.ok(codebuddySearchBody.results.some((result) => result.session.source_platform === "codebuddy"));
 
-    const cursorSearchResponse = await runtime.app.inject({ method: "GET", url: `/api/turns/search?q=${encodeURIComponent("MCP Service Guide")}` });
+    const cursorSearchResponse = await runtime.app.inject({ method: "GET", url: `/api/turns/search?q=${encodeURIComponent("Research stable MCP servers")}` });
     assert.equal(cursorSearchResponse.statusCode, 200);
     const cursorSearchBody = JSON.parse(cursorSearchResponse.body);
     assert.ok(cursorSearchBody.results.some((result) => result.session.source_platform === "cursor"));

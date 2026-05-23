@@ -17,6 +17,7 @@ import {
   seedMultiTurnCodexFixture,
   seedCodexInjectedScaffoldFixture,
   seedCodexInjectedOnlyFixture,
+  seedCodexInjectedOnlyWithSystemContextFixture,
   seedClaudeInterruptedFixture,
   getRepoMockDataRoot,
   readStableAdapterValidationManifest,
@@ -371,6 +372,25 @@ test("runSourceProbe does not promote injected-only scaffolding into standalone 
   }
 });
 
+test("runSourceProbe does not promote injected-only Codex scaffolding with system context into user turns", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const source = await seedCodexInjectedOnlyWithSystemContextFixture(tempRoot);
+    const [payload] = (await runSourceProbe({ limit_files_per_source: 1 }, [source])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.turns.length, 0);
+    assert.equal(payload.contexts.length, 0);
+    assert.equal(payload.sessions[0]?.turn_count, 0);
+    assert.ok(payload.atoms.some((atom) => atom.origin_kind === "injected_user_shaped"));
+    assert.ok(payload.atoms.some((atom) => atom.actor_kind === "system"));
+    assert.equal(payload.candidates.some((candidate) => candidate.candidate_kind === "turn"), false);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("runSourceProbe keeps Claude interruption markers as source metadata instead of turns", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
 
@@ -693,4 +713,3 @@ test("runSourceProbe does not use file mtime when atom timestamps already differ
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
-

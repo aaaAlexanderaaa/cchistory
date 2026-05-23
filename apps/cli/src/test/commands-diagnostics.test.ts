@@ -74,6 +74,7 @@ test("--help renders usage without touching storage-backed commands", async () =
     assert.equal(result.exitCode, 0, result.stderr);
     assert.match(result.stdout, /^Usage:/);
     assert.match(result.stdout, /cchistory sync/);
+    assert.match(result.stdout, /--index\s+Read from existing store only/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -87,6 +88,7 @@ test("command help renders from the registry without opening a store", async () 
     assert.equal(searchHelp.exitCode, 0, searchHelp.stderr);
     assert.match(searchHelp.stdout, /Usage: cchistory search <query>/);
     assert.match(searchHelp.stdout, /--project <ref>/);
+    assert.match(searchHelp.stdout, /--index\s+Read from existing store only/);
     assert.doesNotMatch(searchHelp.stderr, /Store not found|unable to open database/);
 
     const agentHelp = await runCliCapture(["help", "agent", "pull"], tempRoot);
@@ -94,6 +96,23 @@ test("command help renders from the registry without opening a store", async () 
     assert.match(agentHelp.stdout, /Usage: cchistory agent pull/);
     assert.match(agentHelp.stdout, /--state-file <file>/);
     assert.doesNotMatch(agentHelp.stderr, /Store not found|unable to open database/);
+
+    const statsHelp = await runCliCapture(["help", "stats"], tempRoot);
+    assert.equal(statsHelp.exitCode, 0, statsHelp.stderr);
+    assert.match(statsHelp.stdout, /Usage: cchistory stats \[--by model\|project\|source\|host\|day\|month\]/);
+    assert.match(statsHelp.stdout, /--by <dimension>\s+Group token usage by this dimension\. One of: model, project, source, host, day, month\./);
+    assert.match(statsHelp.stdout, /cchistory stats --by model/);
+
+    const statsUsageHelp = await runCliCapture(["stats", "usage", "--help"], tempRoot);
+    assert.equal(statsUsageHelp.exitCode, 0, statsUsageHelp.stderr);
+    assert.match(statsUsageHelp.stdout, /Usage: cchistory stats usage --by model\|project\|source\|host\|day\|month/);
+    assert.match(statsUsageHelp.stdout, /--by <dimension>\s+Group token usage by this dimension\. One of: model, project, source, host, day, month\./);
+    assert.doesNotMatch(statsUsageHelp.stderr, /Store not found|unable to open database/);
+
+    const mergeHelp = await runCliCapture(["help", "merge"], tempRoot);
+    assert.equal(mergeHelp.exitCode, 0, mergeHelp.stderr);
+    assert.match(mergeHelp.stdout, /--on-conflict <mode>\s+Conflict behavior\. One of: skip, replace\./);
+    assert.doesNotMatch(mergeHelp.stdout, /One of: error, skip, replace/);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -148,6 +167,71 @@ test("parser rejects unknown, invalid, and duplicate command options", async () 
     const duplicate = await runCliCapture(["search", "--limit", "1", "--limit", "2", "probe"], tempRoot);
     assert.equal(duplicate.exitCode, 1);
     assert.match(duplicate.stderr, /Option --limit can only be provided once/);
+
+    const invalidStatsDimension = await runCliCapture(["stats", "--by", "workspace"], tempRoot);
+    assert.equal(invalidStatsDimension.exitCode, 1);
+    assert.match(invalidStatsDimension.stderr, /Invalid value for --by: workspace\. Expected one of model, project, source, host, day, month\./);
+
+    const invalidMergeConflict = await runCliCapture(["merge", "--from", "a.sqlite", "--to", "b.sqlite", "--on-conflict", "abort"], tempRoot);
+    assert.equal(invalidMergeConflict.exitCode, 1);
+    assert.match(invalidMergeConflict.stderr, /Invalid value for --on-conflict: abort\. Expected one of skip, replace\./);
+    assert.doesNotMatch(invalidMergeConflict.stderr, /error, skip, replace/);
+
+    const missingStatsDimension = await runCliCapture(["stats", "usage"], tempRoot);
+    assert.equal(missingStatsDimension.exitCode, 1);
+    assert.match(missingStatsDimension.stderr, /`stats usage` requires --by <dimension>/);
+    assert.match(missingStatsDimension.stderr, /Example: cchistory stats usage --by model/);
+    assert.doesNotMatch(missingStatsDimension.stderr, /Store not found|unable to open database/);
+
+    const negativeLimit = await runCliCapture(["search", "--limit=-1", "probe"], tempRoot);
+    assert.equal(negativeLimit.exitCode, 1);
+    assert.match(negativeLimit.stderr, /Invalid value for --limit: -1\. Expected a positive integer\./);
+    assert.doesNotMatch(negativeLimit.stderr, /Store not found|unable to open database/);
+
+    const fractionalOffset = await runCliCapture(["search", "--offset", "1.5", "probe"], tempRoot);
+    assert.equal(fractionalOffset.exitCode, 1);
+    assert.match(fractionalOffset.stderr, /Invalid value for --offset: 1\.5\. Expected a non-negative integer\./);
+
+    const conflictingReadModes = await runCliCapture(["--full", "--index", "stats"], tempRoot);
+    assert.equal(conflictingReadModes.exitCode, 1);
+    assert.match(conflictingReadModes.stderr, /Choose either --full or --index, not both\./);
+    assert.doesNotMatch(conflictingReadModes.stderr, /Store not found|unable to open database/);
+
+    const zeroInterval = await runCliCapture(["agent", "schedule", "--interval-seconds", "0"], tempRoot);
+    assert.equal(zeroInterval.exitCode, 1);
+    assert.match(zeroInterval.stderr, /Invalid value for --interval-seconds: 0\. Expected a positive integer\./);
+    assert.doesNotMatch(zeroInterval.stderr, /Remote agent state file not found|fetch failed/);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("usage errors for incomplete commands happen before store or remote access", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-usage-errors-"));
+
+  try {
+    const cases: Array<{ argv: string[]; pattern: RegExp }> = [
+      { argv: ["tree", "project"], pattern: /Use `tree projects`, `tree project <project-id-or-slug>`, or `tree session <session-ref>`\./ },
+      { argv: ["tree", "projects", "extra"], pattern: /Use `tree projects`, `tree project <project-id-or-slug>`, or `tree session <session-ref>`\./ },
+      { argv: ["show", "banana", "x"], pattern: /Use `show project\|session\|turn\|source <ref>`\./ },
+      { argv: ["show", "project", "cchistory", "extra"], pattern: /Use `show project\|session\|turn\|source <ref>`\./ },
+      { argv: ["query"], pattern: /Use `query turns\|turn\|sessions\|session\|projects\|project \.\.\.`\./ },
+      { argv: ["query", "turns", "extra"], pattern: /Use `query turns\|turn\|sessions\|session\|projects\|project \.\.\.`\./ },
+      { argv: ["query", "turn"], pattern: /Missing required --id flag\./ },
+      { argv: ["agent", "pair"], pattern: /Missing required --server flag\./ },
+      { argv: ["agent", "schedule"], pattern: /Missing required --interval-seconds flag\./ },
+      { argv: ["restore-check"], pattern: /`restore-check` requires an explicit --store or --db target\./ },
+      { argv: ["export"], pattern: /Missing required --out flag\./ },
+      { argv: ["merge", "--from", "a.sqlite"], pattern: /Missing required --to flag\./ },
+    ];
+
+    for (const { argv, pattern } of cases) {
+      const result = await runCliCapture(argv, tempRoot);
+      assert.equal(result.exitCode, 1, argv.join(" "));
+      assert.match(result.stderr, pattern, argv.join(" "));
+      assert.doesNotMatch(result.stderr, /Store not found|unable to open database|ENOENT|fetch failed/, argv.join(" "));
+      assert.equal(result.stdout, "", argv.join(" "));
+    }
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -177,6 +261,20 @@ test("errors hide stack traces unless debug is enabled", async () => {
     } else {
       process.env.CCHISTORY_DEBUG = originalDebug;
     }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("--json failures keep stdout empty and print actionable text to stderr", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-json-error-"));
+
+  try {
+    const result = await runCliCapture(["--json", "search"], tempRoot);
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.stdout, "");
+    assert.match(result.stderr, /Search requires a query string\./);
+    assert.doesNotMatch(result.stderr, /\n\s+at /);
+  } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

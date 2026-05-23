@@ -326,11 +326,7 @@ export function buildTurnsAndContext(
     );
 
     const hasAuthoredUserInput = userMessages.some((message) => !message.is_injected);
-    const hasRenderableContext =
-      contextProjection.assistant_replies.length > 0 ||
-      contextProjection.tool_calls.length > 0 ||
-      contextProjection.system_messages.length > 0;
-    if (!hasAuthoredUserInput && !hasRenderableContext) {
+    if (!hasAuthoredUserInput) {
       continue;
     }
 
@@ -796,4 +792,3 @@ export function extractCanonicalFallback(segments: readonly DisplaySegment[]): s
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
-

@@ -1,14 +1,16 @@
 import { getSourceFormatProfiles } from "@cchistory/source-adapters";
+import type { CCHistoryStorage } from "@cchistory/storage";
 import { listVisibleProjects } from "../renderers.js";
 import {
   type CommandContext,
   type CommandOutput,
   openReadStore,
 } from "../main.js";
-import { resolveProjectRef, resolveSessionRef, resolveTurnRef } from "../resolvers.js";
+import { resolveProjectRef, resolveSessionRef, resolveSourceRef, resolveTurnRef } from "../resolvers.js";
 
 export async function handleQueryAlias(context: CommandContext): Promise<CommandOutput> {
   const target = context.commandPath[1] ?? context.positionals[0];
+  validateQueryTarget(context, target);
   const readStore = await openReadStore(context);
   try {
     const { storage } = readStore;
@@ -17,7 +19,7 @@ export async function handleQueryAlias(context: CommandContext): Promise<Command
         const query = context.options.search;
         const projectRef = context.options.project;
         const projectId = projectRef ? resolveProjectRef(storage, projectRef).project_id : undefined;
-        const sourceIds = context.options.source;
+        const sourceIds = resolveSourceRefs(storage, context.options.source);
         const limit = context.options.limit ?? 20;
         const json = query
           ? storage.searchTurns({
@@ -49,7 +51,7 @@ export async function handleQueryAlias(context: CommandContext): Promise<Command
       case "sessions": {
         const projectRef = context.options.project;
         const projectId = projectRef ? resolveProjectRef(storage, projectRef).project_id : undefined;
-        const sourceIds = context.options.source;
+        const sourceIds = resolveSourceRefs(storage, context.options.source);
         const limit = context.options.limit ?? 20;
         const json = storage
           .listResolvedSessions()
@@ -69,14 +71,21 @@ export async function handleQueryAlias(context: CommandContext): Promise<Command
         return { text: JSON.stringify(json, null, 2), json };
       }
       case "projects": {
-        const json = listVisibleProjects(storage, context);
+        const sourceIds = resolveSourceRefs(storage, context.options.source);
+        const projects = listVisibleProjects(storage, context);
+        const json = sourceIds.length === 0
+          ? projects
+          : projects.filter((project) => projectHasSourceTurn(storage, project.project_id, sourceIds));
         return { text: JSON.stringify(json, null, 2), json };
       }
       case "project": {
         const project = resolveProjectRef(storage, requireOption(context.options.id, "id"));
+        const sourceIds = resolveSourceRefs(storage, context.options.source);
         const json = {
           project,
-          turns: storage.listProjectTurns(project.project_id, (context.options.linkState as "all" | "committed" | "candidate" | "unlinked" | undefined) ?? "all"),
+          turns: storage
+            .listProjectTurns(project.project_id, (context.options.linkState as "all" | "committed" | "candidate" | "unlinked" | undefined) ?? "all")
+            .filter((turn) => (sourceIds.length > 0 ? sourceIds.includes(turn.source_id) : true)),
         };
         return { text: JSON.stringify(json, null, 2), json };
       }
@@ -86,6 +95,36 @@ export async function handleQueryAlias(context: CommandContext): Promise<Command
   } finally {
     await readStore.close();
   }
+}
+
+function validateQueryTarget(context: CommandContext, target: string | undefined): void {
+  const positionalLimit = context.commandPath[1] ? 0 : 1;
+  if (context.positionals.length > positionalLimit) {
+    throw new Error("Use `query turns|turn|sessions|session|projects|project ...`.");
+  }
+  switch (target) {
+    case "turns":
+    case "sessions":
+    case "projects":
+      return;
+    case "turn":
+    case "session":
+    case "project":
+      requireOption(context.options.id, "id");
+      return;
+    default:
+      throw new Error("Use `query turns|turn|sessions|session|projects|project ...`.");
+  }
+}
+
+function resolveSourceRefs(storage: CCHistoryStorage, refs: string[]): string[] {
+  return refs.map((ref) => resolveSourceRef(storage, ref).id);
+}
+
+function projectHasSourceTurn(storage: CCHistoryStorage, projectId: string, sourceIds: string[]): boolean {
+  return storage
+    .listProjectTurns(projectId, "all")
+    .some((turn) => sourceIds.includes(turn.source_id));
 }
 
 function requireOption(value: string | undefined, key: string): string {

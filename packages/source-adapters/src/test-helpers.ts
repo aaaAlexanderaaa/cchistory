@@ -514,6 +514,60 @@ export async function seedCodexInjectedOnlyFixture(tempRoot: string): Promise<So
   return createSourceDefinition("src-codex-injected-only", "codex", codexDir);
 }
 
+export async function seedCodexInjectedOnlyWithSystemContextFixture(tempRoot: string): Promise<SourceDefinition> {
+  const codexDir = path.join(tempRoot, "codex-injected-only-system-context");
+  await mkdir(codexDir, { recursive: true });
+
+  await writeFile(
+    path.join(codexDir, "rollout-2026-03-09T00-00-00-codex-fixture.jsonl"),
+    [
+      {
+        timestamp: "2026-03-09T08:20:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-injected-only-system-context-session",
+          cwd: "/workspace/injected-only-system-context",
+          model: "gpt-5",
+        },
+      },
+      {
+        timestamp: "2026-03-09T08:20:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text:
+                "# AGENTS.md instructions for /workspace/injected-only-system-context\n\n<INSTRUCTIONS>\nBe precise.\n</INSTRUCTIONS>\n\n<environment_context>\n  <cwd>/workspace/injected-only-system-context</cwd>\n  <shell>zsh</shell>\n</environment_context>",
+            },
+          ],
+        },
+      },
+      {
+        timestamp: "2026-03-09T08:20:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "system",
+          content: [
+            {
+              type: "output_text",
+              text: "Continue working toward the active thread goal.",
+            },
+          ],
+        },
+      },
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n"),
+    "utf8",
+  );
+
+  return createSourceDefinition("src-codex-injected-only-system-context", "codex", codexDir);
+}
+
 export async function seedClaudeInterruptedFixture(tempRoot: string): Promise<SourceDefinition> {
   const claudeDir = path.join(tempRoot, "claude-interrupted");
   await mkdir(claudeDir, { recursive: true });

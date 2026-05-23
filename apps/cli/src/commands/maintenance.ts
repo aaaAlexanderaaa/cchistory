@@ -24,6 +24,7 @@ import {
   openStorage,
   pruneOrphanRawSnapshotsSafe,
   resolveStoreLayout,
+  type StoreLayout,
 } from "../store.js";
 import {
   type CommandContext,
@@ -311,48 +312,115 @@ export async function handleImport(context: CommandContext): Promise<CommandOutp
 export async function handleMergeAlias(context: CommandContext): Promise<CommandOutput> {
   const fromPath = requireOption(context.options.from, "from");
   const toPath = requireOption(context.options.to, "to");
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-merge-"));
-  const fromLayout = resolveStoreLayout({ cwd: context.io.cwd, dbArg: fromPath });
-  const toLayout = resolveStoreLayout({ cwd: context.io.cwd, dbArg: toPath });
+  const fromLayout = resolveMergeStoreLayout(context, fromPath);
+  const toLayout = resolveMergeStoreLayout(context, toPath);
   const sourceRefs = context.options.source;
-  const conflictMode = (context.options.onConflict ?? "replace") as "skip" | "replace";
-
-  const sourceStorage = await openStorage(fromLayout);
-  const targetStorage = await openStorage(toLayout);
+  const conflictOption = context.options.onConflict;
+  if (conflictOption === "error") {
+    throw new Error("`merge --on-conflict` must be skip or replace. Use `import --on-conflict error` when you need an error-on-conflict workflow.");
+  }
+  const conflictMode: "skip" | "replace" = conflictOption === "skip" ? "skip" : "replace";
+  const dryRun = context.globals.dryRun || !context.options.write;
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-merge-"));
+  let sourceStorage: CCHistoryStorage | undefined;
+  let targetStorage: CCHistoryStorage | undefined;
   try {
-    const selectedSourceIds = sourceRefs.length > 0 ? sourceRefs.map((ref) => resolveSourceRef(sourceStorage, ref).id) : undefined;
+    const openedSourceStorage = await openStorage(fromLayout);
+    sourceStorage = openedSourceStorage;
+    const targetStoreExists = await pathExists(toLayout.dbPath);
+    if (!dryRun) {
+      await mkdir(toLayout.assetDir, { recursive: true });
+      await mkdir(toLayout.rawDir, { recursive: true });
+    }
+    const openedTargetStorage = dryRun && !targetStoreExists
+      ? await createStorage({ dbPath: ":memory:" })
+      : await openStorage(toLayout);
+    targetStorage = openedTargetStorage;
+    const selectedSourceIds = sourceRefs.length > 0 ? sourceRefs.map((ref) => resolveSourceRef(openedSourceStorage, ref).id) : undefined;
     await exportBundle({
-      storage: sourceStorage,
+      storage: openedSourceStorage,
       bundleDir: tempDir,
       sourceIds: selectedSourceIds,
       includeRawBlobs: true,
     });
+    if (dryRun) {
+      const plan = await planBundleImport({
+        storage: openedTargetStorage,
+        bundleDir: tempDir,
+        onConflict: conflictMode,
+      });
+      return {
+        text: [
+          renderKeyValue([
+            ["Workflow", "merge"],
+            ["Mode", "preview"],
+            ["From DB", fromLayout.dbPath],
+            ["To DB", toLayout.dbPath],
+            ["Target Exists", String(targetStoreExists)],
+            ["Conflict Mode", conflictMode],
+            ["Would Import", String(plan.imported_source_ids.length)],
+            ["Would Replace", String(plan.replaced_source_ids.length)],
+            ["Would Skip", String(plan.skipped_source_ids.length)],
+            ["Would Conflict", String(plan.conflicting_source_ids.length)],
+            ["Would Fail", String(plan.would_fail)],
+          ]),
+          "",
+          renderImportPlanTable(plan),
+        ].join("\n"),
+        json: {
+          kind: "merge-dry-run",
+          from_db_path: fromLayout.dbPath,
+          to_db_path: toLayout.dbPath,
+          target_exists: targetStoreExists,
+          ...plan,
+        },
+      };
+    }
     const imported = await importBundleIntoStore({
-      storage: targetStorage,
+      storage: openedTargetStorage,
       bundleDir: tempDir,
       rawDir: toLayout.rawDir,
-      onConflict: conflictMode === "replace" ? "replace" : "skip",
+      onConflict: conflictMode,
     });
     const rawGc = await pruneOrphanRawSnapshotsSafe({
-      storage: targetStorage,
+      storage: openedTargetStorage,
       rawDir: toLayout.rawDir,
     });
     return {
       text: [
+        renderKeyValue([
+          ["Workflow", "merge"],
+          ["Mode", "write"],
+          ["From DB", fromLayout.dbPath],
+          ["To DB", toLayout.dbPath],
+          ["Conflict Mode", conflictMode],
+        ]),
+        "",
         `Merged via bundle compatibility path: imported=${imported.imported_source_ids.length} replaced=${imported.replaced_source_ids.length} skipped=${imported.skipped_source_ids.length}`,
         "",
         renderSection("Raw GC", renderRawGcSummary(rawGc)),
       ].join("\n"),
       json: {
+        kind: "merge",
+        from_db_path: fromLayout.dbPath,
+        to_db_path: toLayout.dbPath,
         ...imported,
         raw_gc: rawGc,
       },
     };
   } finally {
-    sourceStorage.close();
-    targetStorage.close();
+    sourceStorage?.close();
+    targetStorage?.close();
     await rm(tempDir, { recursive: true, force: true });
   }
+}
+
+function resolveMergeStoreLayout(context: CommandContext, targetPath: string): StoreLayout {
+  const basename = path.basename(targetPath);
+  const looksLikeDbFile = basename === "cchistory.sqlite" || /\.(?:sqlite|sqlite3|db)$/iu.test(basename);
+  return looksLikeDbFile
+    ? resolveStoreLayout({ cwd: context.io.cwd, dbArg: targetPath })
+    : resolveStoreLayout({ cwd: context.io.cwd, storeArg: targetPath });
 }
 
 export async function handleGc(context: CommandContext): Promise<CommandOutput> {
@@ -377,9 +445,9 @@ export async function handleGc(context: CommandContext): Promise<CommandOutput> 
         ["Dry Run", String(dryRun)],
         ["Scanned Files", formatNumber(result.scanned_files)],
         ["Referenced Files", formatNumber(result.referenced_files)],
-        ["Deleted Files", formatNumber(result.deleted_files)],
-        ["Deleted Bytes", formatBytes(result.deleted_bytes)],
-        ["Removed Dirs", formatNumber(result.removed_dirs)],
+        [dryRun ? "Would Delete Files" : "Deleted Files", formatNumber(result.deleted_files)],
+        [dryRun ? "Would Delete Bytes" : "Deleted Bytes", formatBytes(result.deleted_bytes)],
+        [dryRun ? "Would Remove Dirs" : "Removed Dirs", formatNumber(result.removed_dirs)],
       ]),
       json: {
         kind: "gc",

@@ -12,9 +12,8 @@ Options:
   --db <file>      Explicit SQLite file path
   --index          Read from existing store only (default for reads)
   --full           Re-scan sources into a temporary in-memory store
-  --store-only     Suppress host discovery and sync preview; focus on the selected store
   --json           Machine-readable JSON output
-  --dry-run        Preview `sync` or `gc` actions without writing
+  --dry-run        Preview supported write workflows without writing
   --showall        Include empty projects in listings and missing discovery candidates
   --debug          Print stack traces for troubleshooting
   --no-color       Disable ANSI color output
@@ -23,6 +22,30 @@ Options:
 Use `cchistory <command> --help`, `cchistory help <command>`, or
 `cchistory help <command> <subcommand>` for command-specific usage without
 opening a store or running discovery.
+
+## Failure Behavior
+
+The CLI is designed to be safe to try. Usage errors fail before opening the
+SQLite store, scanning source roots, or contacting a remote service. That means
+commands such as `cchistory tree project`, `cchistory query turn`, and
+`cchistory agent pair` should return an actionable usage message instead of a
+storage, filesystem, or network error.
+
+Expected operator mental model:
+
+- Unknown commands or flags exit non-zero and name the invalid command or flag.
+- Missing required arguments name the exact next argument or flag to provide.
+- Numeric flags reject negative, zero-where-not-useful, and fractional values
+  before any data access.
+- `--full` and `--index` are mutually exclusive read modes.
+- Missing stores are reported only for commands that have enough valid input to
+  perform a read.
+- `--debug` or `CCHISTORY_DEBUG=1` adds stack traces; default errors stay short.
+- `--json` writes machine-readable data to stdout on success. Human and machine
+  outputs use the same canonical projections, but JSON preserves stable IDs and
+  full projection fields where the human view is intentionally summarized.
+- Failures always keep stdout empty and print actionable text to stderr, even
+  when `--json` was requested.
 
 ## Commands
 
@@ -154,7 +177,7 @@ cchistory search "docker" --source codex --limit 5      # Scoped to source
 | Flag | Description |
 |------|-------------|
 | `--project <id>` | Filter by project |
-| `--source <id>` | Filter by source (repeatable) |
+| `--source <slot-or-id>` | Filter by source (repeatable) |
 | `--limit <n>` | Max results (default: 50) |
 | `--offset <n>` | Skip first N results for pagination |
 | `--all` | Return all matches, capped at 1000 |
@@ -198,8 +221,9 @@ Overview and usage analytics.
 
 ```bash
 cchistory stats                                 # Overview
+cchistory stats --by model                      # Token usage by model
+cchistory stats --by project                    # Token usage by project
 cchistory stats usage --by model                # Token usage by model
-cchistory stats usage --by project              # Token usage by project
 cchistory stats usage --by day                  # Daily usage with bar chart
 cchistory stats usage --by month                # Monthly usage
 ```
@@ -225,7 +249,12 @@ Total Tokens        : 461,890
 | Flag | Description |
 |------|-------------|
 | `--by <dimension>` | Rollup dimension: `model`, `project`, `source`, `host`, `day`, `month` |
+| `--source <slot-or-id>` | Limit overview and rollups to one source; repeat for multiple sources |
 | `--showall` | Include known zero-token turns |
+
+`stats --by <dimension>` and `stats usage --by <dimension>` are equivalent.
+Use the explicit `usage` subcommand when you want the command itself to read as
+a rollup request.
 
 ### tree
 
@@ -302,7 +331,7 @@ cchistory export --out ./my-backup --source codex --no-raw      # Without raw bl
 | Flag | Description |
 |------|-------------|
 | `--out <dir>` | Output bundle directory (required) |
-| `--source <id>` | Limit to sources (repeatable) |
+| `--source <slot-or-id>` | Limit to sources (repeatable) |
 | `--no-raw` | Omit raw blobs from bundle |
 | `--dry-run` | Preview bundle counts and selected sources without writing files |
 
@@ -321,7 +350,7 @@ cchistory backup --out ./my-backup --source codex --no-raw --write
 | Flag | Description |
 |------|-------------|
 | `--out <dir>` | Output bundle directory (required) |
-| `--source <id>` | Limit to sources (repeatable) |
+| `--source <slot-or-id>` | Limit to sources (repeatable) |
 | `--no-raw` | Omit raw blobs from the written bundle |
 | `--write` | Execute the write step; without this flag `backup` stays preview-only |
 | `--dry-run` | Explicit preview alias; `backup` already previews by default |
@@ -424,22 +453,29 @@ cchistory gc --store /tmp/history-store                      # Explicit store
 ```
 
 `gc` only removes files under `<store>/raw/` that are not referenced by any current `captured_blobs.captured_path` row. It does not rewrite canonical rows in SQLite.
+In `--dry-run` mode, the output labels planned cleanup as `Would Delete Files`,
+`Would Delete Bytes`, and `Would Remove Dirs`; no raw files are removed.
 
 ### merge
 
-Directly merge between two stores.
+Preview-first merge between two stores through the bundle compatibility path.
 
 ```bash
-cchistory merge --from /host-a/.cchistory --to /host-b/.cchistory
-cchistory merge --from /host-a/.cchistory --to /host-b/.cchistory --source codex
+cchistory merge --from /host-a/.cchistory --to /host-b/.cchistory                  # Preview
+cchistory merge --from /host-a/.cchistory --to /host-b/.cchistory --write          # Execute
+cchistory merge --from /host-a/.cchistory --to /host-b/.cchistory --source codex --write
 ```
 
 | Flag | Description |
 |------|-------------|
 | `--from <path>` | Source store/DB (required) |
 | `--to <path>` | Target store/DB (required) |
-| `--source <id>` | Limit to sources (repeatable) |
+| `--source <slot-or-id>` | Limit to sources (repeatable) |
 | `--on-conflict <mode>` | `skip` or `replace` (default: `replace`) |
+| `--write` | Execute the merge; without this flag `merge` stays preview-only |
+
+`merge --on-conflict error` is intentionally rejected. Use `export` plus
+`import --on-conflict error` when you want an error-on-conflict workflow.
 
 ### query
 
@@ -461,7 +497,7 @@ cchistory query project --id <project-ref> --link-state committed
 | `--id <id-or-ref>` | Entity ID or accepted entity reference for single-entity queries |
 | `--search <query>` | Full-text search (for `turns`) |
 | `--project <ref>` | Project filter; accepts the same project refs as `show/context/search` |
-| `--source <id>` | Source filter |
+| `--source <slot-or-id>` | Source filter; accepts source slots such as `codex` and full source IDs |
 | `--limit <n>` | Max items (default: 20) |
 | `--link-state <state>` | Filter: `all`, `committed`, `candidate`, `unlinked` |
 
@@ -482,12 +518,13 @@ Behavior notes:
 - `agent upload` runs one dirty-source collection cycle and uploads only changed source payloads unless `--force` is set.
 - `agent schedule` repeats the same upload cycle locally on a caller-provided interval; it does not create server-side jobs.
 - `agent pull` asks the server for one leased typed collection job, runs that collection scope locally, uploads through the same bundle path, and reports completion or failure.
+- `agent upload`, `agent schedule`, and `agent pull` require a pairing state file. If it is missing, run `cchistory agent pair --server <url> --pair-token <token>` first.
 - `--retry-attempts` and `--retry-delay-ms` apply to upload/pull network retries; `--no-raw` keeps remote bundles lighter by omitting raw blobs.
 
 Validation note:
 
 - The current remote-agent validation contract lives in `docs/design/R29_REMOTE_AGENT_VALIDATION_CONTRACT.md`.
-- Package-scoped CLI/API tests already prove the mocked pair/upload/schedule/pull logic.
+- Package-scoped tests prove mocked pairing, leased pull/upload flow, and missing-state errors before remote access.
 - Server-backed remote-agent validation still requires a user-started API service and should be recorded as a manual operator review rather than treated as an agent-started runtime path.
 - That contract is not the completed diary: the actual recorded pair/upload/schedule and leased-pull server-backed reviews remain blocked manual work under `R35` until a user starts the API service and performs them.
 

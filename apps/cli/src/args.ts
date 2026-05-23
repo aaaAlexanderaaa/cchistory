@@ -186,7 +186,7 @@ const commandOptions: Record<string, OptionSpec> = {
     kind: "enum",
     valueName: "dimension",
     choices: ["model", "project", "source", "host", "day", "month"],
-    description: "Usage rollup dimension",
+    description: "Group token usage by this dimension.",
   },
   out: {
     kind: "string",
@@ -396,14 +396,20 @@ const commandSpecs: CommandSpec[] = [
   {
     path: ["stats"],
     category: "Browse & Inspect",
-    usage: "cchistory stats [usage --by <dimension>]",
+    usage: "cchistory stats [--by model|project|source|host|day|month]",
     summary: "Token usage statistics",
-    description: "Show overview and usage analytics.",
+    description: "Show the store overview; add --by to roll up token usage.",
     children: ["usage"],
     options: ["by", ...readOptions],
-    examples: ["cchistory stats", "cchistory stats usage --by model"],
+    examples: ["cchistory stats", "cchistory stats --by model", "cchistory stats --by project", "cchistory stats usage --by day"],
   },
-  { path: ["stats", "usage"], usage: "cchistory stats usage --by model|project|source|host|day|month", description: "Show usage rollups.", options: ["by", ...readOptions] },
+  {
+    path: ["stats", "usage"],
+    usage: "cchistory stats usage --by model|project|source|host|day|month",
+    description: "Show token usage grouped by model, project, source, host, day, or month.",
+    options: ["by", ...readOptions],
+    examples: ["cchistory stats usage --by model", "cchistory stats usage --by source", "cchistory stats usage --by month"],
+  },
   {
     path: ["export"],
     category: "Backup & Transfer",
@@ -442,11 +448,11 @@ const commandSpecs: CommandSpec[] = [
   {
     path: ["merge"],
     category: "Backup & Transfer",
-    usage: "cchistory merge --from <db> --to <db> [--source <slot-or-id>] [--on-conflict skip|replace]",
-    summary: "Merge two stores via bundle exchange",
-    description: "Merge between two stores through the bundle compatibility path.",
-    options: ["from", "to", "source", "on-conflict"],
-    examples: ["cchistory merge --from /host-a/.cchistory --to /host-b/.cchistory"],
+    usage: "cchistory merge --from <store-or-db> --to <store-or-db> [--source <slot-or-id>] [--on-conflict skip|replace] [--write]",
+    summary: "Preview-first merge via bundle exchange",
+    description: "Preview or execute a merge between two stores through the bundle compatibility path.",
+    options: ["from", "to", "source", "on-conflict", "write"],
+    examples: ["cchistory merge --from /host-a/.cchistory --to /host-b/.cchistory", "cchistory merge --from /host-a/.cchistory --to /host-b/.cchistory --write"],
   },
   {
     path: ["gc"],
@@ -470,8 +476,8 @@ const commandSpecs: CommandSpec[] = [
   { path: ["query", "turn"], usage: "cchistory query turn --id <turn-id-or-prefix>", description: "Query one turn.", options: ["id", ...readOptions] },
   { path: ["query", "sessions"], usage: "cchistory query sessions [--project <ref>] [--source <slot-or-id>] [--limit <n>]", description: "Query sessions.", options: ["project", "source", "limit", "limit-files"] },
   { path: ["query", "session"], usage: "cchistory query session --id <session-ref>", description: "Query one session.", options: ["id", ...readOptions] },
-  { path: ["query", "projects"], usage: "cchistory query projects", description: "Query projects.", options: readOptions },
-  { path: ["query", "project"], usage: "cchistory query project --id <project-ref> [--link-state all|committed|candidate|unlinked]", description: "Query one project.", options: ["id", "link-state", ...readOptions] },
+  { path: ["query", "projects"], usage: "cchistory query projects [--source <slot-or-id>]", description: "Query projects.", options: readOptions },
+  { path: ["query", "project"], usage: "cchistory query project --id <project-ref> [--source <slot-or-id>] [--link-state all|committed|candidate|unlinked]", description: "Query one project.", options: ["id", "link-state", ...readOptions] },
   {
     path: ["templates"],
     category: "Advanced (experimental)",
@@ -540,7 +546,9 @@ export function parseCliArgs(args: string[]): ParsedCommand {
 
   if (!wantsHelp && !version) {
     validateCommand(commandPath, tokens);
-    validateOptionChoices(options);
+    validateGlobalCombinations(globals);
+    validateOptionChoices(commandPath, options);
+    validateNumericRanges(options);
   } else if (wantsHelp && helpTarget.length > 0) {
     validateHelpTarget(helpTarget);
   }
@@ -715,15 +723,49 @@ function allowedOptionNamesForCommand(path: string[]): Set<string> {
   return names;
 }
 
-function validateOptionChoices(options: CommandOptions): void {
+function validateOptionChoices(path: string[], options: CommandOptions): void {
   validateChoice("by", options.by);
-  validateChoice("on-conflict", options.onConflict);
+  validateChoice("on-conflict", options.onConflict, commandOptionsForValidation(path));
   validateChoice("link-state", options.linkState);
 }
 
-function validateChoice(name: string, value: string | undefined): void {
+function commandOptionsForValidation(path: string[]): Record<string, OptionSpec> {
+  return commandOptionsForHelp(path);
+}
+
+function validateGlobalCombinations(globals: CliGlobals): void {
+  if (globals.full && globals.index) {
+    throw new Error("Choose either --full or --index, not both.");
+  }
+}
+
+function validateNumericRanges(options: CommandOptions): void {
+  validatePositiveInteger("limit", options.limit);
+  validateNonNegativeInteger("offset", options.offset);
+  validatePositiveInteger("limit-files", options.limitFiles);
+  validatePositiveInteger("interval-seconds", options.intervalSeconds);
+  validatePositiveInteger("iterations", options.iterations);
+  validateNonNegativeInteger("retry-attempts", options.retryAttempts);
+  validateNonNegativeInteger("retry-delay-ms", options.retryDelayMs);
+}
+
+function validatePositiveInteger(name: string, value: number | undefined): void {
+  if (value === undefined) return;
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`Invalid value for --${name}: ${value}. Expected a positive integer.`);
+  }
+}
+
+function validateNonNegativeInteger(name: string, value: number | undefined): void {
+  if (value === undefined) return;
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`Invalid value for --${name}: ${value}. Expected a non-negative integer.`);
+  }
+}
+
+function validateChoice(name: string, value: string | undefined, specs: Record<string, OptionSpec> = commandOptions): void {
   if (!value) return;
-  const spec = commandOptions[name];
+  const spec = specs[name];
   if (!spec?.choices) return;
   if (!spec.choices.includes(value)) {
     throw new Error(`Invalid value for --${name}: ${value}. Expected one of ${spec.choices.join(", ")}.`);
@@ -767,15 +809,21 @@ function renderGlobalHelp(): string {
       if (spec.path[0] === "context") {
         lines.push("    --limit <n>                        Max recent asks/sessions for context");
       }
+      if (spec.path[0] === "stats") {
+        lines.push("    --by <dimension>                   Roll up token usage by model, project, source, host, day, or month");
+      }
     }
     lines.push("");
   }
   lines.push("Global flags:");
-  for (const name of ["store", "db", "json", "long", "full", "dry-run", "showall"] as const) {
-    lines.push(`  ${formatOptionUsage(name, globalOptions[name])}`);
+  const globalFlagNames = ["store", "db", "json", "long", "full", "index", "dry-run", "showall"] as const;
+  const globalFlagWidth = optionUsageWidth(globalFlagNames, globalOptions);
+  for (const name of globalFlagNames) {
+    lines.push(`  ${formatOptionUsage(name, globalOptions[name], globalFlagWidth)}`);
   }
   lines.push("");
   lines.push("Store resolution: nearest .cchistory/ in cwd or ancestors; fallback ~/.cchistory");
+  lines.push("Run `cchistory help <command>` for command-specific options and examples.");
   return lines.join("\n");
 }
 
@@ -803,13 +851,17 @@ function renderCommandHelp(path: string[]): string {
     .sort((left, right) => left.localeCompare(right));
   if (localOptions.length > 0) {
     lines.push("", "Command options:");
+    const commandOptionSpecs = commandOptionsForHelp(path);
+    const localOptionWidth = optionUsageWidth(localOptions, commandOptionSpecs);
     for (const name of localOptions) {
-      lines.push(`  ${formatOptionUsage(name, commandOptions[name]!)}`);
+      lines.push(`  ${formatOptionUsage(name, commandOptionSpecs[name]!, localOptionWidth)}`);
     }
   }
   lines.push("", "Global flags:");
-  for (const name of ["store", "db", "json", "long", "full", "dry-run", "showall", "debug", "color"] as const) {
-    lines.push(`  ${formatOptionUsage(name, globalOptions[name])}`);
+  const globalFlagNames = ["store", "db", "json", "long", "full", "index", "dry-run", "showall", "debug", "color"] as const;
+  const globalFlagWidth = optionUsageWidth(globalFlagNames, globalOptions);
+  for (const name of globalFlagNames) {
+    lines.push(`  ${formatOptionUsage(name, globalOptions[name], globalFlagWidth)}`);
   }
   if (spec.examples && spec.examples.length > 0) {
     lines.push("", "Examples:");
@@ -835,10 +887,40 @@ function formatCommandSummary(spec: CommandSpec): string {
   return `${command.padEnd(36)} ${spec.summary ?? spec.description}`;
 }
 
-function formatOptionUsage(name: string, spec: OptionSpec): string {
+function commandOptionsForHelp(path: string[]): Record<string, OptionSpec> {
+  if (commandName(path) !== "merge") {
+    return commandOptions;
+  }
+  return {
+    ...commandOptions,
+    "on-conflict": {
+      ...commandOptions["on-conflict"]!,
+      choices: ["skip", "replace"],
+    },
+  };
+}
+
+function formatOptionUsage(name: string, spec: OptionSpec, labelWidth = 18): string {
+  const label = formatOptionLabel(name, spec);
+  return `${label.padEnd(labelWidth)} ${formatOptionDescription(spec)}`;
+}
+
+function formatOptionLabel(name: string, spec: OptionSpec): string {
   const renderedName = name === "raw" ? "--no-raw" : name === "color" ? "--no-color" : `--${name}`;
   const value = spec.kind === "boolean" ? "" : ` <${spec.valueName ?? "value"}>`;
-  return `${`${renderedName}${value}`.padEnd(18)} ${spec.description}`;
+  return `${renderedName}${value}`;
+}
+
+function formatOptionDescription(spec: OptionSpec): string {
+  const choices = spec.choices && spec.choices.length > 0 ? ` One of: ${spec.choices.join(", ")}.` : "";
+  const description = choices.length > 0 && !/[.!?]$/u.test(spec.description)
+    ? `${spec.description}.`
+    : spec.description;
+  return `${description}${choices}`;
+}
+
+function optionUsageWidth<T extends string>(names: readonly T[], specs: Record<T, OptionSpec>): number {
+  return Math.max(18, ...names.map((name) => formatOptionLabel(name, specs[name]).length));
 }
 
 function readBoolean(values: Record<string, string | string[] | boolean | undefined>, key: string): boolean {

@@ -28,6 +28,17 @@ store rather than separate interpretations.
   <img src="docs/screenshots/web-all-turns.webp" alt="CCHistory Web — All Turns view" width="800" />
 </p>
 
+## Start Here
+
+| Goal | Use |
+|------|-----|
+| Sync local AI-tool history and inspect health | [`cchistory sync`](docs/guide/cli.md#sync), [`cchistory health`](docs/guide/cli.md#health) |
+| Find an old ask and inspect the surrounding session | [`cchistory search`](docs/guide/cli.md#search), [`cchistory show`](docs/guide/cli.md#show), [`cchistory tree`](docs/guide/cli.md#tree) |
+| Give an AI agent project context before it continues work | [`cchistory context project <ref>`](docs/guide/cli.md#context) |
+| Browse history interactively | [TUI guide](docs/guide/tui.md) or [Web guide](docs/guide/web.md) |
+| Backup, restore, or move a store | [CLI backup/import/restore guide](docs/guide/cli.md#backup-and-restore) |
+| Understand support status and parser coverage | [Documentation map](docs/README.md), [runtime surface](docs/design/CURRENT_RUNTIME_SURFACE.md), [source notes](docs/sources/README.md) |
+
 ## Key Features
 
 - **Multi-platform ingestion** — Collects conversations from registered local source adapters via local file parsing and app-local live probes where required
@@ -167,39 +178,16 @@ pnpm run verify:clean-install
 For the broader current verification surface, these repository commands are the
 main shortcuts:
 
-```bash
-# Release-gate and install/distribution verification
-pnpm run verify:clean-install
-pnpm run verify:cli-artifact
-pnpm run verify:web-build-offline
-pnpm run verify:support-status
-pnpm run verify:runtime-inventory
+| Need | Command |
+|------|---------|
+| Support/runtime drift check | `pnpm run verify:support-status` and `pnpm run verify:runtime-inventory` |
+| CLI/TUI read-side quality gate | `pnpm run verify:cli-tui-read-side` |
+| Clean install / artifact distribution | `pnpm run verify:clean-install` and `pnpm run verify:cli-artifact` |
+| Web production build | `pnpm run verify:web-build-offline` |
 
-# Operator-style local read-path verification
-pnpm run verify:cli-tui-read-side
-pnpm run verify:v1-seeded-acceptance
-pnpm run verify:read-only-admin
-pnpm run verify:fixture-sync-recall
-pnpm run verify:bundle-conflict-recovery
-pnpm run verify:real-layout-sync-recall
-pnpm run verify:related-work-recall
-pnpm run verify:local-full-read-bundle
-node scripts/verify-scale-recall.mjs
-
-# User-started or archive-truthfulness review helpers
-pnpm run prepare:v1-seeded-web-review -- --store <dir>
-pnpm run verify:real-archive-probes
-```
-
-Use `pnpm run verify:cli-tui-read-side` as the local quality gate for CLI/TUI
-read-side changes. It runs the focused CLI/TUI package regressions, true E2E
-journeys, skeptical browse/search verifier, and all-stable real-layout parity
-without starting persistent API or Web services.
-
-`docs/design/CURRENT_RUNTIME_SURFACE.md` remains the canonical current-state
-inventory for what each verifier proves.
-
-For development work, keep these validation surfaces distinct:
+See [`docs/design/CURRENT_RUNTIME_SURFACE.md`](docs/design/CURRENT_RUNTIME_SURFACE.md)
+for the full verifier inventory and what each command proves. For development
+work, keep these validation surfaces distinct:
 
 - Runtime-critical ingestion flows through `packages/source-adapters` and
   `runSourceProbe`, then lands in storage through `sync` or

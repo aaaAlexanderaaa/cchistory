@@ -166,6 +166,8 @@ export async function handleLs(context: CommandContext): Promise<CommandOutput> 
 export async function handleTree(context: CommandContext): Promise<CommandOutput> {
   const target = context.commandPath[1] ?? context.positionals[0];
   const ref = context.commandPath[1] ? context.positionals[0] : context.positionals[1];
+  validateTreeArity(context, target);
+
   const readStore = await openReadStore(context);
   try {
     const { layout, storage } = readStore;
@@ -308,12 +310,23 @@ export async function handleTree(context: CommandContext): Promise<CommandOutput
   }
 }
 
+function validateTreeArity(context: CommandContext, target: string | undefined): void {
+  const expectedPositionals =
+    target === "projects" ? (context.commandPath[1] ? 0 : 1) :
+    target === "project" || target === "session" ? (context.commandPath[1] ? 1 : 2) :
+    -1;
+  if (expectedPositionals < 0 || context.positionals.length !== expectedPositionals) {
+    throw new Error("Use `tree projects`, `tree project <project-id-or-slug>`, or `tree session <session-ref>`.");
+  }
+}
+
 export async function handleShow(context: CommandContext): Promise<CommandOutput> {
   const target = context.commandPath[1] ?? context.positionals[0];
   const ref = context.commandPath[1] ? context.positionals[0] : context.positionals[1];
   if (!target || !ref) {
     throw new Error("Use `show project|session|turn|source <ref>`.");
   }
+  validateShowArity(context, target);
 
   const readStore = await openReadStore(context);
   try {
@@ -484,6 +497,15 @@ export async function handleShow(context: CommandContext): Promise<CommandOutput
   } finally {
     await readStore.close();
   }
+}
+
+function validateShowArity(context: CommandContext, target: string): void {
+  const validTarget = target === "project" || target === "session" || target === "turn" || target === "source";
+  const expectedPositionals = context.commandPath[1] ? 1 : 2;
+  if (validTarget && context.positionals.length === expectedPositionals) {
+    return;
+  }
+  throw new Error("Use `show project|session|turn|source <ref>`.");
 }
 
 export async function handleSearch(context: CommandContext): Promise<CommandOutput> {

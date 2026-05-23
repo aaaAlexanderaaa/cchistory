@@ -16,17 +16,31 @@ import {
   type CommandOutput,
   openReadStore,
 } from "../main.js";
+import { resolveSourceRef } from "../resolvers.js";
+
+const USAGE_STATS_DIMENSIONS = ["model", "project", "source", "host", "day", "month"] as const satisfies readonly UsageStatsDimension[];
 
 export async function handleStats(context: CommandContext): Promise<CommandOutput> {
-  const readStore = await openReadStore(context);
   const showAll = context.globals.showAll;
+  const dimension = context.options.by;
+  const wantsUsageRollup = context.commandPath[1] === "usage" || Boolean(dimension);
 
+  if (wantsUsageRollup && !isUsageStatsDimension(dimension)) {
+    throw new Error(
+      "`stats usage` requires --by <dimension>. Expected one of model, project, source, host, day, or month.\nExample: cchistory stats usage --by model\nRun `cchistory help stats usage` for details.",
+    );
+  }
+  const usageDimension = isUsageStatsDimension(dimension) ? dimension : undefined;
+
+  const readStore = await openReadStore(context);
   try {
-    const dimension = context.options.by as UsageStatsDimension | undefined;
-    if (dimension) {
-      return createStatsUsageOutput(readStore.layout, readStore.storage, dimension, showAll);
+    const selectedSourceIds = context.options.source.length > 0
+      ? context.options.source.map((ref) => resolveSourceRef(readStore.storage, ref).id)
+      : undefined;
+    if (usageDimension) {
+      return createStatsUsageOutput(readStore.layout, readStore.storage, usageDimension, showAll, selectedSourceIds);
     }
-    return createStatsOverviewOutput(readStore.layout, readStore.storage, showAll);
+    return createStatsOverviewOutput(readStore.layout, readStore.storage, showAll, selectedSourceIds);
   } finally {
     await readStore.close();
   }
@@ -41,6 +55,7 @@ export function createStatsOverviewOutput(layout: StoreLayout, storage: CCHistor
   const turns = storage.listResolvedTurns().filter((turn) => !selectedSourceIds || selectedSourceIds.includes(turn.source_id));
   const projectIds = new Set(sessions.map((session) => session.primary_project_id).filter((value): value is string => Boolean(value)));
   const projects = storage.listProjects().filter((project) => projectIds.has(project.project_id));
+  const sourceScope = renderSourceScopeFromIds(storage, selectedSourceIds);
   const excludedNote = overview.excluded_zero_token_turns
     ? `${overview.excluded_zero_token_turns} non-API turns excluded (slash commands, cancellations). Use --showall to include.`
     : undefined;
@@ -48,6 +63,7 @@ export function createStatsOverviewOutput(layout: StoreLayout, storage: CCHistor
     text: [
       renderKeyValue([
         ["DB", layout.dbPath],
+        ...(sourceScope ? [["Source Scope", sourceScope] as [string, string]] : []),
         ["Schema Version", schema.schema_version],
         ["Schema Migrations", String(schema.migrations.length)],
         ["Search Mode", storage.searchMode],
@@ -78,6 +94,7 @@ export function createStatsOverviewOutput(layout: StoreLayout, storage: CCHistor
       },
       schema,
       search_mode: storage.searchMode,
+      source_scope: selectedSourceIds ?? null,
       overview,
     },
   };
@@ -88,13 +105,15 @@ export function createStatsUsageOutput(
   storage: CCHistoryStorage,
   dimension: UsageStatsDimension,
   showAll: boolean,
+  selectedSourceIds?: string[],
 ): CommandOutput {
-  if (!["model", "project", "source", "host", "day", "month"].includes(dimension)) {
+  if (!isUsageStatsDimension(dimension)) {
     throw new Error("`stats usage --by` must be one of model, project, source, host, day, or month.");
   }
 
-  const usageFilters = { include_known_zero_token: showAll };
+  const usageFilters = { include_known_zero_token: showAll, source_ids: selectedSourceIds };
   const rollup = storage.listUsageRollup(dimension, usageFilters);
+  const sourceScope = renderSourceScopeFromIds(storage, selectedSourceIds);
   const notesText = renderUsageNotes(rollup.rows, dimension);
   const excludedNote = rollup.excluded_zero_token_turns
     ? `${rollup.excluded_zero_token_turns} non-API turns excluded (slash commands, cancellations). Use --showall to include.`
@@ -102,6 +121,7 @@ export function createStatsUsageOutput(
   const chartText = dimension === "day" || dimension === "month" ? renderUsageCharts(rollup.rows, dimension) : undefined;
   return {
     text: [
+      sourceScope ? renderKeyValue([["Source Scope", sourceScope]]) : undefined,
       renderTable(
         ["Label", "Turns", "Covered", "Coverage", "Total Tokens", "Input", "Output"],
         rollup.rows.map((row) => [
@@ -125,10 +145,28 @@ export function createStatsUsageOutput(
       kind: "stats-usage",
       db_path: layout.dbPath,
       dimension,
+      source_scope: selectedSourceIds ?? null,
       overview: storage.getUsageOverview(usageFilters),
       rollup,
     },
   };
+}
+
+function isUsageStatsDimension(value: string | undefined): value is UsageStatsDimension {
+  return USAGE_STATS_DIMENSIONS.includes(value as UsageStatsDimension);
+}
+
+function renderSourceScopeFromIds(storage: CCHistoryStorage, sourceIds: string[] | undefined): string | undefined {
+  if (!sourceIds || sourceIds.length === 0) {
+    return undefined;
+  }
+  const sourcesById = new Map(storage.listSources().map((source) => [source.id, source]));
+  return sourceIds
+    .map((id) => {
+      const source = sourcesById.get(id);
+      return source ? `${source.display_name} (${source.slot_id})` : id;
+    })
+    .join(", ");
 }
 
 function renderUsageCharts(

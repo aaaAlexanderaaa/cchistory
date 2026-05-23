@@ -164,3 +164,70 @@ test("runSourceProbe handles LobeChat export with multiple conversations in a si
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("runSourceProbe keeps LobeChat weak project hints unlinked and preserves malformed exports", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-lobechat-edge-"));
+
+  try {
+    const lobechatDir = path.join(tempRoot, "lobechat");
+    await mkdir(lobechatDir, { recursive: true });
+
+    await writeFile(
+      path.join(lobechatDir, "weak-project-export.json"),
+      JSON.stringify({
+        id: "lobechat-weak-project",
+        title: "Weak project conversation",
+        workspacePath: "/workspace/from-export-label-only",
+        model: "gpt-4.1",
+        messages: [
+          {
+            id: "weak-user-1",
+            role: "user",
+            createdAt: "2026-03-10T09:00:00.000Z",
+            content: "Summarize this exported chat without committing it to a project.",
+          },
+          {
+            id: "weak-assistant-1",
+            role: "assistant",
+            createdAt: "2026-03-10T09:00:01.000Z",
+            content: "This export remains globally readable unless linked by stronger evidence.",
+          },
+        ],
+      }),
+      "utf8",
+    );
+    await writeFile(path.join(lobechatDir, "broken-export.json"), "{ this is not valid json", "utf8");
+
+    const [payload] = (
+      await runSourceProbe(
+        { source_ids: ["src-lobechat-edge"] },
+        [createSourceDefinition("src-lobechat-edge", "lobechat", lobechatDir, "conversational_export")],
+      )
+    ).sources;
+
+    assert.ok(payload, "should produce a payload");
+    assert.equal(payload.source.sync_status, "healthy");
+    assert.equal(payload.source.family, "conversational_export");
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.turns[0]?.link_state, "unlinked");
+    assert.match(payload.turns[0]?.canonical_text ?? "", /exported chat/);
+    assert.ok(
+      payload.candidates.some(
+        (candidate) =>
+          candidate.candidate_kind === "project_observation" &&
+          candidate.evidence.workspace_path === "/workspace/from-export-label-only",
+      ),
+      "weak workspace evidence should remain visible for later candidate/manual linking",
+    );
+    assert.ok(
+      payload.loss_audits.some((audit) => audit.diagnostic_code === "record_json_parse_failed"),
+      "malformed export should be preserved as an inspectable parse warning",
+    );
+    assert.ok(
+      payload.blobs.some((blob) => blob.origin_path.endsWith("broken-export.json")),
+      "malformed export file should stay captured as raw evidence",
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

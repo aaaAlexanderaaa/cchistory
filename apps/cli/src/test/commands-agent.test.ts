@@ -150,6 +150,27 @@ test("agent pull leases a remote job and uploads a mockable local bundle", async
   }
 });
 
+test("agent upload and pull explain missing pairing state before remote access", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-agent-missing-state-"));
+  const missingStatePath = path.join(tempRoot, "missing-agent-state.json");
+
+  try {
+    for (const argv of [
+      ["agent", "upload", "--state-file", missingStatePath],
+      ["agent", "pull", "--state-file", missingStatePath],
+    ]) {
+      const result = await runCliCapture(argv, tempRoot);
+      assert.equal(result.exitCode, 1, argv.join(" "));
+      assert.equal(result.stdout, "", argv.join(" "));
+      assert.match(result.stderr, /Remote agent state file not found:/);
+      assert.match(result.stderr, /cchistory agent pair --server <url> --pair-token <token>/);
+      assert.doesNotMatch(result.stderr, /ENOENT|fetch failed|ECONNREFUSED/);
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 async function startMockRemoteAgentServer(handler: (request: MockRequest) => unknown): Promise<{
   url: string;
   close: () => Promise<void>;

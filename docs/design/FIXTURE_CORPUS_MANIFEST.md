@@ -27,7 +27,7 @@ The current fixture set covers all 12 registered adapters across `local_coding_a
 | `Gemini` | export JSON session, message pairs, workspace signal | nested directory discovery | `platforms/gemini.test.ts`, `core/discovery.test.ts` |
 | `OpenClaw` | agents/sessions JSONL layout, cron automation vs user-turn boundary | real-archive sanitized fixtures | `platforms/openclaw.test.ts`, `mock_data/` |
 | `OpenCode` | storage session/message/part tree, workspace JSON | multi-session tree, config-only roots excluded | `platforms/opencode.test.ts`, `mock_data/` |
-| `LobeChat` | exported JSON bundle with messages, single and multi-conversation array | non-JSON files excluded by matchesSourceFile | `platforms/lobechat.test.ts`, `core/discovery.test.ts` |
+| `LobeChat` | exported JSON bundle with messages, single and multi-conversation array | non-JSON files excluded by matchesSourceFile; malformed JSON captured as raw evidence plus parse warning; weak workspace/project hints remain non-committed parser evidence and may only become candidate-linked after storage linking or manual review | `platforms/lobechat.test.ts`, `core/discovery.test.ts` |
 | `CodeBuddy` | JSONL transcript with `type:user`/`assistant`, skipRun echoes, empty siblings | empty user messages excluded, skipRun audit emitted | `platforms/codebuddy.test.ts` |
 | `Accio Work` | agent session JSONL plus subagent sessions and conversation metadata sidecars | JSONC metadata and parent-child linkage preserved without promoting companion files into standalone turns | `platforms/accio.test.ts`, `mock_data/fixtures/accio-multi-agent/` |
 

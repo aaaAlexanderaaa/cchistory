@@ -183,9 +183,9 @@ describe("Journey E — Real-layout truthfulness", () => {
     assert.equal(hit.project.display_name, "esql-lab");
   });
 
-  it("search finds Gemini turn via agentresearch", async () => {
+  it("search finds Gemini turn via authored ask text", async () => {
     const results = await runCliJson(
-      ["search", "agentresearch", "--store", storeDir],
+      ["search", "noteworthy AI agent frameworks", "--store", storeDir],
       tempRoot,
       childEnv,
     );
@@ -205,9 +205,9 @@ describe("Journey E — Real-layout truthfulness", () => {
     assert.equal(hit.project.display_name, "config-workspace-ai_learning");
   });
 
-  it("search finds Cursor turn via MCP Service Guide", async () => {
+  it("search finds Cursor chat-store turn via authored ask text", async () => {
     const results = await runCliJson(
-      ["search", "MCP Service Guide", "--store", storeDir],
+      ["search", "Research stable MCP servers", "--store", storeDir],
       tempRoot,
       childEnv,
     );
@@ -222,7 +222,7 @@ describe("Journey E — Real-layout truthfulness", () => {
       { platform: "claude_code", query: "expert code reviewer", project: "chat-ui-kit" },
       { platform: "factory_droid", query: "history lab", project: "history-lab" },
       { platform: "amp", query: "AMP ingestion gaps", project: "history-lab" },
-      { platform: "antigravity", query: "history-lab", project: "history-lab" },
+      { platform: "antigravity", query: "启动方式", project: "history-lab" },
     ];
 
     for (const entry of cases) {
@@ -300,7 +300,7 @@ describe("Journey E — Real-layout truthfulness", () => {
 
       const geminiBody = await apiGet(
         server.app,
-        `/api/turns/search?q=${encodeURIComponent("agentresearch")}`,
+        `/api/turns/search?q=${encodeURIComponent("noteworthy AI agent frameworks")}`,
       );
       assert.ok(geminiBody.results.some((r) => r.session.source_platform === "gemini"));
 

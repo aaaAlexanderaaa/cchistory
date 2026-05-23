@@ -48,6 +48,47 @@ test("search matches partial keywords without requiring an exact phrase", async 
   }
 });
 
+test("query source filters accept human source slots, not only source IDs", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-query-source-filter-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+    const storeDir = path.join(tempRoot, "store");
+
+    const syncResult = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--source", "claude_code"], tempRoot);
+    assert.equal(syncResult.exitCode, 0, syncResult.stderr);
+
+    const turnsResult = await runCliCapture(["query", "turns", "--store", storeDir, "--source", "codex", "--limit", "10"], tempRoot);
+    assert.equal(turnsResult.exitCode, 0, turnsResult.stderr);
+    const turns = JSON.parse(turnsResult.stdout);
+    assert.ok(turns.length > 0);
+    assert.ok(turns.every((turn: { source_id: string }) => turn.source_id.includes("codex")));
+
+    const sessionsResult = await runCliCapture(["query", "sessions", "--store", storeDir, "--source", "claude_code", "--limit", "10"], tempRoot);
+    assert.equal(sessionsResult.exitCode, 0, sessionsResult.stderr);
+    const sessions = JSON.parse(sessionsResult.stdout);
+    assert.ok(sessions.length > 0);
+    assert.ok(sessions.every((session: { source_platform: string }) => session.source_platform === "claude_code"));
+
+    const projectsResult = await runCliCapture(["query", "projects", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(projectsResult.exitCode, 0, projectsResult.stderr);
+    const projects = JSON.parse(projectsResult.stdout);
+    assert.ok(projects.length > 0);
+    assert.ok(projects.every((project: { display_name: string }) => project.display_name === "cchistory"));
+
+    const projectResult = await runCliCapture(["query", "project", "--store", storeDir, "--id", "cchistory", "--source", "codex"], tempRoot);
+    assert.equal(projectResult.exitCode, 0, projectResult.stderr);
+    const projectPayload = JSON.parse(projectResult.stdout);
+    assert.ok(projectPayload.turns.length > 0);
+    assert.ok(projectPayload.turns.every((turn: { source_id: string }) => turn.source_id.includes("codex")));
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("show session and query session accept human-friendly session references", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-session-refs-"));
   const originalHome = process.env.HOME;

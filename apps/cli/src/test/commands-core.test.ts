@@ -16,6 +16,8 @@ test("help groups search pagination flags under search, not project context", as
     const limitIndex = result.stdout.indexOf("--limit <n>");
     const offsetIndex = result.stdout.indexOf("--offset <n>");
     const allIndex = result.stdout.indexOf("--all");
+    const statsIndex = result.stdout.indexOf("stats");
+    const statsByIndex = result.stdout.indexOf("--by <dimension>");
 
     assert.ok(searchIndex >= 0, "help should include search row");
     assert.ok(contextIndex > searchIndex, "context row should appear after search row");
@@ -23,6 +25,8 @@ test("help groups search pagination flags under search, not project context", as
     assert.ok(offsetIndex > searchIndex && offsetIndex < contextIndex, "search --offset should be grouped under search");
     assert.ok(allIndex > searchIndex && allIndex < contextIndex, "search --all should be grouped under search");
     assert.match(result.stdout.slice(contextIndex), /Max recent asks\/sessions for context/);
+    assert.ok(statsByIndex > statsIndex, "stats --by dimensions should be visible from global help");
+    assert.match(result.stdout, /Run `cchistory help <command>` for command-specific options and examples\./);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -50,6 +54,30 @@ test("sync, ls, search, and stats usage render human-readable output for real so
     const longProjectsResult = await runCliCapture(["ls", "projects", "--store", storeDir, "--long"], tempRoot);
     assert.equal(longProjectsResult.exitCode, 0, longProjectsResult.stderr);
     assert.match(longProjectsResult.stdout, /Source Mix/);
+
+    const allStatsResult = await runCliCapture(["stats", "--store", storeDir, "--json"], tempRoot);
+    assert.equal(allStatsResult.exitCode, 0, allStatsResult.stderr);
+    const allStats = JSON.parse(allStatsResult.stdout);
+    const codexStatsResult = await runCliCapture(["stats", "--store", storeDir, "--source", "codex", "--json"], tempRoot);
+    assert.equal(codexStatsResult.exitCode, 0, codexStatsResult.stderr);
+    const codexStats = JSON.parse(codexStatsResult.stdout);
+    assert.ok(allStats.counts.sources > codexStats.counts.sources, "source-filtered stats should narrow source counts");
+    assert.equal(codexStats.counts.sources, 1);
+    assert.equal(codexStats.source_scope.length, 1);
+    assert.match(codexStats.source_scope[0], /codex/);
+    const codexStatsText = await runCliCapture(["stats", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(codexStatsText.exitCode, 0, codexStatsText.stderr);
+    assert.match(codexStatsText.stdout, /Source Scope\s+:\s+Codex \(codex\)/);
+
+    const codexUsageResult = await runCliCapture(["stats", "--store", storeDir, "--source", "codex", "--by", "source", "--json"], tempRoot);
+    assert.equal(codexUsageResult.exitCode, 0, codexUsageResult.stderr);
+    const codexUsage = JSON.parse(codexUsageResult.stdout);
+    assert.equal(codexUsage.rollup.rows.length, 1);
+    assert.deepEqual(codexUsage.source_scope, codexStats.source_scope);
+    assert.match(codexUsage.rollup.rows[0].label, /Codex/);
+    const codexUsageText = await runCliCapture(["stats", "--store", storeDir, "--source", "codex", "--by", "model"], tempRoot);
+    assert.equal(codexUsageText.exitCode, 0, codexUsageText.stderr);
+    assert.match(codexUsageText.stdout, /Source Scope\s+:\s+Codex \(codex\)/);
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });

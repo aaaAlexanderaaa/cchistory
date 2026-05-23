@@ -29,7 +29,16 @@ export function defaultRemoteAgentStatePath(): string {
 }
 
 export async function readLocalRemoteAgentState(statePath: string): Promise<LocalRemoteAgentState> {
-  const payload = JSON.parse(await readFile(statePath, "utf8")) as Partial<LocalRemoteAgentState>;
+  let rawState: string;
+  try {
+    rawState = await readFile(statePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw new Error(`Remote agent state file not found: ${statePath}. Run \`cchistory agent pair --server <url> --pair-token <token>\` first.`);
+    }
+    throw error;
+  }
+  const payload = JSON.parse(rawState) as Partial<LocalRemoteAgentState>;
   if (
     payload.version !== 1 ||
     typeof payload.server_url !== "string" ||
