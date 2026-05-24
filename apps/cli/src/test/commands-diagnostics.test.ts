@@ -74,6 +74,9 @@ test("sync --detail reports source, file, write, and reindex progress on stderr"
     const result = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--detail"], tempRoot);
     assert.equal(result.exitCode, 0, result.stderr);
     assert.match(result.stdout, /Synced 1 source\(s\)/);
+    assert.match(result.stderr, /\[sync:cli:store_open_start\]/);
+    assert.match(result.stderr, /\[sync:cli:source_resolution_start\]/);
+    assert.match(result.stderr, /\[sync:codex:incremental_reuse_load_start\]/);
     assert.match(result.stderr, /\[sync:codex:source_start\]/);
     assert.match(result.stderr, /\[sync:codex:file_start\]/);
     assert.match(result.stderr, /\[sync:codex:file_capture_done\].*\(\d+ms\)/);
@@ -153,6 +156,10 @@ test("sync reuses unchanged Codex projections on a repeated run", async () => {
 
     const secondSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--detail"], tempRoot);
     assert.equal(secondSync.exitCode, 0, secondSync.stderr);
+    const reuseLoadIndex = secondSync.stderr.indexOf("[sync:codex:incremental_reuse_load_start]");
+    const sourceStartIndex = secondSync.stderr.indexOf("[sync:codex:source_start]");
+    assert.ok(reuseLoadIndex >= 0, "incremental reuse load should be visible before source scanning");
+    assert.ok(sourceStartIndex > reuseLoadIndex, "source scanning should start after incremental reuse is loaded");
     assert.match(secondSync.stderr, /\[sync:codex:file_reuse\]/);
     assert.match(secondSync.stderr, /\[sync:codex:file_done\]/);
   } finally {
@@ -624,6 +631,8 @@ test("sync --progress jsonl emits machine-readable progress without corrupting s
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.command, "sync");
     const progress = result.stderr.trim().split("\n").map((line) => JSON.parse(line));
+    assert.ok(progress.some((entry) => entry.kind === "sync-progress" && entry.stage === "store_open_start"));
+    assert.ok(progress.some((entry) => entry.kind === "sync-progress" && entry.stage === "incremental_reuse_load_start"));
     assert.ok(progress.some((entry) => entry.kind === "sync-progress" && entry.stage === "source_start"));
     assert.ok(progress.some((entry) => entry.kind === "sync-progress" && entry.stage === "reindex_done"));
   } finally {

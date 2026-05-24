@@ -45,10 +45,16 @@ export async function handleSync(context: CommandContext): Promise<CommandOutput
     return handleSyncDryRun(context);
   }
 
+  const progress = createProgressReporter(context);
   const layout = resolveStoreLayout({
     cwd: context.io.cwd,
     storeArg: context.globals.store,
     dbArg: context.globals.db,
+  });
+  const storeOpenStartedAt = Date.now();
+  progress?.({
+    stage: "store_open_start",
+    message: `Opening SQLite store ${layout.dbPath}`,
   });
   await mkdir(layout.assetDir, { recursive: true });
   await mkdir(layout.rawDir, { recursive: true });
@@ -57,7 +63,11 @@ export async function handleSync(context: CommandContext): Promise<CommandOutput
   const limitFiles = context.options.limitFiles;
   const changedSince = normalizeChangedSince(context.options.since);
   const storage = await openStorage(layout);
-  const progress = createProgressReporter(context);
+  progress?.({
+    stage: "store_open_done",
+    message: `Opened SQLite store ${layout.dbPath}`,
+    elapsed_ms: Date.now() - storeOpenStartedAt,
+  });
 
   try {
     const { host, syncedSources } = await syncSelectedSources({
@@ -457,11 +467,35 @@ export async function syncSelectedSources(input: {
   safeMode?: boolean;
   onProgress?: (event: SyncProgressEvent) => void;
 }): Promise<{ host: Awaited<ReturnType<typeof runSourceProbe>>["host"]; syncedSources: SyncedSourceSummary[] }> {
+  const rosterStartedAt = Date.now();
+  input.onProgress?.({
+    stage: "source_resolution_start",
+    message: input.sourceRefs.length > 0
+      ? `Resolving selected source(s): ${input.sourceRefs.join(", ")}`
+      : "Resolving available default source(s)",
+  });
   const sourceRoster = input.sourceRefs.length > 0
     ? getDefaultSourcesForHost({ includeMissing: true })
     : getDefaultSources();
   const sources = applySourceSelection(sourceRoster, input.sourceRefs);
+  input.onProgress?.({
+    stage: "source_resolution_done",
+    message: `Resolved ${sources.length} source(s) to scan`,
+    count: sources.length,
+    elapsed_ms: Date.now() - rosterStartedAt,
+  });
+
+  const hostProbeStartedAt = Date.now();
+  input.onProgress?.({
+    stage: "host_probe_start",
+    message: "Reading local host identity",
+  });
   const hostProbe = await runSourceProbe({}, []);
+  input.onProgress?.({
+    stage: "host_probe_done",
+    message: `Host identity ${hostProbe.host.hostname}`,
+    elapsed_ms: Date.now() - hostProbeStartedAt,
+  });
   if (sources.length === 0) {
     return { host: hostProbe.host, syncedSources: [] };
   }
@@ -470,9 +504,50 @@ export async function syncSelectedSources(input: {
   for (const source of sources) {
     let payload: SourceSyncPayload | undefined;
     try {
-      const previousPayload = supportsIncrementalReuse(source.platform)
-        ? input.storage.getSourceIncrementalPayload(source.id)
-        : undefined;
+      input.onProgress?.({
+        stage: "source_prepare_start",
+        source_id: source.id,
+        slot_id: source.slot_id,
+        platform: source.platform,
+        display_name: source.display_name,
+        message: `Preparing ${source.display_name} (${source.slot_id})`,
+      });
+      const reuseLoadStartedAt = Date.now();
+      let previousPayload: SourceSyncPayload | undefined;
+      if (supportsIncrementalReuse(source.platform)) {
+        input.onProgress?.({
+          stage: "incremental_reuse_load_start",
+          source_id: source.id,
+          slot_id: source.slot_id,
+          platform: source.platform,
+          display_name: source.display_name,
+          message: `Loading previous ${source.display_name} projections for incremental reuse`,
+        });
+        previousPayload = input.storage.getSourceIncrementalPayload(source.id);
+        input.onProgress?.({
+          stage: "incremental_reuse_load_done",
+          source_id: source.id,
+          slot_id: source.slot_id,
+          platform: source.platform,
+          display_name: source.display_name,
+          message: previousPayload
+            ? [
+                `Loaded previous ${source.display_name} projections`,
+                `(${previousPayload.blobs.length} blob(s), ${previousPayload.records.length} record(s), ${previousPayload.atoms.length} atom(s))`,
+              ].join(" ")
+            : `No previous ${source.display_name} projections found for incremental reuse`,
+          count: previousPayload?.blobs.length ?? 0,
+          elapsed_ms: Date.now() - reuseLoadStartedAt,
+        });
+      }
+      input.onProgress?.({
+        stage: "source_prepare_done",
+        source_id: source.id,
+        slot_id: source.slot_id,
+        platform: source.platform,
+        display_name: source.display_name,
+        message: `Prepared ${source.display_name} (${source.slot_id})`,
+      });
       const result = await runSourceProbe(
         {
           source_ids: [source.id],
@@ -548,11 +623,26 @@ export function applySourceSelection<T extends { id: string; slot_id: string }>(
 }
 
 type SyncProgressEvent = (SourceProbeProgressEvent | {
-  stage: "write_store_start" | "write_store_done" | "reindex_start" | "reindex_done" | "source_error";
-  source_id: string;
-  slot_id: string;
-  platform: SourceStatus["platform"];
-  display_name: string;
+  stage:
+    | "store_open_start"
+    | "store_open_done"
+    | "source_resolution_start"
+    | "source_resolution_done"
+    | "host_probe_start"
+    | "host_probe_done"
+    | "source_prepare_start"
+    | "source_prepare_done"
+    | "incremental_reuse_load_start"
+    | "incremental_reuse_load_done"
+    | "write_store_start"
+    | "write_store_done"
+    | "reindex_start"
+    | "reindex_done"
+    | "source_error";
+  source_id?: string;
+  slot_id?: string;
+  platform?: SourceStatus["platform"];
+  display_name?: string;
   message?: string;
   file_path?: string;
   file_index?: number;
@@ -575,7 +665,7 @@ function createProgressReporter(context: CommandContext): ((event: SyncProgressE
       return;
     }
 
-    const prefix = `[${command}:${event.slot_id}:${event.stage}]`;
+    const prefix = `[${command}:${event.slot_id ?? "cli"}:${event.stage}]`;
     const fileProgress =
       typeof event.file_index === "number" && typeof event.file_count === "number"
         ? ` ${event.file_index}/${event.file_count}`
