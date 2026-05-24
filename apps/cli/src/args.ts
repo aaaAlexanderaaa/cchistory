@@ -42,6 +42,7 @@ export interface CommandOptions {
   offset?: number;
   all: boolean;
   limitFiles?: number;
+  since?: string;
   storeOnly: boolean;
   project?: string;
   by?: string;
@@ -167,6 +168,11 @@ const commandOptions: Record<string, OptionSpec> = {
     kind: "number",
     valueName: "n",
     description: "Limit files per source",
+  },
+  since: {
+    kind: "string",
+    valueName: "time",
+    description: "Mark unchanged reused files older than an ISO time or relative window such as 7d or 12h as skipped",
   },
   "store-only": {
     kind: "boolean",
@@ -318,11 +324,11 @@ const commandSpecs: CommandSpec[] = [
   {
     path: ["sync"],
     category: "Data Management",
-    usage: "cchistory sync [--source <slot-or-id>] [--limit-files <n>] [--detail] [--safe] [--dry-run]",
+    usage: "cchistory sync [--source <slot-or-id>] [--limit-files <n>] [--since <time>] [--detail] [--safe] [--dry-run]",
     summary: "Ingest data from local AI tool directories",
     description: "Ingest local source files into the selected store.",
-    options: ["source", "limit-files", "detail", "progress", "safe"],
-    examples: ["cchistory sync", "cchistory sync --source codex --detail", "cchistory sync --progress jsonl --safe"],
+    options: ["source", "limit-files", "since", "detail", "progress", "safe"],
+    examples: ["cchistory sync", "cchistory sync --source codex --detail", "cchistory sync --source claude_code --since 7d"],
   },
   {
     path: ["discover"],
@@ -655,6 +661,7 @@ function normalizeCommandOptions(values: Record<string, string | string[] | bool
     offset: readNumber(values, "offset"),
     all: readBoolean(values, "all"),
     limitFiles: readNumber(values, "limit-files"),
+    since: readString(values, "since"),
     storeOnly: readBoolean(values, "store-only"),
     project: readString(values, "project"),
     by: readString(values, "by"),

@@ -1,10 +1,17 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fileExists, runCliCapture, runCliJson, seedCliDiscoveryFixtures, seedCliFixtures } from "./helpers.js";
+import {
+  fileExists,
+  runCliCapture,
+  runCliJson,
+  seedCliDiscoveryFixtures,
+  seedCliFixtures,
+  writeCodexSessionFixture,
+} from "./helpers.js";
 
 test("discover lists Gemini CLI sync roots alongside discovery-only auxiliary paths", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-discover-"));
@@ -69,8 +76,534 @@ test("sync --detail reports source, file, write, and reindex progress on stderr"
     assert.match(result.stdout, /Synced 1 source\(s\)/);
     assert.match(result.stderr, /\[sync:codex:source_start\]/);
     assert.match(result.stderr, /\[sync:codex:file_start\]/);
+    assert.match(result.stderr, /\[sync:codex:file_capture_done\].*\(\d+ms\)/);
+    assert.match(result.stderr, /\[sync:codex:file_parse_done\].*\(\d+ms\)/);
+    assert.match(result.stderr, /\[sync:codex:derive_done\].*\(\d+ms\)/);
     assert.match(result.stderr, /\[sync:codex:write_store_start\]/);
-    assert.match(result.stderr, /\[sync:codex:reindex_done\]/);
+    assert.match(result.stderr, /\[sync:codex:reindex_done\].*\(\d+ms\)/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync --since reuses older unchanged Codex files from the existing store without losing turns", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-since-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    process.env.HOME = tempRoot;
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    const oldFile = path.join(tempRoot, ".codex", "sessions", "rollout-codex-old.jsonl");
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-old.jsonl", {
+      sessionId: "codex-old-session",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Old prompt should remain searchable.",
+      reply: "Old reply remains indexed.",
+      startAt: "2026-03-09T00:00:00.000Z",
+    });
+    const oldDate = new Date("2020-01-01T00:00:00.000Z");
+    await utimes(oldFile, oldDate, oldDate);
+
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-new.jsonl", {
+      sessionId: "codex-new-session",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "New prompt should be added.",
+      reply: "New reply is indexed.",
+      startAt: "2026-03-09T01:00:00.000Z",
+    });
+
+    const result = await runCliCapture([
+      "sync",
+      "--store",
+      storeDir,
+      "--source",
+      "codex",
+      "--since",
+      "1h",
+      "--json",
+      "--detail",
+    ], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.sources[0].counts.turns, 2);
+    assert.match(result.stderr, /\[sync:codex:file_skip\]/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync reuses unchanged Codex projections on a repeated run", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-reuse-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    const secondSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--detail"], tempRoot);
+    assert.equal(secondSync.exitCode, 0, secondSync.stderr);
+    assert.match(secondSync.stderr, /\[sync:codex:file_reuse\]/);
+    assert.match(secondSync.stderr, /\[sync:codex:file_done\]/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync reparses same-size same-mtime Codex rewrites instead of trusting stat-only reuse", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-rewrite-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    process.env.HOME = tempRoot;
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    const filePath = path.join(tempRoot, ".codex", "sessions", "rollout-codex-session-1.jsonl");
+    const oldDate = new Date("2020-01-01T00:00:00.000Z");
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-session-1.jsonl", {
+      sessionId: "codex-session-1",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Alpha prompt.",
+      reply: "Alpha reply.",
+      startAt: "2026-03-09T00:00:00.000Z",
+    });
+    await utimes(filePath, oldDate, oldDate);
+    const firstSize = (await stat(filePath)).size;
+
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-session-1.jsonl", {
+      sessionId: "codex-session-1",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Bravo prompt.",
+      reply: "Bravo reply.",
+      startAt: "2026-03-09T00:00:00.000Z",
+    });
+    await utimes(filePath, oldDate, oldDate);
+    assert.equal((await stat(filePath)).size, firstSize);
+
+    const result = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--since", "1h", "--detail"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(result.stderr, /\[sync:codex:file_parse_done\]/);
+    assert.doesNotMatch(result.stderr, /\[sync:codex:file_reuse\]|\[sync:codex:file_skip\]/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync preserves empty unchanged Codex file evidence across reuse", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-empty-reuse-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    process.env.HOME = tempRoot;
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    await writeFile(path.join(tempRoot, ".codex", "sessions", "empty.jsonl"), "", "utf8");
+    const storeDir = path.join(tempRoot, "store");
+
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--json"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+    const firstPayload = JSON.parse(firstSync.stdout);
+    assert.equal(firstPayload.sources[0].counts.blobs, 1);
+    assert.equal(firstPayload.sources[0].counts.records, 0);
+
+    const secondSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--json", "--detail"], tempRoot);
+    assert.equal(secondSync.exitCode, 0, secondSync.stderr);
+    const secondPayload = JSON.parse(secondSync.stdout);
+    assert.equal(secondPayload.sources[0].counts.blobs, 1);
+    assert.equal(secondPayload.sources[0].counts.records, 0);
+    assert.match(secondSync.stderr, /\[sync:codex:file_reuse\]/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync reuses unchanged Claude Code files that share one session without duplicating rows", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-claude-multifile-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    process.env.HOME = tempRoot;
+    const claudeDir = path.join(tempRoot, ".claude", "projects");
+    await mkdir(claudeDir, { recursive: true });
+    const makeClaudeLine = (timestamp: string, type: "user" | "assistant", text: string) => JSON.stringify({
+      sessionId: "claude-shared-session",
+      timestamp,
+      type,
+      cwd: "/workspace/claude-project",
+      message: {
+        role: type,
+        content: [{ type: "text", text }],
+      },
+    });
+    await writeFile(
+      path.join(claudeDir, "parent.jsonl"),
+      [
+        makeClaudeLine("2026-03-09T01:00:00.000Z", "user", "Parent asks for review."),
+        makeClaudeLine("2026-03-09T01:00:01.000Z", "assistant", "Parent review complete."),
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      path.join(claudeDir, "child.jsonl"),
+      [
+        makeClaudeLine("2026-03-09T01:10:00.000Z", "user", "Child asks for detail."),
+        makeClaudeLine("2026-03-09T01:10:01.000Z", "assistant", "Child detail complete."),
+      ].join("\n"),
+      "utf8",
+    );
+
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "claude_code", "--json"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+    const firstPayload = JSON.parse(firstSync.stdout);
+    assert.equal(firstPayload.sources[0].counts.turns, 2);
+
+    const secondSync = await runCliCapture(["sync", "--store", storeDir, "--source", "claude_code", "--json", "--detail"], tempRoot);
+    assert.equal(secondSync.exitCode, 0, secondSync.stderr);
+    const secondPayload = JSON.parse(secondSync.stdout);
+    assert.equal(secondPayload.sources[0].counts.turns, 2);
+    assert.match(secondSync.stderr, /\[sync:claude_code:file_reuse\]/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync mixed Claude Code reuse and reparse does not retain stale cross-file atom edges", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-claude-mixed-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    process.env.HOME = tempRoot;
+    const claudeDir = path.join(tempRoot, ".claude", "projects");
+    await mkdir(claudeDir, { recursive: true });
+    const makeClaudeLine = (input: {
+      sessionId: string;
+      timestamp: string;
+      type: "user" | "assistant";
+      text?: string;
+      toolId?: string;
+      toolName?: string;
+      toolResult?: string;
+    }) => JSON.stringify({
+      sessionId: input.sessionId,
+      timestamp: input.timestamp,
+      type: input.type,
+      cwd: "/workspace/claude-project",
+      message: {
+        role: input.type,
+        content: input.toolName
+          ? [
+              { type: "text", text: input.text ?? "Using a tool." },
+              { type: "tool_use", id: input.toolId, name: input.toolName, input: { cmd: "pwd" } },
+            ]
+          : input.toolResult
+            ? [{ type: "tool_result", tool_use_id: input.toolId, content: [{ type: "text", text: input.toolResult }] }]
+            : [{ type: "text", text: input.text }],
+      },
+    });
+    const parentPath = path.join(claudeDir, "parent.jsonl");
+    const childPath = path.join(claudeDir, "child.jsonl");
+    await writeFile(
+      parentPath,
+      [
+        makeClaudeLine({ sessionId: "claude-shared-session", timestamp: "2026-03-09T01:00:00.000Z", type: "user", text: "Parent asks for review." }),
+        makeClaudeLine({ sessionId: "claude-shared-session", timestamp: "2026-03-09T01:00:01.000Z", type: "assistant", text: "Parent starts tool.", toolId: "tool-a", toolName: "shell" }),
+      ].join("\n"),
+      "utf8",
+    );
+    await writeFile(
+      childPath,
+      [
+        makeClaudeLine({ sessionId: "claude-shared-session", timestamp: "2026-03-09T01:00:02.000Z", type: "assistant", toolId: "tool-a", toolResult: "/workspace/claude-project" }),
+      ].join("\n"),
+      "utf8",
+    );
+
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "claude_code"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    await writeFile(
+      childPath,
+      [
+        makeClaudeLine({ sessionId: "claude-shared-session", timestamp: "2026-03-09T01:00:02.000Z", type: "assistant", text: "Child file rewritten without old tool result." }),
+      ].join("\n"),
+      "utf8",
+    );
+    const result = await runCliCapture(["sync", "--store", storeDir, "--source", "claude_code", "--json", "--detail"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const dangling = db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM atom_edges e
+        LEFT JOIN conversation_atoms from_atom ON from_atom.id = e.from_atom_id
+        LEFT JOIN conversation_atoms to_atom ON to_atom.id = e.to_atom_id
+        WHERE from_atom.id IS NULL OR to_atom.id IS NULL
+      `).get() as { count: number };
+      assert.equal(dangling.count, 0);
+    } finally {
+      db.close();
+    }
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync incrementally parses appended Codex and Claude Code JSONL records", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-append-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--source", "claude_code"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    await appendFile(
+      path.join(tempRoot, ".codex", "sessions", "rollout-codex-session-1.jsonl"),
+      `\n${[
+        {
+          timestamp: "2026-03-09T00:10:00.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Append a Codex follow-up." }],
+          },
+        },
+        {
+          timestamp: "2026-03-09T00:10:01.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Codex follow-up appended." }],
+          },
+        },
+      ].map((line) => JSON.stringify(line)).join("\n")}`,
+      "utf8",
+    );
+    await appendFile(
+      path.join(tempRoot, ".claude", "projects", "conversation.jsonl"),
+      `\n${[
+        {
+          timestamp: "2026-03-09T01:10:00.000Z",
+          type: "user",
+          cwd: "/workspace/claude-project",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "Append a Claude follow-up." }],
+          },
+        },
+        {
+          timestamp: "2026-03-09T01:10:01.000Z",
+          type: "assistant",
+          cwd: "/workspace/claude-project",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Claude follow-up appended." }],
+          },
+        },
+      ].map((line) => JSON.stringify(line)).join("\n")}`,
+      "utf8",
+    );
+
+    const result = await runCliCapture([
+      "sync",
+      "--store",
+      storeDir,
+      "--source",
+      "codex",
+      "--source",
+      "claude_code",
+      "--json",
+      "--detail",
+    ], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.sources.find((entry: { source: { slot_id: string } }) => entry.source.slot_id === "codex").counts.turns, 2);
+    assert.equal(payload.sources.find((entry: { source: { slot_id: string } }) => entry.source.slot_id === "claude_code").counts.turns, 2);
+    assert.match(result.stderr, /\[sync:codex:file_append_done\]/);
+    assert.match(result.stderr, /\[sync:claude_code:file_append_done\]/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync falls back to full parse when append completes a previously invalid Codex line", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-partial-line-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    process.env.HOME = tempRoot;
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    const filePath = path.join(tempRoot, ".codex", "sessions", "rollout-codex-partial.jsonl");
+    await writeFile(
+      filePath,
+      [
+        JSON.stringify({
+          timestamp: "2026-03-09T00:00:00.000Z",
+          type: "session_meta",
+          payload: { id: "codex-partial-session", cwd: "/workspace/cchistory", model: "gpt-5" },
+        }),
+        `{"timestamp":"2026-03-09T00:00:01.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Partial`,
+      ].join("\n"),
+      "utf8",
+    );
+
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    await appendFile(filePath, ` prompt."}]}}\n`, "utf8");
+    const result = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--json", "--detail"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.sources[0].counts.turns, 1);
+    assert.match(result.stderr, /\[sync:codex:file_parse_done\]/);
+    assert.doesNotMatch(result.stderr, /\[sync:codex:file_append_done\]/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync falls back to full parse when a Codex append does not start on a JSONL line boundary", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-append-boundary-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    process.env.HOME = tempRoot;
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    const filePath = path.join(tempRoot, ".codex", "sessions", "rollout-codex-no-newline.jsonl");
+    await writeFile(
+      filePath,
+      [
+        JSON.stringify({
+          timestamp: "2026-03-09T00:00:00.000Z",
+          type: "session_meta",
+          payload: { id: "codex-no-newline-session", cwd: "/workspace/cchistory", model: "gpt-5" },
+        }),
+        JSON.stringify({
+          timestamp: "2026-03-09T00:00:01.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Initial prompt without trailing newline." }],
+          },
+        }),
+      ].join("\n"),
+      "utf8",
+    );
+
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    await appendFile(
+      filePath,
+      JSON.stringify({
+        timestamp: "2026-03-09T00:00:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "This write continues the same physical line." }],
+        },
+      }),
+      "utf8",
+    );
+    const result = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--detail"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(result.stderr, /\[sync:codex:file_parse_done\]/);
+    assert.doesNotMatch(result.stderr, /\[sync:codex:file_append_done\]/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync does not reuse stale append snapshots after a Codex file is truncated", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-truncate-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    process.env.HOME = tempRoot;
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    const filePath = path.join(tempRoot, ".codex", "sessions", "rollout-codex-session-1.jsonl");
+    const oldDate = new Date("2020-01-01T00:00:00.000Z");
+    const writeOriginal = async () => {
+      await writeCodexSessionFixture(tempRoot, "rollout-codex-session-1.jsonl", {
+        sessionId: "codex-session-1",
+        cwd: "/workspace/cchistory",
+        model: "gpt-5",
+        prompt: "Original prompt only.",
+        reply: "Original reply only.",
+        startAt: "2026-03-09T00:00:00.000Z",
+      });
+      await utimes(filePath, oldDate, oldDate);
+    };
+
+    await writeOriginal();
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    await appendFile(
+      filePath,
+      `\n${JSON.stringify({
+        timestamp: "2026-03-09T00:10:00.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Temporary appended prompt." }],
+        },
+      })}\n${JSON.stringify({
+        timestamp: "2026-03-09T00:10:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Temporary appended reply." }],
+        },
+      })}`,
+      "utf8",
+    );
+    const appendSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(appendSync.exitCode, 0, appendSync.stderr);
+
+    await writeOriginal();
+    const result = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--json", "--detail"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.sources[0].counts.turns, 1);
+    assert.match(result.stderr, /\[sync:codex:file_parse_done\]/);
+    assert.doesNotMatch(result.stderr, /\[sync:codex:file_reuse\]/);
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });

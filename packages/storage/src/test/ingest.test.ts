@@ -305,6 +305,33 @@ test("getSourcePayload returns undefined for unknown source ID", async () => {
     const storage = new CCHistoryStorage(dataDir);
     const result = storage.getSourcePayload("src-does-not-exist");
     assert.equal(result, undefined);
+    assert.equal(storage.getSourceIncrementalPayload("src-does-not-exist"), undefined);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("getSourceIncrementalPayload omits read projections while preserving reuse inputs", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-incremental-payload-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(createFixturePayload("src-incremental", "Need fast reuse", "stage-run-incremental"));
+
+    const sourceId = storage.listSources()[0]?.id;
+    assert.ok(sourceId);
+    const payload = storage.getSourceIncrementalPayload(sourceId);
+    assert.ok(payload);
+    assert.equal(payload.stage_runs.length, 1);
+    assert.equal(payload.loss_audits.length, 1);
+    assert.equal(payload.blobs.length, 1);
+    assert.equal(payload.records.length, 1);
+    assert.equal(payload.fragments.length, 4);
+    assert.equal(payload.atoms.length, 4);
+    assert.equal(payload.edges.length, 2);
+    assert.equal(payload.sessions.length, 1);
+    assert.deepEqual(payload.candidates, []);
+    assert.deepEqual(payload.turns, []);
+    assert.deepEqual(payload.contexts, []);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -355,4 +382,3 @@ test("upsertImportedBundle stores and retrieves bundle records", async () => {
     await rm(dataDir, { recursive: true, force: true });
   }
 });
-

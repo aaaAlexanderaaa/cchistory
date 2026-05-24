@@ -55,6 +55,7 @@ export async function handleSync(context: CommandContext): Promise<CommandOutput
 
   const sourceRefs = context.options.source;
   const limitFiles = context.options.limitFiles;
+  const changedSince = normalizeChangedSince(context.options.since);
   const storage = await openStorage(layout);
   const progress = createProgressReporter(context);
 
@@ -64,6 +65,7 @@ export async function handleSync(context: CommandContext): Promise<CommandOutput
       storage,
       sourceRefs,
       limitFiles,
+      changedSince,
       snapshotRawBlobs: true,
       safeMode: context.options.safe,
       onProgress: progress,
@@ -450,6 +452,7 @@ export async function syncSelectedSources(input: {
   storage: CCHistoryStorage;
   sourceRefs: string[];
   limitFiles?: number;
+  changedSince?: string;
   snapshotRawBlobs: boolean;
   safeMode?: boolean;
   onProgress?: (event: SyncProgressEvent) => void;
@@ -467,11 +470,16 @@ export async function syncSelectedSources(input: {
   for (const source of sources) {
     let payload: SourceSyncPayload | undefined;
     try {
+      const previousPayload = supportsIncrementalReuse(source.platform)
+        ? input.storage.getSourceIncrementalPayload(source.id)
+        : undefined;
       const result = await runSourceProbe(
         {
           source_ids: [source.id],
           limit_files_per_source: input.limitFiles,
           safe_mode: input.safeMode,
+          changed_since: input.changedSince,
+          previous_payloads: previousPayload ? { [source.id]: previousPayload } : undefined,
           on_progress: (event) => input.onProgress?.(event),
         },
         [source],
@@ -499,9 +507,14 @@ export async function syncSelectedSources(input: {
       display_name: payload.source.display_name,
       message: `Writing ${payload.source.display_name} payload to SQLite`,
     });
+    const writeStartedAt = Date.now();
+    let reindexStartedAt: number | undefined;
     const counts = input.storage.replaceSourcePayload(payload, {
       allow_host_rekey: true,
       onProgress: (event) => {
+        if (event.stage === "reindex_start") {
+          reindexStartedAt = Date.now();
+        }
         input.onProgress?.({
           stage: event.stage,
           source_id: payload.source.id,
@@ -509,6 +522,12 @@ export async function syncSelectedSources(input: {
           platform: payload.source.platform,
           display_name: payload.source.display_name,
           message: formatStorageProgressMessage(event.stage, payload.source.display_name),
+          elapsed_ms:
+            event.stage === "write_store_done"
+              ? Date.now() - writeStartedAt
+              : event.stage === "reindex_done" && reindexStartedAt !== undefined
+                ? Date.now() - reindexStartedAt
+                : undefined,
         });
       },
     });
@@ -538,6 +557,7 @@ type SyncProgressEvent = (SourceProbeProgressEvent | {
   file_path?: string;
   file_index?: number;
   file_count?: number;
+  size_bytes?: number;
   count?: number;
   elapsed_ms?: number;
 });
@@ -561,7 +581,8 @@ function createProgressReporter(context: CommandContext): ((event: SyncProgressE
         ? ` ${event.file_index}/${event.file_count}`
         : "";
     const elapsed = typeof event.elapsed_ms === "number" ? ` (${event.elapsed_ms}ms)` : "";
-    context.io.stderr(`${prefix}${fileProgress} ${event.message ?? event.file_path ?? ""}${elapsed}\n`);
+    const size = typeof event.size_bytes === "number" ? ` ${formatBytes(event.size_bytes)}` : "";
+    context.io.stderr(`${prefix}${fileProgress}${size} ${event.message ?? event.file_path ?? ""}${elapsed}\n`);
   };
 }
 
@@ -611,6 +632,33 @@ function formatStorageProgressMessage(stage: SyncProgressEvent["stage"], sourceN
     default:
       return sourceName;
   }
+}
+
+function normalizeChangedSince(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  const relative = trimmed.match(/^(\d+)(m|h|d|w)$/iu);
+  if (relative) {
+    const amount = Number(relative[1]);
+    const unit = relative[2]!.toLowerCase();
+    const multiplier =
+      unit === "m" ? 60 * 1000 :
+      unit === "h" ? 60 * 60 * 1000 :
+      unit === "d" ? 24 * 60 * 60 * 1000 :
+      7 * 24 * 60 * 60 * 1000;
+    return new Date(Date.now() - amount * multiplier).toISOString();
+  }
+  const parsed = Date.parse(trimmed);
+  if (!Number.isNaN(parsed)) {
+    return new Date(parsed).toISOString();
+  }
+  throw new Error(`Invalid --since value: ${value}. Use an ISO timestamp or a relative window such as 30m, 12h, 7d, or 2w.`);
+}
+
+function supportsIncrementalReuse(platform: SourceDefinition["platform"]): boolean {
+  return platform === "codex" || platform === "claude_code";
 }
 
 async function inspectStore(dbPath: string): Promise<{

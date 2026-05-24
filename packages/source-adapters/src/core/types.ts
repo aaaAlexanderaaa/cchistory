@@ -64,6 +64,8 @@ export interface ProbeOptions {
   limit_files_per_source?: number;
   safe_mode?: boolean;
   max_file_bytes?: number;
+  changed_since?: string;
+  previous_payloads?: Record<string, SourceSyncPayload | undefined>;
   on_progress?: (event: SourceProbeProgressEvent) => void;
 }
 
@@ -75,7 +77,13 @@ export type SourceProbeProgressStage =
   | "list_files_start"
   | "list_files_done"
   | "file_start"
+  | "file_capture_done"
+  | "file_parse_done"
   | "file_done"
+  | "file_reuse"
+  | "file_append_start"
+  | "file_append_done"
+  | "file_skip"
   | "file_error"
   | "derive_start"
   | "derive_done"
@@ -91,6 +99,7 @@ export interface SourceProbeProgressEvent {
   file_path?: string;
   file_index?: number;
   file_count?: number;
+  size_bytes?: number;
   count?: number;
   elapsed_ms?: number;
 }

@@ -198,6 +198,11 @@ export class CCHistoryStorage {
     return source ? this.buildSourcePayload(source.id) : undefined;
   }
 
+  getSourceIncrementalPayload(sourceId: string): SourceSyncPayload | undefined {
+    const source = this.listSources().find((entry) => entry.id === sourceId);
+    return source ? this.buildSourceIncrementalPayload(source.id) : undefined;
+  }
+
   /**
    * Stream a source payload as JSON to a writer callback, one row at a time.
    * This avoids loading the entire payload into memory.
@@ -842,6 +847,28 @@ export class CCHistoryStorage {
         "ORDER BY submission_started_at DESC, created_at DESC",
       ),
       contexts: Queries.selectPayloadsBySource<TurnContextProjection>(this.db, "turn_contexts", sourceId, "ORDER BY turn_id"),
+    };
+  }
+
+  private buildSourceIncrementalPayload(sourceId: string): SourceSyncPayload {
+    const source = this.listSources().find((entry) => entry.id === sourceId);
+    if (!source) {
+      throw new Error(`Unknown source id: ${sourceId}`);
+    }
+
+    return {
+      source,
+      stage_runs: Queries.selectPayloadsBySource<StageRun>(this.db, "stage_runs", sourceId),
+      loss_audits: Queries.selectPayloadsBySource<LossAuditRecord>(this.db, "loss_audits", sourceId),
+      blobs: Queries.selectPayloadsBySource<CapturedBlob>(this.db, "captured_blobs", sourceId),
+      records: Queries.selectPayloadsBySource<RawRecord>(this.db, "raw_records", sourceId),
+      fragments: Queries.selectPayloadsBySource<SourceFragment>(this.db, "source_fragments", sourceId),
+      atoms: Queries.selectPayloadsBySource<ConversationAtom>(this.db, "conversation_atoms", sourceId, "ORDER BY time_key ASC, seq_no ASC"),
+      edges: Queries.selectPayloadsBySource<AtomEdge>(this.db, "atom_edges", sourceId),
+      sessions: Queries.selectPayloadsBySource<SessionProjection>(this.db, "sessions", sourceId, "ORDER BY created_at ASC, updated_at ASC"),
+      candidates: [],
+      turns: [],
+      contexts: [],
     };
   }
 

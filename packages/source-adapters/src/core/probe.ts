@@ -16,6 +16,7 @@ import type {
   UserTurnProjection,
   TurnContextProjection,
   SourceFormatProfile,
+  SourcePlatform,
 } from "@cchistory/domain";
 import { deriveHostId, deriveSourceInstanceId } from "@cchistory/domain";
 import {
@@ -166,6 +167,7 @@ async function processSource(
     stage: "derive_start",
     message: `Deriving projections from ${collectionCore.sessionsById.size} session candidate(s)`,
   });
+  const deriveStartedAt = Date.now();
   const processingCore = await processCollectedSessions(
     collectionCore.sessionsById,
     collectionCore.orphanBlobs,
@@ -176,6 +178,7 @@ async function processSource(
     stage: "derive_done",
     message: `Derived ${processingCore.sessions.length} session(s), ${processingCore.turns.length} turn(s)`,
     count: processingCore.turns.length,
+    elapsed_ms: Date.now() - deriveStartedAt,
   });
   const uniqueBlobs = dedupeById(processingCore.blobs);
 
@@ -248,6 +251,8 @@ async function collectSourceInputs(
 ): Promise<CollectionCoreResult> {
   const captureRunId = stableId("capture-run", source.id, startedAt);
   const adapter = getPlatformAdapter(source.platform);
+  const previousIndex = buildPreviousSourceIndex(options.previous_payloads?.[source.id], sourceFormatProfile);
+  const changedSinceMs = parseChangedSinceMs(options.changed_since);
   const sessionsById = new Map<string, SessionBuildInput>();
   const orphanBlobs: CapturedBlob[] = [];
   const companionFiles: string[] = [];
@@ -295,16 +300,19 @@ async function collectSourceInputs(
     stage: "list_files_start",
     message: `Listing source files under ${source.base_dir}`,
   });
+  const listFilesStartedAt = Date.now();
   const files = await listSourceFiles(source.platform, source.base_dir, remainingFileLimit);
   emitProbeProgress(options, source, {
     stage: "list_files_done",
     message: `Found ${files.length} source file(s)`,
     count: files.length,
     file_count: files.length,
+    elapsed_ms: Date.now() - listFilesStartedAt,
   });
 
   for (const [fileIndex, filePath] of files.entries()) {
     let capturedBlob: CapturedBlobInput | undefined;
+    const fileStartedAt = Date.now();
     emitProbeProgress(options, source, {
       stage: "file_start",
       message: `Processing ${filePath}`,
@@ -313,7 +321,8 @@ async function collectSourceInputs(
       file_count: files.length,
     });
     try {
-      const sizeBytes = await getFileSize(filePath);
+      const fileStats = await stat(filePath);
+      const sizeBytes = fileStats.size;
       const maxFileBytes = options.max_file_bytes ?? DEFAULT_MAX_FILE_BYTES;
       if (sizeBytes > maxFileBytes) {
         const detail = `Skipped oversized source file ${filePath}: ${sizeBytes} bytes exceeds ${maxFileBytes} byte limit`;
@@ -334,10 +343,48 @@ async function collectSourceInputs(
           file_path: filePath,
           file_index: fileIndex + 1,
           file_count: files.length,
+          elapsed_ms: Date.now() - fileStartedAt,
         });
         continue;
       }
+      const previousEntry = previousIndex?.byOriginPath.get(path.normalize(filePath));
+      const captureStartedAt = Date.now();
       capturedBlob = await captureBlob(source, host.id, filePath, captureRunId);
+      emitProbeProgress(options, source, {
+        stage: "file_capture_done",
+        message: `Captured ${filePath}`,
+        file_path: filePath,
+        file_index: fileIndex + 1,
+        file_count: files.length,
+        size_bytes: capturedBlob.blob.size_bytes,
+        elapsed_ms: Date.now() - captureStartedAt,
+      });
+
+      if (previousEntry && canReuseCapturedBlob(previousEntry, capturedBlob.blob)) {
+        mergePreviousFileEntry(sessionsById, orphanBlobs, sourceLossAudits, previousEntry);
+        const isOlderThanSince = changedSinceMs !== undefined && fileStats.mtime.getTime() < changedSinceMs;
+        emitProbeProgress(options, source, {
+          stage: isOlderThanSince ? "file_skip" : "file_reuse",
+          message: isOlderThanSince
+            ? `Reused unchanged file older than --since: ${filePath}`
+            : `Reused unchanged projection for ${filePath}`,
+          file_path: filePath,
+          file_index: fileIndex + 1,
+          file_count: files.length,
+          size_bytes: capturedBlob.blob.size_bytes,
+          elapsed_ms: Date.now() - fileStartedAt,
+        });
+        emitProbeProgress(options, source, {
+          stage: "file_done",
+          message: `Processed ${filePath}`,
+          file_path: filePath,
+          file_index: fileIndex + 1,
+          file_count: files.length,
+          size_bytes: capturedBlob.blob.size_bytes,
+          elapsed_ms: Date.now() - fileStartedAt,
+        });
+        continue;
+      }
     } catch (error) {
       const detail = `Failed to capture source file ${filePath}: ${formatErrorMessage(error)}`;
       const blobRef = stableId("blob", source.id, filePath, "capture-failed");
@@ -357,15 +404,39 @@ async function collectSourceInputs(
         file_path: filePath,
         file_index: fileIndex + 1,
         file_count: files.length,
+        elapsed_ms: Date.now() - fileStartedAt,
       });
       continue;
     }
 
     try {
-      const adapterResults = await processBlob(source, sourceFormatProfile, filePath, capturedBlob);
+      const parseStartedAt = Date.now();
+      const previousEntry = previousIndex?.byOriginPath.get(path.normalize(filePath));
+      const appendedResults = previousEntry
+        ? processAppendedJsonlBlob(source, sourceFormatProfile, filePath, capturedBlob, previousEntry)
+        : undefined;
+      if (appendedResults) {
+        emitProbeProgress(options, source, {
+          stage: "file_append_start",
+          message: `Parsing appended records for ${filePath}`,
+          file_path: filePath,
+          file_index: fileIndex + 1,
+          file_count: files.length,
+        });
+      }
+      const adapterResults = appendedResults ?? await processBlob(source, sourceFormatProfile, filePath, capturedBlob);
       for (const adapterResult of adapterResults) {
         mergeAdapterBlobResult(sessionsById, adapterResult);
       }
+      emitProbeProgress(options, source, {
+        stage: appendedResults ? "file_append_done" : "file_parse_done",
+        message: appendedResults ? `Parsed appended records for ${filePath}` : `Parsed ${filePath}`,
+        file_path: filePath,
+        file_index: fileIndex + 1,
+        file_count: files.length,
+        size_bytes: capturedBlob.blob.size_bytes,
+        elapsed_ms: Date.now() - parseStartedAt,
+      });
       if (adapter?.getCompanionEvidencePaths && !options.safe_mode) {
         for (const companionPath of await adapter.getCompanionEvidencePaths(source.base_dir, filePath)) {
           const normalizedCompanionPath = path.normalize(companionPath);
@@ -403,6 +474,8 @@ async function collectSourceInputs(
         file_path: filePath,
         file_index: fileIndex + 1,
         file_count: files.length,
+        size_bytes: capturedBlob.blob.size_bytes,
+        elapsed_ms: Date.now() - fileStartedAt,
       });
     } catch (error) {
       orphanBlobs.push(capturedBlob.blob);
@@ -424,6 +497,7 @@ async function collectSourceInputs(
         file_path: filePath,
         file_index: fileIndex + 1,
         file_count: files.length,
+        elapsed_ms: Date.now() - fileStartedAt,
       });
     }
   }
@@ -441,23 +515,7 @@ function mergeAdapterBlobResult(
   sessionsById: Map<string, SessionBuildInput>,
   adapterResult: AdapterBlobResult,
 ): void {
-  const current = sessionsById.get(adapterResult.draft.id);
-  if (current) {
-    current.blobs.push(...adapterResult.blobs);
-    current.records.push(...adapterResult.records);
-    current.fragments.push(...adapterResult.fragments);
-    current.atoms.push(...adapterResult.atoms);
-    current.edges.push(...adapterResult.edges);
-    current.loss_audits.push(...adapterResult.loss_audits);
-    current.draft.title = current.draft.title ?? adapterResult.draft.title;
-    current.draft.working_directory = current.draft.working_directory ?? adapterResult.draft.working_directory;
-    current.draft.model = current.draft.model ?? adapterResult.draft.model;
-    current.draft.created_at = minIso(current.draft.created_at, adapterResult.draft.created_at);
-    current.draft.updated_at = maxIso(current.draft.updated_at, adapterResult.draft.updated_at);
-    return;
-  }
-
-  sessionsById.set(adapterResult.draft.id, {
+  mergeSessionBuildInput(sessionsById, {
     draft: adapterResult.draft,
     blobs: [...adapterResult.blobs],
     records: [...adapterResult.records],
@@ -466,6 +524,383 @@ function mergeAdapterBlobResult(
     edges: [...adapterResult.edges],
     loss_audits: [...adapterResult.loss_audits],
   });
+}
+
+function mergeSessionBuildInput(
+  sessionsById: Map<string, SessionBuildInput>,
+  sessionInput: SessionBuildInput,
+): void {
+  const current = sessionsById.get(sessionInput.draft.id);
+  if (current) {
+    current.blobs.push(...sessionInput.blobs);
+    current.records.push(...sessionInput.records);
+    current.fragments.push(...sessionInput.fragments);
+    current.atoms.push(...sessionInput.atoms);
+    current.edges.push(...sessionInput.edges);
+    current.loss_audits.push(...sessionInput.loss_audits);
+    current.draft.title = current.draft.title ?? sessionInput.draft.title;
+    current.draft.working_directory = current.draft.working_directory ?? sessionInput.draft.working_directory;
+    current.draft.model = current.draft.model ?? sessionInput.draft.model;
+    current.draft.created_at = minIso(current.draft.created_at, sessionInput.draft.created_at);
+    current.draft.updated_at = maxIso(current.draft.updated_at, sessionInput.draft.updated_at);
+    return;
+  }
+
+  sessionsById.set(sessionInput.draft.id, {
+    draft: { ...sessionInput.draft },
+    blobs: [...sessionInput.blobs],
+    records: [...sessionInput.records],
+    fragments: [...sessionInput.fragments],
+    atoms: [...sessionInput.atoms],
+    edges: [...sessionInput.edges],
+    loss_audits: [...sessionInput.loss_audits],
+  });
+}
+
+function mergePreviousFileEntry(
+  sessionsById: Map<string, SessionBuildInput>,
+  orphanBlobs: CapturedBlob[],
+  sourceLossAudits: LossAuditRecord[],
+  previousEntry: PreviousFileEntry,
+): void {
+  for (const sessionInput of previousEntry.sessionInputs) {
+    mergeSessionBuildInput(sessionsById, sessionInput);
+  }
+  orphanBlobs.push(...previousEntry.orphanBlobs);
+  sourceLossAudits.push(...previousEntry.lossAudits);
+}
+
+interface PreviousFileEntry {
+  originPath: string;
+  blobs: CapturedBlob[];
+  tailBlob?: CapturedBlob;
+  sessionInputs: SessionBuildInput[];
+  orphanBlobs: CapturedBlob[];
+  lossAudits: LossAuditRecord[];
+}
+
+interface PreviousSourceIndex {
+  byOriginPath: Map<string, PreviousFileEntry>;
+}
+
+function buildPreviousSourceIndex(
+  previousPayload: SourceSyncPayload | undefined,
+  sourceFormatProfile: SourceFormatProfile,
+): PreviousSourceIndex | undefined {
+  if (!previousPayload || !isIncrementalJsonlPlatform(previousPayload.source.platform)) {
+    return undefined;
+  }
+  if (!previousPayloadMatchesProfile(previousPayload, sourceFormatProfile)) {
+    return undefined;
+  }
+
+  const sessionsById = new Map(previousPayload.sessions.map((session) => [session.id, session]));
+  const recordsByBlobId = groupBy(previousPayload.records, (record) => record.blob_id);
+  const fragmentsByRecordId = groupBy(previousPayload.fragments, (fragment) => fragment.record_id);
+  const atomsByFragmentId = new Map<string, ConversationAtom[]>();
+  for (const atom of previousPayload.atoms) {
+    for (const fragmentRef of atom.fragment_refs) {
+      pushGrouped(atomsByFragmentId, fragmentRef, atom);
+    }
+  }
+  const edgesByAtomId = new Map<string, AtomEdge[]>();
+  for (const edge of previousPayload.edges) {
+    pushGrouped(edgesByAtomId, edge.from_atom_id, edge);
+    pushGrouped(edgesByAtomId, edge.to_atom_id, edge);
+  }
+  const lossAuditsByBlobRef = groupPresent(previousPayload.loss_audits, (audit) => audit.blob_ref);
+  const lossAuditsByRecordRef = groupPresent(previousPayload.loss_audits, (audit) => audit.record_ref);
+  const lossAuditsByFragmentRef = groupPresent(previousPayload.loss_audits, (audit) => audit.fragment_ref);
+  const lossAuditsByAtomRef = groupPresent(previousPayload.loss_audits, (audit) => audit.atom_ref);
+  const blobsByOriginPath = groupBy(previousPayload.blobs, (blob) => path.normalize(blob.origin_path));
+
+  const byOriginPath = new Map<string, PreviousFileEntry>();
+  for (const [originPath, blobs] of blobsByOriginPath) {
+    const fileRecords = blobs.flatMap((blob) => recordsByBlobId.get(blob.id) ?? []);
+    const fileRecordIds = new Set(fileRecords.map((record) => record.id));
+    const fileFragments = fileRecords.flatMap((record) => fragmentsByRecordId.get(record.id) ?? []);
+    const fileFragmentIds = new Set(fileFragments.map((fragment) => fragment.id));
+    const fileAtoms = dedupeById(fileFragments.flatMap((fragment) => atomsByFragmentId.get(fragment.id) ?? []));
+    const fileAtomIds = new Set(fileAtoms.map((atom) => atom.id));
+    const fileEdges = dedupeById(fileAtoms.flatMap((atom) => edgesByAtomId.get(atom.id) ?? []))
+      .filter((edge) => fileAtomIds.has(edge.from_atom_id) && fileAtomIds.has(edge.to_atom_id));
+    const fileLossAudits = dedupeById([
+      ...blobs.flatMap((blob) => lossAuditsByBlobRef.get(blob.id) ?? []),
+      ...fileRecords.flatMap((record) => lossAuditsByRecordRef.get(record.id) ?? []),
+      ...fileFragments.flatMap((fragment) => lossAuditsByFragmentRef.get(fragment.id) ?? []),
+      ...fileAtoms.flatMap((atom) => lossAuditsByAtomRef.get(atom.id) ?? []),
+    ]);
+    const sessionRefs = new Set(fileRecords.map((record) => record.session_ref));
+    const sessionInputs: SessionBuildInput[] = [];
+    const sessionLossAuditIds = new Set<string>();
+    for (const sessionRef of sessionRefs) {
+      const session = sessionsById.get(sessionRef);
+      const records = fileRecords.filter((record) => record.session_ref === sessionRef);
+      const recordIds = new Set(records.map((record) => record.id));
+      const fragments = fileFragments.filter((fragment) => recordIds.has(fragment.record_id));
+      const fragmentIds = new Set(fragments.map((fragment) => fragment.id));
+      const atoms = fileAtoms.filter((atom) => atom.fragment_refs.some((fragmentRef) => fragmentIds.has(fragmentRef)));
+      const atomIds = new Set(atoms.map((atom) => atom.id));
+      const edges = fileEdges.filter((edge) => atomIds.has(edge.from_atom_id) || atomIds.has(edge.to_atom_id));
+      const usedBlobIds = new Set(records.map((record) => record.blob_id));
+      const sessionBlobs = blobs.filter((blob) => usedBlobIds.has(blob.id));
+      const sessionLossAudits = dedupeById(fileLossAudits.filter((audit) =>
+        audit.session_ref === sessionRef ||
+        (audit.record_ref !== undefined && recordIds.has(audit.record_ref)) ||
+        (audit.fragment_ref !== undefined && fragmentIds.has(audit.fragment_ref)) ||
+        (audit.atom_ref !== undefined && atomIds.has(audit.atom_ref)) ||
+        (audit.blob_ref !== undefined && usedBlobIds.has(audit.blob_ref)),
+      ));
+      for (const audit of sessionLossAudits) {
+        sessionLossAuditIds.add(audit.id);
+      }
+      sessionInputs.push({
+        draft: {
+          id: sessionRef,
+          source_id: previousPayload.source.id,
+          source_platform: previousPayload.source.platform,
+          host_id: session?.host_id ?? previousPayload.source.host_id,
+          title: session?.title,
+          created_at: minAtomTime(atoms) ?? session?.created_at,
+          updated_at: maxAtomTime(atoms) ?? session?.updated_at,
+          model: session?.model,
+          working_directory: session?.working_directory,
+          source_native_project_ref: session?.source_native_project_ref,
+          last_cumulative_token_usage: findLastCumulativeTokenUsage(fragments),
+        },
+        blobs: sessionBlobs,
+        records,
+        fragments,
+        atoms,
+        edges,
+        loss_audits: sessionLossAudits,
+      });
+    }
+    const recordBlobIds = new Set(fileRecords.map((record) => record.blob_id));
+    byOriginPath.set(originPath, {
+      originPath,
+      blobs,
+      tailBlob: blobs.reduce<CapturedBlob | undefined>(
+        (current, blob) => !current || blob.size_bytes > current.size_bytes ? blob : current,
+        undefined,
+      ),
+      sessionInputs,
+      orphanBlobs: blobs.filter((blob) => !recordBlobIds.has(blob.id)),
+      lossAudits: dedupeById(fileLossAudits.filter((audit) => !sessionLossAuditIds.has(audit.id))),
+    });
+  }
+
+  return { byOriginPath };
+}
+
+function previousPayloadMatchesProfile(payload: SourceSyncPayload, sourceFormatProfile: SourceFormatProfile): boolean {
+  return payload.stage_runs.some((stageRun) =>
+    stageRun.parser_version === sourceFormatProfile.parser_version &&
+    stageRun.source_format_profile_ids?.includes(sourceFormatProfile.id),
+  );
+}
+
+function isIncrementalJsonlPlatform(platform: SourcePlatform): boolean {
+  return platform === "codex" || platform === "claude_code";
+}
+
+function canReuseCapturedBlob(previousEntry: PreviousFileEntry, capturedBlob: CapturedBlob): boolean {
+  return previousEntry.tailBlob?.size_bytes === capturedBlob.size_bytes &&
+    previousEntry.tailBlob.file_modified_at === capturedBlob.file_modified_at &&
+    previousEntry.tailBlob.checksum === capturedBlob.checksum;
+}
+
+function processAppendedJsonlBlob(
+  source: SourceDefinition,
+  sourceFormatProfile: SourceFormatProfile,
+  filePath: string,
+  capturedBlob: CapturedBlobInput,
+  previousEntry: PreviousFileEntry,
+): AdapterBlobResult[] | undefined {
+  if (!isIncrementalJsonlPlatform(source.platform) || previousEntry.sessionInputs.length !== 1 || !previousEntry.tailBlob) {
+    return undefined;
+  }
+  const previousTail = previousEntry.tailBlob;
+  if (
+    capturedBlob.blob.size_bytes <= previousTail.size_bytes ||
+    capturedBlob.blob.file_modified_at === previousTail.file_modified_at
+  ) {
+    return undefined;
+  }
+  const previousPrefix = capturedBlob.fileBuffer.subarray(0, previousTail.size_bytes);
+  if (sha1(previousPrefix) !== previousTail.checksum) {
+    return undefined;
+  }
+  const appendedBuffer = capturedBlob.fileBuffer.subarray(previousTail.size_bytes);
+  if (!isJsonlAppendBoundary(previousPrefix, appendedBuffer)) {
+    return undefined;
+  }
+
+  const previousInput = previousEntry.sessionInputs[0]!;
+  if (hasPreviousJsonParseFailure(previousInput)) {
+    return undefined;
+  }
+  const sessionId = previousInput.draft.id;
+  const baseOrdinal = previousInput.records.reduce((max, record) => Math.max(max, record.ordinal), -1) + 1;
+  const appendedRecords = collectJsonlRecordsFromText({
+    text: appendedBuffer.toString("utf8"),
+    sourceId: source.id,
+    sessionId,
+    blobId: capturedBlob.blob.id,
+    baseOrdinal,
+  });
+  if (appendedRecords.length === 0) {
+    return undefined;
+  }
+
+  const context = {
+    source,
+    hostId: capturedBlob.blob.host_id,
+    filePath,
+    profileId: sourceFormatProfile.id,
+    sessionId,
+    captureRunId: capturedBlob.blob.capture_run_id,
+  };
+  const draft: SessionDraft = {
+    ...previousInput.draft,
+    updated_at: undefined,
+    last_cumulative_token_usage: findLastCumulativeTokenUsage(previousInput.fragments),
+  };
+  const appendedFragments: SourceFragment[] = [];
+  const appendedLossAudits: LossAuditRecord[] = [];
+  for (const record of appendedRecords) {
+    const parsed = parseRecord(context, record, draft);
+    appendedFragments.push(...parsed.fragments);
+    appendedLossAudits.push(...parsed.lossAudits);
+  }
+
+  const fragments = [...previousInput.fragments, ...appendedFragments];
+  const atomized = atomizeFragments(source.id, sessionId, sourceFormatProfile.id, fragments);
+  hydrateDraftFromAtoms(draft, atomized.atoms, capturedBlob.blob.file_modified_at);
+
+  return [{
+    draft,
+    blobs: [...previousInput.blobs, capturedBlob.blob],
+    records: [...previousInput.records, ...appendedRecords],
+    fragments,
+    atoms: atomized.atoms,
+    edges: atomized.edges,
+    loss_audits: [...previousInput.loss_audits, ...appendedLossAudits],
+  }];
+}
+
+function isJsonlAppendBoundary(previousPrefix: Buffer, appendedBuffer: Buffer): boolean {
+  if (previousPrefix.length === 0 || appendedBuffer.length === 0) {
+    return true;
+  }
+  const previousLast = previousPrefix[previousPrefix.length - 1];
+  const appendedFirst = appendedBuffer[0];
+  return previousLast === 10 || previousLast === 13 || appendedFirst === 10 || appendedFirst === 13;
+}
+
+function collectJsonlRecordsFromText(input: {
+  text: string;
+  sourceId: string;
+  sessionId: string;
+  blobId: string;
+  baseOrdinal: number;
+}): RawRecord[] {
+  const records: RawRecord[] = [];
+  let start = 0;
+  let ordinal = input.baseOrdinal;
+  for (let index = 0; index <= input.text.length; index += 1) {
+    const isEnd = index === input.text.length;
+    const charCode = isEnd ? -1 : input.text.charCodeAt(index);
+    if (!isEnd && charCode !== 10 && charCode !== 13) {
+      continue;
+    }
+    const line = input.text.slice(start, index).trim();
+    if (line) {
+      records.push({
+        id: stableId("record", input.sourceId, input.sessionId, input.blobId, String(ordinal), `${ordinal}`),
+        source_id: input.sourceId,
+        blob_id: input.blobId,
+        session_ref: input.sessionId,
+        ordinal,
+        record_path_or_offset: `${ordinal}`,
+        observed_at: nowIso(),
+        parseable: true,
+        raw_json: line,
+      });
+      ordinal += 1;
+    }
+    if (charCode === 13 && index + 1 < input.text.length && input.text.charCodeAt(index + 1) === 10) {
+      index += 1;
+    }
+    start = index + 1;
+  }
+  return records;
+}
+
+function hasPreviousJsonParseFailure(previousInput: SessionBuildInput): boolean {
+  return previousInput.loss_audits.some((audit) => audit.diagnostic_code === "record_json_parse_failed");
+}
+
+function minAtomTime(atoms: readonly ConversationAtom[]): string | undefined {
+  return atoms.reduce<string | undefined>((current, atom) => minIso(current, atom.time_key), undefined);
+}
+
+function maxAtomTime(atoms: readonly ConversationAtom[]): string | undefined {
+  return atoms.reduce<string | undefined>((current, atom) => maxIso(current, atom.time_key), undefined);
+}
+
+function findLastCumulativeTokenUsage(fragments: readonly SourceFragment[]): SessionDraft["last_cumulative_token_usage"] {
+  for (let index = fragments.length - 1; index >= 0; index -= 1) {
+    const usage = fragments[index]?.payload.cumulative_token_usage;
+    if (isObject(usage)) {
+      return extractTokenUsage(usage);
+    }
+  }
+  return undefined;
+}
+
+function groupBy<T>(items: readonly T[], keyFor: (item: T) => string): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const item of items) {
+    pushGrouped(grouped, keyFor(item), item);
+  }
+  return grouped;
+}
+
+function groupPresent<T>(items: readonly T[], keyFor: (item: T) => string | undefined): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const item of items) {
+    const key = keyFor(item);
+    if (key !== undefined) {
+      pushGrouped(grouped, key, item);
+    }
+  }
+  return grouped;
+}
+
+function pushGrouped<T>(grouped: Map<string, T[]>, key: string, item: T): void {
+  const group = grouped.get(key) ?? [];
+  group.push(item);
+  grouped.set(key, group);
+}
+
+function parseChangedSinceMs(value: string | undefined): number | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const relative = value.trim().match(/^(\d+)(m|h|d|w)$/iu);
+  if (relative) {
+    const amount = Number(relative[1]);
+    const unit = relative[2]!.toLowerCase();
+    const multiplier =
+      unit === "m" ? 60 * 1000 :
+      unit === "h" ? 60 * 60 * 1000 :
+      unit === "d" ? 24 * 60 * 60 * 1000 :
+      7 * 24 * 60 * 60 * 1000;
+    return Date.now() - amount * multiplier;
+  }
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? undefined : parsed;
 }
 
 async function processCollectedSessions(
