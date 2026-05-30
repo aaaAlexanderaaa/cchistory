@@ -35,6 +35,7 @@ import type {
 } from "@cchistory/domain";
 import { initializeStorageSchema, readStorageSchemaInfo, type StorageSchemaInfo } from "../db/schema.js";
 import {
+  mergeSourcePayloadByOriginPath as mergePersistedSourcePayloadByOriginPath,
   replaceSourcePayloadWithOptions as replacePersistedSourcePayloadWithOptions,
 } from "../ingest/source-payload.js";
 import { buildFallbackProjectObservationCandidates } from "../linking/fallback.js";
@@ -145,6 +146,34 @@ export class CCHistoryStorage {
     return result;
   }
 
+  mergeSourcePayloadByOriginPath(
+    payload: SourceSyncPayload,
+    options: {
+      preserve_origin_paths?: readonly string[];
+      observed_origin_paths?: readonly string[];
+      onProgress?: (event: { stage: "write_store_done" | "reindex_start" | "reindex_done"; source_id: string }) => void;
+    } = {},
+  ): {
+    sessions: number;
+    turns: number;
+    records: number;
+    fragments: number;
+    atoms: number;
+    blobs: number;
+  } {
+    const result = mergePersistedSourcePayloadByOriginPath(this.db, payload, {
+      preserve_origin_paths: options.preserve_origin_paths,
+      observed_origin_paths: options.observed_origin_paths,
+      on_progress: options.onProgress,
+    });
+
+    this.invalidateProjectLinkSnapshot();
+    options.onProgress?.({ stage: "reindex_start", source_id: payload.source.id });
+    this.refreshDerivedState();
+    options.onProgress?.({ stage: "reindex_done", source_id: payload.source.id });
+    return result;
+  }
+
   upsertProjectOverride(input: {
     target_kind: ProjectManualOverride["target_kind"];
     target_ref: string;
@@ -201,6 +230,11 @@ export class CCHistoryStorage {
   getSourceIncrementalPayload(sourceId: string): SourceSyncPayload | undefined {
     const source = this.listSources().find((entry) => entry.id === sourceId);
     return source ? this.buildSourceIncrementalPayload(source.id) : undefined;
+  }
+
+  getSourceIncrementalMetadataPayload(sourceId: string): SourceSyncPayload | undefined {
+    const source = this.listSources().find((entry) => entry.id === sourceId);
+    return source ? this.buildSourceIncrementalMetadataPayload(source.id) : undefined;
   }
 
   /**
@@ -866,6 +900,28 @@ export class CCHistoryStorage {
       atoms: Queries.selectPayloadsBySource<ConversationAtom>(this.db, "conversation_atoms", sourceId, "ORDER BY time_key ASC, seq_no ASC"),
       edges: Queries.selectPayloadsBySource<AtomEdge>(this.db, "atom_edges", sourceId),
       sessions: Queries.selectPayloadsBySource<SessionProjection>(this.db, "sessions", sourceId, "ORDER BY created_at ASC, updated_at ASC"),
+      candidates: [],
+      turns: [],
+      contexts: [],
+    };
+  }
+
+  private buildSourceIncrementalMetadataPayload(sourceId: string): SourceSyncPayload {
+    const source = this.listSources().find((entry) => entry.id === sourceId);
+    if (!source) {
+      throw new Error(`Unknown source id: ${sourceId}`);
+    }
+
+    return {
+      source,
+      stage_runs: Queries.selectPayloadsBySource<StageRun>(this.db, "stage_runs", sourceId),
+      loss_audits: [],
+      blobs: Queries.selectPayloadsBySource<CapturedBlob>(this.db, "captured_blobs", sourceId),
+      records: [],
+      fragments: [],
+      atoms: [],
+      edges: [],
+      sessions: [],
       candidates: [],
       turns: [],
       contexts: [],

@@ -297,6 +297,8 @@ function computeDirtyFingerprint(payload: SourceSyncPayload): string {
       checksum: blob.checksum,
       size_bytes: blob.size_bytes,
       file_modified_at: blob.file_modified_at,
+      file_changed_at: blob.file_changed_at,
+      file_identity_stable: blob.file_identity_stable,
     })),
     // Include derived layer data so that parser/linker/projection changes
     // invalidate the fingerprint even when raw blobs are unchanged.

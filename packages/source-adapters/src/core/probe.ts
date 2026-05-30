@@ -348,6 +348,31 @@ async function collectSourceInputs(
         continue;
       }
       const previousEntry = previousIndex?.byOriginPath.get(path.normalize(filePath));
+      const isOlderThanSince = changedSinceMs !== undefined && fileStats.mtime.getTime() < changedSinceMs;
+      if (previousEntry && isOlderThanSince && canReuseBlobFromStats(previousEntry, fileStats)) {
+        if (!previousIndex?.metadataOnly) {
+          mergePreviousFileEntry(sessionsById, orphanBlobs, sourceLossAudits, previousEntry);
+        }
+        emitProbeProgress(options, source, {
+          stage: "file_skip",
+          message: `Reused unchanged file older than --since without reading content: ${filePath}`,
+          file_path: filePath,
+          file_index: fileIndex + 1,
+          file_count: files.length,
+          size_bytes: fileStats.size,
+          elapsed_ms: Date.now() - fileStartedAt,
+        });
+        emitProbeProgress(options, source, {
+          stage: "file_done",
+          message: `Processed ${filePath}`,
+          file_path: filePath,
+          file_index: fileIndex + 1,
+          file_count: files.length,
+          size_bytes: fileStats.size,
+          elapsed_ms: Date.now() - fileStartedAt,
+        });
+        continue;
+      }
       const captureStartedAt = Date.now();
       capturedBlob = await captureBlob(source, host.id, filePath, captureRunId);
       emitProbeProgress(options, source, {
@@ -361,29 +386,53 @@ async function collectSourceInputs(
       });
 
       if (previousEntry && canReuseCapturedBlob(previousEntry, capturedBlob.blob)) {
-        mergePreviousFileEntry(sessionsById, orphanBlobs, sourceLossAudits, previousEntry);
-        const isOlderThanSince = changedSinceMs !== undefined && fileStats.mtime.getTime() < changedSinceMs;
-        emitProbeProgress(options, source, {
-          stage: isOlderThanSince ? "file_skip" : "file_reuse",
-          message: isOlderThanSince
-            ? `Reused unchanged file older than --since: ${filePath}`
-            : `Reused unchanged projection for ${filePath}`,
-          file_path: filePath,
-          file_index: fileIndex + 1,
-          file_count: files.length,
-          size_bytes: capturedBlob.blob.size_bytes,
-          elapsed_ms: Date.now() - fileStartedAt,
-        });
-        emitProbeProgress(options, source, {
-          stage: "file_done",
-          message: `Processed ${filePath}`,
-          file_path: filePath,
-          file_index: fileIndex + 1,
-          file_count: files.length,
-          size_bytes: capturedBlob.blob.size_bytes,
-          elapsed_ms: Date.now() - fileStartedAt,
-        });
-        continue;
+        if (previousIndex?.metadataOnly) {
+          if (isOlderThanSince) {
+            orphanBlobs.push(capturedBlob.blob);
+            emitProbeProgress(options, source, {
+              stage: "file_skip",
+              message: `Reused unchanged file older than --since: ${filePath}`,
+              file_path: filePath,
+              file_index: fileIndex + 1,
+              file_count: files.length,
+              size_bytes: capturedBlob.blob.size_bytes,
+              elapsed_ms: Date.now() - fileStartedAt,
+            });
+            emitProbeProgress(options, source, {
+              stage: "file_done",
+              message: `Processed ${filePath}`,
+              file_path: filePath,
+              file_index: fileIndex + 1,
+              file_count: files.length,
+              size_bytes: capturedBlob.blob.size_bytes,
+              elapsed_ms: Date.now() - fileStartedAt,
+            });
+            continue;
+          }
+        } else {
+          mergePreviousFileEntry(sessionsById, orphanBlobs, sourceLossAudits, previousEntry, capturedBlob.blob);
+          emitProbeProgress(options, source, {
+            stage: isOlderThanSince ? "file_skip" : "file_reuse",
+            message: isOlderThanSince
+              ? `Reused unchanged file older than --since: ${filePath}`
+              : `Reused unchanged projection for ${filePath}`,
+            file_path: filePath,
+            file_index: fileIndex + 1,
+            file_count: files.length,
+            size_bytes: capturedBlob.blob.size_bytes,
+            elapsed_ms: Date.now() - fileStartedAt,
+          });
+          emitProbeProgress(options, source, {
+            stage: "file_done",
+            message: `Processed ${filePath}`,
+            file_path: filePath,
+            file_index: fileIndex + 1,
+            file_count: files.length,
+            size_bytes: capturedBlob.blob.size_bytes,
+            elapsed_ms: Date.now() - fileStartedAt,
+          });
+          continue;
+        }
       }
     } catch (error) {
       const detail = `Failed to capture source file ${filePath}: ${formatErrorMessage(error)}`;
@@ -562,12 +611,40 @@ function mergePreviousFileEntry(
   orphanBlobs: CapturedBlob[],
   sourceLossAudits: LossAuditRecord[],
   previousEntry: PreviousFileEntry,
+  replacementTailBlob?: CapturedBlob,
 ): void {
+  const blobReplacements = replacementTailBlob ? new Map([[replacementTailBlob.id, replacementTailBlob]]) : undefined;
   for (const sessionInput of previousEntry.sessionInputs) {
-    mergeSessionBuildInput(sessionsById, sessionInput);
+    mergeSessionBuildInput(sessionsById, blobReplacements ? replaceSessionInputBlobs(sessionInput, blobReplacements) : sessionInput);
   }
-  orphanBlobs.push(...previousEntry.orphanBlobs);
+  orphanBlobs.push(...previousEntry.orphanBlobs.map((blob) => replaceBlob(blob, blobReplacements)));
   sourceLossAudits.push(...previousEntry.lossAudits);
+}
+
+function replaceSessionInputBlobs(
+  sessionInput: SessionBuildInput,
+  replacements: ReadonlyMap<string, CapturedBlob>,
+): SessionBuildInput {
+  return {
+    ...sessionInput,
+    blobs: sessionInput.blobs.map((blob) => replaceBlob(blob, replacements)),
+  };
+}
+
+function replaceBlob(blob: CapturedBlob, replacements: ReadonlyMap<string, CapturedBlob> | undefined): CapturedBlob {
+  const replacement = replacements?.get(blob.id);
+  if (!replacement) {
+    return blob;
+  }
+  return {
+    ...blob,
+    size_bytes: replacement.size_bytes,
+    captured_at: replacement.captured_at,
+    capture_run_id: replacement.capture_run_id,
+    file_modified_at: replacement.file_modified_at,
+    file_changed_at: replacement.file_changed_at,
+    file_identity_stable: replacement.file_identity_stable,
+  };
 }
 
 interface PreviousFileEntry {
@@ -581,6 +658,7 @@ interface PreviousFileEntry {
 
 interface PreviousSourceIndex {
   byOriginPath: Map<string, PreviousFileEntry>;
+  metadataOnly: boolean;
 }
 
 function buildPreviousSourceIndex(
@@ -690,7 +768,15 @@ function buildPreviousSourceIndex(
     });
   }
 
-  return { byOriginPath };
+  return {
+    byOriginPath,
+    metadataOnly:
+      previousPayload.records.length === 0 &&
+      previousPayload.fragments.length === 0 &&
+      previousPayload.atoms.length === 0 &&
+      previousPayload.edges.length === 0 &&
+      previousPayload.sessions.length === 0,
+  };
 }
 
 function previousPayloadMatchesProfile(payload: SourceSyncPayload, sourceFormatProfile: SourceFormatProfile): boolean {
@@ -708,6 +794,14 @@ function canReuseCapturedBlob(previousEntry: PreviousFileEntry, capturedBlob: Ca
   return previousEntry.tailBlob?.size_bytes === capturedBlob.size_bytes &&
     previousEntry.tailBlob.file_modified_at === capturedBlob.file_modified_at &&
     previousEntry.tailBlob.checksum === capturedBlob.checksum;
+}
+
+function canReuseBlobFromStats(previousEntry: PreviousFileEntry, stats: { size: number; mtime: Date; ctime: Date }): boolean {
+  return previousEntry.tailBlob?.size_bytes === stats.size &&
+    previousEntry.tailBlob.file_modified_at === stats.mtime.toISOString() &&
+    previousEntry.tailBlob.file_identity_stable === true &&
+    previousEntry.tailBlob.file_changed_at !== undefined &&
+    previousEntry.tailBlob.file_changed_at === stats.ctime.toISOString();
 }
 
 function processAppendedJsonlBlob(

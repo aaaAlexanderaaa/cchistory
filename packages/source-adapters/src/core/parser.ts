@@ -503,8 +503,14 @@ export async function captureBlob(
   filePath: string,
   captureRunId: string,
 ): Promise<CapturedBlobInput> {
+  const beforeStats = await fs.stat(filePath);
   const fileBuffer = await fs.readFile(filePath);
-  const stats = await fs.stat(filePath);
+  const afterStats = await fs.stat(filePath);
+  const fileIdentityStable =
+    beforeStats.size === afterStats.size &&
+    beforeStats.mtimeMs === afterStats.mtimeMs &&
+    beforeStats.ctimeMs === afterStats.ctimeMs &&
+    fileBuffer.byteLength === afterStats.size;
   const checksum = sha1(fileBuffer);
   return {
     blob: {
@@ -513,10 +519,12 @@ export async function captureBlob(
       host_id: hostId,
       origin_path: filePath,
       checksum,
-      size_bytes: stats.size,
+      size_bytes: fileBuffer.byteLength,
       captured_at: nowIso(),
       capture_run_id: captureRunId,
-      file_modified_at: stats.mtime.toISOString(),
+      file_modified_at: afterStats.mtime.toISOString(),
+      file_changed_at: fileIdentityStable ? afterStats.ctime.toISOString() : undefined,
+      file_identity_stable: fileIdentityStable,
     },
     fileBuffer,
   };

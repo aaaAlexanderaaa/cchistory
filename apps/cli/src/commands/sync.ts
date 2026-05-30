@@ -503,6 +503,9 @@ export async function syncSelectedSources(input: {
   const syncedSources: SyncedSourceSummary[] = [];
   for (const source of sources) {
     let payload: SourceSyncPayload | undefined;
+    let usePartialSinceSync = shouldUsePartialSinceSync(source, input);
+    const preservedOriginPaths = new Set<string>();
+    const observedOriginPaths = new Set<string>();
     try {
       input.onProgress?.({
         stage: "source_prepare_start",
@@ -523,7 +526,12 @@ export async function syncSelectedSources(input: {
           display_name: source.display_name,
           message: `Loading previous ${source.display_name} projections for incremental reuse`,
         });
-        previousPayload = input.storage.getSourceIncrementalPayload(source.id);
+        previousPayload = usePartialSinceSync
+          ? input.storage.getSourceIncrementalMetadataPayload(source.id)
+          : input.storage.getSourceIncrementalPayload(source.id);
+        if (usePartialSinceSync && !previousPayload) {
+          usePartialSinceSync = false;
+        }
         input.onProgress?.({
           stage: "incremental_reuse_load_done",
           source_id: source.id,
@@ -532,7 +540,7 @@ export async function syncSelectedSources(input: {
           display_name: source.display_name,
           message: previousPayload
             ? [
-                `Loaded previous ${source.display_name} projections`,
+                `Loaded previous ${source.display_name} ${usePartialSinceSync ? "metadata" : "projections"}`,
                 `(${previousPayload.blobs.length} blob(s), ${previousPayload.records.length} record(s), ${previousPayload.atoms.length} atom(s))`,
               ].join(" ")
             : `No previous ${source.display_name} projections found for incremental reuse`,
@@ -555,7 +563,15 @@ export async function syncSelectedSources(input: {
           safe_mode: input.safeMode,
           changed_since: input.changedSince,
           previous_payloads: previousPayload ? { [source.id]: previousPayload } : undefined,
-          on_progress: (event) => input.onProgress?.(event),
+          on_progress: (event) => {
+            if (usePartialSinceSync && event.file_path) {
+              observedOriginPaths.add(event.file_path);
+              if (event.stage === "file_skip") {
+                preservedOriginPaths.add(event.file_path);
+              }
+            }
+            input.onProgress?.(event);
+          },
         },
         [source],
       );
@@ -584,30 +600,40 @@ export async function syncSelectedSources(input: {
     });
     const writeStartedAt = Date.now();
     let reindexStartedAt: number | undefined;
-    const counts = input.storage.replaceSourcePayload(payload, {
-      allow_host_rekey: true,
-      onProgress: (event) => {
-        if (event.stage === "reindex_start") {
-          reindexStartedAt = Date.now();
-        }
-        input.onProgress?.({
-          stage: event.stage,
-          source_id: payload.source.id,
-          slot_id: payload.source.slot_id,
-          platform: payload.source.platform,
-          display_name: payload.source.display_name,
-          message: formatStorageProgressMessage(event.stage, payload.source.display_name),
-          elapsed_ms:
-            event.stage === "write_store_done"
-              ? Date.now() - writeStartedAt
-              : event.stage === "reindex_done" && reindexStartedAt !== undefined
-                ? Date.now() - reindexStartedAt
-                : undefined,
+    const onStorageProgress = (event: { stage: "write_store_done" | "reindex_start" | "reindex_done"; source_id: string }) => {
+      if (event.stage === "reindex_start") {
+        reindexStartedAt = Date.now();
+      }
+      input.onProgress?.({
+        stage: event.stage,
+        source_id: payload.source.id,
+        slot_id: payload.source.slot_id,
+        platform: payload.source.platform,
+        display_name: payload.source.display_name,
+        message: formatStorageProgressMessage(event.stage, payload.source.display_name),
+        elapsed_ms:
+          event.stage === "write_store_done"
+            ? Date.now() - writeStartedAt
+            : event.stage === "reindex_done" && reindexStartedAt !== undefined
+              ? Date.now() - reindexStartedAt
+              : undefined,
+      });
+    };
+    const counts = usePartialSinceSync
+      ? input.storage.mergeSourcePayloadByOriginPath(payload, {
+          preserve_origin_paths: [...preservedOriginPaths],
+          observed_origin_paths: [...observedOriginPaths],
+          onProgress: onStorageProgress,
+        })
+      : input.storage.replaceSourcePayload(payload, {
+          allow_host_rekey: true,
+          onProgress: onStorageProgress,
         });
-      },
-    });
+    const storedSource = usePartialSinceSync
+      ? input.storage.listSources().find((entry) => entry.id === payload.source.id) ?? payload.source
+      : payload.source;
     syncedSources.push({
-      source: payload.source,
+      source: storedSource,
       counts,
     });
   }
@@ -749,6 +775,13 @@ function normalizeChangedSince(value: string | undefined): string | undefined {
 
 function supportsIncrementalReuse(platform: SourceDefinition["platform"]): boolean {
   return platform === "codex" || platform === "claude_code";
+}
+
+function shouldUsePartialSinceSync(
+  source: SourceDefinition,
+  input: { changedSince?: string; limitFiles?: number },
+): boolean {
+  return source.platform === "codex" && Boolean(input.changedSince) && input.limitFiles === undefined;
 }
 
 async function inspectStore(dbPath: string): Promise<{

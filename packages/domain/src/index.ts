@@ -239,6 +239,8 @@ export interface CapturedBlob {
   captured_at: string;
   capture_run_id: string;
   file_modified_at?: string;
+  file_changed_at?: string;
+  file_identity_stable?: boolean;
 }
 
 export interface RawRecord {

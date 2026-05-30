@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import type { CapturedBlob } from "@cchistory/domain";
 import {
   fileExists,
   runCliCapture,
@@ -137,6 +138,158 @@ test("sync --since reuses older unchanged Codex files from the existing store wi
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.sources[0].counts.turns, 2);
     assert.match(result.stderr, /\[sync:codex:file_skip\]/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync --since skips unchanged old Codex files before content capture when file identity matches", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-since-fast-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    process.env.HOME = tempRoot;
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    const oldFile = path.join(tempRoot, ".codex", "sessions", "rollout-codex-old.jsonl");
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-old.jsonl", {
+      sessionId: "codex-old-session",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Old prompt should remain searchable.",
+      reply: "Old reply remains indexed.",
+      startAt: "2026-03-09T00:00:00.000Z",
+    });
+    const oldDate = new Date("2020-01-01T00:00:00.000Z");
+    await utimes(oldFile, oldDate, oldDate);
+
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    const result = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--since", "1h", "--detail"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(result.stderr, /Reused unchanged file older than --since without reading content/);
+    assert.match(result.stderr, /\[sync:codex:file_skip\]/);
+    assert.doesNotMatch(result.stderr, /\[sync:codex:file_capture_done\]/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync --since backfills file identity metadata for upgraded unchanged Codex blobs", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-since-backfill-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    process.env.HOME = tempRoot;
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    const oldFile = path.join(tempRoot, ".codex", "sessions", "rollout-codex-old.jsonl");
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-old.jsonl", {
+      sessionId: "codex-old-session",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Old prompt should backfill metadata.",
+      reply: "Old reply remains indexed.",
+      startAt: "2026-03-09T00:00:00.000Z",
+    });
+    const oldDate = new Date("2020-01-01T00:00:00.000Z");
+    await utimes(oldFile, oldDate, oldDate);
+
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    updateFirstCapturedBlob(dbPath, (blob) => {
+      delete blob.file_changed_at;
+      delete blob.file_identity_stable;
+    });
+
+    const backfillSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--since", "1h", "--detail"], tempRoot);
+    assert.equal(backfillSync.exitCode, 0, backfillSync.stderr);
+    assert.match(backfillSync.stderr, /\[sync:codex:file_capture_done\]/);
+    assert.doesNotMatch(backfillSync.stderr, /without reading content/);
+    const backfilledBlob = readFirstCapturedBlob(dbPath);
+    assert.equal(backfilledBlob.file_identity_stable, true);
+    assert.equal(typeof backfilledBlob.file_changed_at, "string");
+
+    const fastSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--since", "1h", "--detail"], tempRoot);
+    assert.equal(fastSync.exitCode, 0, fastSync.stderr);
+    assert.match(fastSync.stderr, /Reused unchanged file older than --since without reading content/);
+    assert.doesNotMatch(fastSync.stderr, /\[sync:codex:file_capture_done\]/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync --since repairs old racy Codex captures instead of trusting stat-only metadata", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-since-racy-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    process.env.HOME = tempRoot;
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    const filePath = path.join(tempRoot, ".codex", "sessions", "rollout-codex-session-1.jsonl");
+    const oldDate = new Date("2020-01-01T00:00:00.000Z");
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-session-1.jsonl", {
+      sessionId: "codex-session-1",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Initial prompt before racy append.",
+      reply: "Initial reply before racy append.",
+      startAt: "2026-03-09T00:00:00.000Z",
+    });
+    await utimes(filePath, oldDate, oldDate);
+
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    await appendFile(
+      filePath,
+      `\n${[
+        {
+          timestamp: "2026-03-09T00:10:00.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Appended prompt after racy capture." }],
+          },
+        },
+        {
+          timestamp: "2026-03-09T00:10:01.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Appended reply after racy capture." }],
+          },
+        },
+      ].map((line) => JSON.stringify(line)).join("\n")}`,
+      "utf8",
+    );
+    await utimes(filePath, oldDate, oldDate);
+    const appendedStats = await stat(filePath);
+
+    updateFirstCapturedBlob(dbPath, (blob) => {
+      blob.size_bytes = appendedStats.size;
+      blob.file_modified_at = appendedStats.mtime.toISOString();
+      blob.file_changed_at = appendedStats.ctime.toISOString();
+      delete blob.file_identity_stable;
+    });
+
+    const result = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--since", "1h", "--json", "--detail"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.sources[0].counts.turns, 2);
+    assert.match(result.stderr, /\[sync:codex:file_capture_done\]/);
+    assert.match(result.stderr, /\[sync:codex:file_parse_done\]/);
+    assert.doesNotMatch(result.stderr, /without reading content/);
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });
@@ -991,3 +1144,32 @@ test("--no-color disables ANSI even when FORCE_COLOR is set", async () => {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+function readFirstCapturedBlob(dbPath: string): CapturedBlob {
+  const db = new DatabaseSync(dbPath);
+  try {
+    const row = db
+      .prepare("SELECT id, payload_json FROM captured_blobs ORDER BY id LIMIT 1")
+      .get() as { id: string; payload_json: string } | undefined;
+    assert.ok(row, "expected at least one captured blob");
+    return JSON.parse(row.payload_json) as CapturedBlob;
+  } finally {
+    db.close();
+  }
+}
+
+function updateFirstCapturedBlob(dbPath: string, mutate: (blob: CapturedBlob) => void): CapturedBlob {
+  const db = new DatabaseSync(dbPath);
+  try {
+    const row = db
+      .prepare("SELECT id, payload_json FROM captured_blobs ORDER BY id LIMIT 1")
+      .get() as { id: string; payload_json: string } | undefined;
+    assert.ok(row, "expected at least one captured blob");
+    const blob = JSON.parse(row.payload_json) as CapturedBlob;
+    mutate(blob);
+    db.prepare("UPDATE captured_blobs SET payload_json = ? WHERE id = ?").run(JSON.stringify(blob), row.id);
+    return blob;
+  } finally {
+    db.close();
+  }
+}

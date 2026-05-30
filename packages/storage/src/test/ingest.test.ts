@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import type { SourceSyncPayload } from "@cchistory/domain";
 import { CCHistoryStorage } from "../index.js";
 import { createFixturePayload } from "./helpers.js";
 
@@ -337,6 +338,103 @@ test("getSourceIncrementalPayload omits read projections while preserving reuse 
   }
 });
 
+test("mergeSourcePayloadByOriginPath preserves skipped files and removes absent files", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-partial-source-merge-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const sourceId = "src-partial-merge";
+    const baseDir = "/tmp/partial-merge";
+    const keepPath = path.join(baseDir, "keep.jsonl");
+    const stalePath = path.join(baseDir, "stale.jsonl");
+    const newPath = path.join(baseDir, "new.jsonl");
+
+    const keep = createFixturePayload(sourceId, "Keep old turn", "sr-keep", {
+      baseDir,
+      sessionId: "session-keep",
+      turnId: "turn-keep",
+    });
+    keep.blobs[0]!.origin_path = keepPath;
+    const stale = createFixturePayload(sourceId, "Drop stale turn", "sr-stale", {
+      baseDir,
+      sessionId: "session-stale",
+      turnId: "turn-stale",
+    });
+    stale.blobs[0]!.origin_path = stalePath;
+    storage.replaceSourcePayload(combineSourcePayloads(keep, stale));
+    assert.equal(storage.listTurns().length, 2);
+
+    const incoming = createFixturePayload(sourceId, "Add new turn", "sr-new", {
+      baseDir,
+      sessionId: "session-new",
+      turnId: "turn-new",
+    });
+    incoming.blobs[0]!.origin_path = newPath;
+    const counts = storage.mergeSourcePayloadByOriginPath(incoming, {
+      preserve_origin_paths: [keepPath],
+      observed_origin_paths: [keepPath, newPath],
+    });
+
+    assert.equal(counts.turns, 2);
+    assert.equal(counts.blobs, 2);
+    assert.deepEqual(storage.listTurns().map((turn) => turn.canonical_text).sort(), ["Add new turn", "Keep old turn"]);
+    assert.deepEqual(storage.listBlobs().map((blob) => blob.origin_path).sort(), [keepPath, newPath].sort());
+    assert.equal(storage.listSources()[0]?.total_turns, 2);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("mergeSourcePayloadByOriginPath deletes observed paths that produced no blob", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-partial-source-blobless-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const sourceId = "src-partial-blobless";
+    const baseDir = "/tmp/partial-blobless";
+    const keepPath = path.join(baseDir, "keep.jsonl");
+    const failedPath = path.join(baseDir, "failed.jsonl");
+
+    const keep = createFixturePayload(sourceId, "Keep skipped turn", "sr-keep-blobless", {
+      baseDir,
+      sessionId: "session-keep-blobless",
+      turnId: "turn-keep-blobless",
+    });
+    keep.blobs[0]!.origin_path = keepPath;
+    const failed = createFixturePayload(sourceId, "Drop failed turn", "sr-failed-blobless", {
+      baseDir,
+      sessionId: "session-failed-blobless",
+      turnId: "turn-failed-blobless",
+    });
+    failed.blobs[0]!.origin_path = failedPath;
+    storage.replaceSourcePayload(combineSourcePayloads(keep, failed));
+    assert.equal(storage.listTurns().length, 2);
+
+    const incoming: SourceSyncPayload = {
+      ...createFixturePayload(sourceId, "No rows", "sr-blobless-empty", { baseDir }),
+      blobs: [],
+      records: [],
+      fragments: [],
+      atoms: [],
+      edges: [],
+      candidates: [],
+      sessions: [],
+      turns: [],
+      contexts: [],
+    };
+    const counts = storage.mergeSourcePayloadByOriginPath(incoming, {
+      preserve_origin_paths: [keepPath],
+      observed_origin_paths: [keepPath, failedPath],
+    });
+
+    assert.equal(counts.turns, 1);
+    assert.equal(counts.blobs, 1);
+    assert.deepEqual(storage.listTurns().map((turn) => turn.canonical_text), ["Keep skipped turn"]);
+    assert.deepEqual(storage.listBlobs().map((blob) => blob.origin_path), [keepPath]);
+    assert.equal(storage.listSources()[0]?.total_turns, 1);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("upsertImportedBundle stores and retrieves bundle records", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-import-bundle-"));
   try {
@@ -382,3 +480,32 @@ test("upsertImportedBundle stores and retrieves bundle records", async () => {
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+function combineSourcePayloads(left: SourceSyncPayload, right: SourceSyncPayload): SourceSyncPayload {
+  return {
+    source: {
+      ...left.source,
+      last_sync:
+        (right.source.last_sync ?? "") > (left.source.last_sync ?? "")
+          ? right.source.last_sync
+          : left.source.last_sync,
+      total_blobs: left.blobs.length + right.blobs.length,
+      total_records: left.records.length + right.records.length,
+      total_fragments: left.fragments.length + right.fragments.length,
+      total_atoms: left.atoms.length + right.atoms.length,
+      total_sessions: left.sessions.length + right.sessions.length,
+      total_turns: left.turns.length + right.turns.length,
+    },
+    stage_runs: [...left.stage_runs, ...right.stage_runs],
+    loss_audits: [...left.loss_audits, ...right.loss_audits],
+    blobs: [...left.blobs, ...right.blobs],
+    records: [...left.records, ...right.records],
+    fragments: [...left.fragments, ...right.fragments],
+    atoms: [...left.atoms, ...right.atoms],
+    edges: [...left.edges, ...right.edges],
+    candidates: [...left.candidates, ...right.candidates],
+    sessions: [...left.sessions, ...right.sessions],
+    turns: [...left.turns, ...right.turns],
+    contexts: [...left.contexts, ...right.contexts],
+  };
+}

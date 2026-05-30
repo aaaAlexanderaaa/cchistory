@@ -399,6 +399,9 @@ export interface TurnLineage {
     checksum: string;
     size_bytes: number;
     captured_at: Date;
+    file_modified_at?: Date;
+    file_changed_at?: Date;
+    file_identity_stable?: boolean;
   }>;
 }
 
@@ -796,6 +799,9 @@ export function mapTurnLineage(lineage: PipelineLineageDto): TurnLineage {
       checksum: blob.checksum,
       size_bytes: blob.size_bytes,
       captured_at: new Date(blob.captured_at),
+      file_modified_at: blob.file_modified_at ? new Date(blob.file_modified_at) : undefined,
+      file_changed_at: blob.file_changed_at ? new Date(blob.file_changed_at) : undefined,
+      file_identity_stable: blob.file_identity_stable,
     })),
   };
 }
