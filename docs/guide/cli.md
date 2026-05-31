@@ -1,6 +1,6 @@
 # CLI Guide
 
-The CCHistory CLI (`apps/cli`) is the primary local operator tool. By default it reuses the nearest existing `.cchistory/cchistory.sqlite` in the current directory or its ancestors; if none exists, it falls back to `~/.cchistory/cchistory.sqlite`. Use `--store` or `--db` to pin an explicit store location. If you want a repo-local store regardless of where you invoke the CLI, pass `--store ./.cchistory`.
+The CCHistory CLI (`apps/cli`) is the primary local operator tool. By default it uses `~/.cchistory/cchistory.sqlite`. Use `--store` or `--db` to pin an explicit store location. If you want a repo-local store regardless of where you invoke the CLI, pass `--store ./.cchistory`.
 
 ## Global Options
 

@@ -169,4 +169,4 @@ Monitor system integrity:
 | `CCHISTORY_INTERNAL_API_ORIGIN` | `http://127.0.0.1:8040` | Backend API URL (server-side proxy) |
 | `NEXT_PUBLIC_CCHISTORY_API_BASE_URL` | `/api/cchistory` | Client-side API base URL |
 | `CCHISTORY_API_TOKEN` | _(none)_ | Bearer token forwarded to API |
-| `CCHISTORY_API_DATA_DIR` | _(default store resolution)_ | Optional API-side override for the indexed store path; useful for seeded review stores without changing the canonical service flow |
+| `CCHISTORY_API_DATA_DIR` | `~/.cchistory` | Optional API-side override for the indexed store path; useful for seeded review stores without changing the canonical service flow |

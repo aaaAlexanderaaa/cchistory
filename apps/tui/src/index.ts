@@ -189,7 +189,7 @@ function renderHelp(): string {
     "Interactive and snapshot TUI for local project, ask, and detail browsing.",
     "",
     "Options:",
-    "  --store <dir>         Local indexed store directory (default: ~/.cchistory/store)",
+    "  --store <dir>         Local indexed store directory (default: ~/.cchistory)",
     "  --db <path>            Specific SQLite database path",
     "  --search <query>       Initial search query",
     "  --full                 Run a live in-memory scan analogous to CLI `--full`",

@@ -16,7 +16,7 @@ import { getDefaultSourcesForHost, runSourceProbe } from "@cchistory/source-adap
 import { CCHistoryStorage } from "@cchistory/storage";
 import { createApiRuntime } from "./app.js";
 
-test("runtime defaults to the nearest existing .cchistory directory under the provided cwd", async () => {
+test("runtime default ignores ancestor .cchistory directories and uses home", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
 
   try {
@@ -29,7 +29,7 @@ test("runtime defaults to the nearest existing .cchistory directory under the pr
 
     const runtime = await createApiRuntime({ cwd: apiCwd, homeDir, sources: [] });
     try {
-      assert.equal(runtime.dataDir, path.join(projectRoot, ".cchistory"));
+      assert.equal(runtime.dataDir, path.join(homeDir, ".cchistory"));
     } finally {
       await runtime.app.close();
       runtime.storage.close();
@@ -39,7 +39,7 @@ test("runtime defaults to the nearest existing .cchistory directory under the pr
   }
 });
 
-test("runtime falls back to the home .cchistory directory when no ancestor store exists", async () => {
+test("runtime defaults to the home .cchistory directory when no explicit store is configured", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
 
   try {

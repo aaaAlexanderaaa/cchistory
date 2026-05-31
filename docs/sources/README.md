@@ -16,7 +16,7 @@
 2. `runSourceProbe` 递归扫描根目录，按 adapter 的 `matchesSourceFile` 规则筛文件。
 3. 每个文件先被捕获为 `CapturedBlob`，保留 `origin_path`、校验和、文件修改时间等证据。
 4. adapter 再把 blob 拆成 `RawRecord`、`SourceFragment`、`ConversationAtom`，最后投影成 `Session`、`UserTurn`、`TurnContext`。
-5. 结果写入本地 SQLite；如果是常规 `sync`，原始文件快照也会落到 `.cchistory/raw/`。
+5. 结果写入本地 SQLite；如果是常规 `sync`，原始文件快照也会落到所选 store 的 `raw/` 目录（默认 `~/.cchistory/raw/`）。
 
 Antigravity 是唯一的明显例外：
 
@@ -26,7 +26,7 @@ Antigravity 是唯一的明显例外：
 
 # CCHistory 本地存储布局
 
-CCHistory 的本地存储由一个 SQLite 数据库、一组按 blob id 命名的原始快照、以及少量 inspection 产物组成。典型目录如下：
+CCHistory 的本地存储由一个 SQLite 数据库、一组按 blob id 命名的原始快照、以及少量 inspection 产物组成。默认 store 是 `~/.cchistory/`；显式 `--store` / `--db` 只改变落点，不改变内部布局。典型目录如下：
 
 ```text
 .cchistory/

@@ -2,10 +2,9 @@
 
 The CCHistory API (`apps/api`) is a Fastify REST server providing read and admin access to the CCHistory store.
 
-By default the API reuses the nearest existing `.cchistory/` under its current
-working directory or ancestor directories; if none exists, it falls back to
-`~/.cchistory/`. Under the canonical dev-services runtime this normally resolves
-to the repository root `.cchistory/`.
+By default the API uses `~/.cchistory/`. Set `CCHISTORY_API_DATA_DIR` when a
+service run should point at a repo-local, seeded-review, restored, or otherwise
+custom indexed store.
 
 ## Starting the Server
 

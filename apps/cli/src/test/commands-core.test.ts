@@ -96,20 +96,24 @@ test("pnpm-style leading -- is ignored before the command name", async () => {
   }
 });
 
-test("default store falls back to one home-anchored path across working directories", async () => {
+test("default store uses one home-anchored path across working directories", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-store-fallback-"));
   const originalHome = process.env.HOME;
   try {
-    process.env.HOME = tempRoot;
-    const workDirA = path.join(tempRoot, "work-a");
-    const workDirB = path.join(tempRoot, "work-b");
+    const homeDir = path.join(tempRoot, "home");
+    const projectRoot = path.join(tempRoot, "workspace");
+    process.env.HOME = homeDir;
+    const workDirA = path.join(projectRoot, "work-a");
+    const workDirB = path.join(projectRoot, "work-b");
+    await mkdir(path.join(projectRoot, ".cchistory"), { recursive: true });
+    await mkdir(workDirA, { recursive: true });
+    await mkdir(workDirB, { recursive: true });
 
-    // Both should refer to the same default store in HOME
     const resA = await runCliCapture(["sync", "--dry-run"], workDirA);
     const resB = await runCliCapture(["sync", "--dry-run"], workDirB);
 
-    assert.match(resA.stdout, new RegExp(path.join(tempRoot, ".cchistory", "cchistory.sqlite").replace(/\\/g, "\\\\")));
-    assert.match(resB.stdout, new RegExp(path.join(tempRoot, ".cchistory", "cchistory.sqlite").replace(/\\/g, "\\\\")));
+    assert.match(resA.stdout, new RegExp(path.join(homeDir, ".cchistory", "cchistory.sqlite").replace(/\\/g, "\\\\")));
+    assert.match(resB.stdout, new RegExp(path.join(homeDir, ".cchistory", "cchistory.sqlite").replace(/\\/g, "\\\\")));
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });
@@ -120,8 +124,9 @@ test("default store sync remains readable across working directories", async () 
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-store-readable-"));
   const originalHome = process.env.HOME;
   try {
-    await seedCliFixtures(tempRoot);
-    process.env.HOME = tempRoot;
+    const homeDir = path.join(tempRoot, "home");
+    await seedCliFixtures(homeDir);
+    process.env.HOME = homeDir;
     const workDirA = path.join(tempRoot, "work-a");
     const workDirB = path.join(tempRoot, "work-b");
     await mkdir(workDirA, { recursive: true });
@@ -135,7 +140,7 @@ test("default store sync remains readable across working directories", async () 
     assert.equal(sourcesResult.exitCode, 0, sourcesResult.stderr);
     const sourcesPayload = JSON.parse(sourcesResult.stdout);
     assert.equal(sourcesPayload.kind, "sources");
-    assert.match(sourcesPayload.db_path, new RegExp(path.join(tempRoot, ".cchistory", "cchistory.sqlite").replace(/\\/g, "\\\\")));
+    assert.match(sourcesPayload.db_path, new RegExp(path.join(homeDir, ".cchistory", "cchistory.sqlite").replace(/\\/g, "\\\\")));
     assert.equal(sourcesPayload.sources.length, 1);
     assert.equal(sourcesPayload.sources[0].platform, "codex");
   } finally {

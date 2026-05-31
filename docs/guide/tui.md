@@ -51,8 +51,8 @@ When launched without an interactive terminal, the same entrypoint prints a text
 
 Unless `--store` or `--db` is provided, the TUI follows the same local store resolution rules as the CLI and API:
 
-- reuse the nearest existing `.cchistory/` under the current directory or its ancestors
-- otherwise fall back to `~/.cchistory/`
+- use `~/.cchistory/` by default
+- use `--store <dir>` or `--db <file>` to pin another location
 
 ## Layout
 

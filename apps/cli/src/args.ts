@@ -866,7 +866,7 @@ function renderGlobalHelp(): string {
     lines.push(`  ${formatOptionUsage(name, globalOptions[name], globalFlagWidth)}`);
   }
   lines.push("");
-  lines.push("Store resolution: nearest .cchistory/ in cwd or ancestors; fallback ~/.cchistory");
+  lines.push("Store resolution: ~/.cchistory by default; use --store or --db to pin another location");
   lines.push("Run `cchistory help <command>` for command-specific options and examples.");
   return lines.join("\n");
 }

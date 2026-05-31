@@ -136,8 +136,8 @@ Current read modes and browse expansions:
 
 Default store resolution:
 
-- reuse the nearest existing `.cchistory/` under the current directory or its ancestors
-- otherwise fall back to `~/.cchistory/`
+- use `~/.cchistory/` by default
+- use `--store <dir>` or `--db <file>` to pin a repo-local, restored, or custom store
 
 The current remote-agent CLI slice now ships through `cchistory agent pair`, `cchistory agent upload`, `cchistory agent schedule`, and `cchistory agent pull`. The local agent state file persists pairing plus cheap dirty-source fingerprints, `agent upload` supports bounded retry/backoff flags, `agent schedule` runs repeated local upload cycles on a caller-provided interval, and `agent pull` leases one typed collection job from the main service, reuses the same canonical bundle/upload path, and reports success or failure back to the control plane. On the API side, the paired-agent control plane also accepts heartbeat updates, exposes admin inventory/label-management routes, and now persists typed collection jobs plus lease/result metadata through dedicated agent/admin job routes.
 
@@ -174,8 +174,7 @@ The managed API exposes recall, project, artifact, source-config, probe/replay, 
 Default data-dir resolution matches the CLI default-store policy unless `CCHISTORY_API_DATA_DIR` is set for the API process:
 
 - if `CCHISTORY_API_DATA_DIR` is set, use that explicit indexed-store directory
-- otherwise reuse the nearest existing `.cchistory/` under the current working directory or its ancestors
-- otherwise fall back to `~/.cchistory/`
+- otherwise use `~/.cchistory/`
 
 Current route groups:
 
