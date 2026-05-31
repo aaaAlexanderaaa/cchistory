@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { CCHistoryStorage, matchesSearchCandidateQuery } from "../index.js";
@@ -86,7 +87,7 @@ test("searchTurns with unicode and emoji text matches correctly", async () => {
   }
 });
 
-test("matchesSearchCandidateQuery targets canonical text only", () => {
+test("matchesSearchCandidateQuery targets canonical and path text only", () => {
   const candidate = {
     canonical_text: "canonical metadata target",
   };
@@ -96,8 +97,86 @@ test("matchesSearchCandidateQuery targets canonical text only", () => {
   assert.equal(matchesSearchCandidateQuery(candidate, "metadata target"), true);
   assert.equal(matchesSearchCandidateQuery(candidate, "alpha"), false);
   assert.equal(matchesSearchCandidateQuery({ canonical_text: "unrelated prompt body" }, "metadata target"), false);
+  assert.equal(
+    matchesSearchCandidateQuery(
+      { canonical_text: "unrelated prompt body", path_text: "/workspace/metadata-target" },
+      "metadata-target",
+    ),
+    true,
+  );
   const rawOnlyCandidate = { canonical_text: "unrelated prompt body", raw_text: "metadata target" };
   assert.equal(matchesSearchCandidateQuery(rawOnlyCandidate, "metadata target"), false);
+});
+
+test("opening a store with the old FTS schema rebuilds the new search index", async (t) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-old-fts-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    if (storage.searchMode !== "fts5") {
+      storage.close();
+      t.skip("FTS5 is unavailable in this Node SQLite build");
+      return;
+    }
+    storage.replaceSourcePayload(
+      createFixturePayload("src-search-old-fts", "Canonical upgraded search target", "sr-old-fts", {
+        turnId: "turn-old-fts",
+        sessionId: "session-old-fts",
+      }),
+    );
+    storage.close();
+
+    const db = new DatabaseSync(path.join(dataDir, "cchistory.sqlite"));
+    try {
+      db.exec(`
+        DROP TABLE IF EXISTS search_index;
+        DROP TABLE IF EXISTS search_index_config;
+        DROP TABLE IF EXISTS search_index_content;
+        DROP TABLE IF EXISTS search_index_data;
+        DROP TABLE IF EXISTS search_index_docsize;
+        DROP TABLE IF EXISTS search_index_idx;
+        DROP TABLE IF EXISTS search_index_hashes;
+        CREATE VIRTUAL TABLE search_index USING fts5(
+          turn_id UNINDEXED,
+          project_id UNINDEXED,
+          source_id UNINDEXED,
+          link_state UNINDEXED,
+          value_axis UNINDEXED,
+          canonical_text,
+          raw_text,
+          tokenize = 'unicode61 porter'
+        );
+        INSERT INTO search_index (
+          turn_id,
+          project_id,
+          source_id,
+          link_state,
+          value_axis,
+          canonical_text,
+          raw_text
+        ) VALUES (
+          'turn-old-fts',
+          '',
+          'src-search-old-fts',
+          'unlinked',
+          'active',
+          'Canonical upgraded search target',
+          ''
+        );
+      `);
+    } finally {
+      db.close();
+    }
+
+    const upgradedStorage = new CCHistoryStorage(dataDir);
+    try {
+      const results = upgradedStorage.searchTurns({ query: "upgraded search target" });
+      assert.deepEqual(results.map((result) => result.turn.id), ["turn-old-fts"]);
+    } finally {
+      upgradedStorage.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
 });
 
 test("searchTurns does not match raw-only turn text", async () => {
@@ -190,6 +269,66 @@ test("searchTurns ignores metadata-only session matches", async () => {
       results.map((result) => result.turn.id),
       [],
       "Default search should not surface a turn solely because the session title matches",
+    );
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("searchTurns matches session workspace path fragments and basenames", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-path-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(
+      createFixturePayload("src-search-path", "Audit unrelated prompt", "sr-search-path", {
+        turnId: "turn-search-path",
+        sessionId: "session-search-path",
+        workingDirectory: "/Users/mock_user/workspace/cchistory-resume-audit",
+      }),
+    );
+
+    assert.deepEqual(
+      storage.searchTurns({ query: "/Users/mock_user/workspace/cchistory-resume-audit" }).map((result) => result.turn.id),
+      ["turn-search-path"],
+    );
+    assert.deepEqual(
+      storage.searchTurns({ query: "cchistory-resume-audit" }).map((result) => result.turn.id),
+      ["turn-search-path"],
+    );
+    assert.deepEqual(
+      storage.searchTurns({ query: "workspace cchistory-resume-audit" }).map((result) => result.turn.id),
+      ["turn-search-path"],
+    );
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("searchTurns matches project workspace path from project observations", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-project-path-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(
+      createFixturePayload("src-search-project-path", "Review projection unrelated", "sr-search-project-path", {
+        turnId: "turn-search-project-path",
+        sessionId: "session-search-project-path",
+        workingDirectory: "/tmp/transient-session-cwd",
+        projectObservation: {
+          workspacePath: "/Users/mock_user/workspace/provider-isolated-history",
+          repoRoot: "/Users/mock_user/workspace/provider-isolated-history",
+          repoFingerprint: "fp-provider-isolated-history",
+          sourceNativeProjectRef: "-Users-mock-user-workspace-provider-isolated-history",
+        },
+      }),
+    );
+
+    assert.deepEqual(
+      storage.searchTurns({ query: "provider-isolated-history" }).map((result) => result.turn.id),
+      ["turn-search-project-path"],
+    );
+    assert.deepEqual(
+      storage.searchTurns({ query: "-Users-mock-user-workspace-provider-isolated-history" }).map((result) => result.turn.id),
+      ["turn-search-project-path"],
     );
   } finally {
     await rm(dataDir, { recursive: true, force: true });

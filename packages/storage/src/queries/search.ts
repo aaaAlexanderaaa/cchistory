@@ -4,6 +4,7 @@ import type { SearchHighlight, UserTurnProjection } from "@cchistory/domain";
 
 export interface SearchCandidateFields {
   canonical_text?: string;
+  path_text?: string;
 }
 
 interface SearchPlan {
@@ -24,7 +25,7 @@ interface SearchTerm {
 function turnIndexHash(turn: UserTurnProjection): string {
   return createHash("sha1")
     .update(
-      `canonical-search-v2\0${turn.project_id ?? ""}\0${turn.source_id}\0${turn.link_state}\0${turn.value_axis}\0${turn.canonical_text ?? ""}`,
+      `canonical-search-v3\0${turn.project_id ?? ""}\0${turn.source_id}\0${turn.link_state}\0${turn.value_axis}\0${turn.canonical_text ?? ""}\0${turn.path_text ?? ""}`,
     )
     .digest("hex");
 }
@@ -62,7 +63,7 @@ export function replaceSearchIndex(
     const deleteIdx = db.prepare("DELETE FROM search_index WHERE turn_id = ?");
     const deleteHash = db.prepare("DELETE FROM search_index_hashes WHERE turn_id = ?");
     const insertIdx = db.prepare(
-      "INSERT INTO search_index (turn_id, project_id, source_id, link_state, value_axis, canonical_text, raw_text) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      "INSERT INTO search_index (turn_id, project_id, source_id, link_state, value_axis, canonical_text, path_text, raw_text) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
     );
     const upsertHash = db.prepare(
       "INSERT OR REPLACE INTO search_index_hashes (turn_id, hash) VALUES (?, ?)",
@@ -96,6 +97,7 @@ export function replaceSearchIndex(
         turn.link_state,
         turn.value_axis,
         turn.canonical_text,
+        turn.path_text ?? "",
         "",
       );
       upsertHash.run(turn.id, hash);
@@ -195,7 +197,7 @@ function fallbackTurnIds(turns: UserTurnProjection[], query: string, limit: numb
 function buildFtsQuery(query: string): string {
   const plan = buildSearchPlan(query);
   const queryText = buildFtsQueryText(plan);
-  return `canonical_text : (${queryText})`;
+  return `(canonical_text : (${queryText}) OR path_text : (${queryText}))`;
 }
 
 function buildFtsQueryText(plan: SearchPlan): string {
@@ -243,10 +245,10 @@ function matchesSearchPlan(text: string, plan: SearchPlan): boolean {
 }
 
 function matchesTurnSearchPlan(
-  turn: Pick<SearchCandidateFields, "canonical_text">,
+  turn: Pick<SearchCandidateFields, "canonical_text" | "path_text">,
   plan: SearchPlan,
 ): boolean {
-  return matchesSearchPlan(turn.canonical_text ?? "", plan);
+  return matchesSearchPlan(turn.canonical_text ?? "", plan) || matchesSearchPlan(turn.path_text ?? "", plan);
 }
 
 export function matchesSearchCandidateQuery(candidate: SearchCandidateFields, query: string): boolean {

@@ -33,7 +33,12 @@ import type {
   KnowledgeArtifact,
   ImportedBundleRecord,
 } from "@cchistory/domain";
-import { initializeStorageSchema, readStorageSchemaInfo, type StorageSchemaInfo } from "../db/schema.js";
+import {
+  initializeStorageSchema,
+  readStorageSchemaInfo,
+  type StorageSchemaInfo,
+  type StorageSchemaInitialization,
+} from "../db/schema.js";
 import {
   mergeSourcePayloadByOriginPath as mergePersistedSourcePayloadByOriginPath,
   replaceSourcePayloadWithOptions as replacePersistedSourcePayloadWithOptions,
@@ -86,7 +91,11 @@ export class CCHistoryStorage {
     this.db.exec("PRAGMA busy_timeout = 5000;");
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA foreign_keys = ON;");
-    this.searchIndexReady = this.initialize();
+    const initialization = this.initialize();
+    this.searchIndexReady = initialization.searchIndexReady;
+    if (initialization.searchIndexNeedsRebuild) {
+      this.rebuildSearchIndex();
+    }
   }
 
   close(): void {
@@ -101,8 +110,12 @@ export class CCHistoryStorage {
     return readStorageSchemaInfo(this.db);
   }
 
-  private initialize(): boolean {
+  private initialize(): StorageSchemaInitialization {
     return initializeStorageSchema(this.db);
+  }
+
+  private rebuildSearchIndex(): void {
+    replaceSearchIndex(this.db, this.searchIndexReady, this.listResolvedTurns());
   }
 
   replaceSourcePayload(

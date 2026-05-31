@@ -295,10 +295,12 @@ export function formatSearchResultContext(
   const sourceLabel = source ? source.display_name : session?.source_platform ?? "unknown";
   const model = result.turn.context_summary.primary_model ?? "";
   const workspace = session?.working_directory ? workspaceBasename(session.working_directory) : "";
+  const resumeHint = session?.resume_command ? "resume-ready" : "";
 
   const parts = [sourceLabel];
   if (model) parts.push(model);
   if (workspace) parts.push(workspace);
+  if (resumeHint) parts.push(resumeHint);
   if (options.long) {
     if (session?.title) parts.push(truncateText(session.title, 32));
     const related = formatRelatedWorkRollup(relatedWork);
@@ -310,13 +312,17 @@ export function formatSearchResultContext(
 export function formatSearchResultPivots(result: TurnSearchResult, options: { long?: boolean } = {}): string {
   const sessionRef = result.session?.id ?? result.turn.session_id;
   if (!options.long) {
-    return `${dim("→")} show turn ${idColor(shortId(result.turn.id))}`;
+    const resume = result.session?.resume_command ? `${dim(" · ")}${green("resume-ready")}` : "";
+    return `${dim("→")} show turn ${idColor(shortId(result.turn.id))}${resume}`;
   }
   const pivots = [
     `show turn ${idColor(shortId(result.turn.id))}`,
     `show session ${idColor(sessionRef)}`,
     `tree session ${idColor(sessionRef)} --long`,
   ];
+  if (result.session?.resume_command) {
+    pivots.push(result.session.resume_command);
+  }
   if (result.project) {
     pivots.push(`show project ${idColor(result.project.slug)}`);
   }

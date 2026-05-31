@@ -631,6 +631,10 @@ export interface SessionProjection {
   model?: string;
   working_directory?: string;
   source_native_project_ref?: string;
+  source_session_id?: string;
+  resume_command?: string;
+  resume_working_directory?: string;
+  resume_command_confidence?: number;
   primary_project_id?: string;
   sync_axis: SyncAxis;
 }
@@ -726,6 +730,7 @@ export interface UserTurnProjection extends TurnIdentity {
   submission_started_at: string;
   last_context_activity_at: string;
   session_id: string;
+  path_text?: string;
   source_id: string;
   project_id?: string;
   project_ref?: string;
@@ -850,6 +855,7 @@ export interface SearchDocument {
   link_state: LinkState;
   value_axis: ValueAxis;
   canonical_text: string;
+  path_text?: string;
   raw_text: string;
   updated_at: string;
 }

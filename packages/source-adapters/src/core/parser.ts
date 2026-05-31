@@ -45,6 +45,8 @@ import {
   createFragment,
   createLossAudit,
   deriveSessionId,
+  extractSourceSessionIdFromCanonicalSessionId,
+  buildSourceResumeCommand,
   epochMillisToIso,
   isObject,
   mapRoleToActor,
@@ -464,6 +466,8 @@ export function buildAdapterBlobResult(
   const lossAudits: LossAuditRecord[] = [...initialLossAudits];
   const draft: SessionDraft = {
     id: sessionId,
+    source_session_id: draftPatch.source_session_id ??
+      extractSourceSessionIdFromCanonicalSessionId(source.platform, sessionId),
     source_id: source.id,
     source_platform: source.platform,
     host_id: hostId,
@@ -473,6 +477,9 @@ export function buildAdapterBlobResult(
     model: draftPatch.model,
     working_directory: draftPatch.working_directory,
     source_native_project_ref: deriveSourceNativeProjectRef(source, filePath),
+    resume_command: draftPatch.resume_command,
+    resume_working_directory: draftPatch.resume_working_directory,
+    resume_command_confidence: draftPatch.resume_command_confidence,
   };
 
   for (const record of records) {
@@ -485,6 +492,18 @@ export function buildAdapterBlobResult(
   atoms.push(...atomized.atoms);
   edges.push(...atomized.edges);
   hydrateDraftFromAtoms(draft, atoms, blob.file_modified_at);
+  const resume = isOrdinaryResumeEligibleSourceFile(source.platform, filePath)
+    ? buildSourceResumeCommand({
+        platform: draft.source_platform,
+        sourceSessionId: draft.source_session_id,
+        workingDirectory: draft.working_directory,
+      })
+    : undefined;
+  if (resume) {
+    draft.resume_command = draft.resume_command ?? resume.command;
+    draft.resume_working_directory = draft.resume_working_directory ?? resume.working_directory;
+    draft.resume_command_confidence = draft.resume_command_confidence ?? resume.confidence;
+  }
 
   return {
     draft,
@@ -495,6 +514,13 @@ export function buildAdapterBlobResult(
     edges,
     loss_audits: lossAudits,
   };
+}
+
+export function isOrdinaryResumeEligibleSourceFile(platform: SourcePlatform, filePath: string): boolean {
+  if (platform === "claude_code" && /(^|[\\/])subagents([\\/]|$)/u.test(filePath)) {
+    return false;
+  }
+  return true;
 }
 
 export async function captureBlob(

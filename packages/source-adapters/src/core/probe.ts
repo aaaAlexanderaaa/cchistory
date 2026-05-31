@@ -29,6 +29,8 @@ import {
   listSourceFiles,
   readGitProjectEvidence,
   deriveSessionId,
+  extractSourceSessionIdFromCanonicalSessionId,
+  buildSourceResumeCommand,
   minIso,
   maxIso,
   sha1,
@@ -45,6 +47,7 @@ import {
   buildAdapterBlobResult,
   captureBlob,
   parseRecord,
+  isOrdinaryResumeEligibleSourceFile,
   extractGenericSessionMetadata,
   extractGenericRole,
   extractGenericContentItems,
@@ -590,6 +593,12 @@ function mergeSessionBuildInput(
     current.draft.title = current.draft.title ?? sessionInput.draft.title;
     current.draft.working_directory = current.draft.working_directory ?? sessionInput.draft.working_directory;
     current.draft.model = current.draft.model ?? sessionInput.draft.model;
+    current.draft.source_session_id = current.draft.source_session_id ?? sessionInput.draft.source_session_id;
+    current.draft.resume_command = current.draft.resume_command ?? sessionInput.draft.resume_command;
+    current.draft.resume_working_directory =
+      current.draft.resume_working_directory ?? sessionInput.draft.resume_working_directory;
+    current.draft.resume_command_confidence =
+      current.draft.resume_command_confidence ?? sessionInput.draft.resume_command_confidence;
     current.draft.created_at = minIso(current.draft.created_at, sessionInput.draft.created_at);
     current.draft.updated_at = maxIso(current.draft.updated_at, sessionInput.draft.updated_at);
     return;
@@ -654,6 +663,29 @@ interface PreviousFileEntry {
   sessionInputs: SessionBuildInput[];
   orphanBlobs: CapturedBlob[];
   lossAudits: LossAuditRecord[];
+}
+
+function backfillReusableSessionResumeFields(
+  platform: SourcePlatform,
+  filePath: string,
+  draft: SessionDraft,
+): SessionDraft {
+  const sourceSessionId = draft.source_session_id ??
+    extractSourceSessionIdFromCanonicalSessionId(platform, draft.id);
+  const resume = isOrdinaryResumeEligibleSourceFile(platform, filePath)
+    ? buildSourceResumeCommand({
+        platform,
+        sourceSessionId,
+        workingDirectory: draft.working_directory,
+      })
+    : undefined;
+  return {
+    ...draft,
+    source_session_id: sourceSessionId,
+    resume_command: draft.resume_command ?? resume?.command,
+    resume_working_directory: draft.resume_working_directory ?? resume?.working_directory,
+    resume_command_confidence: draft.resume_command_confidence ?? resume?.confidence,
+  };
 }
 
 interface PreviousSourceIndex {
@@ -732,8 +764,10 @@ function buildPreviousSourceIndex(
       for (const audit of sessionLossAudits) {
         sessionLossAuditIds.add(audit.id);
       }
-      sessionInputs.push({
-        draft: {
+      const draft = backfillReusableSessionResumeFields(
+        previousPayload.source.platform,
+        originPath,
+        {
           id: sessionRef,
           source_id: previousPayload.source.id,
           source_platform: previousPayload.source.platform,
@@ -744,8 +778,15 @@ function buildPreviousSourceIndex(
           model: session?.model,
           working_directory: session?.working_directory,
           source_native_project_ref: session?.source_native_project_ref,
+          source_session_id: session?.source_session_id,
+          resume_command: session?.resume_command,
+          resume_working_directory: session?.resume_working_directory,
+          resume_command_confidence: session?.resume_command_confidence,
           last_cumulative_token_usage: findLastCumulativeTokenUsage(fragments),
         },
+      );
+      sessionInputs.push({
+        draft,
         blobs: sessionBlobs,
         records,
         fragments,
@@ -859,6 +900,9 @@ function processAppendedJsonlBlob(
     ...previousInput.draft,
     updated_at: undefined,
     last_cumulative_token_usage: findLastCumulativeTokenUsage(previousInput.fragments),
+    source_session_id:
+      previousInput.draft.source_session_id ??
+      extractSourceSessionIdFromCanonicalSessionId(source.platform, sessionId),
   };
   const appendedFragments: SourceFragment[] = [];
   const appendedLossAudits: LossAuditRecord[] = [];
@@ -871,9 +915,10 @@ function processAppendedJsonlBlob(
   const fragments = [...previousInput.fragments, ...appendedFragments];
   const atomized = atomizeFragments(source.id, sessionId, sourceFormatProfile.id, fragments);
   hydrateDraftFromAtoms(draft, atomized.atoms, capturedBlob.blob.file_modified_at);
+  const backfilledDraft = backfillReusableSessionResumeFields(source.platform, filePath, draft);
 
   return [{
-    draft,
+    draft: backfilledDraft,
     blobs: [...previousInput.blobs, capturedBlob.blob],
     records: [...previousInput.records, ...appendedRecords],
     fragments,

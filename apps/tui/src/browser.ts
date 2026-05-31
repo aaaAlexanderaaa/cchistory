@@ -748,7 +748,8 @@ function formatSearchTurnRow(entry: LocalTuiSearchResult, selected: boolean, foc
   const prefix = `${connector}${selectionPrefix(selected, focused)}`;
   const model = entry.turn.context_summary.primary_model ?? "";
   const date = formatShortDate(entry.turn.submission_started_at);
-  const metaText = [model, date].filter(Boolean).join(" · ");
+  const resume = entry.session?.resume_command ? "resume-ready" : "";
+  const metaText = [model, date, resume].filter(Boolean).join(" · ");
   const metaW = displayWidth(metaText);
   const prefixW = displayWidth(prefix);
   const snippetMax = Math.max(colWidth - metaW - prefixW - 2, 8);
@@ -891,6 +892,12 @@ function formatDetailRows(browser: LocalTuiBrowser, input: DetailInput): string[
     rows.push(`${bold("Project:")} ${cyan(input.projectName ?? "?")} ${magenta(shortId)}`);
   }
   rows.push(`${metaLabel("Model:")} ${blue(model)}${tokens ? ` ${dim("·")} ${tokens}` : ""} ${dim("·")} ${blue(source)} ${dim("·")} ${date}`);
+  if (t.session?.resume_command) {
+    rows.push(`${metaLabel("Resume:")}`);
+    rows.push(...wrapText(t.session.resume_command, contentWidth).map((line) => `  ${line}`));
+  } else if (t.session?.source_session_id) {
+    rows.push(`${metaLabel("Source Session:")} ${t.session.source_session_id}`);
+  }
 
   // Related work summary
   const parents = (t.related_work ?? []).filter(e => e.relation_kind === "delegated_session" && e.direction === "inbound").length;
@@ -1304,6 +1311,7 @@ function getCachedOrFreshResults(browser: LocalTuiBrowser, query: string): Local
       return matchesSearchCandidateQuery(
         {
           canonical_text: r.turn.canonical_text,
+          path_text: r.turn.path_text,
         },
         query,
       );

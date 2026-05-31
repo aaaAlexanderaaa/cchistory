@@ -141,7 +141,7 @@ export function SearchView({
                 type="text"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Search canonical turn text..."
+                placeholder="Search asks, absolute paths, repo names..."
                 className="w-full bg-transparent text-base outline-none placeholder:text-muted"
                 autoFocus
               />
@@ -158,7 +158,7 @@ export function SearchView({
           </div>
 
           <div className="flex flex-wrap items-center gap-3 border-t border-border px-4 py-3 text-xs sm:px-6">
-            <span className="text-muted">Search your coding history across all sessions and projects.</span>
+            <span className="text-muted">Search asks, workspace paths, and repo basenames across all sessions and projects.</span>
             <FilterChip label="Archived" active={showArchived} onClick={() => setShowArchived((value) => !value)} />
             <FilterChip label="Covered" active={showCovered} onClick={() => setShowCovered((value) => !value)} />
             <FilterChip label="Include Unlinked" active={showCandidates} onClick={() => setShowCandidates((value) => !value)} />
@@ -179,7 +179,7 @@ export function SearchView({
 
         <div className="flex-1 overflow-y-auto p-4 sm:p-6">
           {!hasQuery && (
-            <EmptyState title="Start typing" detail="Search runs against masked canonical turn text." />
+            <EmptyState title="Start typing" detail="Search runs against asks, paths, and repo names." />
           )}
 
           {hasQuery && results.length === 0 && (
@@ -230,6 +230,7 @@ export function SearchView({
                         <div className="line-clamp-3 text-[15px] leading-6 text-text">{renderHighlightedText(result)}</div>
                         <div className="mt-3 flex flex-wrap items-center gap-2 text-[10px] stamp-text">
                           <SessionBadge session={result.session} compact />
+                          {result.session?.resume_command && <ResumeReadyChip />}
                           <span className="border border-border bg-paper px-1.5 py-0.5 text-muted">
                             {result.turn.context_summary.assistant_reply_count} replies
                           </span>
@@ -261,6 +262,10 @@ export function SearchView({
       )}
     </div>
   )
+}
+
+function ResumeReadyChip() {
+  return <span className="border border-success/30 bg-success/10 px-1.5 py-0.5 text-success">resume-ready</span>
 }
 
 function FilterChip({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {

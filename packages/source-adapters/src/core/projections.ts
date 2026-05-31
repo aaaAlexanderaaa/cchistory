@@ -1,3 +1,4 @@
+import path from "node:path";
 import type {
   AtomEdge,
   CapturedBlob,
@@ -39,6 +40,7 @@ import {
   extractStopReasonFromPayload,
   buildStageRunId,
   RULE_VERSION,
+  normalizePathSeparators,
 } from "./utils.js";
 import type { SessionDraft, GitProjectEvidence, TokenUsageMetrics } from "./types.js";
 import { resolveSourceFormatProfile } from "./discovery.js";
@@ -413,6 +415,7 @@ export function buildTurnsAndContext(
         record_refs: Array.from(allRecordIds),
         blob_refs: Array.from(allBlobIds),
       },
+      path_text: buildTurnPathText(draft, contextProjection, groupAtoms, contextAtoms),
     });
 
     contexts.push(contextProjection);
@@ -429,6 +432,10 @@ export function buildTurnsAndContext(
     model: draft.model,
     working_directory: draft.working_directory,
     source_native_project_ref: draft.source_native_project_ref,
+    source_session_id: draft.source_session_id,
+    resume_command: draft.resume_command,
+    resume_working_directory: draft.resume_working_directory,
+    resume_command_confidence: draft.resume_command_confidence,
     turn_count: turns.length,
     sync_axis: "current",
   };
@@ -621,6 +628,53 @@ export function buildTurnContext(
     tool_calls: toolCalls,
     raw_event_refs: Array.from(rawEventRefs),
   };
+}
+
+function buildTurnPathText(
+  draft: SessionDraft,
+  contextProjection: TurnContextProjection,
+  groupAtoms: ConversationAtom[],
+  contextAtoms: ConversationAtom[],
+): string | undefined {
+  const parts = new Set<string>();
+
+  addPathText(parts, draft.working_directory);
+  addPathText(parts, draft.source_native_project_ref);
+  addPathText(parts, draft.resume_working_directory);
+  addPathText(parts, draft.source_native_project_ref ? path.basename(draft.source_native_project_ref) : undefined);
+
+  for (const atom of [...groupAtoms, ...contextAtoms]) {
+    const payload = atom.payload;
+    addPathText(parts, asString(payload.path));
+    addPathText(parts, asString(payload.workspace_path));
+    addPathText(parts, asString(payload.repo_root));
+    addPathText(parts, asString(payload.source_native_project_ref));
+  }
+
+  for (const reply of contextProjection.assistant_replies) {
+    for (const segment of reply.display_segments ?? []) {
+      if (segment.type === "reference") {
+        addPathText(parts, segment.content);
+      }
+    }
+  }
+
+  return [...parts].join(" ").trim() || undefined;
+}
+
+function addPathText(target: Set<string>, value: string | undefined): void {
+  if (!value) {
+    return;
+  }
+  const normalized = normalizePathSeparators(value).trim();
+  if (!normalized) {
+    return;
+  }
+  target.add(normalized);
+  const basename = normalized.split("/").filter(Boolean).at(-1);
+  if (basename) {
+    target.add(basename);
+  }
 }
 
 export function summarizeAssistantReplyUsage(replies: TurnContextProjection["assistant_replies"]): TokenUsageMetrics | undefined {

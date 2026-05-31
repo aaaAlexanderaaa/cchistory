@@ -80,6 +80,7 @@ export interface UserTurnProjectionDto {
   submission_started_at: string;
   last_context_activity_at: string;
   session_id: string;
+  path_text?: string;
   source_id: string;
   project_id?: string;
   project_ref?: string;
@@ -160,6 +161,10 @@ export interface SessionProjectionDto {
   model?: string;
   working_directory?: string;
   source_native_project_ref?: string;
+  source_session_id?: string;
+  resume_command?: string;
+  resume_working_directory?: string;
+  resume_command_confidence?: number;
   primary_project_id?: string;
   sync_axis: "current" | "superseded" | "source_absent" | "import_snapshot";
 }

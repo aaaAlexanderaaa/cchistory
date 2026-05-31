@@ -1,10 +1,10 @@
 'use client'
 
-import type { ReactNode } from 'react'
+import { useState, type MouseEvent, type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import { useSessionRelatedWorkQuery } from '@/lib/api'
 import type { ProjectIdentity, Session, SessionRelatedWork, UserTurn } from '@/lib/types'
-import { ChevronLeft, Clock, FolderOpen, Layers, MonitorSmartphone, Waypoints, X } from 'lucide-react'
+import { Check, ChevronLeft, Clock, Copy, FolderOpen, Layers, MonitorSmartphone, Waypoints, X } from 'lucide-react'
 import { format } from 'date-fns'
 
 interface SessionDetailPanelProps {
@@ -145,10 +145,23 @@ export function SessionDetailPanel({
         <section className="border-t border-border px-4 py-4">
           <div className="mb-3 text-[10px] stamp-text text-muted">SESSION METADATA</div>
           <div className="grid grid-cols-1 gap-3 text-sm">
+            {session.resume_command && (
+              <div className="border-b border-border/50 pb-3">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <span className="text-xs text-muted">Resume Command</span>
+                  <CopyButton text={session.resume_command} />
+                </div>
+                <pre className="whitespace-pre-wrap break-all border border-border bg-paper px-3 py-2 text-xs mono-text text-ink">
+                  {session.resume_command}
+                </pre>
+              </div>
+            )}
             <MetaRow label="Created" value={format(session.created_at, 'yyyy-MM-dd HH:mm')} />
             <MetaRow label="Updated" value={format(session.updated_at, 'yyyy-MM-dd HH:mm')} />
             <MetaRow label="Model" value={session.model || 'Unknown'} />
             <MetaRow label="Host" value={session.host_id} mono />
+            {session.source_session_id && <MetaRow label="Source Session ID" value={session.source_session_id} mono />}
+            {session.resume_working_directory && <MetaRow label="Resume CWD" value={session.resume_working_directory} mono />}
             {session.working_directory && <MetaRow label="Working Dir" value={session.working_directory} mono />}
           </div>
         </section>
@@ -183,8 +196,34 @@ function MetaRow({ label, value, mono = false }: { label: string; value: string;
   return (
     <div className="flex items-start justify-between gap-3 border-b border-border/50 pb-2 last:border-b-0 last:pb-0">
       <span className="text-xs text-muted">{label}</span>
-      <span className={cn('text-right text-ink', mono && 'mono-text text-xs')}>{value}</span>
+      <span className={cn('min-w-0 break-all text-right text-ink', mono && 'mono-text text-xs')}>{value}</span>
     </div>
+  )
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = async (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard API unavailable.
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className="p-0.5 text-muted hover:text-ink"
+      title="Copy"
+    >
+      {copied ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
+    </button>
   )
 }
 

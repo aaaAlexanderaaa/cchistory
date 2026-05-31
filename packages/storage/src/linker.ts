@@ -130,6 +130,7 @@ export function deriveProjectLinkSnapshot(input: {
   const turns = input.turns.map((turn) =>
     decorateTurn(
       turn,
+      sessionsById.get(turn.session_id),
       observationsBySession.get(turn.session_id) ?? [],
       projectById,
       overrideByTurnId.get(turn.id) ?? overrideBySessionId.get(turn.session_id),
@@ -641,37 +642,44 @@ function deriveWorkspaceContinuityConfidence(input: {
 
 function decorateTurn(
   turn: UserTurnProjection,
+  session: SessionProjection | undefined,
   observations: LinkedProjectObservation[],
   projectById: Map<string, ProjectIdentity>,
   manualOverride?: ProjectManualOverride,
 ): UserTurnProjection {
+  const turnWithSessionPath = {
+    ...turn,
+    path_text: buildTurnPathText(turn, session),
+  };
+
   if (manualOverride) {
     const project = projectById.get(manualOverride.project_id) ?? buildManualProjectIdentity(manualOverride);
     projectById.set(project.project_id, project);
     return {
-      ...turn,
+      ...turnWithSessionPath,
       project_id: project.project_id,
       project_ref: project.slug,
       link_state: "committed",
       project_link_state: "committed",
       project_confidence: 1,
       candidate_project_ids: [project.project_id],
+      path_text: buildTurnPathText(turnWithSessionPath, session, project),
     };
   }
 
   const linkedObservations = observations.filter((observation) => observation.project_id && observation.linkage_state);
   if (linkedObservations.length === 0) {
-    return turn;
+    return turnWithSessionPath;
   }
 
   const selectedObservation = selectObservationForTurn(turn, linkedObservations);
   if (!selectedObservation?.project_id) {
-    return turn;
+    return turnWithSessionPath;
   }
 
   const project = projectById.get(selectedObservation.project_id);
   if (!project) {
-    return turn;
+    return turnWithSessionPath;
   }
 
   const candidateProjectIds = uniqueStrings(
@@ -681,13 +689,14 @@ function decorateTurn(
   );
 
   return {
-    ...turn,
+    ...turnWithSessionPath,
     project_id: project.project_id,
     project_ref: project.slug,
     link_state: project.linkage_state,
     project_link_state: project.linkage_state,
     project_confidence: project.confidence,
     candidate_project_ids: project.linkage_state === "candidate" ? candidateProjectIds : undefined,
+    path_text: buildTurnPathText(turnWithSessionPath, session, project),
   };
 }
 
@@ -730,6 +739,33 @@ function selectPrimaryProjectTurn(turns: UserTurnProjection[]): DecoratedTurn | 
   const committedTurns = linkedTurns.filter((turn) => turn.link_state === "committed");
   const pool = committedTurns.length > 0 ? committedTurns : linkedTurns;
   return [...pool].sort((left, right) => right.last_context_activity_at.localeCompare(left.last_context_activity_at))[0];
+}
+
+function buildTurnPathText(
+  turn: UserTurnProjection,
+  session?: SessionProjection,
+  project?: ProjectIdentity,
+): string | undefined {
+  const parts = new Set<string>();
+  addPathPart(parts, turn.path_text);
+  addPathPart(parts, session?.working_directory);
+  addPathPart(parts, session?.source_native_project_ref);
+  addPathPart(parts, session?.resume_working_directory);
+  addPathPart(parts, project?.primary_workspace_path);
+  addPathPart(parts, project?.repo_root);
+  addPathPart(parts, project?.source_native_project_ref);
+  return [...parts].join(" ").trim() || undefined;
+}
+
+function addPathPart(target: Set<string>, value: string | undefined): void {
+  if (!value) {
+    return;
+  }
+  target.add(value);
+  const baseName = value.split("/").filter(Boolean).at(-1);
+  if (baseName) {
+    target.add(baseName);
+  }
 }
 
 function deriveWorkspaceSubpath(workspacePath: string | undefined, repoRoot: string | undefined): string | undefined {

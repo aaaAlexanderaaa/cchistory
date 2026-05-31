@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useMemo, useState, type ReactNode } from 'react'
+import { Fragment, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
 import { formatTokenUsageSummary } from '@/lib/token-usage'
 import { cn } from '@/lib/utils'
 import { useTurnLineageQuery } from '@/lib/api'
@@ -31,6 +31,8 @@ import {
   MessageSquare,
   User,
   Wrench,
+  Copy,
+  Check,
   X,
 } from 'lucide-react'
 import { format } from 'date-fns'
@@ -97,6 +99,7 @@ export function TurnDetailPanel({
   )
   const hasComplexUserInput = turn.user_messages.length > 1 || turn.user_messages.some((message) => message.is_injected)
   const userInputBadge = turn.user_messages.length === 1 ? '1 message' : `${turn.user_messages.length} messages`
+  const resumeCommand = session?.resume_command
 
   const timelineEntries = useMemo<TimelineEntry[]>(() => {
     if (!context) {
@@ -163,7 +166,7 @@ export function TurnDetailPanel({
           </button>
         </div>
 
-        <div className="flex flex-wrap items-center gap-4 px-4 pb-3 text-xs text-muted">
+          <div className="flex flex-wrap items-center gap-4 px-4 pb-3 text-xs text-muted">
           <span className="flex items-center gap-1">
             <Clock className="w-3 h-3" />
             {format(turn.created_at, 'yyyy-MM-dd HH:mm')}
@@ -181,6 +184,17 @@ export function TurnDetailPanel({
             {tokenSummary}
           </span>
         </div>
+        {resumeCommand && (
+          <div className="border-t border-border px-4 py-3">
+            <div className="mb-2 flex items-center justify-between gap-2 text-[10px] stamp-text text-muted">
+              <span>RESUME COMMAND</span>
+              <CopyButton text={resumeCommand} />
+            </div>
+            <pre className="whitespace-pre-wrap break-all rounded-none border border-border bg-paper px-3 py-2 text-xs mono-text text-ink">
+              {resumeCommand}
+            </pre>
+          </div>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto">
@@ -505,6 +519,32 @@ function LineageMetric({ label, value }: { label: string; value: number }) {
       <div className="text-[10px] stamp-text text-muted">{label}</div>
       <div className="mt-1 text-lg font-bold font-display text-ink">{value}</div>
     </div>
+  )
+}
+
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = async (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard API unavailable.
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      className="p-0.5 text-muted hover:text-ink"
+      title="Copy"
+    >
+      {copied ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
+    </button>
   )
 }
 

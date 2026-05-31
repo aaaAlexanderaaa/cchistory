@@ -16,6 +16,11 @@ export interface StorageSchemaInfo {
   migrations: StorageSchemaMigration[];
 }
 
+export interface StorageSchemaInitialization {
+  searchIndexReady: boolean;
+  searchIndexNeedsRebuild: boolean;
+}
+
 const STORAGE_SCHEMA_MIGRATIONS: ReadonlyArray<{
   id: string;
   to_version: string;
@@ -33,7 +38,7 @@ const STORAGE_SCHEMA_MIGRATIONS: ReadonlyArray<{
   },
 ];
 
-export function initializeStorageSchema(db: DatabaseSync): boolean {
+export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitialization {
   const existingSchemaVersion = readExistingSchemaVersion(db);
   if (existingSchemaVersion && compareStorageSchemaVersions(existingSchemaVersion, STORAGE_SCHEMA_VERSION) > 0) {
     throw new Error(
@@ -205,19 +210,8 @@ export function initializeStorageSchema(db: DatabaseSync): boolean {
   `);
 
   try {
-    db.exec(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
-        turn_id UNINDEXED,
-        project_id UNINDEXED,
-        source_id UNINDEXED,
-        link_state UNINDEXED,
-        value_axis UNINDEXED,
-        canonical_text,
-        raw_text,
-        tokenize = 'unicode61 porter'
-      );
-    `);
-    return true;
+    const searchIndexNeedsRebuild = ensureSearchIndex(db);
+    return { searchIndexReady: true, searchIndexNeedsRebuild };
   } catch (error) {
     if (process.env.CCHISTORY_SHOW_RUNTIME_WARNINGS === "1") {
       console.warn(
@@ -225,7 +219,46 @@ export function initializeStorageSchema(db: DatabaseSync): boolean {
         error instanceof Error ? error.message : error,
       );
     }
-    return false;
+    return { searchIndexReady: false, searchIndexNeedsRebuild: false };
+  }
+}
+
+function ensureSearchIndex(db: DatabaseSync): boolean {
+  const existingColumns = listTableColumns(db, "search_index");
+  const searchIndexNeedsRebuild = existingColumns.length > 0 && !existingColumns.includes("path_text");
+  if (searchIndexNeedsRebuild) {
+    db.exec(`
+      DROP TABLE IF EXISTS search_index;
+      DROP TABLE IF EXISTS search_index_config;
+      DROP TABLE IF EXISTS search_index_content;
+      DROP TABLE IF EXISTS search_index_data;
+      DROP TABLE IF EXISTS search_index_docsize;
+      DROP TABLE IF EXISTS search_index_idx;
+      DROP TABLE IF EXISTS search_index_hashes;
+    `);
+  }
+
+  db.exec(`
+    CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
+      turn_id UNINDEXED,
+      project_id UNINDEXED,
+      source_id UNINDEXED,
+      link_state UNINDEXED,
+      value_axis UNINDEXED,
+      canonical_text,
+      path_text,
+      raw_text,
+      tokenize = 'unicode61 porter'
+    );
+  `);
+  return searchIndexNeedsRebuild;
+}
+
+function listTableColumns(db: DatabaseSync, tableName: string): string[] {
+  try {
+    return (db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name: string }>).map((row) => row.name);
+  } catch {
+    return [];
   }
 }
 

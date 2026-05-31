@@ -292,6 +292,52 @@ test("browser incremental search cache refines canonical ask matches for extende
   }
 });
 
+test("browser fallback search cache refines path matches for extended queries", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-tui-search-cache-path-"));
+
+  try {
+    const storage = new CCHistoryStorage({ dbPath: path.join(tempDir, "search-cache-path.sqlite") });
+    storage.replaceSourcePayload(
+      createFixturePayload("src-search-cache-path", "unrelated prompt body", "stage-search-cache-path", {
+        sessionId: "session-search-cache-path",
+        turnId: "turn-search-cache-path",
+        workingDirectory: "/workspace/path-target-project",
+        includeProjectObservation: true,
+      }),
+    );
+    storage.upsertProjectOverride({
+      target_kind: "turn",
+      target_ref: "turn-search-cache-path",
+      project_id: "project-search-cache-path",
+      display_name: "Path Target Project",
+    });
+
+    const browser = { ...buildLocalTuiBrowser(storage), searchMode: "fallback" as const };
+    let state = createBrowserState(browser);
+    state = reduceBrowserState(browser, state, { type: "enter-search-mode" });
+
+    for (const value of "path") {
+      state = reduceBrowserState(browser, state, { type: "append-search-char", value });
+    }
+
+    let snapshot = stripAnsi(renderBrowserSnapshot(browser, state));
+    assert.match(snapshot, /Search: path/);
+    assert.match(snapshot, /Matches: 1/);
+
+    state = reduceBrowserState(browser, state, { type: "append-search-char", value: "-" });
+    state = reduceBrowserState(browser, state, { type: "append-search-char", value: "t" });
+
+    snapshot = stripAnsi(renderBrowserSnapshot(browser, state));
+    assert.match(snapshot, /Search: path-t/);
+    assert.match(snapshot, /Matches: 1/);
+    assert.match(snapshot, /Project: Path Target Project/);
+
+    storage.close();
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 test("browser snapshot marks active pane and preserves turn detail cues", async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-tui-detail-"));
 

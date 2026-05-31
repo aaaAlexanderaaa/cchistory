@@ -61,6 +61,7 @@ test("[claude] sidechain subagent fixtures stay as delegated evidence instead of
   assert.equal(payload.turns.length, 0);
   assert.equal(payload.contexts.length, 0);
   assert.equal(payload.sessions[0]?.turn_count, 0);
+  assert.equal(payload.sessions[0]?.resume_command, undefined);
   assert.ok(payload.fragments.some((fragment) => fragment.fragment_kind === "session_relation"));
   assert.ok(
     payload.atoms.some(
@@ -70,6 +71,54 @@ test("[claude] sidechain subagent fixtures stay as delegated evidence instead of
     ),
   );
   assert.equal(payload.candidates.some((candidate) => candidate.candidate_kind === "turn"), false);
+});
+
+test("[claude] preserves source session UUID and resume command provenance", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-claude-resume-"));
+
+  try {
+    const claudeDir = path.join(tempRoot, ".claude", "projects", "-workspace-claude-resume");
+    await mkdir(claudeDir, { recursive: true });
+    const sourceSessionId = "9d77cfc2-1e2e-4fcb-a0f5-0013bd8cf101";
+
+    await writeFile(
+      path.join(claudeDir, `${sourceSessionId}.jsonl`),
+      [
+        {
+          timestamp: "2026-03-09T01:00:00.000Z",
+          type: "user",
+          sessionId: sourceSessionId,
+          cwd: "/workspace/claude-resume",
+          message: { role: "user", content: [{ type: "text", text: "Recover Claude resume command." }] },
+        },
+        {
+          timestamp: "2026-03-09T01:00:01.000Z",
+          type: "assistant",
+          sessionId: sourceSessionId,
+          cwd: "/workspace/claude-resume",
+          message: { role: "assistant", content: [{ type: "text", text: "Done." }] },
+        },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8",
+    );
+
+    const source = createSourceDefinition("src-claude-resume", "claude_code", claudeDir);
+    const result = await runSourceProbe({ source_ids: [source.id] }, [source]);
+    const payload = result.sources[0];
+    const session = payload?.sessions[0];
+
+    assert.ok(session);
+    assert.equal(session.id, `sess:claude_code:${sourceSessionId}`);
+    assert.equal(session.source_session_id, sourceSessionId);
+    assert.equal(session.resume_working_directory, "/workspace/claude-resume");
+    assert.equal(session.resume_command, `cd /workspace/claude-resume && claude --resume ${sourceSessionId}`);
+    assert.equal(session.resume_command_confidence, 1);
+    assert.match(payload?.turns[0]?.path_text ?? "", /\/workspace\/claude-resume/u);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test("[claude] local command envelopes do not anchor slash-command control noise", async () => {

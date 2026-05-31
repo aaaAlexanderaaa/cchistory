@@ -381,20 +381,29 @@ export function getSourceFilePriority(platform: SourcePlatform, filePath: string
 }
 
 export function deriveSessionId(platform: SourcePlatform, filePath: string, fileBuffer: Buffer): string {
+  const sourceSessionId = extractSourceSessionId(platform, filePath, fileBuffer);
+  if (sourceSessionId) {
+    return `sess:${platform}:${sourceSessionId}`;
+  }
+
+  return `sess:${platform}:${path.basename(filePath, path.extname(filePath))}`;
+}
+
+export function extractSourceSessionId(platform: SourcePlatform, filePath: string, fileBuffer: Buffer): string | undefined {
   if (platform === "amp") {
     try {
       const parsed = JSON.parse(fileBuffer.toString("utf8")) as Record<string, unknown>;
       const id = asString(parsed.id);
       if (id) {
-        return `sess:${platform}:${id}`;
+        return id;
       }
     } catch {
-      return `sess:${platform}:${path.basename(filePath)}`;
+      return undefined;
     }
   }
 
   if (platform === "openclaw") {
-    return `sess:${platform}:${path.basename(filePath, path.extname(filePath))}`;
+    return path.basename(filePath, path.extname(filePath));
   }
 
   if (platform === "gemini") {
@@ -402,10 +411,10 @@ export function deriveSessionId(platform: SourcePlatform, filePath: string, file
       const parsed = JSON.parse(fileBuffer.toString("utf8")) as Record<string, unknown>;
       const id = asString(parsed.sessionId) ?? asString(parsed.id);
       if (id) {
-        return `sess:${platform}:${id}`;
+        return id;
       }
     } catch {
-      return `sess:${platform}:${path.basename(filePath, path.extname(filePath))}`;
+      return undefined;
     }
   }
 
@@ -417,10 +426,10 @@ export function deriveSessionId(platform: SourcePlatform, filePath: string, file
         const payload = isObject(parsed.payload) ? parsed.payload : undefined;
         const sessionId = asString(payload?.id);
         if (sessionId) {
-          return `sess:${platform}:${sessionId}`;
+          return sessionId;
         }
       } catch {
-        return `sess:${platform}:${path.basename(filePath, path.extname(filePath))}`;
+        return undefined;
       }
     }
   }
@@ -432,7 +441,7 @@ export function deriveSessionId(platform: SourcePlatform, filePath: string, file
         const parsed = JSON.parse(firstLine) as Record<string, unknown>;
         const sessionId = asString(parsed.sessionId);
         if (sessionId) {
-          return `sess:${platform}:${sessionId}`;
+          return sessionId;
         }
       } catch {
         /* fall through to basename */
@@ -440,7 +449,54 @@ export function deriveSessionId(platform: SourcePlatform, filePath: string, file
     }
   }
 
-  return `sess:${platform}:${path.basename(filePath, path.extname(filePath))}`;
+  return undefined;
+}
+
+export function buildSourceResumeCommand(input: {
+  platform: SourcePlatform;
+  sourceSessionId?: string;
+  workingDirectory?: string;
+}): { command: string; working_directory: string; confidence: number } | undefined {
+  if (!input.sourceSessionId || !input.workingDirectory) {
+    return undefined;
+  }
+
+  const nativeCommand =
+    input.platform === "codex"
+      ? `codex resume ${quoteShellArg(input.sourceSessionId)}`
+      : input.platform === "claude_code"
+        ? `claude --resume ${quoteShellArg(input.sourceSessionId)}`
+        : undefined;
+  if (!nativeCommand) {
+    return undefined;
+  }
+
+  return {
+    command: `cd ${quoteShellArg(input.workingDirectory)} && ${nativeCommand}`,
+    working_directory: input.workingDirectory,
+    confidence: 1,
+  };
+}
+
+export function extractSourceSessionIdFromCanonicalSessionId(
+  platform: SourcePlatform,
+  sessionId: string | undefined,
+): string | undefined {
+  if (!sessionId) {
+    return undefined;
+  }
+  const prefix = `sess:${platform}:`;
+  if (!sessionId.startsWith(prefix)) {
+    return undefined;
+  }
+  return sessionId.slice(prefix.length) || undefined;
+}
+
+function quoteShellArg(value: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]+$/u.test(value)) {
+    return value;
+  }
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 export function mapRoleToActor(role: string): ActorKind {

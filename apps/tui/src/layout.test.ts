@@ -77,6 +77,9 @@ function createFixturePayload(
     sessionId?: string;
     turnId?: string;
     workingDirectory?: string;
+    sourceSessionId?: string;
+    resumeCommand?: string;
+    resumeWorkingDirectory?: string;
     includeProjectObservation?: boolean;
     syncStatus?: "healthy" | "stale" | "error";
     createdAt?: string;
@@ -386,6 +389,10 @@ function createFixturePayload(
         turn_count: 1,
         model: "gpt-5",
         working_directory: workingDirectory,
+        source_session_id: options.sourceSessionId,
+        resume_command: options.resumeCommand,
+        resume_working_directory: options.resumeWorkingDirectory,
+        resume_command_confidence: options.resumeCommand ? 1 : undefined,
         sync_axis: "current",
       },
     ],
@@ -1146,6 +1153,81 @@ test("long text wrapping in detail pane", async () => {
     // Count lines containing parts of the prompt text
     const promptLines = lines.filter((l) => l.includes("very long") || l.includes("prompt text") || l.includes("should wrap"));
     assert.ok(promptLines.length >= 1, "Expected wrapped prompt text to appear across multiple lines");
+  });
+});
+
+test("long resume commands in detail pane stay within viewport bounds", async () => {
+  await withTempStorage((storage) => {
+    const workspacePath = "/Users/mock_user/workspace/very/deep/path/with/a/project/name/that/keeps/going/chat-ui-kit";
+    const sourceSessionId = "019ce50a-d285-7a52-b98a-6a3a66a48547";
+    const resumeCommand = `cd ${workspacePath} && codex resume ${sourceSessionId}`;
+
+    storage.replaceSourcePayload(
+      createFixturePayload("src-resume-long", "Resume detail layout turn", "stage-resume-long", {
+        sessionId: "session-resume-long",
+        turnId: "turn-resume-long",
+        workingDirectory: workspacePath,
+        sourceSessionId,
+        resumeCommand,
+        resumeWorkingDirectory: workspacePath,
+        includeProjectObservation: true,
+      }),
+    );
+    storage.upsertProjectOverride({
+      target_kind: "turn",
+      target_ref: "turn-resume-long",
+      project_id: "project-resume-long",
+      display_name: "Resume Layout Project",
+    });
+
+    const browser = buildLocalTuiBrowser(storage);
+    let state = createBrowserState(browser);
+    state = reduceBrowserState(browser, state, { type: "drill" });
+    state = reduceBrowserState(browser, state, { type: "drill" });
+
+    const snapshot = renderBrowserSnapshot(browser, state, { width: 80, height: 28 });
+    const stripped = stripAnsi(snapshot);
+    const lines = stripped.split("\n");
+
+    assert.match(stripped, /Resume:/, "Resume command label not found in detail pane");
+    assert.match(stripped, /codex resume 019ce50a-d285-7a52-b98a-6a3a66a48547/, "Resume command not rendered");
+
+    for (let i = 0; i < lines.length; i++) {
+      const w = displayWidth(lines[i]!);
+      assert.ok(w <= 80, `Line ${i} overflows with long resume command: displayWidth=${w} > 80`);
+    }
+  });
+});
+
+test("detail pane shows bare source session ids without resume availability wording", async () => {
+  await withTempStorage((storage) => {
+    storage.replaceSourcePayload(
+      createFixturePayload("src-source-session-only", "Source session detail turn", "stage-source-session-only", {
+        sessionId: "session-source-session-only",
+        turnId: "turn-source-session-only",
+        workingDirectory: "/workspace/source-session-only",
+        sourceSessionId: "source-session-only-123",
+        includeProjectObservation: true,
+      }),
+    );
+    storage.upsertProjectOverride({
+      target_kind: "turn",
+      target_ref: "turn-source-session-only",
+      project_id: "project-source-session-only",
+      display_name: "Source Session Only",
+    });
+
+    const browser = buildLocalTuiBrowser(storage);
+    let state = createBrowserState(browser);
+    state = reduceBrowserState(browser, state, { type: "drill" });
+    state = reduceBrowserState(browser, state, { type: "drill" });
+
+    const snapshot = renderBrowserSnapshot(browser, state, { width: 100, height: 28 });
+    const stripped = stripAnsi(snapshot);
+
+    assert.match(stripped, /Source Session:\s+source-session-only-123/);
+    assert.doesNotMatch(stripped, /Resume:\s+available/);
+    assert.doesNotMatch(stripped, /Resume:\s+source-session-only-123/);
   });
 });
 

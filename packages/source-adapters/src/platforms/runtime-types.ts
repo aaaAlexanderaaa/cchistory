@@ -33,6 +33,10 @@ export interface SessionDraftLike {
   title?: string;
   model?: string;
   working_directory?: string;
+  source_session_id?: string;
+  resume_command?: string;
+  resume_working_directory?: string;
+  resume_command_confidence?: number;
   last_cumulative_token_usage?: TokenUsageLike;
 }
 

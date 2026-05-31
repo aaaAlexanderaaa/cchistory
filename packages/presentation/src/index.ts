@@ -86,6 +86,7 @@ export interface UserTurn {
   created_at: Date;
   last_context_activity_at: Date;
   session_id: string;
+  path_text?: string;
   source_id: string;
   project_id?: string;
   link_state: LinkState;
@@ -162,6 +163,10 @@ export interface Session {
   model?: string;
   working_directory?: string;
   source_native_project_ref?: string;
+  source_session_id?: string;
+  resume_command?: string;
+  resume_working_directory?: string;
+  resume_command_confidence?: number;
   primary_project_id?: string;
   sync_axis: SyncAxis;
 }
@@ -456,6 +461,7 @@ export function mapUserTurn(turn: UserTurnProjectionDto): UserTurn {
     created_at: new Date(turn.submission_started_at || turn.created_at),
     last_context_activity_at: new Date(turn.last_context_activity_at),
     session_id: turn.session_id,
+    path_text: turn.path_text,
     source_id: turn.source_id,
     project_id: turn.project_id,
     link_state: turn.link_state,

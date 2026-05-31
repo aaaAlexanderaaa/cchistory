@@ -128,6 +128,7 @@ export interface HostDiscoveryEntry {
 
 export interface SessionDraft {
   id: string;
+  source_session_id?: string;
   source_id: string;
   source_platform: SourcePlatform;
   host_id: string;
@@ -137,6 +138,9 @@ export interface SessionDraft {
   model?: string;
   working_directory?: string;
   source_native_project_ref?: string;
+  resume_command?: string;
+  resume_working_directory?: string;
+  resume_command_confidence?: number;
   last_cumulative_token_usage?: TokenUsageMetrics;
 }
 

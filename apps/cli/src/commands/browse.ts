@@ -384,6 +384,7 @@ export async function handleShow(context: CommandContext): Promise<CommandOutput
       const sessionRows: Array<[string, string]> = [
         ["Title", session.title ?? "(untitled)"],
         ["Workspace", session.working_directory ?? "unknown"],
+        ...(session.resume_command ? [["Resume Command", session.resume_command] as [string, string]] : []),
         ["Project", projectLabel(project)],
         ["Source", source ? source.display_name : session.source_platform],
         ["Model", session.model ?? "unknown"],
@@ -393,6 +394,8 @@ export async function handleShow(context: CommandContext): Promise<CommandOutput
       if (longListing) {
         sessionRows.push(
           ["Session ID", session.id],
+          ...(session.source_session_id ? [["Source Session ID", session.source_session_id] as [string, string]] : []),
+          ...(session.resume_working_directory ? [["Resume CWD", session.resume_working_directory] as [string, string]] : []),
           ...(project ? [["Project ID", project.project_id] as [string, string]] : []),
           ["Source Platform", session.source_platform],
           ...(source ? [["Source ID", source.id] as [string, string]] : []),
@@ -442,8 +445,14 @@ export async function handleShow(context: CommandContext): Promise<CommandOutput
         ["Submitted", formatCompactDate(turn.submission_started_at)],
         ["Tokens", `${formatNumber(turn.context_summary.total_tokens ?? 0)} (in=${formatNumber(turn.context_summary.token_usage?.input_tokens ?? 0)}, out=${formatNumber(turn.context_summary.token_usage?.output_tokens ?? 0)})`],
       ];
+      if (session?.resume_command) {
+        overviewRows.push(["Resume Command", session.resume_command]);
+      }
       if (longListing) {
         overviewRows.push(["Session ID", turn.session_id]);
+        if (session?.source_session_id) {
+          overviewRows.push(["Source Session ID", session.source_session_id]);
+        }
       }
       const traceability = longListing
         ? [

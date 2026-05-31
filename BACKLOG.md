@@ -15,7 +15,9 @@ before starting non-trivial corrective work.
 **R17, R31, and R35 are blocked on operator-provided data or user-started
 services.** R39 completed in-place on 2026-05-17 after the canonical-only
 default-search fix, focused local validation, and three successful independent
-final reviews.
+final reviews. R40 completed in-place on 2026-05-31 after resume provenance,
+path-aware search, CLI/TUI/Web projection work, source-shaped E2E coverage, and
+the CLI/TUI read-side verification gate passed.
 
 Documentation drift guardrail work from `R36` was completed in-place on
 2026-05-14 and is kept below as the current ownership record for support/runtime
@@ -38,6 +40,144 @@ on 2026-05-17.
 | R35 - Managed Remote-Agent Manual Review | active | Waiting for user to start canonical API service |
 
 231 completed objectives were archived and subsequently removed during repository cleanup.
+
+---
+
+## Objective: R40 - Resume Provenance And Path Search
+Status: done
+Priority: P0
+Source: user direction on 2026-05-31
+Design: `docs/design/R40_RESUME_PROVENANCE_PATH_SEARCH_PLAN.md`
+
+Users can see sessions in CCHistory that may be invisible to the currently
+active upstream agent account/provider namespace. They need to recover the
+source-native resume UUID and a ready-to-copy command such as
+`cd /absolute/path && codex resume <uuid>` or
+`cd /absolute/path && claude --resume <uuid>`. They also need to find those
+sessions by absolute workspace path or repo basename, not only by canonical turn
+text.
+
+This objective must preserve the frozen model: project-first history,
+`UserTurn` as the primary recall object, evidence-preserving ingestion, and
+UI/API/CLI/TUI as projections of one canonical model. Source-native resume data
+is provenance, not a replacement for canonical session identity.
+
+Implementation priority agreed with the user:
+
+1. Storage/search plus CLI/TUI first, because this is the fastest path to a
+   usable resume command.
+2. WebUI in the same feature slice, focused on search/detail/resume/long-path
+   display rather than a broad redesign.
+3. Search result rows may show a compact resume availability hint; full
+   copyable commands belong in detail panels.
+
+Completion evidence:
+
+- Source adapters, storage, CLI, TUI, API-client/domain/presentation, and Web
+  targeted builds/tests passed.
+- `pnpm run verify:cli-tui-read-side` passed, including real-layout fixture
+  sync/read checks.
+- Journey E now proves Codex and Claude Code fixtures can be found by absolute
+  workspace path and expose expected resume commands in built CLI JSON output.
+
+### KR: R40-KR1 Source-native resume provenance is preserved
+Status: done
+Acceptance: Codex and Claude Code source-shaped ingestion preserve the
+source-native session UUID and expose a deterministic resume projection without
+deriving it by brittle display-string parsing. The projection distinguishes the
+canonical session ID from the source-native resume ID.
+
+- Task: document Codex and Claude Code resume provenance and account/provider
+  isolation
+  Status: done
+  Acceptance: a design note records the local verified resume syntax, UUID
+  source fields, path layout, cwd filtering behavior, provider/account isolation
+  observations, and privacy boundaries for local validation.
+  Artifact: `docs/design/R40_RESUME_PROVENANCE_PATH_SEARCH_PLAN.md`
+
+- Task: extend domain/API/presentation session contracts for resume provenance
+  Status: done
+  Acceptance: `SessionProjection`, API DTOs, presentation mappings, and tests
+  expose source-native resume fields and distinguish them from CCHistory
+  session IDs.
+  Artifact: `packages/domain/src/`, `packages/api-client/src/`,
+  `packages/presentation/src/`
+
+- Task: preserve Codex and Claude Code source-native resume IDs in adapters
+  Status: done
+  Acceptance: source-shaped adapter tests prove Codex extracts the session UUID
+  from `session_meta.payload.id`, Claude Code extracts the source session UUID
+  from raw `sessionId` or filename evidence, and delegated/subagent evidence
+  does not produce misleading ordinary resume commands.
+  Artifact: `packages/source-adapters/src/`
+
+### KR: R40-KR2 Path-aware search finds resume targets
+Status: done
+Acceptance: search matches canonical ask text plus absolute workspace/project
+path evidence, including path fragments and basename fragments, with both FTS5
+and fallback substring search behavior covered.
+
+- Task: extend storage search indexing to include path-bearing session/project
+  metadata
+  Status: done
+  Acceptance: storage tests prove queries for absolute path fragments,
+  workspace basenames, and canonical ask content return the expected turns and
+  preserve existing search filters/pagination behavior.
+  Artifact: `packages/storage/src/queries/search.ts`,
+  `packages/storage/src/test/search.test.ts`
+
+- Task: add source-shaped E2E coverage for path search to resume provenance
+  Status: done
+  Acceptance: Codex and Claude Code fixtures sync through the built CLI, can be
+  searched by workspace path, and expose the expected resume command in
+  machine-readable output.
+  Artifact: `mock_data/`, `tests/e2e/` or `scripts/verify-*.mjs`
+
+### KR: R40-KR3 CLI/TUI expose quick resume commands
+Status: done
+Acceptance: CLI and TUI let an operator quickly recover the source-native
+resume command for a search result or session without losing traceability to
+the canonical turn/session.
+
+- Task: expose resume provenance in CLI show/search output
+  Status: done
+  Acceptance: `show turn`, `show session`, and search JSON include resume
+  provenance; human long/detail output prints copyable commands such as
+  `cd /absolute/path && codex resume <uuid>` and
+  `cd /absolute/path && claude --resume <uuid>`.
+  Artifact: `apps/cli/src/`, `apps/cli/src/test/`
+
+- Task: expose resume provenance in TUI detail
+  Status: done
+  Acceptance: the right-side TUI detail area shows a readable resume command
+  for supported Codex/Claude Code sessions while result rows remain compact;
+  layout tests cover long absolute paths and commands.
+  Artifact: `apps/tui/src/`, `apps/tui/src/*test.ts`
+
+### KR: R40-KR4 Web search/detail catches up for this workflow
+Status: done
+Acceptance: Web search supports ask/path lookup, shows compact resume
+availability in result rows, and shows a full copyable command in detail
+panels. Long paths and side panels remain usable on desktop and mobile layouts.
+
+- Task: update Web search and detail surfaces for path search and resume
+  provenance
+  Status: done
+  Acceptance: search copy no longer claims only canonical turn text; result
+  rows include source/path context and a compact resume availability cue; turn
+  and session detail panels show full copyable resume commands.
+  Artifact: `apps/web/components/views/search-view.tsx`,
+  `apps/web/components/turn-detail-panel.tsx`,
+  `apps/web/components/session-detail-panel.tsx`
+
+- Task: fix Web long-path and side-panel display issues touched by the resume
+  workflow
+  Status: done
+  Acceptance: the changed Web surfaces handle long absolute paths, dense
+  metadata, and narrow/mobile side panels without text overlap or unusable
+  overflow. Use existing Web validation paths and do not start persistent
+  services on the local Codex desktop profile.
+  Artifact: `apps/web/`
 
 ---
 

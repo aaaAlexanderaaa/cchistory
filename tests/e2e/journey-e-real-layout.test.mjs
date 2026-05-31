@@ -237,6 +237,36 @@ describe("Journey E — Real-layout truthfulness", () => {
     }
   });
 
+  it("path search exposes source-native resume commands for Codex and Claude Code", async () => {
+    const results = await runCliJson(
+      ["search", "/Users/mock_user/workspace/chat-ui-kit", "--store", storeDir],
+      tempRoot,
+      childEnv,
+    );
+
+    const codexHit = results.results.find((r) => r.session.source_platform === "codex");
+    assert.ok(codexHit, "expected Codex hit from absolute workspace path search");
+    assert.equal(codexHit.project.display_name, "chat-ui-kit");
+    assert.ok(codexHit.session.source_session_id, "expected Codex source-native session id");
+    assert.equal(codexHit.session.resume_working_directory, "/Users/mock_user/workspace/chat-ui-kit");
+    assert.equal(
+      codexHit.session.resume_command,
+      `cd /Users/mock_user/workspace/chat-ui-kit && codex resume ${codexHit.session.source_session_id}`,
+    );
+    assert.match(codexHit.turn.path_text ?? "", /\/Users\/mock_user\/workspace\/chat-ui-kit/);
+
+    const claudeHit = results.results.find((r) => r.session.source_platform === "claude_code");
+    assert.ok(claudeHit, "expected Claude Code hit from absolute workspace path search");
+    assert.equal(claudeHit.project.display_name, "chat-ui-kit");
+    assert.ok(claudeHit.session.source_session_id, "expected Claude source-native session id");
+    assert.equal(claudeHit.session.resume_working_directory, "/Users/mock_user/workspace/chat-ui-kit");
+    assert.equal(
+      claudeHit.session.resume_command,
+      `cd /Users/mock_user/workspace/chat-ui-kit && claude --resume ${claudeHit.session.source_session_id}`,
+    );
+    assert.match(claudeHit.turn.path_text ?? "", /\/Users\/mock_user\/workspace\/chat-ui-kit/);
+  });
+
   // ---- Turn drill-down ----
 
   it("show turn on OpenCode hit returns correct project and session", async () => {

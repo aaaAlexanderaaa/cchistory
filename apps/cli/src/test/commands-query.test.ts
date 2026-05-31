@@ -144,17 +144,14 @@ test("show session and turn reject ambiguous prefixes with actionable errors", a
 
     await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
 
-    const sessionsResult = await runCliCapture(["query", "sessions", "--store", storeDir, "--limit", "10"], tempRoot);
-    assert.equal(sessionsResult.exitCode, 0, sessionsResult.stderr);
-    const sessions = JSON.parse(sessionsResult.stdout);
-    const sessionPrefix = findAmbiguousPrefix(sessions.map((session: { id: string }) => session.id));
+    const sessionPrefix = "/workspace/cchistory";
 
     const sessionResult = await runCliCapture(["show", "session", sessionPrefix, "--store", storeDir], tempRoot);
     assert.equal(sessionResult.exitCode, 1);
     assert.match(sessionResult.stderr, new RegExp(`Ambiguous session reference: ${escapeRegExp(sessionPrefix)}`));
-    assert.match(sessionResult.stderr, /Matched ID prefix/);
+    assert.match(sessionResult.stderr, /Matched workspace/);
 
-    const turnsResult = await runCliCapture(["query", "turns", "--store", storeDir, "--limit", "10"], tempRoot);
+    const turnsResult = await runCliCapture(["query", "turns", "--store", storeDir, "--limit", "30"], tempRoot);
     assert.equal(turnsResult.exitCode, 0, turnsResult.stderr);
     const turns = JSON.parse(turnsResult.stdout);
     const turnPrefix = findAmbiguousPrefix(turns.map((turn: { id: string }) => turn.id));
