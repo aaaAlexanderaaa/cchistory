@@ -1,11 +1,12 @@
 'use client'
 
-import { useState, type MouseEvent, type ReactNode } from 'react'
+import { type ReactNode } from 'react'
 import { cn } from '@/lib/utils'
 import { useSessionRelatedWorkQuery } from '@/lib/api'
 import type { ProjectIdentity, Session, SessionRelatedWork, UserTurn } from '@/lib/types'
-import { Check, ChevronLeft, Clock, Copy, FolderOpen, Layers, MonitorSmartphone, Waypoints, X } from 'lucide-react'
+import { ChevronLeft, Clock, FolderOpen, Layers, MonitorSmartphone, Waypoints, X } from 'lucide-react'
 import { format } from 'date-fns'
+import { CopyButton } from './copy-button'
 
 interface SessionDetailPanelProps {
   session: Session
@@ -198,32 +199,6 @@ function MetaRow({ label, value, mono = false }: { label: string; value: string;
       <span className="text-xs text-muted">{label}</span>
       <span className={cn('min-w-0 break-all text-right text-ink', mono && 'mono-text text-xs')}>{value}</span>
     </div>
-  )
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
-
-  const handleCopy = async (event: MouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation()
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch {
-      // Clipboard API unavailable.
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      className="p-0.5 text-muted hover:text-ink"
-      title="Copy"
-    >
-      {copied ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
-    </button>
   )
 }
 

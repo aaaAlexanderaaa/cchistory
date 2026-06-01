@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { SearchHighlight, UserTurnProjection } from "@cchistory/domain";
+import { setSearchIndexStatus } from "../db/schema.js";
 
 export interface SearchCandidateFields {
   canonical_text?: string;
@@ -103,6 +104,7 @@ export function replaceSearchIndex(
       upsertHash.run(turn.id, hash);
     }
 
+    setSearchIndexStatus(db, "ready");
     db.exec("RELEASE replace_search_index;");
   } catch (error) {
     db.exec("ROLLBACK TO replace_search_index;");

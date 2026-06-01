@@ -179,6 +179,67 @@ test("opening a store with the old FTS schema rebuilds the new search index", as
   }
 });
 
+test("opening a store after a crash between the FTS drop and rebuild still rebuilds", async (t) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-crash-recovery-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    if (storage.searchMode !== "fts5") {
+      storage.close();
+      t.skip("FTS5 is unavailable in this Node SQLite build");
+      return;
+    }
+    storage.replaceSourcePayload(
+      createFixturePayload("src-search-crash-recovery", "Crash recovery target", "sr-crash-recovery", {
+        turnId: "turn-crash-recovery",
+        sessionId: "session-crash-recovery",
+      }),
+    );
+    storage.close();
+
+    // Simulate a crash between ensureSearchIndex's DROP and the constructor's
+    // successful replaceSearchIndex: the table is current-schema (path_text
+    // exists) and empty, and the durable marker is set to "needs_rebuild".
+    const db = new DatabaseSync(path.join(dataDir, "cchistory.sqlite"));
+    try {
+      db.exec(`
+        DROP TABLE IF EXISTS search_index;
+        DROP TABLE IF EXISTS search_index_config;
+        DROP TABLE IF EXISTS search_index_content;
+        DROP TABLE IF EXISTS search_index_data;
+        DROP TABLE IF EXISTS search_index_docsize;
+        DROP TABLE IF EXISTS search_index_idx;
+        DROP TABLE IF EXISTS search_index_hashes;
+        CREATE VIRTUAL TABLE search_index USING fts5(
+          turn_id UNINDEXED,
+          project_id UNINDEXED,
+          source_id UNINDEXED,
+          link_state UNINDEXED,
+          value_axis UNINDEXED,
+          canonical_text,
+          path_text,
+          raw_text,
+          tokenize = 'unicode61 porter'
+        );
+        INSERT OR REPLACE INTO schema_meta (key, value_text, updated_at) VALUES (
+          'search_index_status', 'needs_rebuild', '${new Date().toISOString()}'
+        );
+      `);
+    } finally {
+      db.close();
+    }
+
+    const recoveredStorage = new CCHistoryStorage(dataDir);
+    try {
+      const results = recoveredStorage.searchTurns({ query: "crash recovery target" });
+      assert.deepEqual(results.map((result) => result.turn.id), ["turn-crash-recovery"]);
+    } finally {
+      recoveredStorage.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("searchTurns does not match raw-only turn text", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-raw-only-"));
   try {

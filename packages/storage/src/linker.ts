@@ -647,39 +647,43 @@ function decorateTurn(
   projectById: Map<string, ProjectIdentity>,
   manualOverride?: ProjectManualOverride,
 ): UserTurnProjection {
-  const turnWithSessionPath = {
-    ...turn,
-    path_text: buildTurnPathText(turn, session),
-  };
-
   if (manualOverride) {
     const project = projectById.get(manualOverride.project_id) ?? buildManualProjectIdentity(manualOverride);
     projectById.set(project.project_id, project);
     return {
-      ...turnWithSessionPath,
+      ...turn,
       project_id: project.project_id,
       project_ref: project.slug,
       link_state: "committed",
       project_link_state: "committed",
       project_confidence: 1,
       candidate_project_ids: [project.project_id],
-      path_text: buildTurnPathText(turnWithSessionPath, session, project),
+      path_text: buildTurnPathText(turn, session, project),
     };
   }
 
   const linkedObservations = observations.filter((observation) => observation.project_id && observation.linkage_state);
   if (linkedObservations.length === 0) {
-    return turnWithSessionPath;
+    return {
+      ...turn,
+      path_text: buildTurnPathText(turn, session),
+    };
   }
 
   const selectedObservation = selectObservationForTurn(turn, linkedObservations);
   if (!selectedObservation?.project_id) {
-    return turnWithSessionPath;
+    return {
+      ...turn,
+      path_text: buildTurnPathText(turn, session),
+    };
   }
 
   const project = projectById.get(selectedObservation.project_id);
   if (!project) {
-    return turnWithSessionPath;
+    return {
+      ...turn,
+      path_text: buildTurnPathText(turn, session),
+    };
   }
 
   const candidateProjectIds = uniqueStrings(
@@ -689,14 +693,14 @@ function decorateTurn(
   );
 
   return {
-    ...turnWithSessionPath,
+    ...turn,
     project_id: project.project_id,
     project_ref: project.slug,
     link_state: project.linkage_state,
     project_link_state: project.linkage_state,
     project_confidence: project.confidence,
     candidate_project_ids: project.linkage_state === "candidate" ? candidateProjectIds : undefined,
-    path_text: buildTurnPathText(turnWithSessionPath, session, project),
+    path_text: buildTurnPathText(turn, session, project),
   };
 }
 

@@ -492,6 +492,14 @@ export function buildAdapterBlobResult(
   atoms.push(...atomized.atoms);
   edges.push(...atomized.edges);
   hydrateDraftFromAtoms(draft, atoms, blob.file_modified_at);
+  // Note: the resume command is built from the *post-hydration* working_directory.
+  // R40 deliberately reuses the latest cwd as the resume cwd signal, so the
+  // synthesized `cd <cwd> && resume <uuid>` may diverge from the original
+  // session's first cwd if a mid-session `cd` is reflected in workspace_signal
+  // atoms. Validate that native `codex resume` / `claude --resume` reattach
+  // correctly using the latest cwd on each supported upstream version before
+  // assuming the projected command is interchangeable with the session's first
+  // cwd.
   const resume = isOrdinaryResumeEligibleSourceFile(source.platform, filePath)
     ? buildSourceResumeCommand({
         platform: draft.source_platform,

@@ -225,8 +225,17 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
 
 function ensureSearchIndex(db: DatabaseSync): boolean {
   const existingColumns = listTableColumns(db, "search_index");
-  const searchIndexNeedsRebuild = existingColumns.length > 0 && !existingColumns.includes("path_text");
+  const schemaNeedsRebuild = existingColumns.length > 0 && !existingColumns.includes("path_text");
+  // A prior open that crashed between dropping the old FTS table and finishing
+  // the rebuild leaves a current-schema table with zero rows. Schema inspection
+  // alone will not detect that — the path_text column is already present, so
+  // we also consult a durable marker written before the drop and cleared only
+  // after a successful rebuild.
+  const crashMarkerNeedsRebuild = readSearchIndexStatus(db) === "needs_rebuild";
+  const searchIndexNeedsRebuild = schemaNeedsRebuild || crashMarkerNeedsRebuild;
   if (searchIndexNeedsRebuild) {
+    // Set the marker *before* the drop so a crash here is recoverable on next open.
+    setSearchIndexStatus(db, "needs_rebuild");
     db.exec(`
       DROP TABLE IF EXISTS search_index;
       DROP TABLE IF EXISTS search_index_config;
@@ -260,6 +269,29 @@ function listTableColumns(db: DatabaseSync, tableName: string): string[] {
   } catch {
     return [];
   }
+}
+
+export type SearchIndexStatus = "ready" | "needs_rebuild" | "unavailable";
+
+const SEARCH_INDEX_STATUS_KEY = "search_index_status";
+
+export function readSearchIndexStatus(db: DatabaseSync): SearchIndexStatus | undefined {
+  try {
+    const row = db.prepare("SELECT value_text FROM schema_meta WHERE key = ?").get(SEARCH_INDEX_STATUS_KEY) as
+      | { value_text: string }
+      | undefined;
+    const value = row?.value_text;
+    if (value === "ready" || value === "needs_rebuild" || value === "unavailable") {
+      return value;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function setSearchIndexStatus(db: DatabaseSync, status: SearchIndexStatus): void {
+  setSchemaMeta(db, SEARCH_INDEX_STATUS_KEY, status);
 }
 
 export function isFutureStorageSchemaVersion(version: string): boolean {

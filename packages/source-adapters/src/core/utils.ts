@@ -478,6 +478,14 @@ export function buildSourceResumeCommand(input: {
   };
 }
 
+/**
+ * Inverse of `deriveSessionId`: strip the `sess:${platform}:` prefix to recover
+ * the source-native session id. Returns undefined if `sessionId` is missing or
+ * was not produced by the canonical id format — for example, if `deriveSessionId`
+ * is ever changed to a hash-only scheme, this function will silently degrade
+ * to "no resume available" with no signal. Callers that need to distinguish
+ * "no source id" from "no canonical id" should check the prefix themselves.
+ */
 export function extractSourceSessionIdFromCanonicalSessionId(
   platform: SourcePlatform,
   sessionId: string | undefined,

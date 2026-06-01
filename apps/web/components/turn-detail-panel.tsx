@@ -1,6 +1,6 @@
 'use client'
 
-import { Fragment, useMemo, useState, type MouseEvent, type ReactNode } from 'react'
+import { Fragment, useMemo, useState, type ReactNode } from 'react'
 import { formatTokenUsageSummary } from '@/lib/token-usage'
 import { cn } from '@/lib/utils'
 import { useTurnLineageQuery } from '@/lib/api'
@@ -31,11 +31,10 @@ import {
   MessageSquare,
   User,
   Wrench,
-  Copy,
-  Check,
   X,
 } from 'lucide-react'
 import { format } from 'date-fns'
+import { CopyButton } from './copy-button'
 
 interface TurnDetailPanelProps {
   turn: UserTurn
@@ -166,7 +165,7 @@ export function TurnDetailPanel({
           </button>
         </div>
 
-          <div className="flex flex-wrap items-center gap-4 px-4 pb-3 text-xs text-muted">
+        <div className="flex flex-wrap items-center gap-4 px-4 pb-3 text-xs text-muted">
           <span className="flex items-center gap-1">
             <Clock className="w-3 h-3" />
             {format(turn.created_at, 'yyyy-MM-dd HH:mm')}
@@ -519,32 +518,6 @@ function LineageMetric({ label, value }: { label: string; value: number }) {
       <div className="text-[10px] stamp-text text-muted">{label}</div>
       <div className="mt-1 text-lg font-bold font-display text-ink">{value}</div>
     </div>
-  )
-}
-
-function CopyButton({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false)
-
-  const handleCopy = async (event: MouseEvent<HTMLButtonElement>) => {
-    event.stopPropagation()
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    } catch {
-      // Clipboard API unavailable.
-    }
-  }
-
-  return (
-    <button
-      type="button"
-      onClick={handleCopy}
-      className="p-0.5 text-muted hover:text-ink"
-      title="Copy"
-    >
-      {copied ? <Check className="w-3 h-3 text-success" /> : <Copy className="w-3 h-3" />}
-    </button>
   )
 }
 

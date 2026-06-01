@@ -135,4 +135,3 @@ Search UI should let users find sessions by:
 - Use real local Codex and Claude directory layouts to confirm provider/account
   isolation behavior.
 - Confirm that the extracted UUID is the one accepted by the native resume CLI.
-
