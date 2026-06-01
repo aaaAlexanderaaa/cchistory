@@ -169,7 +169,7 @@ test("sync --since skips unchanged old Codex files before content capture when f
 
     const result = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--since", "1h", "--detail"], tempRoot);
     assert.equal(result.exitCode, 0, result.stderr);
-    assert.match(result.stderr, /Reused unchanged file older than --since without reading content/);
+    assert.match(result.stderr, /Reused unchanged file without reading content/);
     assert.match(result.stderr, /\[sync:codex:file_skip\]/);
     assert.doesNotMatch(result.stderr, /\[sync:codex:file_capture_done\]/);
   } finally {
@@ -217,7 +217,7 @@ test("sync --since backfills file identity metadata for upgraded unchanged Codex
 
     const fastSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--since", "1h", "--detail"], tempRoot);
     assert.equal(fastSync.exitCode, 0, fastSync.stderr);
-    assert.match(fastSync.stderr, /Reused unchanged file older than --since without reading content/);
+    assert.match(fastSync.stderr, /Reused unchanged file without reading content/);
     assert.doesNotMatch(fastSync.stderr, /\[sync:codex:file_capture_done\]/);
   } finally {
     process.env.HOME = originalHome;
@@ -313,7 +313,7 @@ test("sync reuses unchanged Codex projections on a repeated run", async () => {
     const sourceStartIndex = secondSync.stderr.indexOf("[sync:codex:source_start]");
     assert.ok(reuseLoadIndex >= 0, "incremental reuse load should be visible before source scanning");
     assert.ok(sourceStartIndex > reuseLoadIndex, "source scanning should start after incremental reuse is loaded");
-    assert.match(secondSync.stderr, /\[sync:codex:file_reuse\]/);
+    assert.match(secondSync.stderr, /\[sync:codex:file_skip\]/);
     assert.match(secondSync.stderr, /\[sync:codex:file_done\]/);
   } finally {
     process.env.HOME = originalHome;
@@ -387,7 +387,7 @@ test("sync preserves empty unchanged Codex file evidence across reuse", async ()
     const secondPayload = JSON.parse(secondSync.stdout);
     assert.equal(secondPayload.sources[0].counts.blobs, 1);
     assert.equal(secondPayload.sources[0].counts.records, 0);
-    assert.match(secondSync.stderr, /\[sync:codex:file_reuse\]/);
+    assert.match(secondSync.stderr, /\[sync:codex:file_skip\]/);
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });
@@ -439,14 +439,14 @@ test("sync reuses unchanged Claude Code files that share one session without dup
     assert.equal(secondSync.exitCode, 0, secondSync.stderr);
     const secondPayload = JSON.parse(secondSync.stdout);
     assert.equal(secondPayload.sources[0].counts.turns, 2);
-    assert.match(secondSync.stderr, /\[sync:claude_code:file_reuse\]/);
+    assert.match(secondSync.stderr, /\[sync:claude_code:file_skip\]/);
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
 
-test("sync mixed Claude Code reuse and reparse does not retain stale cross-file atom edges", async () => {
+test("sync mixed Claude Code reuse and reparse preserves skipped shared-session turns", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-claude-mixed-"));
   const originalHome = process.env.HOME;
 
@@ -510,9 +510,17 @@ test("sync mixed Claude Code reuse and reparse does not retain stale cross-file 
     );
     const result = await runCliCapture(["sync", "--store", storeDir, "--source", "claude_code", "--json", "--detail"], tempRoot);
     assert.equal(result.exitCode, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.sources[0].counts.turns, 1);
+    assert.match(result.stderr, /\[sync:claude_code:file_skip\]/);
+    assert.match(result.stderr, /\[sync:claude_code:file_parse_done\]/);
 
     const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
     try {
+      const turns = db.prepare("SELECT payload_json FROM user_turns ORDER BY submission_started_at").all()
+        .map((row) => JSON.parse((row as { payload_json: string }).payload_json) as { canonical_text: string });
+      assert.deepEqual(turns.map((turn) => turn.canonical_text), ["Parent asks for review."]);
+
       const dangling = db.prepare(`
         SELECT COUNT(*) AS count
         FROM atom_edges e

@@ -352,13 +352,13 @@ async function collectSourceInputs(
       }
       const previousEntry = previousIndex?.byOriginPath.get(path.normalize(filePath));
       const isOlderThanSince = changedSinceMs !== undefined && fileStats.mtime.getTime() < changedSinceMs;
-      if (previousEntry && isOlderThanSince && canReuseBlobFromStats(previousEntry, fileStats)) {
+      if (previousEntry && canReuseBlobFromStats(previousEntry, fileStats)) {
         if (!previousIndex?.metadataOnly) {
           mergePreviousFileEntry(sessionsById, orphanBlobs, sourceLossAudits, previousEntry);
         }
         emitProbeProgress(options, source, {
           stage: "file_skip",
-          message: `Reused unchanged file older than --since without reading content: ${filePath}`,
+          message: `Reused unchanged file without reading content: ${filePath}`,
           file_path: filePath,
           file_index: fileIndex + 1,
           file_count: files.length,
@@ -390,35 +390,10 @@ async function collectSourceInputs(
 
       if (previousEntry && canReuseCapturedBlob(previousEntry, capturedBlob.blob)) {
         if (previousIndex?.metadataOnly) {
-          if (isOlderThanSince) {
-            orphanBlobs.push(capturedBlob.blob);
-            emitProbeProgress(options, source, {
-              stage: "file_skip",
-              message: `Reused unchanged file older than --since: ${filePath}`,
-              file_path: filePath,
-              file_index: fileIndex + 1,
-              file_count: files.length,
-              size_bytes: capturedBlob.blob.size_bytes,
-              elapsed_ms: Date.now() - fileStartedAt,
-            });
-            emitProbeProgress(options, source, {
-              stage: "file_done",
-              message: `Processed ${filePath}`,
-              file_path: filePath,
-              file_index: fileIndex + 1,
-              file_count: files.length,
-              size_bytes: capturedBlob.blob.size_bytes,
-              elapsed_ms: Date.now() - fileStartedAt,
-            });
-            continue;
-          }
-        } else {
-          mergePreviousFileEntry(sessionsById, orphanBlobs, sourceLossAudits, previousEntry, capturedBlob.blob);
+          orphanBlobs.push(capturedBlob.blob);
           emitProbeProgress(options, source, {
-            stage: isOlderThanSince ? "file_skip" : "file_reuse",
-            message: isOlderThanSince
-              ? `Reused unchanged file older than --since: ${filePath}`
-              : `Reused unchanged projection for ${filePath}`,
+            stage: "file_skip",
+            message: `Reused unchanged file: ${filePath}`,
             file_path: filePath,
             file_index: fileIndex + 1,
             file_count: files.length,
@@ -436,6 +411,28 @@ async function collectSourceInputs(
           });
           continue;
         }
+        mergePreviousFileEntry(sessionsById, orphanBlobs, sourceLossAudits, previousEntry, capturedBlob.blob);
+        emitProbeProgress(options, source, {
+          stage: isOlderThanSince ? "file_skip" : "file_reuse",
+          message: isOlderThanSince
+            ? `Reused unchanged file: ${filePath}`
+            : `Reused unchanged projection for ${filePath}`,
+          file_path: filePath,
+          file_index: fileIndex + 1,
+          file_count: files.length,
+          size_bytes: capturedBlob.blob.size_bytes,
+          elapsed_ms: Date.now() - fileStartedAt,
+        });
+        emitProbeProgress(options, source, {
+          stage: "file_done",
+          message: `Processed ${filePath}`,
+          file_path: filePath,
+          file_index: fileIndex + 1,
+          file_count: files.length,
+          size_bytes: capturedBlob.blob.size_bytes,
+          elapsed_ms: Date.now() - fileStartedAt,
+        });
+        continue;
       }
     } catch (error) {
       const detail = `Failed to capture source file ${filePath}: ${formatErrorMessage(error)}`;

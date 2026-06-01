@@ -503,7 +503,7 @@ export async function syncSelectedSources(input: {
   const syncedSources: SyncedSourceSummary[] = [];
   for (const source of sources) {
     let payload: SourceSyncPayload | undefined;
-    let usePartialSinceSync = shouldUsePartialSinceSync(source, input);
+    let useMergeByOriginPath = shouldUseMergeByOriginPath(source, input);
     const preservedOriginPaths = new Set<string>();
     const observedOriginPaths = new Set<string>();
     try {
@@ -517,7 +517,7 @@ export async function syncSelectedSources(input: {
       });
       const reuseLoadStartedAt = Date.now();
       let previousPayload: SourceSyncPayload | undefined;
-      if (supportsIncrementalReuse(source.platform)) {
+      if (useMergeByOriginPath) {
         input.onProgress?.({
           stage: "incremental_reuse_load_start",
           source_id: source.id,
@@ -526,11 +526,9 @@ export async function syncSelectedSources(input: {
           display_name: source.display_name,
           message: `Loading previous ${source.display_name} projections for incremental reuse`,
         });
-        previousPayload = usePartialSinceSync
-          ? input.storage.getSourceIncrementalMetadataPayload(source.id)
-          : input.storage.getSourceIncrementalPayload(source.id);
-        if (usePartialSinceSync && !previousPayload) {
-          usePartialSinceSync = false;
+        previousPayload = input.storage.getSourceIncrementalPayload(source.id);
+        if (!previousPayload) {
+          useMergeByOriginPath = false;
         }
         input.onProgress?.({
           stage: "incremental_reuse_load_done",
@@ -540,7 +538,7 @@ export async function syncSelectedSources(input: {
           display_name: source.display_name,
           message: previousPayload
             ? [
-                `Loaded previous ${source.display_name} ${usePartialSinceSync ? "metadata" : "projections"}`,
+                `Loaded previous ${source.display_name} reuse inputs`,
                 `(${previousPayload.blobs.length} blob(s), ${previousPayload.records.length} record(s), ${previousPayload.atoms.length} atom(s))`,
               ].join(" ")
             : `No previous ${source.display_name} projections found for incremental reuse`,
@@ -564,7 +562,7 @@ export async function syncSelectedSources(input: {
           changed_since: input.changedSince,
           previous_payloads: previousPayload ? { [source.id]: previousPayload } : undefined,
           on_progress: (event) => {
-            if (usePartialSinceSync && event.file_path) {
+            if (useMergeByOriginPath && event.file_path) {
               observedOriginPaths.add(event.file_path);
               if (event.stage === "file_skip") {
                 preservedOriginPaths.add(event.file_path);
@@ -619,7 +617,7 @@ export async function syncSelectedSources(input: {
               : undefined,
       });
     };
-    const counts = usePartialSinceSync
+    const counts = useMergeByOriginPath
       ? input.storage.mergeSourcePayloadByOriginPath(payload, {
           preserve_origin_paths: [...preservedOriginPaths],
           observed_origin_paths: [...observedOriginPaths],
@@ -629,7 +627,7 @@ export async function syncSelectedSources(input: {
           allow_host_rekey: true,
           onProgress: onStorageProgress,
         });
-    const storedSource = usePartialSinceSync
+    const storedSource = useMergeByOriginPath
       ? input.storage.listSources().find((entry) => entry.id === payload.source.id) ?? payload.source
       : payload.source;
     syncedSources.push({
@@ -777,11 +775,11 @@ function supportsIncrementalReuse(platform: SourceDefinition["platform"]): boole
   return platform === "codex" || platform === "claude_code";
 }
 
-function shouldUsePartialSinceSync(
+function shouldUseMergeByOriginPath(
   source: SourceDefinition,
-  input: { changedSince?: string; limitFiles?: number },
+  input: { limitFiles?: number },
 ): boolean {
-  return source.platform === "codex" && Boolean(input.changedSince) && input.limitFiles === undefined;
+  return supportsIncrementalReuse(source.platform) && input.limitFiles === undefined;
 }
 
 async function inspectStore(dbPath: string): Promise<{
