@@ -36,6 +36,10 @@ Source 支持状态的代码级事实在
 [`packages/source-adapters/src/platforms/registry.ts`](../../packages/source-adapters/src/platforms/registry.ts)。
 更宽泛的 domain/API enum 只是 schema allowance，不代表 adapter 已经注册或
 达到 stable 支持。
+Source 产品价值分层属于设计语义，定义在
+[`../../HIGH_LEVEL_DESIGN_FREEZE.md`](../../HIGH_LEVEL_DESIGN_FREEZE.md)；
+当前注册 adapter 到价值分层的映射记录在
+[`CURRENT_RUNTIME_SURFACE.md`](CURRENT_RUNTIME_SURFACE.md)。
 
 ## CLI、TUI 与 Operator Experience
 

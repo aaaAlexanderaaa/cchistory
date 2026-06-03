@@ -41,7 +41,10 @@ import {
 } from "../db/schema.js";
 import {
   mergeSourcePayloadByOriginPath as mergePersistedSourcePayloadByOriginPath,
+  pruneSourcePayloadByObservedOriginPaths as prunePersistedSourcePayloadByObservedOriginPaths,
   replaceSourcePayloadWithOptions as replacePersistedSourcePayloadWithOptions,
+  updateSourceSyncMetadata as updatePersistedSourceSyncMetadata,
+  type SourcePayloadWriteProgressEvent,
 } from "../ingest/source-payload.js";
 import { buildFallbackProjectObservationCandidates } from "../linking/fallback.js";
 import { assignProjectRevisions } from "../linking/revisions.js";
@@ -69,6 +72,11 @@ import {
 import * as Queries from "./queries.js";
 import * as Stats from "./stats.js";
 import * as Gc from "./gc.js";
+
+type StorageProgressEvent = SourcePayloadWriteProgressEvent | {
+  stage: "reindex_start" | "reindex_done";
+  source_id: string;
+};
 
 export class CCHistoryStorage {
   private readonly db: DatabaseSync;
@@ -122,7 +130,8 @@ export class CCHistoryStorage {
     payload: SourceSyncPayload,
     options: {
       allow_host_rekey?: boolean;
-      onProgress?: (event: { stage: "write_store_done" | "reindex_start" | "reindex_done"; source_id: string }) => void;
+      onProgress?: (event: StorageProgressEvent) => void;
+      refreshDerived?: boolean;
     } = {},
   ): {
     sessions: number;
@@ -153,6 +162,9 @@ export class CCHistoryStorage {
     }
 
     this.invalidateProjectLinkSnapshot();
+    if (options.refreshDerived === false) {
+      return result;
+    }
     options.onProgress?.({ stage: "reindex_start", source_id: payload.source.id });
     this.refreshDerivedState();
     options.onProgress?.({ stage: "reindex_done", source_id: payload.source.id });
@@ -164,7 +176,8 @@ export class CCHistoryStorage {
     options: {
       preserve_origin_paths?: readonly string[];
       observed_origin_paths?: readonly string[];
-      onProgress?: (event: { stage: "write_store_done" | "reindex_start" | "reindex_done"; source_id: string }) => void;
+      onProgress?: (event: StorageProgressEvent) => void;
+      refreshDerived?: boolean;
     } = {},
   ): {
     sessions: number;
@@ -181,11 +194,109 @@ export class CCHistoryStorage {
     });
 
     this.invalidateProjectLinkSnapshot();
+    if (options.refreshDerived === false) {
+      return result;
+    }
     options.onProgress?.({ stage: "reindex_start", source_id: payload.source.id });
     this.refreshDerivedState();
     options.onProgress?.({ stage: "reindex_done", source_id: payload.source.id });
     return result;
   }
+
+  updateSourceSyncMetadata(
+    payload: SourceSyncPayload,
+    options: {
+      onProgress?: (event: StorageProgressEvent) => void;
+    } = {},
+  ): {
+    sessions: number;
+    turns: number;
+    records: number;
+    fragments: number;
+    atoms: number;
+    blobs: number;
+  } {
+    return updatePersistedSourceSyncMetadata(this.db, payload, {
+      on_progress: options.onProgress,
+    });
+  }
+
+  pruneSourcePayloadByObservedOriginPaths(
+    sourceId: string,
+    observedOriginPaths: readonly string[],
+    options: {
+      refreshDerived?: boolean;
+      onProgress?: (event: StorageProgressEvent) => void;
+    } = {},
+  ): {
+    sessions: number;
+    turns: number;
+    records: number;
+    fragments: number;
+    atoms: number;
+    blobs: number;
+  } {
+    const result = prunePersistedSourcePayloadByObservedOriginPaths(this.db, sourceId, observedOriginPaths, {
+      on_progress: options.onProgress,
+    });
+    this.invalidateProjectLinkSnapshot();
+    if (options.refreshDerived === false) {
+      return result;
+    }
+    options.onProgress?.({ stage: "reindex_start", source_id: sourceId });
+    this.refreshDerivedState();
+    options.onProgress?.({ stage: "reindex_done", source_id: sourceId });
+    return result;
+  }
+
+  refreshDerivedProjections(options: {
+    source_id?: string;
+    onProgress?: (event: { stage: "reindex_start" | "reindex_done"; source_id: string }) => void;
+  } = {}): void {
+    const sourceId = options.source_id ?? "all";
+    options.onProgress?.({ stage: "reindex_start", source_id: sourceId });
+    this.refreshDerivedState();
+    options.onProgress?.({ stage: "reindex_done", source_id: sourceId });
+  }
+
+  annotateSourceStageRunStats(
+    sourceId: string,
+    statsByStage: Partial<Record<StageRun["stage_kind"], Record<string, number>>>,
+  ): void {
+    const rows = this.db.prepare("SELECT id, payload_json FROM stage_runs WHERE source_id = ?").all(sourceId) as Array<{
+      id: string;
+      payload_json: string;
+    }>;
+    const update = this.db.prepare("UPDATE stage_runs SET payload_json = ? WHERE id = ?");
+
+    for (const row of rows) {
+      const stageRun = fromJson<StageRun>(row.payload_json);
+      const extraStats = statsByStage[stageRun.stage_kind];
+      if (!extraStats) {
+        continue;
+      }
+      update.run(toJson({ ...stageRun, stats: { ...stageRun.stats, ...extraStats } }), row.id);
+    }
+  }
+
+  countSourceLossAuditsByStage(sourceId: string): Partial<Record<StageRun["stage_kind"], number>> {
+    const rows = this.db.prepare(`
+      SELECT stage_kind, COUNT(*) AS count
+        FROM loss_audits INDEXED BY idx_loss_audits_source_failure_stage
+       WHERE source_id = ?
+         AND severity IN ('warning', 'error')
+       GROUP BY stage_kind
+    `).all(sourceId) as Array<{ stage_kind: string; count: number }>;
+    const counts: Partial<Record<StageRun["stage_kind"], number>> = {};
+    for (const row of rows) {
+      if (!row.stage_kind) {
+        continue;
+      }
+      counts[row.stage_kind as StageRun["stage_kind"]] = row.count;
+    }
+    return counts;
+  }
+
 
   upsertProjectOverride(input: {
     target_kind: ProjectManualOverride["target_kind"];
@@ -243,6 +354,14 @@ export class CCHistoryStorage {
   getSourceIncrementalPayload(sourceId: string): SourceSyncPayload | undefined {
     const source = this.listSources().find((entry) => entry.id === sourceId);
     return source ? this.buildSourceIncrementalPayload(source.id) : undefined;
+  }
+
+  getSourceIncrementalPayloadForOriginPaths(
+    sourceId: string,
+    originPaths: readonly string[],
+  ): SourceSyncPayload | undefined {
+    const source = this.listSources().find((entry) => entry.id === sourceId);
+    return source ? this.buildSourceIncrementalPayloadForOriginPaths(source.id, originPaths) : undefined;
   }
 
   getSourceIncrementalMetadataPayload(sourceId: string): SourceSyncPayload | undefined {
@@ -913,6 +1032,65 @@ export class CCHistoryStorage {
       atoms: Queries.selectPayloadsBySource<ConversationAtom>(this.db, "conversation_atoms", sourceId, "ORDER BY time_key ASC, seq_no ASC"),
       edges: Queries.selectPayloadsBySource<AtomEdge>(this.db, "atom_edges", sourceId),
       sessions: Queries.selectPayloadsBySource<SessionProjection>(this.db, "sessions", sourceId, "ORDER BY created_at ASC, updated_at ASC"),
+      candidates: [],
+      turns: [],
+      contexts: [],
+    };
+  }
+
+  private buildSourceIncrementalPayloadForOriginPaths(
+    sourceId: string,
+    originPaths: readonly string[],
+  ): SourceSyncPayload {
+    const source = this.listSources().find((entry) => entry.id === sourceId);
+    if (!source) {
+      throw new Error(`Unknown source id: ${sourceId}`);
+    }
+
+    const normalizedOriginPaths = originPaths.map((entry) => path.normalize(entry));
+    const blobs = Queries.selectBlobsByOriginPaths(this.db, sourceId, normalizedOriginPaths);
+    const records = blobs.flatMap((blob) => Queries.selectRecordsBySourceAndBlobId(this.db, sourceId, blob.id));
+    const sessionRefs = uniqueStrings(records.map((record) => record.session_ref));
+    const fragments = sessionRefs.flatMap((sessionRef) =>
+      Queries.selectPayloadsBySourceAndSession<SourceFragment>(this.db, "source_fragments", sourceId, sessionRef),
+    );
+    const atoms = sessionRefs.flatMap((sessionRef) =>
+      Queries.selectPayloadsBySourceAndSession<ConversationAtom>(
+          this.db,
+          "conversation_atoms",
+          sourceId,
+          sessionRef,
+          "ORDER BY time_key ASC, seq_no ASC",
+      ),
+    );
+    const edges = sessionRefs.flatMap((sessionRef) =>
+      Queries.selectPayloadsBySourceAndSession<AtomEdge>(this.db, "atom_edges", sourceId, sessionRef),
+    );
+    const sessions = sessionRefs
+      .map((sessionRef) => Queries.getSession(this.db, sessionRef))
+      .filter((session): session is SessionProjection => session !== undefined && session.source_id === sourceId);
+    const loss_audits = Queries.selectReusableLossAuditsByRefs(
+      this.db,
+      sourceId,
+      {
+        blobIds: new Set(blobs.map((blob) => blob.id)),
+        recordIds: new Set(records.map((record) => record.id)),
+        fragmentIds: new Set(fragments.map((fragment) => fragment.id)),
+        atomIds: new Set(atoms.map((atom) => atom.id)),
+        sessionRefs: new Set(sessionRefs),
+      },
+    );
+
+    return {
+      source,
+      stage_runs: Queries.selectPayloadsBySource<StageRun>(this.db, "stage_runs", sourceId),
+      loss_audits,
+      blobs,
+      records,
+      fragments,
+      atoms,
+      edges,
+      sessions,
       candidates: [],
       turns: [],
       contexts: [],

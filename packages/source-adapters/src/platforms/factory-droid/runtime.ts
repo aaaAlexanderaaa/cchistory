@@ -179,6 +179,11 @@ export function parseFactoryRecord(
     return { fragments, lossAudits };
   }
 
+  if (recordType === "todo_state" || recordType === "session_end" || recordType === "compaction_state") {
+    fragments.push(createFactoryLifecycleFragment(context, record, timeKey, recordType, parsed, helpers));
+    return { fragments, lossAudits };
+  }
+
   lossAudits.push(
     helpers.createRecordLossAudit(
       context,
@@ -190,4 +195,139 @@ export function parseFactoryRecord(
   );
   fragments.push(helpers.createFragment(context, record, 0, "unknown", timeKey, parsed));
   return { fragments, lossAudits };
+}
+
+function createFactoryLifecycleFragment(
+  context: FragmentBuildContextLike,
+  record: RawRecord,
+  timeKey: string,
+  recordType: string,
+  parsed: Record<string, unknown>,
+  helpers: FactoryParseRuntimeHelpers,
+): SourceFragment {
+  const todos = extractFactoryTodoItems(parsed, helpers);
+  const todoText = extractFactoryTodoText(parsed, helpers);
+  const summary = firstFactoryLifecycleText(helpers, parsed.summary, parsed.summaryText, parsed.summary_text);
+  const finalText = firstFactoryLifecycleText(helpers, parsed.finalText, parsed.final_text);
+  const lifecycleText = todoText ?? summary ?? finalText;
+  const todoStatusCounts = summarizeFactoryTodoStatuses(todos, todoText, helpers);
+  return helpers.createFragment(context, record, 0, "unknown", timeKey, {
+    signal_kind: recordType,
+    source_event_type: recordType,
+    source_event_id: helpers.asString(parsed.id),
+    status: helpers.asString(parsed.status),
+    reason: helpers.asString(parsed.reason),
+    message_index: helpers.asNumber(parsed.messageIndex ?? parsed.message_index),
+    duration_ms: helpers.asNumber(parsed.durationMs ?? parsed.duration_ms),
+    tool_count: helpers.asNumber(parsed.toolCount ?? parsed.tool_count),
+    todo_item_count: todos.length || undefined,
+    todo_status_counts: todoStatusCounts,
+    todo_text_present: todoText !== undefined,
+    todo_text_bytes: todoText ? todoText.length : undefined,
+    summary_present: summary !== undefined,
+    summary_bytes: summary ? summary.length : undefined,
+    final_text_present: finalText !== undefined,
+    final_text_bytes: finalText ? finalText.length : undefined,
+    lifecycle_text_kind: lifecycleText ? recordType : undefined,
+    lifecycle_text_present: lifecycleText !== undefined,
+    lifecycle_text_bytes: lifecycleText ? lifecycleText.length : undefined,
+    lifecycle_text_preview: lifecycleText ? previewFactoryLifecycleText(lifecycleText) : undefined,
+    compacted: helpers.asBoolean(parsed.compacted),
+  });
+}
+
+function extractFactoryTodoItems(
+  parsed: Record<string, unknown>,
+  helpers: FactoryParseRuntimeHelpers,
+): unknown[] {
+  for (const candidate of [parsed.todos, parsed.items, parsed.tasks, parsed.todoState, parsed.todo_state]) {
+    const directItems = helpers.asArray(candidate);
+    if (directItems.length > 0) {
+      return directItems;
+    }
+    if (!helpers.isObject(candidate)) {
+      continue;
+    }
+    for (const nestedKey of ["items", "tasks", "todos"]) {
+      const nestedItems = helpers.asArray(candidate[nestedKey]);
+      if (nestedItems.length > 0) {
+        return nestedItems;
+      }
+    }
+  }
+  return [];
+}
+
+function extractFactoryTodoText(
+  parsed: Record<string, unknown>,
+  helpers: FactoryParseRuntimeHelpers,
+): string | undefined {
+  const todos = parsed.todos;
+  if (helpers.isObject(todos)) {
+    return firstFactoryLifecycleText(
+      helpers,
+      todos.todos,
+      todos.text,
+      todos.markdown,
+      todos.summary,
+      parsed.todoText,
+      parsed.todo_text,
+    );
+  }
+  return firstFactoryLifecycleText(helpers, parsed.todoText, parsed.todo_text, todos);
+}
+
+function firstFactoryLifecycleText(
+  helpers: FactoryParseRuntimeHelpers,
+  ...values: unknown[]
+): string | undefined {
+  for (const value of values) {
+    const text = helpers.asString(value)?.trim();
+    if (text) {
+      return text;
+    }
+  }
+  return undefined;
+}
+
+function summarizeFactoryTodoStatuses(
+  todos: unknown[],
+  todoText: string | undefined,
+  helpers: FactoryParseRuntimeHelpers,
+): Record<string, number> | undefined {
+  const counts: Record<string, number> = {};
+  const addStatus = (value: unknown) => {
+    const status = helpers.asString(value)?.trim().toLowerCase().replace(/\s+/gu, "_");
+    if (!status) {
+      return;
+    }
+    counts[status] = (counts[status] ?? 0) + 1;
+  };
+
+  for (const todo of todos) {
+    if (helpers.isObject(todo)) {
+      addStatus(todo.status ?? todo.state);
+      continue;
+    }
+    const todoLine = helpers.asString(todo);
+    if (!todoLine) {
+      continue;
+    }
+    const match = todoLine.match(/\[([^\]]+)\]/u);
+    addStatus(match?.[1]);
+  }
+
+  if (todoText) {
+    const matches = todoText.matchAll(/^\s*(?:\d+\.\s*)?\[([^\]]+)\]/gmu);
+    for (const match of matches) {
+      addStatus(match[1]);
+    }
+  }
+
+  return Object.keys(counts).length > 0 ? counts : undefined;
+}
+
+function previewFactoryLifecycleText(text: string): string {
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  return normalized.length <= 240 ? normalized : `${normalized.slice(0, 237)}...`;
 }

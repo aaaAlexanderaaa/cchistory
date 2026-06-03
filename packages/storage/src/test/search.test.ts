@@ -179,6 +179,51 @@ test("opening a store with the old FTS schema rebuilds the new search index", as
   }
 });
 
+test("opening a store with no FTS table rebuilds the search index", async (t) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-missing-fts-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    if (storage.searchMode !== "fts5") {
+      storage.close();
+      t.skip("FTS5 is unavailable in this Node SQLite build");
+      return;
+    }
+    storage.replaceSourcePayload(
+      createFixturePayload("src-search-missing-fts", "Missing FTS rebuild target", "sr-missing-fts", {
+        turnId: "turn-missing-fts",
+        sessionId: "session-missing-fts",
+      }),
+    );
+    storage.close();
+
+    const db = new DatabaseSync(path.join(dataDir, "cchistory.sqlite"));
+    try {
+      db.exec(`
+        DROP TABLE IF EXISTS search_index;
+        DROP TABLE IF EXISTS search_index_config;
+        DROP TABLE IF EXISTS search_index_content;
+        DROP TABLE IF EXISTS search_index_data;
+        DROP TABLE IF EXISTS search_index_docsize;
+        DROP TABLE IF EXISTS search_index_idx;
+        DROP TABLE IF EXISTS search_index_hashes;
+        DELETE FROM schema_meta WHERE key = 'search_index_status';
+      `);
+    } finally {
+      db.close();
+    }
+
+    const recoveredStorage = new CCHistoryStorage(dataDir);
+    try {
+      const results = recoveredStorage.searchTurns({ query: "missing fts rebuild target" });
+      assert.deepEqual(results.map((result) => result.turn.id), ["turn-missing-fts"]);
+    } finally {
+      recoveredStorage.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("opening a store after a crash between the FTS drop and rebuild still rebuilds", async (t) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-crash-recovery-"));
   try {

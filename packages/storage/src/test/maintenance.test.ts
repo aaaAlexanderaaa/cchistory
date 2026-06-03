@@ -70,6 +70,234 @@ test("storage refuses to write stores with a future schema version", async () =>
   }
 });
 
+test("opening an old evidence schema backfills structural query columns", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-evidence-migration-"));
+  try {
+    const dbPath = path.join(dataDir, "cchistory.sqlite");
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec(`
+        CREATE TABLE schema_meta (
+          key TEXT PRIMARY KEY,
+          value_text TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE captured_blobs (
+          id TEXT PRIMARY KEY,
+          source_id TEXT NOT NULL,
+          payload_json TEXT NOT NULL
+        );
+        CREATE TABLE raw_records (
+          id TEXT PRIMARY KEY,
+          source_id TEXT NOT NULL,
+          session_ref TEXT NOT NULL,
+          payload_json TEXT NOT NULL
+        );
+        CREATE TABLE loss_audits (
+          id TEXT PRIMARY KEY,
+          source_id TEXT NOT NULL,
+          payload_json TEXT NOT NULL
+        );
+      `);
+      db.prepare("INSERT INTO schema_meta (key, value_text, updated_at) VALUES (?, ?, ?)")
+        .run("schema_version", "2026-03-20.1", "2026-03-20T00:00:00.000Z");
+      db.prepare("INSERT INTO captured_blobs (id, source_id, payload_json) VALUES (?, ?, ?)")
+        .run("blob-old", "src-old", JSON.stringify({ id: "blob-old", origin_path: "/tmp/old/session.jsonl" }));
+      db.prepare("INSERT INTO raw_records (id, source_id, session_ref, payload_json) VALUES (?, ?, ?, ?)")
+        .run("record-old", "src-old", "session-old", JSON.stringify({
+          id: "record-old",
+          blob_id: "blob-old",
+          ordinal: 7,
+        }));
+      db.prepare("INSERT INTO loss_audits (id, source_id, payload_json) VALUES (?, ?, ?)")
+        .run("loss-old", "src-old", JSON.stringify({
+          id: "loss-old",
+          stage_kind: "parse_source_fragments",
+          diagnostic_code: "old_warning",
+          severity: "warning",
+          session_ref: "session-old",
+          blob_ref: "blob-old",
+          record_ref: "record-old",
+          fragment_ref: "fragment-old",
+          atom_ref: "atom-old",
+          candidate_ref: "candidate-old",
+        }));
+    } finally {
+      db.close();
+    }
+
+    const storage = new CCHistoryStorage({ dbPath });
+    storage.close();
+
+    const migrated = new DatabaseSync(dbPath);
+    try {
+      const schemaMeta = migrated.prepare("SELECT value_text FROM schema_meta WHERE key = ?").get("evidence_query_columns_backfill") as
+        | { value_text: string }
+        | undefined;
+      assert.equal(schemaMeta?.value_text, "done");
+      const blob = migrated.prepare("SELECT origin_path FROM captured_blobs WHERE id = ?").get("blob-old") as
+        | { origin_path: string }
+        | undefined;
+      assert.equal(blob?.origin_path, path.normalize("/tmp/old/session.jsonl"));
+
+      const record = migrated.prepare("SELECT blob_id, ordinal FROM raw_records WHERE id = ?").get("record-old") as
+        | { blob_id: string; ordinal: number }
+        | undefined;
+      assert.equal(record?.blob_id, "blob-old");
+      assert.equal(record?.ordinal, 7);
+
+      const lossAudit = migrated.prepare(`
+          SELECT stage_kind,
+                 diagnostic_code,
+                 severity,
+                 session_ref,
+                 blob_ref,
+                 record_ref,
+                 fragment_ref,
+                 atom_ref,
+                 candidate_ref
+            FROM loss_audits
+           WHERE id = ?
+        `).get("loss-old") as
+        | {
+            stage_kind: string;
+            diagnostic_code: string;
+            severity: string;
+            session_ref: string;
+            blob_ref: string;
+            record_ref: string;
+            fragment_ref: string;
+            atom_ref: string;
+            candidate_ref: string;
+          }
+        | undefined;
+      assert.equal(lossAudit?.stage_kind, "parse_source_fragments");
+      assert.equal(lossAudit?.diagnostic_code, "old_warning");
+      assert.equal(lossAudit?.severity, "warning");
+      assert.equal(lossAudit?.session_ref, "session-old");
+      assert.equal(lossAudit?.blob_ref, "blob-old");
+      assert.equal(lossAudit?.record_ref, "record-old");
+      assert.equal(lossAudit?.fragment_ref, "fragment-old");
+      assert.equal(lossAudit?.atom_ref, "atom-old");
+      assert.equal(lossAudit?.candidate_ref, "candidate-old");
+    } finally {
+      migrated.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("opening a 2026-06-02 evidence schema backfills loss audit severity", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-severity-migration-"));
+  try {
+    const dbPath = path.join(dataDir, "cchistory.sqlite");
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec(`
+        CREATE TABLE schema_meta (
+          key TEXT PRIMARY KEY,
+          value_text TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE TABLE loss_audits (
+          id TEXT PRIMARY KEY,
+          source_id TEXT NOT NULL,
+          stage_kind TEXT NOT NULL DEFAULT '',
+          diagnostic_code TEXT NOT NULL DEFAULT '',
+          session_ref TEXT NOT NULL DEFAULT '',
+          blob_ref TEXT NOT NULL DEFAULT '',
+          record_ref TEXT NOT NULL DEFAULT '',
+          fragment_ref TEXT NOT NULL DEFAULT '',
+          atom_ref TEXT NOT NULL DEFAULT '',
+          candidate_ref TEXT NOT NULL DEFAULT '',
+          payload_json TEXT NOT NULL
+        );
+      `);
+      const insertMeta = db.prepare("INSERT INTO schema_meta (key, value_text, updated_at) VALUES (?, ?, ?)");
+      insertMeta.run("schema_version", "2026-06-02.1", "2026-06-02T00:00:00.000Z");
+      insertMeta.run("evidence_query_columns_backfill", "done", "2026-06-02T00:00:00.000Z");
+      insertMeta.run("evidence_query_columns_backfill:loss_audits", "done", "2026-06-02T00:00:00.000Z");
+
+      const insertAudit = db.prepare(`
+        INSERT INTO loss_audits (
+          id,
+          source_id,
+          stage_kind,
+          diagnostic_code,
+          session_ref,
+          blob_ref,
+          record_ref,
+          fragment_ref,
+          atom_ref,
+          candidate_ref,
+          payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      insertAudit.run(
+        "loss-info",
+        "src-old",
+        "finalize_projections",
+        "old_info",
+        "session-old",
+        "",
+        "",
+        "",
+        "",
+        "",
+        JSON.stringify({
+          id: "loss-info",
+          stage_kind: "finalize_projections",
+          diagnostic_code: "old_info",
+          severity: "info",
+        }),
+      );
+      insertAudit.run(
+        "loss-warning",
+        "src-old",
+        "parse_source_fragments",
+        "old_warning",
+        "session-old",
+        "",
+        "",
+        "",
+        "",
+        "",
+        JSON.stringify({
+          id: "loss-warning",
+          stage_kind: "parse_source_fragments",
+          diagnostic_code: "old_warning",
+        }),
+      );
+    } finally {
+      db.close();
+    }
+
+    const storage = new CCHistoryStorage({ dbPath });
+    storage.close();
+
+    const migrated = new DatabaseSync(dbPath);
+    try {
+      const rows = migrated.prepare("SELECT id, severity FROM loss_audits ORDER BY id").all() as Array<{
+        id: string;
+        severity: string;
+      }>;
+      assert.deepEqual(rows.map(({ id, severity }) => ({ id, severity })), [
+        { id: "loss-info", severity: "info" },
+        { id: "loss-warning", severity: "warning" },
+      ]);
+      const marker = migrated.prepare("SELECT value_text FROM schema_meta WHERE key = ?").get("loss_audit_severity_column_backfill") as
+        | { value_text: string }
+        | undefined;
+      assert.equal(marker?.value_text, "done");
+    } finally {
+      migrated.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("garbageCollectCandidateTurns with purge mode creates tombstones", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-gc-"));
   try {

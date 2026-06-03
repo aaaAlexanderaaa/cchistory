@@ -143,7 +143,25 @@ Minimum usable semantics for Family B:
 - When no reliable project signal exists, data remains `unlinked` rather than
   polluting project views.
 
-### 5.3 Excluded From MVP
+### 5.3 Source Value Tiers
+
+Source family defines semantic shape. Source value tier defines product
+priority: how much default recall weight, quality attention, and future
+investment a source should receive.
+
+Value tier is separate from adapter support status. A lower-value source may
+still be implemented and regression-tested; it just should not drive product
+defaults, ranking behavior, or roadmap tradeoffs ahead of higher-value sources.
+All tiers must still preserve raw evidence, provenance, deletion semantics, and
+operator visibility.
+
+| Value tier | Sources | Product meaning |
+| --- | --- | --- |
+| Primary | Codex, Claude Code | Highest recall value. Optimize first for correctness, incremental sync, resume/path provenance, ranking, and UX polish. |
+| Standard | CodeBuddy, Cursor, Antigravity, Gemini CLI, OpenClaw, OpenCode, LobeChat, Accio Work, and other registered or future sources unless explicitly reclassified | Normal recall value. Keep supported surfaces truthful and searchable, but do not let these sources override Codex/Claude priorities. |
+| Low | AMP, Factory Droid | Lowest recall value. Preserve evidence and searchable access, but default ranking, QA breadth, and roadmap investment should be conservative. |
+
+### 5.4 Excluded From MVP
 
 - Browser history is excluded from the MVP.
 - The browser domain should not distort the canonical model for conversational

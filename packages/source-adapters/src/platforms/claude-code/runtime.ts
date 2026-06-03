@@ -78,12 +78,13 @@ export function parseClaudeRecord(
       continue;
     }
     const itemType = helpers.asString(item.type) ?? "unknown";
-    if (itemType === "tool_use") {
+    if (itemType === "tool_use" || itemType === "server_tool_use") {
       fragments.push(
         helpers.createFragment(context, record, localSeq++, "tool_call", timeKey, {
           call_id: helpers.asString(item.id),
-          tool_name: helpers.asString(item.name) ?? "tool_use",
+          tool_name: helpers.asString(item.name) ?? itemType,
           input: helpers.isObject(item.input) ? item.input : {},
+          source_event_type: itemType === "server_tool_use" ? itemType : undefined,
         }),
       );
       continue;
@@ -95,6 +96,10 @@ export function parseClaudeRecord(
           output: helpers.stringifyToolContent(item.content),
         }),
       );
+      continue;
+    }
+    if (itemType === "thinking" || itemType === "redacted_thinking") {
+      fragments.push(createClaudeReasoningFragment(context, record, localSeq++, timeKey, item, helpers));
       continue;
     }
     const text = helpers.extractTextFromContentItem(item);
@@ -157,4 +162,25 @@ export function parseClaudeRecord(
     fragments.push(helpers.createTokenUsageFragment(context, record, localSeq++, timeKey, usage, stopReason));
   }
   return { fragments, lossAudits };
+}
+
+function createClaudeReasoningFragment(
+  context: FragmentBuildContextLike,
+  record: RawRecord,
+  seqNo: number,
+  timeKey: string,
+  item: Record<string, unknown>,
+  helpers: ClaudeParseRuntimeHelpers,
+): SourceFragment {
+  const itemType = helpers.asString(item.type) ?? "thinking";
+  const thinking = helpers.asString(item.thinking);
+  const signature = helpers.asString(item.signature) ?? helpers.asString(item.thinkingSignature);
+  return helpers.createFragment(context, record, seqNo, "unknown", timeKey, {
+    signal_kind: itemType === "redacted_thinking" ? "reasoning_opaque" : "assistant_reasoning",
+    source_event_type: itemType,
+    text_present: thinking !== undefined,
+    text_bytes: thinking !== undefined ? thinking.length : undefined,
+    signature_present: signature !== undefined,
+    opaque_reasoning: itemType === "redacted_thinking",
+  });
 }

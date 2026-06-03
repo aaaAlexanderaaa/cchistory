@@ -289,6 +289,80 @@ test("persisted probe snapshots raw blobs and seeds storage", async () => {
   }
 });
 
+test("admin pipeline loss audits preserve info severity without inflating failure counts", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-loss-audit-severity-"));
+
+  try {
+    const dataDir = path.join(tempRoot, "data-loss-audit-severity");
+    const storage = new CCHistoryStorage(dataDir);
+    const payload = createApiFixturePayload("source-loss-audit-severity", "Preserve info diagnostics", {
+      sessionId: "session-loss-audit-severity",
+      turnId: "turn-loss-audit-severity",
+      hostId: "host-loss-audit-severity",
+      platform: "claude_code",
+      workingDirectory: "/workspace/loss-audit-severity",
+    });
+    payload.loss_audits.push(
+      {
+        id: "loss-audit-warning",
+        source_id: payload.source.id,
+        stage_run_id: payload.stage_runs[0]!.id,
+        stage_kind: "finalize_projections",
+        diagnostic_code: "fixture_warning",
+        severity: "warning",
+        scope_ref: payload.sessions[0]!.id,
+        session_ref: payload.sessions[0]!.id,
+        loss_kind: "dropped_for_projection",
+        detail: "fixture warning audit",
+        created_at: "2026-03-09T08:00:03.000Z",
+      },
+      {
+        id: "loss-audit-info",
+        source_id: payload.source.id,
+        stage_run_id: payload.stage_runs[0]!.id,
+        stage_kind: "finalize_projections",
+        diagnostic_code: "fixture_info",
+        severity: "info",
+        scope_ref: payload.sessions[0]!.id,
+        session_ref: payload.sessions[0]!.id,
+        loss_kind: "dropped_for_projection",
+        detail: "fixture informational audit",
+        created_at: "2026-03-09T08:00:03.000Z",
+      },
+    );
+    storage.replaceSourcePayload(payload);
+
+    const runtime = await createApiRuntime({ dataDir, storage, sources: [] });
+    try {
+      const auditsResponse = await runtime.app.inject({ method: "GET", url: "/api/admin/pipeline/loss-audits" });
+      assert.equal(auditsResponse.statusCode, 200);
+      const audits = JSON.parse(auditsResponse.body).loss_audits as Array<{
+        diagnostic_code: string;
+        severity: string;
+      }>;
+      assert.deepEqual(
+        audits
+          .filter((audit) => audit.diagnostic_code.startsWith("fixture_"))
+          .map(({ diagnostic_code, severity }) => ({ diagnostic_code, severity }))
+          .sort((left, right) => left.diagnostic_code.localeCompare(right.diagnostic_code)),
+        [
+          { diagnostic_code: "fixture_info", severity: "info" },
+          { diagnostic_code: "fixture_warning", severity: "warning" },
+        ],
+      );
+
+      const sourceId = runtime.storage.listSources()[0]!.id;
+      const failureCounts = runtime.storage.countSourceLossAuditsByStage(sourceId);
+      assert.equal(failureCounts.finalize_projections, 1);
+    } finally {
+      await runtime.app.close();
+      runtime.storage.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("admin pipeline endpoints keep delegated and automation evidence inspectable without canonical turns", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-secondary-evidence-"));
 

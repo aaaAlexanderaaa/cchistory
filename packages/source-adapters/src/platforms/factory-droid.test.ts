@@ -108,3 +108,109 @@ test("runSourceProbe uses file mtime as session end when factory_droid records s
   }
 });
 
+test("runSourceProbe classifies Factory lifecycle records as hidden source metadata", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-factory-lifecycle-"));
+
+  try {
+    const factoryDir = path.join(tempRoot, "factory-lifecycle");
+    await mkdir(factoryDir, { recursive: true });
+
+    await writeFile(
+      path.join(factoryDir, "session.jsonl"),
+      [
+        {
+          timestamp: "2026-03-09T06:00:00.000Z",
+          type: "session_start",
+          sessionTitle: "Factory lifecycle session",
+          cwd: "/workspace/factory-lifecycle",
+        },
+        {
+          timestamp: "2026-03-09T06:00:01.000Z",
+          type: "message",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "Keep Factory lifecycle events as evidence." }],
+          },
+        },
+        {
+          timestamp: "2026-03-09T06:00:02.000Z",
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Lifecycle events will be preserved as metadata." }],
+          },
+        },
+        {
+          timestamp: "2026-03-09T06:00:03.000Z",
+          type: "todo_state",
+          status: "active",
+          id: "todo-event-1",
+          messageIndex: 1,
+          todos: {
+            todos: "\n1. [completed] Preserve Factory todo state as metadata\n2. [in_progress] Verify lifecycle coverage\n",
+          },
+        },
+        {
+          timestamp: "2026-03-09T06:00:04.000Z",
+          type: "compaction_state",
+          compacted: true,
+          summaryText: "Context compacted for the next step.",
+        },
+        {
+          timestamp: "2026-03-09T06:00:05.000Z",
+          type: "session_end",
+          reason: "completed",
+          status: "success",
+          durationMs: 91628,
+          toolCount: 3,
+          finalText: "Lifecycle session completed with preserved final text.",
+        },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8",
+    );
+
+    const [payload] = (
+      await runSourceProbe({ source_ids: ["src-factory-lifecycle"] }, [
+        createSourceDefinition("src-factory-lifecycle", "factory_droid", factoryDir),
+      ])
+    ).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.turns.length, 1);
+    assert.equal(
+      payload.loss_audits.some((audit) => audit.diagnostic_code === "factory_droid_unhandled_record_type"),
+      false,
+    );
+
+    const lifecycleFragments = payload.fragments.filter(
+      (fragment) =>
+        fragment.payload.signal_kind === "todo_state" ||
+        fragment.payload.signal_kind === "compaction_state" ||
+        fragment.payload.signal_kind === "session_end",
+    );
+    assert.equal(lifecycleFragments.length, 3);
+    assert.ok(lifecycleFragments.every((fragment) => fragment.fragment_kind === "unknown"));
+    const todoFragment = lifecycleFragments.find((fragment) => fragment.payload.signal_kind === "todo_state");
+    assert.equal(todoFragment?.payload.source_event_id, "todo-event-1");
+    assert.equal(todoFragment?.payload.message_index, 1);
+    assert.equal(todoFragment?.payload.todo_text_present, true);
+    assert.equal(todoFragment?.payload.todo_text_bytes, 97);
+    assert.deepEqual(todoFragment?.payload.todo_status_counts, { completed: 1, in_progress: 1 });
+    assert.match(String(todoFragment?.payload.lifecycle_text_preview), /Preserve Factory todo state/);
+    const compactionFragment = lifecycleFragments.find((fragment) => fragment.payload.signal_kind === "compaction_state");
+    assert.equal(compactionFragment?.payload.summary_present, true);
+    assert.equal(compactionFragment?.payload.lifecycle_text_preview, "Context compacted for the next step.");
+    const sessionEndFragment = lifecycleFragments.find((fragment) => fragment.payload.signal_kind === "session_end");
+    assert.equal(sessionEndFragment?.payload.duration_ms, 91628);
+    assert.equal(sessionEndFragment?.payload.tool_count, 3);
+    assert.equal(sessionEndFragment?.payload.final_text_present, true);
+    assert.equal(sessionEndFragment?.payload.lifecycle_text_preview, "Lifecycle session completed with preserved final text.");
+    assert.ok(payload.atoms.some((atom) => atom.payload.signal_kind === "todo_state" && atom.display_policy === "hide"));
+    assert.ok(payload.atoms.some((atom) => atom.payload.signal_kind === "compaction_state" && atom.display_policy === "hide"));
+    assert.ok(payload.atoms.some((atom) => atom.payload.signal_kind === "session_end" && atom.display_policy === "hide"));
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

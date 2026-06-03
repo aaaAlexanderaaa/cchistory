@@ -41,6 +41,157 @@ test("runSourceProbe keeps Claude interruption markers as source metadata instea
   }
 });
 
+test("[claude] thinking content is hidden reasoning evidence instead of assistant reply text", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-claude-thinking-"));
+
+  try {
+    const claudeDir = path.join(tempRoot, "claude-thinking");
+    await mkdir(claudeDir, { recursive: true });
+
+    await writeFile(
+      path.join(claudeDir, "conversation.jsonl"),
+      [
+        {
+          timestamp: "2026-03-09T01:00:00.000Z",
+          type: "user",
+          sessionId: "claude-thinking-session",
+          cwd: "/workspace/claude-thinking",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "Preserve Claude reasoning as hidden evidence." }],
+          },
+        },
+        {
+          timestamp: "2026-03-09T01:00:01.000Z",
+          type: "assistant",
+          sessionId: "claude-thinking-session",
+          cwd: "/workspace/claude-thinking",
+          message: {
+            role: "assistant",
+            model: "claude-opus-4-6",
+            content: [
+              { type: "thinking", thinking: "Private reasoning should not become visible assistant text.", signature: "sig-1" },
+              { type: "thinking", thinking: "", signature: "sig-empty" },
+              { type: "redacted_thinking", data: "opaque-redacted-reasoning" },
+              { type: "text", text: "Only this answer should be visible." },
+            ],
+          },
+        },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8",
+    );
+
+    const source = createSourceDefinition("src-claude-thinking", "claude_code", claudeDir);
+    const result = await runSourceProbe({ source_ids: [source.id] }, [source]);
+    const payload = result.sources[0];
+
+    assert.ok(payload);
+    assert.equal(payload.turns.length, 1);
+    const context = payload.contexts[0];
+    assert.ok(context);
+    assert.equal(context.assistant_replies.length, 1);
+    assert.equal(context.assistant_replies[0]?.content, "Only this answer should be visible.");
+    assert.equal(context.assistant_replies[0]?.content.includes("Private reasoning"), false);
+
+    const reasoningFragments = payload.fragments.filter(
+      (fragment) =>
+        fragment.payload.signal_kind === "assistant_reasoning" ||
+        fragment.payload.signal_kind === "reasoning_opaque",
+    );
+    assert.equal(reasoningFragments.length, 3);
+    assert.ok(reasoningFragments.every((fragment) => fragment.fragment_kind === "unknown"));
+    assert.equal(reasoningFragments.some((fragment) => fragment.payload.signature_present === true), true);
+    assert.equal(reasoningFragments.some((fragment) => fragment.payload.text_bytes === 0), true);
+    assert.equal(reasoningFragments.some((fragment) => fragment.payload.opaque_reasoning === true), true);
+    assert.equal(
+      payload.loss_audits.some((audit) => audit.diagnostic_code === "claude_unsupported_content_item"),
+      false,
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("[claude] server_tool_use content becomes tool-call evidence without warning", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-claude-server-tool-"));
+
+  try {
+    const claudeDir = path.join(tempRoot, "claude-server-tool");
+    await mkdir(claudeDir, { recursive: true });
+
+    await writeFile(
+      path.join(claudeDir, "conversation.jsonl"),
+      [
+        {
+          timestamp: "2026-03-09T01:00:00.000Z",
+          type: "user",
+          sessionId: "claude-server-tool-session",
+          cwd: "/workspace/claude-server-tool",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "Fetch the public project page." }],
+          },
+        },
+        {
+          timestamp: "2026-03-09T01:00:01.000Z",
+          type: "assistant",
+          sessionId: "claude-server-tool-session",
+          cwd: "/workspace/claude-server-tool",
+          message: {
+            role: "assistant",
+            model: "glm-5",
+            content: [
+              { type: "text", text: "I will fetch it." },
+              {
+                type: "server_tool_use",
+                id: "server-tool-1",
+                name: "webReader",
+                input: { url: "https://example.com/project" },
+              },
+              {
+                type: "tool_result",
+                tool_use_id: "server-tool-1",
+                content: "Fetched project page.",
+              },
+            ],
+          },
+        },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8",
+    );
+
+    const source = createSourceDefinition("src-claude-server-tool", "claude_code", claudeDir);
+    const result = await runSourceProbe({ source_ids: [source.id] }, [source]);
+    const payload = result.sources[0];
+
+    assert.ok(payload);
+    assert.equal(payload.turns.length, 1);
+    assert.equal(
+      payload.loss_audits.some((audit) => audit.diagnostic_code === "claude_unsupported_content_item"),
+      false,
+    );
+    const serverToolFragment = payload.fragments.find((fragment) =>
+      fragment.fragment_kind === "tool_call" && fragment.payload.source_event_type === "server_tool_use"
+    );
+    assert.ok(serverToolFragment);
+    assert.equal(serverToolFragment.payload.call_id, "server-tool-1");
+    assert.equal(serverToolFragment.payload.tool_name, "webReader");
+
+    const context = payload.contexts[0];
+    assert.ok(context);
+    const serverToolCall = context.tool_calls.find((toolCall) => toolCall.tool_name === "webReader");
+    assert.ok(serverToolCall);
+    assert.equal(serverToolCall.input.url, "https://example.com/project");
+    assert.match(serverToolCall.output ?? "", /Fetched project page/u);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("[claude] sidechain subagent fixtures stay as delegated evidence instead of canonical turns", async () => {
   const mockDataRoot = getRepoMockDataRoot();
   const baseDir = path.join(

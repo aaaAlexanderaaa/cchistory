@@ -104,6 +104,20 @@ export function selectPayloadsBySource<T>(
     .map((row) => fromJson<T>((row as { payload_json: string }).payload_json));
 }
 
+export function selectPayloadsBySourceAndSession<T>(
+  db: DatabaseSync,
+  tableName: string,
+  sourceId: string,
+  sessionId: string,
+  orderBy = "ORDER BY id",
+): T[] {
+  assertTableName(tableName);
+  return db
+    .prepare(`SELECT payload_json FROM ${tableName} WHERE source_id = ? AND session_ref = ? ${orderBy}`)
+    .all(sourceId, sessionId)
+    .map((row) => fromJson<T>((row as { payload_json: string }).payload_json));
+}
+
 export function selectPayloadsBySession<T>(
   db: DatabaseSync,
   tableName: string,
@@ -129,11 +143,76 @@ export function* iterateRawJsonBySource(
   }
 }
 
+export function selectBlobsByOriginPaths(
+  db: DatabaseSync,
+  sourceId: string,
+  originPaths: readonly string[],
+): CapturedBlob[] {
+  if (originPaths.length === 0) {
+    return [];
+  }
+
+  const select = db.prepare("SELECT payload_json FROM captured_blobs WHERE source_id = ? AND origin_path = ?");
+  const blobs: CapturedBlob[] = [];
+  const seen = new Set<string>();
+  for (const originPath of originPaths) {
+    for (const row of select.all(sourceId, originPath) as Array<{ payload_json: string }>) {
+      const blob = fromJson<CapturedBlob>(row.payload_json);
+      if (seen.has(blob.id)) {
+        continue;
+      }
+      seen.add(blob.id);
+      blobs.push(blob);
+    }
+  }
+  return blobs;
+}
+
 export function selectRecordsByBlobId(db: DatabaseSync, blobId: string): RawRecord[] {
   return db
-    .prepare("SELECT payload_json FROM raw_records WHERE json_extract(payload_json, '$.blob_id') = ? ORDER BY json_extract(payload_json, '$.ordinal')")
+    .prepare("SELECT payload_json FROM raw_records WHERE blob_id = ? ORDER BY ordinal")
     .all(blobId)
     .map((row) => fromJson<RawRecord>((row as { payload_json: string }).payload_json));
+}
+
+export function selectRecordsBySourceAndBlobId(db: DatabaseSync, sourceId: string, blobId: string): RawRecord[] {
+  return db
+    .prepare("SELECT payload_json FROM raw_records WHERE source_id = ? AND blob_id = ? ORDER BY ordinal")
+    .all(sourceId, blobId)
+    .map((row) => fromJson<RawRecord>((row as { payload_json: string }).payload_json));
+}
+
+export function selectReusableLossAuditsByRefs(
+  db: DatabaseSync,
+  sourceId: string,
+  refs: {
+    blobIds: ReadonlySet<string>;
+    recordIds: ReadonlySet<string>;
+    fragmentIds: ReadonlySet<string>;
+    atomIds: ReadonlySet<string>;
+    sessionRefs: ReadonlySet<string>;
+  },
+): LossAuditRecord[] {
+  const rowsById = new Map<string, LossAuditRecord>();
+  const collect = (statement: string, values: Iterable<string>) => {
+    const select = db.prepare(statement);
+    for (const value of values) {
+      if (!value) {
+        continue;
+      }
+      for (const row of select.all(sourceId, value) as Array<{ payload_json: string }>) {
+        const audit = fromJson<LossAuditRecord>(row.payload_json);
+        rowsById.set(audit.id, audit);
+      }
+    }
+  };
+
+  collect("SELECT payload_json FROM loss_audits WHERE source_id = ? AND blob_ref = ?", refs.blobIds);
+  collect("SELECT payload_json FROM loss_audits WHERE source_id = ? AND record_ref = ?", refs.recordIds);
+  collect("SELECT payload_json FROM loss_audits WHERE source_id = ? AND fragment_ref = ?", refs.fragmentIds);
+  collect("SELECT payload_json FROM loss_audits WHERE source_id = ? AND atom_ref = ?", refs.atomIds);
+  collect("SELECT payload_json FROM loss_audits WHERE source_id = ? AND session_ref = ?", refs.sessionRefs);
+  return [...rowsById.values()];
 }
 
 export function countRowsBySource(db: DatabaseSync, tableName: string, sourceId: string): number {

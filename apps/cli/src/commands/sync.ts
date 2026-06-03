@@ -9,11 +9,18 @@ import {
   discoverDefaultSourcesForHost,
   discoverHostToolsForHost,
   runSourceProbe,
+  listSourceFiles,
   listPlatformAdapters,
   type HostDiscoveryEntry,
   type SourceProbeProgressEvent,
 } from "@cchistory/source-adapters";
-import { type SourceDefinition, type SourceStatus, type SourceSyncPayload } from "@cchistory/domain";
+import {
+  type CapturedBlob,
+  type SourceDefinition,
+  type SourceStatus,
+  type SourceSyncPayload,
+  type StageKind,
+} from "@cchistory/domain";
 import { STORAGE_SCHEMA_VERSION, isFutureStorageSchemaVersion, type CCHistoryStorage } from "@cchistory/storage";
 import {
   renderTable,
@@ -39,6 +46,8 @@ import {
 } from "../main.js";
 import { formatSourceHandle, resolveSourceRef } from "../resolvers.js";
 import { createStatsOverviewOutput } from "./stats.js";
+
+const DEFAULT_CODEX_SYNC_BATCH_TARGET_BYTES = 24 * 1024 * 1024;
 
 export async function handleSync(context: CommandContext): Promise<CommandOutput> {
   if (context.globals.dryRun) {
@@ -500,12 +509,22 @@ export async function syncSelectedSources(input: {
     return { host: hostProbe.host, syncedSources: [] };
   }
 
-  const syncedSources: SyncedSourceSummary[] = [];
+  const syncedSources: TimedSyncedSourceSummary[] = [];
   for (const source of sources) {
+    if (shouldUseBatchedCodexSync(source, input)) {
+      const summary = await syncCodexSourceInBatches(source, hostProbe.host.id, input);
+      if (summary) {
+        syncedSources.push(summary);
+        continue;
+      }
+    }
+
     let payload: SourceSyncPayload | undefined;
     let useMergeByOriginPath = shouldUseMergeByOriginPath(source, input);
+    const timing = createSourceTiming();
     const preservedOriginPaths = new Set<string>();
     const observedOriginPaths = new Set<string>();
+    let selectedFilePaths: string[] | undefined;
     try {
       input.onProgress?.({
         stage: "source_prepare_start",
@@ -524,12 +543,19 @@ export async function syncSelectedSources(input: {
           slot_id: source.slot_id,
           platform: source.platform,
           display_name: source.display_name,
-          message: `Loading previous ${source.display_name} projections for incremental reuse`,
+          message: `Loading previous ${source.display_name} reuse inputs for listed source files`,
         });
-        previousPayload = input.storage.getSourceIncrementalPayload(source.id);
-        if (!previousPayload) {
+        const listStartedAt = Date.now();
+        selectedFilePaths = await listSourceFiles(source.platform, source.base_dir, input.limitFiles);
+        timing.scanMs += Date.now() - listStartedAt;
+        previousPayload = selectedFilePaths.length > 0
+          ? input.storage.getSourceIncrementalPayloadForOriginPaths(source.id, selectedFilePaths)
+          : undefined;
+        if (!previousPayload && !input.storage.listSources().some((entry) => entry.id === source.id)) {
           useMergeByOriginPath = false;
         }
+        const reuseLoadElapsedMs = Date.now() - reuseLoadStartedAt;
+        timing.reuseLoadMs += reuseLoadElapsedMs;
         input.onProgress?.({
           stage: "incremental_reuse_load_done",
           source_id: source.id,
@@ -541,9 +567,9 @@ export async function syncSelectedSources(input: {
                 `Loaded previous ${source.display_name} reuse inputs`,
                 `(${previousPayload.blobs.length} blob(s), ${previousPayload.records.length} record(s), ${previousPayload.atoms.length} atom(s))`,
               ].join(" ")
-            : `No previous ${source.display_name} projections found for incremental reuse`,
+            : `No previous ${source.display_name} reuse inputs found for listed source files`,
           count: previousPayload?.blobs.length ?? 0,
-          elapsed_ms: Date.now() - reuseLoadStartedAt,
+          elapsed_ms: reuseLoadElapsedMs,
         });
       }
       input.onProgress?.({
@@ -560,8 +586,10 @@ export async function syncSelectedSources(input: {
           limit_files_per_source: input.limitFiles,
           safe_mode: input.safeMode,
           changed_since: input.changedSince,
+          source_file_paths: selectedFilePaths ? { [source.id]: selectedFilePaths } : undefined,
           previous_payloads: previousPayload ? { [source.id]: previousPayload } : undefined,
           on_progress: (event) => {
+            recordProbeTiming(timing, event);
             if (useMergeByOriginPath && event.file_path) {
               observedOriginPaths.add(event.file_path);
               if (event.stage === "file_skip") {
@@ -597,10 +625,24 @@ export async function syncSelectedSources(input: {
       message: `Writing ${payload.source.display_name} payload to SQLite`,
     });
     const writeStartedAt = Date.now();
-    let reindexStartedAt: number | undefined;
-    const onStorageProgress = (event: { stage: "write_store_done" | "reindex_start" | "reindex_done"; source_id: string }) => {
-      if (event.stage === "reindex_start") {
-        reindexStartedAt = Date.now();
+    let projectionChanged = true;
+    let metadataOnlyPayload = false;
+    const onStorageProgress = (event: StorageProgressEvent) => {
+      const elapsedMs =
+        event.stage === "write_store_done"
+          ? Date.now() - writeStartedAt
+          : undefined;
+      if (event.stage === "write_store_done" && typeof elapsedMs === "number") {
+        projectionChanged = event.projection_changed !== false;
+        timing.sqliteWriteMs += elapsedMs;
+        if (metadataOnlyPayload) {
+          timing.sqliteMetadataMs += elapsedMs;
+          timing.metadataOnlyWriteBatchCount += 1;
+        } else if (useMergeByOriginPath) {
+          timing.sqliteMergeMs += elapsedMs;
+        } else {
+          timing.sqliteReplaceMs += elapsedMs;
+        }
       }
       input.onProgress?.({
         stage: event.stage,
@@ -609,34 +651,460 @@ export async function syncSelectedSources(input: {
         platform: payload.source.platform,
         display_name: payload.source.display_name,
         message: formatStorageProgressMessage(event.stage, payload.source.display_name),
-        elapsed_ms:
-          event.stage === "write_store_done"
-            ? Date.now() - writeStartedAt
-            : event.stage === "reindex_done" && reindexStartedAt !== undefined
-              ? Date.now() - reindexStartedAt
-              : undefined,
+        elapsed_ms: elapsedMs,
       });
     };
-    const counts = useMergeByOriginPath
-      ? input.storage.mergeSourcePayloadByOriginPath(payload, {
-          preserve_origin_paths: [...preservedOriginPaths],
-          observed_origin_paths: [...observedOriginPaths],
+    metadataOnlyPayload = isMetadataOnlySyncPayload(payload);
+    const counts = metadataOnlyPayload
+      ? input.storage.updateSourceSyncMetadata(payload, {
           onProgress: onStorageProgress,
         })
-      : input.storage.replaceSourcePayload(payload, {
-          allow_host_rekey: true,
-          onProgress: onStorageProgress,
-        });
+      : useMergeByOriginPath
+        ? input.storage.mergeSourcePayloadByOriginPath(payload, {
+            preserve_origin_paths: [...preservedOriginPaths],
+            observed_origin_paths: [...observedOriginPaths],
+            refreshDerived: false,
+            onProgress: onStorageProgress,
+          })
+        : input.storage.replaceSourcePayload(payload, {
+            allow_host_rekey: true,
+            refreshDerived: false,
+            onProgress: onStorageProgress,
+          });
     const storedSource = useMergeByOriginPath
       ? input.storage.listSources().find((entry) => entry.id === payload.source.id) ?? payload.source
       : payload.source;
     syncedSources.push({
       source: storedSource,
       counts,
+      timing,
+      projectionChanged,
     });
   }
 
+  refreshDerivedProjectionsForSyncedSources(input.storage, syncedSources, input.onProgress);
   return { host: hostProbe.host, syncedSources };
+}
+
+function refreshDerivedProjectionsForSyncedSources(
+  storage: CCHistoryStorage,
+  syncedSources: TimedSyncedSourceSummary[],
+  onProgress?: (event: SyncProgressEvent) => void,
+): void {
+  if (syncedSources.length === 0) {
+    return;
+  }
+
+  const shouldRefresh = syncedSources.some((summary) => summary.projectionChanged);
+  let refreshElapsedMs = 0;
+  if (shouldRefresh) {
+    const refreshStartedAt = Date.now();
+    storage.refreshDerivedProjections({
+      source_id: "all",
+      onProgress: (event) => {
+        onProgress?.({
+          stage: event.stage,
+          source_id: event.source_id,
+          slot_id: "all",
+          display_name: "All sources",
+          message: formatStorageProgressMessage(event.stage, "All sources"),
+          elapsed_ms: event.stage === "reindex_done" ? Date.now() - refreshStartedAt : undefined,
+        });
+      },
+    });
+    refreshElapsedMs = Date.now() - refreshStartedAt;
+  } else {
+    onProgress?.({
+      stage: "reindex_skip",
+      source_id: "all",
+      slot_id: "all",
+      display_name: "All sources",
+      message: formatStorageProgressMessage("reindex_skip", "All sources"),
+      elapsed_ms: 0,
+    });
+  }
+
+  for (const summary of syncedSources) {
+    summary.timing.projectionRefreshMs += refreshElapsedMs;
+    summary.timing.projectionRefreshSkipped = !shouldRefresh;
+    summary.timing.totalMs = Date.now() - summary.timing.startedAtMs;
+    storage.annotateSourceStageRunStats(
+      summary.source.id,
+      buildSourceAggregateStageStats(
+        summary.source,
+        summary.timing,
+        storage.countSourceLossAuditsByStage(summary.source.id),
+      ),
+    );
+  }
+}
+
+async function syncCodexSourceInBatches(
+  source: SourceDefinition,
+  hostId: string,
+  input: {
+    storage: CCHistoryStorage;
+    changedSince?: string;
+    safeMode?: boolean;
+    onProgress?: (event: SyncProgressEvent) => void;
+  },
+): Promise<TimedSyncedSourceSummary | undefined> {
+  if (!(await pathExists(source.base_dir))) {
+    return undefined;
+  }
+
+  const timing = createSourceTiming();
+  input.onProgress?.({
+    stage: "source_prepare_start",
+    source_id: source.id,
+    slot_id: source.slot_id,
+    platform: source.platform,
+    display_name: source.display_name,
+    message: `Preparing ${source.display_name} (${source.slot_id})`,
+  });
+  const listStartedAt = Date.now();
+  const files = await listSourceFiles(source.platform, source.base_dir);
+  const fileBatches = await buildFileBatches(files, resolveCodexSyncBatchTargetBytes());
+  timing.scanMs += Date.now() - listStartedAt;
+  input.onProgress?.({
+    stage: "source_prepare_done",
+    source_id: source.id,
+    slot_id: source.slot_id,
+    platform: source.platform,
+    display_name: source.display_name,
+    message: `Prepared ${source.display_name} in ${fileBatches.length} bounded batch(es)`,
+    count: files.length,
+    elapsed_ms: Date.now() - listStartedAt,
+  });
+
+  const reuseLoadStartedAt = Date.now();
+  input.onProgress?.({
+    stage: "incremental_reuse_load_start",
+    source_id: source.id,
+    slot_id: source.slot_id,
+    platform: source.platform,
+    display_name: source.display_name,
+    message: `Loading previous ${source.display_name} metadata for incremental reuse`,
+  });
+  const previousMetadataPayload = input.storage.getSourceIncrementalMetadataPayload(source.id);
+  const preSyncStageRuns = previousMetadataPayload?.stage_runs;
+  const metadataReuseLoadElapsedMs = Date.now() - reuseLoadStartedAt;
+  timing.reuseLoadMs += metadataReuseLoadElapsedMs;
+  input.onProgress?.({
+    stage: "incremental_reuse_load_done",
+    source_id: source.id,
+    slot_id: source.slot_id,
+    platform: source.platform,
+    display_name: source.display_name,
+    message: previousMetadataPayload
+      ? `Loaded previous ${source.display_name} reuse metadata (${previousMetadataPayload.blobs.length} blob(s))`
+      : `No previous ${source.display_name} metadata found for incremental reuse`,
+    count: previousMetadataPayload?.blobs.length ?? 0,
+    elapsed_ms: metadataReuseLoadElapsedMs,
+  });
+
+  let counts: SyncedSourceSummary["counts"] = {
+    sessions: 0,
+    turns: 0,
+    records: 0,
+    fragments: 0,
+    atoms: 0,
+    blobs: 0,
+  };
+  const replaceFirstBatch = !input.storage.listSources().some((entry) => entry.id === source.id);
+  let lastPayload: SourceSyncPayload | undefined;
+  let projectionChanged = replaceFirstBatch;
+  let pendingMetadataWrite: {
+    payload: SourceSyncPayload;
+    batchIndex: number;
+    fileCount: number;
+  } | undefined;
+
+  const writeBatchPayload = (
+    payload: SourceSyncPayload,
+    writeKind: CodexBatchWriteKind,
+    batchIndex: number,
+    fileCount: number,
+    preservedOriginPaths: readonly string[] = [],
+    observedOriginPaths: readonly string[] = [],
+  ): SyncedSourceSummary["counts"] => {
+    input.onProgress?.({
+      stage: "write_store_start",
+      source_id: payload.source.id,
+      slot_id: payload.source.slot_id,
+      platform: payload.source.platform,
+      display_name: payload.source.display_name,
+      message: `Writing ${payload.source.display_name} batch ${batchIndex + 1}/${batches.length} to SQLite`,
+      count: fileCount,
+    });
+    const writeStartedAt = Date.now();
+    const onBatchStorageProgress = (event: StorageProgressEvent) => {
+      const elapsedMs = Date.now() - writeStartedAt;
+      if (event.stage === "write_store_done") {
+        if (event.projection_changed !== false) {
+          projectionChanged = true;
+        }
+        timing.sqliteWriteMs += elapsedMs;
+        if (writeKind === "replace") {
+          timing.sqliteReplaceMs += elapsedMs;
+        } else if (writeKind === "merge") {
+          timing.sqliteMergeMs += elapsedMs;
+        } else {
+          timing.sqliteMetadataMs += elapsedMs;
+          timing.metadataOnlyWriteBatchCount += 1;
+        }
+      }
+      input.onProgress?.({
+        stage: event.stage,
+        source_id: payload.source.id,
+        slot_id: payload.source.slot_id,
+        platform: payload.source.platform,
+        display_name: payload.source.display_name,
+        message: formatStorageProgressMessage(event.stage, payload.source.display_name),
+        elapsed_ms: elapsedMs,
+      });
+    };
+    return writeKind === "replace"
+      ? input.storage.replaceSourcePayload(payload, {
+          allow_host_rekey: true,
+          refreshDerived: false,
+          onProgress: onBatchStorageProgress,
+        })
+      : writeKind === "metadata"
+        ? input.storage.updateSourceSyncMetadata(payload, {
+            onProgress: onBatchStorageProgress,
+          })
+      : input.storage.mergeSourcePayloadByOriginPath(payload, {
+          preserve_origin_paths: [...preservedOriginPaths],
+          observed_origin_paths: [...observedOriginPaths],
+          refreshDerived: false,
+          onProgress: onBatchStorageProgress,
+        });
+  };
+
+  const batches = fileBatches.length > 0 ? fileBatches : [[]];
+  timing.batchCount += batches.length;
+  for (const [batchIndex, fileBatch] of batches.entries()) {
+    const preservedOriginPaths = new Set<string>();
+    const batchOriginPaths = new Set(fileBatch.map((entry) => path.normalize(entry)));
+    const outsideBatchOriginPaths = files.filter((entry) => !batchOriginPaths.has(path.normalize(entry)));
+    const batchStartedAt = Date.now();
+    const batchReuseLoadStartedAt = Date.now();
+    const metadataOnlyPreviousPayload = await buildCodexMetadataOnlyReusePayloadForStableOldBatch(
+      previousMetadataPayload,
+      fileBatch,
+      input.changedSince,
+    );
+    if (metadataOnlyPreviousPayload) {
+      timing.metadataOnlyReuseBatchCount += 1;
+    }
+    const filePreviousPayload = fileBatch.length > 0
+      ? metadataOnlyPreviousPayload ?? input.storage.getSourceIncrementalPayloadForOriginPaths(source.id, fileBatch)
+      : undefined;
+    timing.reuseLoadMs += Date.now() - batchReuseLoadStartedAt;
+    const previousPayload = filePreviousPayload && preSyncStageRuns
+      ? { ...filePreviousPayload, stage_runs: preSyncStageRuns }
+      : filePreviousPayload;
+    const result = await runSourceProbe(
+      {
+        source_ids: [source.id],
+        safe_mode: input.safeMode,
+        changed_since: input.changedSince,
+        source_file_paths: { [source.id]: fileBatch },
+        previous_payloads: previousPayload ? { [source.id]: previousPayload } : undefined,
+        on_progress: (event) => {
+          recordProbeTiming(timing, event);
+          if (event.file_path && event.stage === "file_skip") {
+            preservedOriginPaths.add(event.file_path);
+          }
+          input.onProgress?.(event);
+        },
+      },
+      [source],
+    );
+    const payload = result.sources[0];
+    if (!payload) {
+      continue;
+    }
+    lastPayload = payload;
+
+    const metadataOnlyWrite = metadataOnlyPreviousPayload !== undefined && isMetadataOnlySyncPayload(payload);
+    const writeKind = replaceFirstBatch && batchIndex === 0
+      ? "replace"
+      : metadataOnlyWrite
+        ? "metadata"
+        : "merge";
+
+    if (writeKind === "metadata") {
+      pendingMetadataWrite = { payload, batchIndex, fileCount: fileBatch.length };
+    } else {
+      pendingMetadataWrite = undefined;
+      counts = writeBatchPayload(
+        payload,
+        writeKind,
+        batchIndex,
+        fileBatch.length,
+        [...preservedOriginPaths, ...outsideBatchOriginPaths],
+        files,
+      );
+    }
+    input.onProgress?.({
+      stage: "source_prepare_done",
+      source_id: source.id,
+      slot_id: source.slot_id,
+      platform: source.platform,
+      display_name: source.display_name,
+      message: `Finished ${source.display_name} batch ${batchIndex + 1}/${batches.length}`,
+      count: fileBatch.length,
+      elapsed_ms: Date.now() - batchStartedAt,
+    });
+  }
+
+  if (pendingMetadataWrite) {
+    counts = writeBatchPayload(
+      pendingMetadataWrite.payload,
+      "metadata",
+      pendingMetadataWrite.batchIndex,
+      pendingMetadataWrite.fileCount,
+    );
+  }
+
+  const pruneStartedAt = Date.now();
+  counts = input.storage.pruneSourcePayloadByObservedOriginPaths(source.id, files, {
+    refreshDerived: false,
+    onProgress: (event) => {
+      if (event.stage === "write_store_done" && event.projection_changed !== false) {
+        projectionChanged = true;
+      }
+    },
+  });
+  timing.sqlitePruneMs += Date.now() - pruneStartedAt;
+
+  const storedSource = input.storage.listSources().find((entry) => entry.id === source.id) ??
+    lastPayload?.source ??
+    createFailedSourcePayload(source, hostId, "No source payload was produced").source;
+  return { source: storedSource, counts, timing, projectionChanged };
+}
+
+async function buildFileBatches(files: readonly string[], targetBytes: number): Promise<string[][]> {
+  const batches: string[][] = [];
+  let currentBatch: string[] = [];
+  let currentBytes = 0;
+
+  for (const filePath of files) {
+    const fileBytes = await fileSizeOrZero(filePath);
+    if (currentBatch.length > 0 && currentBytes + fileBytes > targetBytes) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      currentBytes = 0;
+    }
+    currentBatch.push(filePath);
+    currentBytes += fileBytes;
+  }
+
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
+  }
+  return batches;
+}
+
+async function buildCodexMetadataOnlyReusePayloadForStableOldBatch(
+  previousMetadataPayload: SourceSyncPayload | undefined,
+  fileBatch: readonly string[],
+  changedSince: string | undefined,
+): Promise<SourceSyncPayload | undefined> {
+  if (!previousMetadataPayload || fileBatch.length === 0 || !changedSince) {
+    return undefined;
+  }
+  const changedSinceMs = Date.parse(changedSince);
+  if (Number.isNaN(changedSinceMs)) {
+    return undefined;
+  }
+
+  const blobsByOriginPath = new Map<string, CapturedBlob[]>();
+  for (const blob of previousMetadataPayload.blobs) {
+    const originPath = path.normalize(blob.origin_path);
+    const blobs = blobsByOriginPath.get(originPath) ?? [];
+    blobs.push(blob);
+    blobsByOriginPath.set(originPath, blobs);
+  }
+
+  const batchBlobs: CapturedBlob[] = [];
+  const seenBlobIds = new Set<string>();
+  for (const filePath of fileBatch) {
+    const originPath = path.normalize(filePath);
+    const tailBlob = selectTailBlob(blobsByOriginPath.get(originPath) ?? []);
+    if (!tailBlob) {
+      return undefined;
+    }
+    let fileStats: Awaited<ReturnType<typeof stat>>;
+    try {
+      fileStats = await stat(filePath);
+    } catch {
+      return undefined;
+    }
+    if (fileStats.mtime.getTime() >= changedSinceMs || !canReuseBlobFromStats(tailBlob, fileStats)) {
+      return undefined;
+    }
+    if (!seenBlobIds.has(tailBlob.id)) {
+      seenBlobIds.add(tailBlob.id);
+      batchBlobs.push(tailBlob);
+    }
+  }
+
+  return {
+    source: previousMetadataPayload.source,
+    stage_runs: previousMetadataPayload.stage_runs,
+    loss_audits: [],
+    blobs: batchBlobs,
+    records: [],
+    fragments: [],
+    atoms: [],
+    edges: [],
+    candidates: [],
+    sessions: [],
+    turns: [],
+    contexts: [],
+  };
+}
+
+function selectTailBlob(blobs: readonly CapturedBlob[]): CapturedBlob | undefined {
+  return blobs.reduce<CapturedBlob | undefined>(
+    (current, blob) => !current || blob.size_bytes > current.size_bytes ? blob : current,
+    undefined,
+  );
+}
+
+function canReuseBlobFromStats(
+  blob: CapturedBlob,
+  stats: { size: number; mtime: Date; ctime: Date },
+): boolean {
+  return blob.size_bytes === stats.size &&
+    blob.file_modified_at === stats.mtime.toISOString() &&
+    blob.file_identity_stable === true &&
+    blob.file_changed_at !== undefined &&
+    blob.file_changed_at === stats.ctime.toISOString();
+}
+
+function isMetadataOnlySyncPayload(payload: SourceSyncPayload): boolean {
+  return payload.loss_audits.length === 0 &&
+    payload.blobs.length === 0 &&
+    payload.records.length === 0 &&
+    payload.fragments.length === 0 &&
+    payload.atoms.length === 0 &&
+    payload.edges.length === 0 &&
+    payload.candidates.length === 0 &&
+    payload.sessions.length === 0 &&
+    payload.turns.length === 0 &&
+    payload.contexts.length === 0;
+}
+
+async function fileSizeOrZero(filePath: string): Promise<number> {
+  try {
+    return (await stat(filePath)).size;
+  } catch {
+    return 0;
+  }
 }
 
 export function applySourceSelection<T extends { id: string; slot_id: string }>(sources: T[], selectedRefs: string[]): T[] {
@@ -644,6 +1112,202 @@ export function applySourceSelection<T extends { id: string; slot_id: string }>(
     return sources;
   }
   return sources.filter((source) => selectedRefs.includes(source.id) || selectedRefs.includes(source.slot_id));
+}
+
+interface TimedSyncedSourceSummary extends SyncedSourceSummary {
+  timing: SourceTiming;
+  projectionChanged: boolean;
+}
+
+type CodexBatchWriteKind = "replace" | "merge" | "metadata";
+
+interface SourceTiming {
+  startedAtMs: number;
+  scanMs: number;
+  parseMs: number;
+  deriveMs: number;
+  sqliteWriteMs: number;
+  sqliteReplaceMs: number;
+  sqliteMergeMs: number;
+  sqliteMetadataMs: number;
+  sqlitePruneMs: number;
+  projectionRefreshMs: number;
+  projectionRefreshSkipped: boolean;
+  reuseLoadMs: number;
+  totalMs: number;
+  fileCount: number;
+  batchCount: number;
+  metadataOnlyReuseBatchCount: number;
+  metadataOnlyWriteBatchCount: number;
+}
+
+function createSourceTiming(): SourceTiming {
+  return {
+    startedAtMs: Date.now(),
+    scanMs: 0,
+    parseMs: 0,
+    deriveMs: 0,
+    sqliteWriteMs: 0,
+    sqliteReplaceMs: 0,
+    sqliteMergeMs: 0,
+    sqliteMetadataMs: 0,
+    sqlitePruneMs: 0,
+    projectionRefreshMs: 0,
+    projectionRefreshSkipped: false,
+    reuseLoadMs: 0,
+    totalMs: 0,
+    fileCount: 0,
+    batchCount: 0,
+    metadataOnlyReuseBatchCount: 0,
+    metadataOnlyWriteBatchCount: 0,
+  };
+}
+
+function recordProbeTiming(timing: SourceTiming, event: SourceProbeProgressEvent): void {
+  const elapsedMs = typeof event.elapsed_ms === "number" ? event.elapsed_ms : undefined;
+  if (event.stage === "list_files_done" && typeof event.count === "number") {
+    timing.fileCount += event.count;
+  }
+  if (elapsedMs === undefined) {
+    return;
+  }
+
+  switch (event.stage) {
+    case "live_probe_done":
+    case "list_files_done":
+    case "file_capture_done":
+    case "file_reuse":
+    case "file_skip":
+      timing.scanMs += elapsedMs;
+      break;
+    case "file_parse_done":
+    case "file_append_done":
+      timing.parseMs += elapsedMs;
+      break;
+    case "derive_done":
+      timing.deriveMs += elapsedMs;
+      break;
+  }
+}
+
+function buildSourceTimingStageStats(
+  timing: SourceTiming,
+): Partial<Record<StageKind, Record<string, number>>> {
+  return {
+    capture: {
+      sync_scan_ms: timing.scanMs,
+      sync_file_count: timing.fileCount,
+      sync_batch_count: timing.batchCount,
+      sync_metadata_only_reuse_batch_count: timing.metadataOnlyReuseBatchCount,
+      sync_reuse_load_ms: timing.reuseLoadMs,
+    },
+    parse_source_fragments: {
+      sync_parse_ms: timing.parseMs,
+    },
+    derive_candidates: {
+      sync_derive_ms: timing.deriveMs,
+    },
+    finalize_projections: {
+      sqlite_write_ms: timing.sqliteWriteMs,
+      sqlite_replace_ms: timing.sqliteReplaceMs,
+      sqlite_merge_ms: timing.sqliteMergeMs,
+      sqlite_metadata_ms: timing.sqliteMetadataMs,
+      sqlite_metadata_write_count: timing.metadataOnlyWriteBatchCount,
+      sqlite_prune_ms: timing.sqlitePruneMs,
+    },
+    index_projections: {
+      projection_refresh_ms: timing.projectionRefreshMs,
+      projection_refresh_skipped: timing.projectionRefreshSkipped ? 1 : 0,
+      sync_reindex_ms: timing.projectionRefreshMs,
+      sync_total_ms: timing.totalMs,
+    },
+  };
+}
+
+function buildSourceAggregateStageStats(
+  source: SourceStatus,
+  timing: SourceTiming,
+  failureCounts: Partial<Record<StageKind, number>>,
+): Partial<Record<StageKind, Record<string, number>>> {
+  const stageCounts: Partial<Record<StageKind, Record<string, number>>> = {
+    capture: {
+      input_count: timing.fileCount || source.total_blobs,
+      output_count: source.total_blobs,
+      success_count: source.total_blobs,
+      failure_count: failureCounts.capture ?? 0,
+      skipped_count: 0,
+      unparseable_count: 0,
+    },
+    extract_records: {
+      input_count: source.total_blobs,
+      output_count: source.total_records,
+      success_count: source.total_records,
+      failure_count: failureCounts.extract_records ?? 0,
+      skipped_count: 0,
+      unparseable_count: failureCounts.extract_records ?? 0,
+    },
+    parse_source_fragments: {
+      input_count: source.total_records,
+      output_count: source.total_fragments,
+      success_count: source.total_fragments,
+      failure_count: failureCounts.parse_source_fragments ?? 0,
+      skipped_count: 0,
+      unparseable_count: failureCounts.parse_source_fragments ?? 0,
+    },
+    atomize: {
+      input_count: source.total_fragments,
+      output_count: source.total_atoms,
+      success_count: source.total_atoms,
+      failure_count: failureCounts.atomize ?? 0,
+      skipped_count: 0,
+      unparseable_count: 0,
+    },
+    derive_candidates: {
+      input_count: source.total_atoms,
+      output_count: source.total_sessions + source.total_turns,
+      success_count: source.total_sessions + source.total_turns,
+      failure_count: failureCounts.derive_candidates ?? 0,
+      skipped_count: 0,
+      unparseable_count: 0,
+    },
+    finalize_projections: {
+      input_count: source.total_sessions + source.total_turns,
+      output_count: source.total_sessions + source.total_turns,
+      success_count: source.total_sessions + source.total_turns,
+      failure_count: failureCounts.finalize_projections ?? 0,
+      skipped_count: 0,
+      unparseable_count: 0,
+      sessions: source.total_sessions,
+      turns: source.total_turns,
+    },
+    apply_masks: {
+      input_count: source.total_turns,
+      output_count: source.total_turns,
+      success_count: source.total_turns,
+      failure_count: failureCounts.apply_masks ?? 0,
+      skipped_count: 0,
+      unparseable_count: 0,
+      turns: source.total_turns,
+    },
+    index_projections: {
+      input_count: source.total_turns,
+      output_count: source.total_turns,
+      success_count: source.total_turns,
+      failure_count: failureCounts.index_projections ?? 0,
+      skipped_count: 0,
+      unparseable_count: 0,
+      turns: source.total_turns,
+    },
+  };
+  const timingStats = buildSourceTimingStageStats(timing);
+  const mergedStats: Partial<Record<StageKind, Record<string, number>>> = {};
+  for (const stage of Object.keys(stageCounts) as StageKind[]) {
+    mergedStats[stage] = {
+      ...stageCounts[stage],
+      ...timingStats[stage],
+    };
+  }
+  return mergedStats;
 }
 
 type SyncProgressEvent = (SourceProbeProgressEvent | {
@@ -662,6 +1326,7 @@ type SyncProgressEvent = (SourceProbeProgressEvent | {
     | "write_store_done"
     | "reindex_start"
     | "reindex_done"
+    | "reindex_skip"
     | "source_error";
   source_id?: string;
   slot_id?: string;
@@ -675,6 +1340,15 @@ type SyncProgressEvent = (SourceProbeProgressEvent | {
   count?: number;
   elapsed_ms?: number;
 });
+
+type StorageProgressEvent = {
+  stage: "write_store_done";
+  source_id: string;
+  projection_changed: boolean;
+} | {
+  stage: "reindex_start" | "reindex_done";
+  source_id: string;
+};
 
 function createProgressReporter(context: CommandContext): ((event: SyncProgressEvent) => void) | undefined {
   const mode = context.options.progress ?? (context.options.detail || context.globals.verbose ? "text" : "none");
@@ -743,6 +1417,8 @@ function formatStorageProgressMessage(stage: SyncProgressEvent["stage"], sourceN
       return "Rebuilding project links and search index";
     case "reindex_done":
       return "Rebuilt project links and search index";
+    case "reindex_skip":
+      return "Skipped project links and search index rebuild; canonical projections were unchanged";
     default:
       return sourceName;
   }
@@ -772,7 +1448,7 @@ function normalizeChangedSince(value: string | undefined): string | undefined {
 }
 
 function supportsIncrementalReuse(platform: SourceDefinition["platform"]): boolean {
-  return platform === "codex" || platform === "claude_code";
+  return platform === "codex" || platform === "claude_code" || platform === "factory_droid";
 }
 
 function shouldUseMergeByOriginPath(
@@ -780,6 +1456,24 @@ function shouldUseMergeByOriginPath(
   input: { limitFiles?: number },
 ): boolean {
   return supportsIncrementalReuse(source.platform) && input.limitFiles === undefined;
+}
+
+function shouldUseBatchedCodexSync(
+  source: SourceDefinition,
+  input: { limitFiles?: number },
+): boolean {
+  return source.platform === "codex" && input.limitFiles === undefined;
+}
+
+function resolveCodexSyncBatchTargetBytes(): number {
+  const override = process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES;
+  if (!override) {
+    return DEFAULT_CODEX_SYNC_BATCH_TARGET_BYTES;
+  }
+  const parsed = Number(override);
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.floor(parsed)
+    : DEFAULT_CODEX_SYNC_BATCH_TARGET_BYTES;
 }
 
 async function inspectStore(dbPath: string): Promise<{

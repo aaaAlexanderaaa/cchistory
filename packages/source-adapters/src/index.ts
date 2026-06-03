@@ -6,6 +6,7 @@ export {
   getSourceFormatProfiles,
   runSourceProbe,
   getBuiltinMaskTemplates,
+  listSourceFiles,
 } from "./core/legacy.js";
 export { listPlatformAdapters, listPlatformAdaptersBySupportTier, listStablePlatformAdapters } from "./platforms/registry.js";
 export type { HostDiscoveryCandidate, HostDiscoveryEntry } from "./core/legacy.js";

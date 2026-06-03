@@ -304,7 +304,10 @@ async function collectSourceInputs(
     message: `Listing source files under ${source.base_dir}`,
   });
   const listFilesStartedAt = Date.now();
-  const files = await listSourceFiles(source.platform, source.base_dir, remainingFileLimit);
+  const selectedFiles = options.source_file_paths?.[source.id] ?? options.source_file_paths?.[source.slot_id];
+  const files = selectedFiles
+    ? [...selectedFiles].slice(0, remainingFileLimit)
+    : await listSourceFiles(source.platform, source.base_dir, remainingFileLimit);
   emitProbeProgress(options, source, {
     stage: "list_files_done",
     message: `Found ${files.length} source file(s)`,
@@ -825,7 +828,7 @@ function previousPayloadMatchesProfile(payload: SourceSyncPayload, sourceFormatP
 }
 
 function isIncrementalJsonlPlatform(platform: SourcePlatform): boolean {
-  return platform === "codex" || platform === "claude_code";
+  return platform === "codex" || platform === "claude_code" || platform === "factory_droid";
 }
 
 function canReuseCapturedBlob(previousEntry: PreviousFileEntry, capturedBlob: CapturedBlob): boolean {

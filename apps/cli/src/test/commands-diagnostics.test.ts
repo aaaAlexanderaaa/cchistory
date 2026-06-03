@@ -1,10 +1,10 @@
-import { appendFile, mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, stat, truncate, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { CapturedBlob } from "@cchistory/domain";
+import type { CapturedBlob, LossAuditRecord, RawRecord, StageRun } from "@cchistory/domain";
 import {
   fileExists,
   runCliCapture,
@@ -84,9 +84,244 @@ test("sync --detail reports source, file, write, and reindex progress on stderr"
     assert.match(result.stderr, /\[sync:codex:file_parse_done\].*\(\d+ms\)/);
     assert.match(result.stderr, /\[sync:codex:derive_done\].*\(\d+ms\)/);
     assert.match(result.stderr, /\[sync:codex:write_store_start\]/);
-    assert.match(result.stderr, /\[sync:codex:reindex_done\].*\(\d+ms\)/);
+    assert.match(result.stderr, /\[sync:codex:write_store_done\].*\(\d+ms\)/);
+    assert.match(result.stderr, /\[sync:all:reindex_done\].*\(\d+ms\)/);
+
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const stageRuns = db.prepare("SELECT payload_json FROM stage_runs").all()
+        .map((row) => JSON.parse((row as { payload_json: string }).payload_json) as {
+          stage_kind: string;
+          stats: Record<string, number>;
+        });
+      const captureRun = stageRuns.find((run) => run.stage_kind === "capture");
+      const parseRun = stageRuns.find((run) => run.stage_kind === "parse_source_fragments");
+      const finalizeRun = stageRuns.find((run) => run.stage_kind === "finalize_projections");
+      const indexRun = stageRuns.find((run) => run.stage_kind === "index_projections");
+      assert.equal(typeof captureRun?.stats.sync_scan_ms, "number");
+      assert.equal(typeof parseRun?.stats.sync_parse_ms, "number");
+      assert.equal(typeof finalizeRun?.stats.sqlite_write_ms, "number");
+      assert.equal(typeof indexRun?.stats.projection_refresh_ms, "number");
+      assert.ok((indexRun?.stats.sync_total_ms ?? 0) >= (finalizeRun?.stats.sqlite_write_ms ?? 0));
+    } finally {
+      db.close();
+    }
   } finally {
     process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync refreshes derived projections once after all selected sources are written", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-single-refresh-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+    const storeDir = path.join(tempRoot, "store");
+
+    const result = await runCliCapture([
+      "sync",
+      "--store",
+      storeDir,
+      "--source",
+      "codex",
+      "--source",
+      "claude_code",
+      "--detail",
+    ], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    assert.match(result.stdout, /Synced 2 source\(s\)/);
+    assert.deepEqual(result.stderr.match(/\[sync:[^\]]+:reindex_done\]/g) ?? [], ["[sync:all:reindex_done]"]);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync writes Codex full scans in bounded batches without dropping turns", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-codex-batches-"));
+  const originalHome = process.env.HOME;
+  const originalBatchTarget = process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES;
+
+  try {
+    process.env.HOME = tempRoot;
+    process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES = "1";
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-batch-a.jsonl", {
+      sessionId: "codex-batch-a",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Batch one prompt should remain searchable.",
+      reply: "Batch one reply.",
+      startAt: "2026-03-09T00:00:00.000Z",
+    });
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-batch-b.jsonl", {
+      sessionId: "codex-batch-b",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Batch two prompt should remain searchable.",
+      reply: "Batch two reply.",
+      startAt: "2026-03-09T01:00:00.000Z",
+    });
+
+    const storeDir = path.join(tempRoot, "store");
+    const result = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--json", "--detail"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.sources[0].counts.turns, 2);
+    assert.match(result.stderr, /Prepared Codex in 2 bounded batch\(es\)/);
+    assert.match(result.stderr, /Writing Codex batch 1\/2 to SQLite/);
+    assert.match(result.stderr, /Writing Codex batch 2\/2 to SQLite/);
+
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const stageRuns = db.prepare("SELECT payload_json FROM stage_runs").all()
+        .map((row) => JSON.parse((row as { payload_json: string }).payload_json) as StageRun);
+      const captureRun = stageRuns.find((run) => run.stage_kind === "capture");
+      const parseRun = stageRuns.find((run) => run.stage_kind === "parse_source_fragments");
+      const finalizeRun = stageRuns.find((run) => run.stage_kind === "finalize_projections");
+      const indexRun = stageRuns.find((run) => run.stage_kind === "index_projections");
+      assert.equal(captureRun?.stats.output_count, 2);
+      assert.equal(captureRun?.stats.sync_file_count, 2);
+      assert.equal(parseRun?.stats.input_count, 6);
+      assert.equal(finalizeRun?.stats.sessions, 2);
+      assert.equal(finalizeRun?.stats.turns, 2);
+      assert.equal(indexRun?.stats.turns, 2);
+      assert.equal(typeof indexRun?.stats.sync_total_ms, "number");
+    } finally {
+      db.close();
+    }
+
+    const search = await runCliJson<{ results: Array<{ turn: { canonical_text: string } }> }>(
+      ["search", "Batch two prompt", "--store", storeDir],
+      tempRoot,
+    );
+    assert.ok(search.results.some((entry) => entry.turn.canonical_text.includes("Batch two prompt")));
+  } finally {
+    process.env.HOME = originalHome;
+    if (originalBatchTarget === undefined) {
+      delete process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES;
+    } else {
+      process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES = originalBatchTarget;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync removes stale Codex rows for observed batch files that produce no blob", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-codex-batch-blobless-"));
+  const originalHome = process.env.HOME;
+  const originalBatchTarget = process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES;
+
+  try {
+    process.env.HOME = tempRoot;
+    process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES = "1";
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-batch-a.jsonl", {
+      sessionId: "codex-batch-a",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Batch keep prompt should remain searchable.",
+      reply: "Batch keep reply.",
+      startAt: "2026-03-09T00:00:00.000Z",
+    });
+    const failedPath = path.join(tempRoot, ".codex", "sessions", "rollout-codex-batch-z.jsonl");
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-batch-z.jsonl", {
+      sessionId: "codex-batch-z",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Batch failed prompt should disappear.",
+      reply: "Batch failed reply.",
+      startAt: "2026-03-09T01:00:00.000Z",
+    });
+
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--json"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+    const firstPayload = JSON.parse(firstSync.stdout);
+    assert.equal(firstPayload.sources[0].counts.turns, 2);
+
+    await truncate(failedPath, 64 * 1024 * 1024 + 1);
+
+    const secondSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--json", "--detail"], tempRoot);
+    assert.equal(secondSync.exitCode, 0, secondSync.stderr);
+    const secondPayload = JSON.parse(secondSync.stdout);
+    assert.equal(secondPayload.sources[0].counts.turns, 1);
+    assert.match(secondSync.stderr, /Skipped oversized source file/);
+
+    const keepSearch = await runCliJson<{ results: Array<{ turn: { canonical_text: string } }> }>(
+      ["search", "Batch keep prompt", "--store", storeDir],
+      tempRoot,
+    );
+    assert.ok(keepSearch.results.some((entry) => entry.turn.canonical_text.includes("Batch keep prompt")));
+
+    const staleSearch = await runCliJson<{ results: Array<{ turn: { canonical_text: string } }> }>(
+      ["search", "Batch failed prompt", "--store", storeDir],
+      tempRoot,
+    );
+    assert.equal(staleSearch.results.length, 0);
+  } finally {
+    process.env.HOME = originalHome;
+    if (originalBatchTarget === undefined) {
+      delete process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES;
+    } else {
+      process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES = originalBatchTarget;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync invalidates stale Codex parser diagnostics across every bounded batch", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-codex-batch-parser-"));
+  const originalHome = process.env.HOME;
+  const originalBatchTarget = process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES;
+
+  try {
+    process.env.HOME = tempRoot;
+    process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES = "1";
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-parser-a.jsonl", {
+      sessionId: "codex-parser-a",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Batch parser one prompt.",
+      reply: "Batch parser one reply.",
+      startAt: "2026-03-09T00:00:00.000Z",
+    });
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-parser-b.jsonl", {
+      sessionId: "codex-parser-b",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Batch parser two prompt.",
+      reply: "Batch parser two reply.",
+      startAt: "2026-03-09T01:00:00.000Z",
+    });
+
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    rewriteCodexStageRunParserVersion(dbPath, "codex-parser@2026-03-11.1");
+    insertStaleCodexUnhandledAuditForOrigin(dbPath, "rollout-codex-parser-b.jsonl");
+    assert.equal(countCodexUnhandledAudits(dbPath), 1);
+
+    const result = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--json", "--detail"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.sources[0].counts.turns, 2);
+    assert.equal(countCodexUnhandledAudits(dbPath), 0);
+    assert.equal(result.stderr.match(/\[sync:codex:file_parse_done\]/g)?.length, 2);
+    assert.doesNotMatch(result.stderr, /\[sync:codex:file_skip\]/);
+  } finally {
+    process.env.HOME = originalHome;
+    if (originalBatchTarget === undefined) {
+      delete process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES;
+    } else {
+      process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES = originalBatchTarget;
+    }
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -172,6 +407,271 @@ test("sync --since skips unchanged old Codex files before content capture when f
     assert.match(result.stderr, /Reused unchanged file without reading content/);
     assert.match(result.stderr, /\[sync:codex:file_skip\]/);
     assert.doesNotMatch(result.stderr, /\[sync:codex:file_capture_done\]/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync --since uses metadata-only reuse for stable old Codex batches", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-since-metadata-batch-"));
+  const originalHome = process.env.HOME;
+  const originalBatchTarget = process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES;
+
+  try {
+    process.env.HOME = tempRoot;
+    process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES = "1";
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    const oldFile = path.join(tempRoot, ".codex", "sessions", "rollout-codex-old.jsonl");
+    const recentFile = path.join(tempRoot, ".codex", "sessions", "rollout-codex-recent.jsonl");
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-old.jsonl", {
+      sessionId: "codex-old-session",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Old metadata-only prompt should remain searchable.",
+      reply: "Old metadata-only reply remains indexed.",
+      startAt: "2026-03-09T00:00:00.000Z",
+    });
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-recent.jsonl", {
+      sessionId: "codex-recent-session",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Recent prompt before append.",
+      reply: "Recent reply before append.",
+      startAt: "2026-03-09T01:00:00.000Z",
+    });
+    const oldDate = new Date("2020-01-01T00:00:00.000Z");
+    await utimes(oldFile, oldDate, oldDate);
+
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    await appendFile(
+      recentFile,
+      `\n${[
+        {
+          timestamp: "2026-03-09T01:10:00.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "Recent appended prompt should be indexed." }],
+          },
+        },
+        {
+          timestamp: "2026-03-09T01:10:01.000Z",
+          type: "response_item",
+          payload: {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: "Recent appended reply." }],
+          },
+        },
+      ].map((line) => JSON.stringify(line)).join("\n")}`,
+      "utf8",
+    );
+
+    const result = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--since", "1h", "--json", "--detail"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.sources[0].counts.turns, 3);
+    assert.match(result.stderr, /\[sync:codex:file_skip\]/);
+    assert.match(result.stderr, /\[sync:codex:file_append_done\]/);
+    assert.match(result.stderr, /\[sync:all:reindex_done\]/);
+
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const stageRuns = db.prepare("SELECT payload_json FROM stage_runs").all()
+        .map((row) => JSON.parse((row as { payload_json: string }).payload_json) as StageRun);
+      const captureRun = stageRuns.find((run) => run.stage_kind === "capture");
+      assert.equal(captureRun?.stats.sync_batch_count, 2);
+      assert.equal(captureRun?.stats.sync_metadata_only_reuse_batch_count, 1);
+      const finalizeRun = stageRuns.find((run) => run.stage_kind === "finalize_projections");
+      assert.equal(typeof finalizeRun?.stats.sqlite_metadata_ms, "number");
+    } finally {
+      db.close();
+    }
+
+    const search = await runCliJson<{ results: Array<{ turn: { canonical_text: string } }> }>(
+      ["search", "Recent appended prompt", "--store", storeDir],
+      tempRoot,
+    );
+    assert.ok(search.results.some((entry) => entry.turn.canonical_text.includes("Recent appended prompt")));
+  } finally {
+    process.env.HOME = originalHome;
+    if (originalBatchTarget === undefined) {
+      delete process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES;
+    } else {
+      process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES = originalBatchTarget;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync --since skips projection refresh when stable old Codex batches are unchanged", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-since-refresh-noop-"));
+  const originalHome = process.env.HOME;
+  const originalBatchTarget = process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES;
+
+  try {
+    process.env.HOME = tempRoot;
+    process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES = "1";
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    const oldFile = path.join(tempRoot, ".codex", "sessions", "rollout-codex-old.jsonl");
+    const olderFile = path.join(tempRoot, ".codex", "sessions", "rollout-codex-older.jsonl");
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-old.jsonl", {
+      sessionId: "codex-old-session",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Old no-op prompt should remain searchable.",
+      reply: "Old no-op reply remains indexed.",
+      startAt: "2026-03-09T00:00:00.000Z",
+    });
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-older.jsonl", {
+      sessionId: "codex-older-session",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Older no-op prompt should remain searchable.",
+      reply: "Older no-op reply remains indexed.",
+      startAt: "2026-03-08T00:00:00.000Z",
+    });
+    const oldDate = new Date("2020-01-01T00:00:00.000Z");
+    await utimes(oldFile, oldDate, oldDate);
+    await utimes(olderFile, oldDate, oldDate);
+
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    const secondSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--since", "1h", "--json", "--detail"], tempRoot);
+    assert.equal(secondSync.exitCode, 0, secondSync.stderr);
+    const payload = JSON.parse(secondSync.stdout);
+    assert.equal(payload.sources[0].counts.turns, 2);
+    assert.match(secondSync.stderr, /\[sync:codex:file_skip\]/);
+    assert.match(secondSync.stderr, /\[sync:all:reindex_skip\]/);
+    assert.doesNotMatch(secondSync.stderr, /\[sync:all:reindex_done\]/);
+
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const stageRuns = db.prepare("SELECT payload_json FROM stage_runs").all()
+        .map((row) => JSON.parse((row as { payload_json: string }).payload_json) as StageRun);
+      const indexRun = stageRuns.find((run) => run.stage_kind === "index_projections");
+      assert.equal(indexRun?.stats.projection_refresh_skipped, 1);
+      assert.equal(indexRun?.stats.projection_refresh_ms, 0);
+      assert.equal(indexRun?.stats.sync_reindex_ms, 0);
+      const captureRun = stageRuns.find((run) => run.stage_kind === "capture");
+      assert.equal(captureRun?.stats.sync_metadata_only_reuse_batch_count, 2);
+      const finalizeRun = stageRuns.find((run) => run.stage_kind === "finalize_projections");
+      assert.equal(typeof finalizeRun?.stats.sqlite_metadata_ms, "number");
+      assert.equal(finalizeRun?.stats.sqlite_metadata_write_count, 1);
+      assert.equal(finalizeRun?.stats.sqlite_merge_ms, 0);
+    } finally {
+      db.close();
+    }
+
+    const search = await runCliJson<{ results: Array<{ turn: { canonical_text: string } }> }>(
+      ["search", "Old no-op prompt", "--store", storeDir],
+      tempRoot,
+    );
+    assert.ok(search.results.some((entry) => entry.turn.canonical_text.includes("Old no-op prompt")));
+  } finally {
+    process.env.HOME = originalHome;
+    if (originalBatchTarget === undefined) {
+      delete process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES;
+    } else {
+      process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES = originalBatchTarget;
+    }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync --since skips projection refresh for unchanged old Factory Droid files", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-since-factory-noop-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    process.env.HOME = tempRoot;
+    await mkdir(path.join(tempRoot, ".factory", "sessions"), { recursive: true });
+    const factoryFile = path.join(tempRoot, ".factory", "sessions", "factory-old-session.jsonl");
+    await writeFile(
+      factoryFile,
+      [
+        {
+          timestamp: "2026-03-09T06:00:00.000Z",
+          type: "session_start",
+          sessionTitle: "Factory no-op session",
+          cwd: "/workspace/cchistory",
+        },
+        {
+          timestamp: "2026-03-09T06:00:01.000Z",
+          type: "message",
+          message: {
+            role: "user",
+            content: [{ type: "text", text: "Factory no-op prompt should remain searchable." }],
+          },
+        },
+        {
+          timestamp: "2026-03-09T06:00:02.000Z",
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: "Factory no-op reply remains indexed." }],
+          },
+        },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join("\n"),
+      "utf8",
+    );
+    const oldDate = new Date("2020-01-01T00:00:00.000Z");
+    await utimes(factoryFile, oldDate, oldDate);
+
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "factory_droid"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    const secondSync = await runCliCapture([
+      "sync",
+      "--store",
+      storeDir,
+      "--source",
+      "factory_droid",
+      "--since",
+      "1h",
+      "--json",
+      "--detail",
+    ], tempRoot);
+    assert.equal(secondSync.exitCode, 0, secondSync.stderr);
+    const payload = JSON.parse(secondSync.stdout);
+    assert.equal(payload.sources[0].counts.turns, 1);
+    assert.match(secondSync.stderr, /\[sync:factory_droid:file_skip\]/);
+    assert.doesNotMatch(secondSync.stderr, /\[sync:factory_droid:file_parse_done\]/);
+    assert.match(secondSync.stderr, /\[sync:all:reindex_skip\]/);
+    assert.doesNotMatch(secondSync.stderr, /\[sync:all:reindex_done\]/);
+
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const stageRuns = db.prepare("SELECT payload_json FROM stage_runs").all()
+        .map((row) => JSON.parse((row as { payload_json: string }).payload_json) as StageRun);
+      const parseRun = stageRuns.find((run) => run.stage_kind === "parse_source_fragments");
+      assert.equal(parseRun?.stats.sync_parse_ms, 0);
+      const finalizeRun = stageRuns.find((run) => run.stage_kind === "finalize_projections");
+      assert.equal(finalizeRun?.stats.sqlite_replace_ms, 0);
+      assert.equal(finalizeRun?.stats.sqlite_metadata_write_count, 0);
+      const indexRun = stageRuns.find((run) => run.stage_kind === "index_projections");
+      assert.equal(indexRun?.stats.projection_refresh_skipped, 1);
+      assert.equal(indexRun?.stats.projection_refresh_ms, 0);
+      assert.equal(indexRun?.stats.sync_reindex_ms, 0);
+    } finally {
+      db.close();
+    }
+
+    const search = await runCliJson<{ results: Array<{ turn: { canonical_text: string } }> }>(
+      ["search", "Factory no-op prompt", "--store", storeDir],
+      tempRoot,
+    );
+    assert.ok(search.results.some((entry) => entry.turn.canonical_text.includes("Factory no-op prompt")));
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });
@@ -428,17 +928,27 @@ test("sync reuses unchanged Claude Code files that share one session without dup
       ].join("\n"),
       "utf8",
     );
+    await writeFile(
+      path.join(claudeDir, "stale.jsonl"),
+      [
+        makeClaudeLine("2026-03-09T01:20:00.000Z", "user", "Stale asks should disappear."),
+        makeClaudeLine("2026-03-09T01:20:01.000Z", "assistant", "Stale detail complete."),
+      ].join("\n"),
+      "utf8",
+    );
 
     const storeDir = path.join(tempRoot, "store");
     const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "claude_code", "--json"], tempRoot);
     assert.equal(firstSync.exitCode, 0, firstSync.stderr);
     const firstPayload = JSON.parse(firstSync.stdout);
-    assert.equal(firstPayload.sources[0].counts.turns, 2);
+    assert.equal(firstPayload.sources[0].counts.turns, 3);
 
+    await rm(path.join(claudeDir, "stale.jsonl"));
     const secondSync = await runCliCapture(["sync", "--store", storeDir, "--source", "claude_code", "--json", "--detail"], tempRoot);
     assert.equal(secondSync.exitCode, 0, secondSync.stderr);
     const secondPayload = JSON.parse(secondSync.stdout);
     assert.equal(secondPayload.sources[0].counts.turns, 2);
+    assert.match(secondSync.stderr, /Loaded previous Claude Code reuse inputs \(2 blob\(s\),/);
     assert.match(secondSync.stderr, /\[sync:claude_code:file_skip\]/);
   } finally {
     process.env.HOME = originalHome;
@@ -1152,6 +1662,106 @@ test("--no-color disables ANSI even when FORCE_COLOR is set", async () => {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+function rewriteCodexStageRunParserVersion(dbPath: string, parserVersion: string): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    const rows = db.prepare("SELECT id, payload_json FROM stage_runs").all() as Array<{
+      id: string;
+      payload_json: string;
+    }>;
+    const update = db.prepare("UPDATE stage_runs SET payload_json = ? WHERE id = ?");
+    for (const row of rows) {
+      const stageRun = JSON.parse(row.payload_json) as StageRun;
+      if (stageRun.parser_version?.startsWith("codex-parser@")) {
+        update.run(JSON.stringify({ ...stageRun, parser_version: parserVersion }), row.id);
+      }
+    }
+  } finally {
+    db.close();
+  }
+}
+
+function insertStaleCodexUnhandledAuditForOrigin(dbPath: string, originBasename: string): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    const blobRows = db.prepare("SELECT payload_json FROM captured_blobs").all() as Array<{
+      payload_json: string;
+    }>;
+    const blob = blobRows
+      .map((row) => JSON.parse(row.payload_json) as CapturedBlob)
+      .find((entry) => path.basename(entry.origin_path) === originBasename);
+    assert.ok(blob, `expected captured blob for ${originBasename}`);
+
+    const recordRow = db
+      .prepare("SELECT payload_json FROM raw_records WHERE source_id = ? AND blob_id = ? ORDER BY ordinal LIMIT 1")
+      .get(blob.source_id, blob.id) as { payload_json: string } | undefined;
+    assert.ok(recordRow, `expected raw record for ${originBasename}`);
+    const record = JSON.parse(recordRow.payload_json) as RawRecord;
+    const stageRunRow = db
+      .prepare("SELECT payload_json FROM stage_runs WHERE source_id = ? LIMIT 1")
+      .get(blob.source_id) as { payload_json: string } | undefined;
+    assert.ok(stageRunRow, `expected stage run for ${originBasename}`);
+    const stageRun = JSON.parse(stageRunRow.payload_json) as StageRun;
+    const audit: LossAuditRecord = {
+      id: `loss-audit:stale:${record.id}`,
+      source_id: blob.source_id,
+      stage_run_id: stageRun.id,
+      stage_kind: "parse_source_fragments",
+      diagnostic_code: "codex_unhandled_record_type",
+      severity: "warning",
+      scope_ref: record.id,
+      session_ref: record.session_ref,
+      blob_ref: blob.id,
+      record_ref: record.id,
+      source_format_profile_id: "codex:jsonl:v1",
+      loss_kind: "unknown_fragment",
+      detail: "Stale diagnostic from an older Codex parser.",
+      created_at: "2026-03-09T01:00:03.000Z",
+    };
+    db.prepare(`
+      INSERT OR REPLACE INTO loss_audits (
+        id,
+        source_id,
+        stage_kind,
+        diagnostic_code,
+        session_ref,
+        blob_ref,
+        record_ref,
+        fragment_ref,
+        atom_ref,
+        candidate_ref,
+        payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      audit.id,
+      audit.source_id,
+      audit.stage_kind,
+      audit.diagnostic_code,
+      audit.session_ref ?? "",
+      audit.blob_ref ?? "",
+      audit.record_ref ?? "",
+      audit.fragment_ref ?? "",
+      audit.atom_ref ?? "",
+      audit.candidate_ref ?? "",
+      JSON.stringify(audit),
+    );
+  } finally {
+    db.close();
+  }
+}
+
+function countCodexUnhandledAudits(dbPath: string): number {
+  const db = new DatabaseSync(dbPath);
+  try {
+    return (db.prepare("SELECT payload_json FROM loss_audits").all() as Array<{ payload_json: string }>)
+      .map((row) => JSON.parse(row.payload_json) as LossAuditRecord)
+      .filter((audit) => audit.diagnostic_code === "codex_unhandled_record_type")
+      .length;
+  } finally {
+    db.close();
+  }
+}
 
 function readFirstCapturedBlob(dbPath: string): CapturedBlob {
   const db = new DatabaseSync(dbPath);

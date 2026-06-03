@@ -136,10 +136,11 @@ export function deriveProjectLinkSnapshot(input: {
       overrideByTurnId.get(turn.id) ?? overrideBySessionId.get(turn.session_id),
     ),
   );
+  const turnsBySessionId = buildTurnsBySessionId(turns);
   const sessions = input.sessions.map((session) =>
     decorateSession(
       session,
-      turns.filter((turn) => turn.session_id === session.id),
+      turnsBySessionId.get(session.id) ?? [],
     ),
   );
 
@@ -214,6 +215,19 @@ export function buildLinkingReview(snapshot: ProjectLinkSnapshot): LinkingReview
       ),
     project_observations: snapshot.observations,
   };
+}
+
+function buildTurnsBySessionId(turns: readonly UserTurnProjection[]): Map<string, UserTurnProjection[]> {
+  const turnsBySessionId = new Map<string, UserTurnProjection[]>();
+  for (const turn of turns) {
+    const existing = turnsBySessionId.get(turn.session_id);
+    if (existing) {
+      existing.push(turn);
+      continue;
+    }
+    turnsBySessionId.set(turn.session_id, [turn]);
+  }
+  return turnsBySessionId;
 }
 
 function hydrateProjectObservation(

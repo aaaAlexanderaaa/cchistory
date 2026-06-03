@@ -65,6 +65,7 @@ export interface ProbeOptions {
   safe_mode?: boolean;
   max_file_bytes?: number;
   changed_since?: string;
+  source_file_paths?: Record<string, readonly string[] | undefined>;
   previous_payloads?: Record<string, SourceSyncPayload | undefined>;
   on_progress?: (event: SourceProbeProgressEvent) => void;
 }

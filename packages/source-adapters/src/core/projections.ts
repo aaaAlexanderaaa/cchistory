@@ -260,32 +260,47 @@ export function buildTurnsAndContext(
   const fragmentById = new Map(fragments.map((fragment) => [fragment.id, fragment]));
   const recordById = new Map(records.map((record) => [record.id, record]));
   const blobById = new Map(blobs.map((blob) => [blob.id, blob]));
+  const atomById = new Map<string, ConversationAtom>();
+  const atomIndexById = new Map<string, number>();
+  for (const [index, atom] of atoms.entries()) {
+    atomById.set(atom.id, atom);
+    atomIndexById.set(atom.id, index);
+  }
+  const edgeIndex = buildTurnContextEdgeIndex(edges);
 
   for (const [index, group] of submissionGroups.entries()) {
     const firstAtomId = group.input_atom_refs[0];
     if (!firstAtomId) {
       continue;
     }
-    const atomIndex = atoms.findIndex((atom) => atom.id === firstAtomId);
+    const atomIndex = atomIndexById.get(firstAtomId) ?? -1;
 
     const nextGroup = submissionGroups[index + 1];
     const nextStartAtomId = nextGroup?.input_atom_refs[0];
+    const nextIndex = nextStartAtomId ? atomIndexById.get(nextStartAtomId) : undefined;
     const currentGroupAtomSet = new Set(group.input_atom_refs);
     const turnId = stableId("turn", draft.source_id, draft.id, String(index));
-    const contextAtoms = atoms.filter((atom, atomIndexValue) => {
-      if (atomIndex < 0 || atomIndexValue <= atomIndex) {
-        return false;
-      }
-      if (nextStartAtomId) {
-        const nextIndex = atoms.findIndex((candidateAtom) => candidateAtom.id === nextStartAtomId);
-        if (nextIndex >= 0 && atomIndexValue >= nextIndex) {
-          return false;
+    const contextAtoms: ConversationAtom[] = [];
+    const contextAtomIds = new Set<string>();
+    const contextEndIndex = nextIndex === undefined || nextIndex < 0 ? atoms.length : nextIndex;
+    if (atomIndex >= 0) {
+      for (let atomIndexValue = atomIndex + 1; atomIndexValue < contextEndIndex; atomIndexValue += 1) {
+        const atom = atoms[atomIndexValue];
+        if (!atom || currentGroupAtomSet.has(atom.id)) {
+          continue;
         }
+        contextAtoms.push(atom);
+        contextAtomIds.add(atom.id);
       }
-      return !currentGroupAtomSet.has(atom.id);
-    });
+    }
 
-    const groupAtoms = atoms.filter((atom) => currentGroupAtomSet.has(atom.id));
+    const groupAtoms: ConversationAtom[] = [];
+    for (const atomId of group.input_atom_refs) {
+      const atom = atomById.get(atomId);
+      if (atom) {
+        groupAtoms.push(atom);
+      }
+    }
     const turnCandidateId = stableId("candidate", "turn", draft.source_id, draft.id, String(index));
     const contextCandidateId = stableId("candidate", "context", draft.source_id, draft.id, String(index));
     const userMessages = groupAtoms
@@ -325,12 +340,18 @@ export function buildTurnsAndContext(
       contextAtoms,
       fragmentById,
       edges,
+      {
+        atomById,
+        contextAtomIds,
+        edgeIndex,
+      },
     );
 
     const hasAuthoredUserInput = userMessages.some((message) => !message.is_injected);
     if (!hasAuthoredUserInput) {
       continue;
     }
+    const lastContextAtom = contextAtoms[contextAtoms.length - 1];
 
     turnCandidates.push({
       id: turnCandidateId,
@@ -339,7 +360,7 @@ export function buildTurnsAndContext(
       candidate_kind: "turn",
       input_atom_refs: groupAtoms.map((atom) => atom.id),
       started_at: group.started_at,
-      ended_at: contextAtoms.at(-1)?.time_key ?? group.ended_at,
+      ended_at: lastContextAtom?.time_key ?? group.ended_at,
       rule_version: RULE_VERSION,
       evidence: {
         submission_group_id: group.id,
@@ -353,7 +374,7 @@ export function buildTurnsAndContext(
       candidate_kind: "context_span",
       input_atom_refs: contextAtoms.map((atom) => atom.id),
       started_at: group.started_at,
-      ended_at: contextAtoms.at(-1)?.time_key ?? group.ended_at,
+      ended_at: lastContextAtom?.time_key ?? group.ended_at,
       rule_version: RULE_VERSION,
       evidence: {
         turn_candidate_id: turnCandidateId,
@@ -391,7 +412,7 @@ export function buildTurnsAndContext(
       display_segments: displaySegments,
       created_at: group.started_at,
       submission_started_at: group.started_at,
-      last_context_activity_at: contextAtoms.at(-1)?.time_key ?? group.ended_at,
+      last_context_activity_at: lastContextAtom?.time_key ?? group.ended_at,
       session_id: draft.id,
       source_id: draft.source_id,
       link_state: "unlinked",
@@ -443,6 +464,35 @@ export function buildTurnsAndContext(
   return { session, turnCandidates, contextCandidates, turns, contexts };
 }
 
+interface TurnContextEdgeIndex {
+  spawnedFromAtomIdByToolAtomId: Map<string, string>;
+  toolResultAtomIdByToolAtomId: Map<string, string>;
+}
+
+interface TurnContextBuildIndex {
+  atomById: ReadonlyMap<string, ConversationAtom>;
+  contextAtomIds: ReadonlySet<string>;
+  edgeIndex: TurnContextEdgeIndex;
+}
+
+function buildTurnContextEdgeIndex(edges: readonly AtomEdge[]): TurnContextEdgeIndex {
+  const spawnedFromAtomIdByToolAtomId = new Map<string, string>();
+  const toolResultAtomIdByToolAtomId = new Map<string, string>();
+  for (const edge of edges) {
+    if (edge.edge_kind === "spawned_from" && !spawnedFromAtomIdByToolAtomId.has(edge.from_atom_id)) {
+      spawnedFromAtomIdByToolAtomId.set(edge.from_atom_id, edge.to_atom_id);
+      continue;
+    }
+    if (edge.edge_kind === "tool_result_for" && !toolResultAtomIdByToolAtomId.has(edge.to_atom_id)) {
+      toolResultAtomIdByToolAtomId.set(edge.to_atom_id, edge.from_atom_id);
+    }
+  }
+  return {
+    spawnedFromAtomIdByToolAtomId,
+    toolResultAtomIdByToolAtomId,
+  };
+}
+
 export function buildTurnContext(
   turnId: string,
   draft: SessionDraft,
@@ -450,17 +500,35 @@ export function buildTurnContext(
   contextAtoms: ConversationAtom[],
   fragmentById: Map<string, SourceFragment>,
   edges: AtomEdge[],
+  buildIndex?: TurnContextBuildIndex,
 ): TurnContextProjection {
   const assistantReplies: TurnContextProjection["assistant_replies"] = [];
   const systemMessages: TurnContextProjection["system_messages"] = [];
   const toolCalls: ToolCallProjection[] = [];
   const rawEventRefs = new Set<string>();
   const replyIdByAtomId = new Map<string, string>();
-  const replyByAtomId = new Map<string, TurnContextProjection["assistant_replies"][number]>();
+  const toolCallIdsByReplyId = new Map<string, string[]>();
   let toolSequence = 0;
   let activeModel = draft.model;
+  const contextIndex =
+    buildIndex ??
+    {
+      atomById: new Map(contextAtoms.map((atom) => [atom.id, atom])),
+      contextAtomIds: new Set(contextAtoms.map((atom) => atom.id)),
+      edgeIndex: buildTurnContextEdgeIndex(edges),
+    };
 
-  for (const atom of [...groupAtoms, ...contextAtoms]) {
+  for (const atom of groupAtoms) {
+    for (const fragmentId of atom.fragment_refs) {
+      const recordId = fragmentById.get(fragmentId)?.record_id;
+      if (recordId) {
+        rawEventRefs.add(recordId);
+      }
+    }
+  }
+  const signalsByReply = new Map<number, ConversationAtom[]>();
+  let currentReplyIndex = -1;
+  for (const atom of contextAtoms) {
     for (const fragmentId of atom.fragment_refs) {
       const recordId = fragmentById.get(fragmentId)?.record_id;
       if (recordId) {
@@ -515,37 +583,29 @@ export function buildTurnContext(
         stop_reason: extractStopReasonFromPayload(atom.payload),
       };
       assistantReplies.push(reply);
-      replyByAtomId.set(atom.id, reply);
+      currentReplyIndex = assistantReplies.length - 1;
       if (replyModel !== "unknown") {
         activeModel = replyModel;
       }
       continue;
     }
+    if (
+      atom.content_kind === "meta_signal" &&
+      atom.payload.signal_kind === "token_usage_signal" &&
+      currentReplyIndex >= 0
+    ) {
+      let signals = signalsByReply.get(currentReplyIndex);
+      if (!signals) {
+        signals = [];
+        signalsByReply.set(currentReplyIndex, signals);
+      }
+      signals.push(atom);
+    }
   }
 
   // Apply token_usage_signal atoms to the most recent preceding assistant reply.
   // Each signal is associated with the reply that precedes it in the atom sequence.
-  if (assistantReplies.length > 0) {
-    // Build a map: replyIndex → [signalAtoms]
-    const signalsByReply = new Map<number, ConversationAtom[]>();
-    let currentReplyIndex = -1;
-    for (const atom of contextAtoms) {
-      if (atom.actor_kind === "assistant" && atom.content_kind === "text" && atom.display_policy !== "hide") {
-        currentReplyIndex++;
-      } else if (
-        atom.content_kind === "meta_signal" &&
-        atom.payload.signal_kind === "token_usage_signal" &&
-        currentReplyIndex >= 0
-      ) {
-        let signals = signalsByReply.get(currentReplyIndex);
-        if (!signals) {
-          signals = [];
-          signalsByReply.set(currentReplyIndex, signals);
-        }
-        signals.push(atom);
-      }
-    }
-
+  if (assistantReplies.length > 0 && signalsByReply.size > 0) {
     for (const [replyIndex, signals] of signalsByReply.entries()) {
       const reply = assistantReplies[replyIndex];
       if (!reply || signals.length === 0) {
@@ -589,8 +649,8 @@ export function buildTurnContext(
     if (atom.content_kind !== "tool_call" || atom.display_policy === "hide") {
       continue;
     }
-    const incomingEdge = edges.find((edge) => edge.from_atom_id === atom.id && edge.edge_kind === "spawned_from");
-    const replyId = incomingEdge ? replyIdByAtomId.get(incomingEdge.to_atom_id) ?? lastAssistantReplyId() : lastAssistantReplyId();
+    const spawnedFromAtomId = contextIndex.edgeIndex.spawnedFromAtomIdByToolAtomId.get(atom.id);
+    const replyId = spawnedFromAtomId ? replyIdByAtomId.get(spawnedFromAtomId) ?? lastAssistantReplyId() : lastAssistantReplyId();
     const inputJson = JSON.stringify(atom.payload.input ?? {});
     const maskedInput = applyMaskTemplates(inputJson, "tool_input");
     const toolCall: ToolCallProjection = {
@@ -605,8 +665,11 @@ export function buildTurnContext(
       created_at: atom.time_key,
     };
 
-    const resultEdge = edges.find((edge) => edge.to_atom_id === atom.id && edge.edge_kind === "tool_result_for");
-    const resultAtom = resultEdge ? contextAtoms.find((candidate) => candidate.id === resultEdge.from_atom_id) : undefined;
+    const resultAtomId = contextIndex.edgeIndex.toolResultAtomIdByToolAtomId.get(atom.id);
+    const resultAtom =
+      resultAtomId && contextIndex.contextAtomIds.has(resultAtomId)
+        ? contextIndex.atomById.get(resultAtomId)
+        : undefined;
     if (resultAtom) {
       const output = asString(resultAtom.payload.output) ?? "";
       const maskedOutput = applyMaskTemplates(output, "tool_output");
@@ -615,10 +678,16 @@ export function buildTurnContext(
       toolCall.output_display_segments = maskedOutput.display_segments;
     }
     toolCalls.push(toolCall);
+    let replyToolCallIds = toolCallIdsByReplyId.get(replyId);
+    if (!replyToolCallIds) {
+      replyToolCallIds = [];
+      toolCallIdsByReplyId.set(replyId, replyToolCallIds);
+    }
+    replyToolCallIds.push(toolCall.id);
   }
 
   for (const reply of assistantReplies) {
-    reply.tool_call_ids = toolCalls.filter((toolCall) => toolCall.reply_id === reply.id).map((toolCall) => toolCall.id);
+    reply.tool_call_ids = toolCallIdsByReplyId.get(reply.id) ?? [];
   }
 
   return {
@@ -814,6 +883,9 @@ export function countLossAuditsByStage(lossAudits: readonly LossAuditRecord[]): 
     index_projections: 0,
   };
   for (const audit of lossAudits) {
+    if (audit.severity === "info") {
+      continue;
+    }
     counts[audit.stage_kind] += 1;
   }
   return counts;

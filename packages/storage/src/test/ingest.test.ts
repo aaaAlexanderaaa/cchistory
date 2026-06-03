@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { SourceSyncPayload } from "@cchistory/domain";
@@ -115,6 +116,50 @@ test("replaceSourcePayload tolerates duplicate loss audit rows within one payloa
 
     storage.replaceSourcePayload(payload);
     assert.equal(storage.listLossAudits().length, 1, "Should deduplicate loss audits on write");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("countSourceLossAuditsByStage excludes informational audits from failure counts", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-loss-audit-severity-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const payload = createFixturePayload("src-loss-audit-severity", "Severity test", "sr-severity");
+    payload.loss_audits.push({
+      ...payload.loss_audits[0]!,
+      id: "info-loss-audit",
+      diagnostic_code: "fixture_info",
+      severity: "info",
+      detail: "fixture info audit",
+    });
+
+    storage.replaceSourcePayload(payload);
+    const sourceId = storage.listSources()[0]!.id;
+    const counts = storage.countSourceLossAuditsByStage(sourceId);
+
+    assert.equal(storage.listLossAudits().length, 2);
+    assert.equal(counts.finalize_projections, 1);
+
+    const db = new DatabaseSync(path.join(dataDir, "cchistory.sqlite"));
+    try {
+      const severities = db.prepare("SELECT severity, COUNT(*) AS count FROM loss_audits GROUP BY severity ORDER BY severity").all() as Array<{
+        severity: string;
+        count: number;
+      }>;
+      assert.deepEqual(severities.map(({ severity, count }) => ({ severity, count })), [
+        { severity: "info", count: 1 },
+        { severity: "warning", count: 1 },
+      ]);
+      assertPlanUsesIndex(
+        db,
+        "SELECT stage_kind, COUNT(*) AS count FROM loss_audits INDEXED BY idx_loss_audits_source_failure_stage WHERE source_id = ? AND severity IN ('warning', 'error') GROUP BY stage_kind",
+        [sourceId],
+        "idx_loss_audits_source_failure_stage",
+      );
+    } finally {
+      db.close();
+    }
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -384,6 +429,54 @@ test("mergeSourcePayloadByOriginPath preserves skipped files and removes absent 
   }
 });
 
+test("mergeSourcePayloadByOriginPath does not rewrite preserved skipped file payload rows", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-partial-source-preserve-noop-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const sourceId = "src-partial-preserve-noop";
+    const baseDir = "/tmp/partial-preserve-noop";
+    const keepPath = path.join(baseDir, "keep.jsonl");
+    const newPath = path.join(baseDir, "new.jsonl");
+    const originalCapturedAt = "2026-01-01T00:00:00.000Z";
+    const incomingCapturedAt = "2026-02-01T00:00:00.000Z";
+
+    const keep = createFixturePayload(sourceId, "Keep skipped turn", "sr-keep-noop", {
+      baseDir,
+      sessionId: "session-keep-noop",
+      turnId: "turn-keep-noop",
+    });
+    keep.blobs[0]!.origin_path = keepPath;
+    keep.blobs[0]!.captured_at = originalCapturedAt;
+    storage.replaceSourcePayload(keep);
+
+    const incomingKeep = createFixturePayload(sourceId, "Keep skipped turn", "sr-keep-noop", {
+      baseDir,
+      sessionId: "session-keep-noop",
+      turnId: "turn-keep-noop",
+    });
+    incomingKeep.blobs[0]!.origin_path = keepPath;
+    incomingKeep.blobs[0]!.captured_at = incomingCapturedAt;
+    const incomingNew = createFixturePayload(sourceId, "Add new turn", "sr-new-noop", {
+      baseDir,
+      sessionId: "session-new-noop",
+      turnId: "turn-new-noop",
+    });
+    incomingNew.blobs[0]!.origin_path = newPath;
+
+    const counts = storage.mergeSourcePayloadByOriginPath(combineSourcePayloads(incomingKeep, incomingNew), {
+      preserve_origin_paths: [keepPath],
+      observed_origin_paths: [keepPath, newPath],
+    });
+
+    assert.equal(counts.turns, 2);
+    assert.deepEqual(storage.listTurns().map((turn) => turn.canonical_text).sort(), ["Add new turn", "Keep skipped turn"]);
+    const keptBlob = storage.listBlobs().find((blob) => blob.id === keep.blobs[0]!.id);
+    assert.equal(keptBlob?.captured_at, originalCapturedAt);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("mergeSourcePayloadByOriginPath deletes observed paths that produced no blob", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-partial-source-blobless-"));
   try {
@@ -430,6 +523,160 @@ test("mergeSourcePayloadByOriginPath deletes observed paths that produced no blo
     assert.deepEqual(storage.listTurns().map((turn) => turn.canonical_text), ["Keep skipped turn"]);
     assert.deepEqual(storage.listBlobs().map((blob) => blob.origin_path), [keepPath]);
     assert.equal(storage.listSources()[0]?.total_turns, 1);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("evidence sync hot paths use indexed structural columns", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-query-plan-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const sourceId = "src-query-plan";
+    const payload = createFixturePayload(sourceId, "Use indexed evidence paths", "sr-query-plan", {
+      sessionId: "session-query-plan",
+      turnId: "turn-query-plan",
+    });
+    const originPath = path.join(payload.source.base_dir, "query-plan.jsonl");
+    payload.blobs[0]!.origin_path = originPath;
+
+    storage.replaceSourcePayload(payload);
+    const storedSourceId = storage.listSources()[0]!.id;
+
+    const incremental = storage.getSourceIncrementalPayloadForOriginPaths(storedSourceId, [originPath]);
+    assert.ok(incremental);
+    assert.equal(incremental.blobs.length, 1);
+    assert.equal(incremental.records.length, 1);
+    assert.equal(incremental.fragments.length, 4);
+    assert.equal(incremental.atoms.length, 4);
+    assert.equal(incremental.edges.length, 2);
+    assert.equal(incremental.loss_audits.length, 1);
+
+    const db = new DatabaseSync(path.join(dataDir, "cchistory.sqlite"));
+    try {
+      assertPlanUsesIndex(
+        db,
+        "SELECT id FROM captured_blobs WHERE source_id = ? AND origin_path = ?",
+        [storedSourceId, path.normalize(originPath)],
+        "idx_captured_blobs_source_origin",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT COUNT(*) AS count FROM captured_blobs WHERE source_id = ?",
+        [storedSourceId],
+        "idx_captured_blobs_source",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT payload_json FROM raw_records WHERE source_id = ? AND blob_id = ? ORDER BY ordinal",
+        [storedSourceId, payload.blobs[0]!.id],
+        "idx_raw_records_source_blob_ordinal",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT payload_json FROM raw_records WHERE source_id = ? AND session_ref = ?",
+        [storedSourceId, payload.records[0]!.session_ref],
+        "idx_raw_records_source_session",
+      );
+      assertPlanUsesAnyIndex(
+        db,
+        "SELECT COUNT(*) AS count FROM raw_records WHERE source_id = ?",
+        [storedSourceId],
+        ["idx_raw_records_source_session", "idx_raw_records_source_blob_ordinal"],
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT session_ref FROM raw_records WHERE source_id = ? AND blob_id = ?",
+        [storedSourceId, payload.blobs[0]!.id],
+        "idx_raw_records_source_blob_ordinal",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT id FROM user_turns WHERE source_id = ? AND session_id = ?",
+        [storedSourceId, payload.records[0]!.session_ref],
+        "idx_user_turns_source_session",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT payload_json FROM source_fragments WHERE source_id = ? AND session_ref = ? ORDER BY id",
+        [storedSourceId, payload.records[0]!.session_ref],
+        "idx_source_fragments_source_session",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT COUNT(*) AS count FROM source_fragments WHERE source_id = ?",
+        [storedSourceId],
+        "idx_source_fragments_source_session",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT payload_json FROM conversation_atoms WHERE source_id = ? AND session_ref = ? ORDER BY time_key ASC, seq_no ASC",
+        [storedSourceId, payload.records[0]!.session_ref],
+        "idx_conversation_atoms_source_session_order",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT COUNT(*) AS count FROM conversation_atoms WHERE source_id = ?",
+        [storedSourceId],
+        "idx_conversation_atoms_source_session_order",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT payload_json FROM atom_edges WHERE source_id = ? AND session_ref = ? ORDER BY id",
+        [storedSourceId, payload.records[0]!.session_ref],
+        "idx_atom_edges_source_session",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT COUNT(*) AS count FROM atom_edges WHERE source_id = ?",
+        [storedSourceId],
+        "idx_atom_edges_source_session",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT COUNT(*) AS count FROM loss_audits WHERE source_id = ?",
+        [storedSourceId],
+        "idx_loss_audits_source",
+      );
+      assertPlanUsesIndex(
+        db,
+        "DELETE FROM loss_audits WHERE source_id = ? AND session_ref = ?",
+        [storedSourceId, payload.records[0]!.session_ref],
+        "idx_loss_audits_source_session",
+      );
+      assertPlanUsesIndex(
+        db,
+        "DELETE FROM loss_audits WHERE source_id = ? AND blob_ref = ?",
+        [storedSourceId, payload.blobs[0]!.id],
+        "idx_loss_audits_source_blob",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT payload_json FROM loss_audits WHERE source_id = ? AND record_ref = ?",
+        [storedSourceId, payload.records[0]!.id],
+        "idx_loss_audits_source_record",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT payload_json FROM loss_audits WHERE source_id = ? AND fragment_ref = ?",
+        [storedSourceId, payload.fragments[3]!.id],
+        "idx_loss_audits_source_fragment",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT payload_json FROM loss_audits WHERE source_id = ? AND diagnostic_code = ?",
+        [storedSourceId, payload.loss_audits[0]!.diagnostic_code],
+        "idx_loss_audits_source_diagnostic",
+      );
+      assertPlanUsesIndex(
+        db,
+        "SELECT stage_kind, COUNT(*) AS count FROM loss_audits INDEXED BY idx_loss_audits_source_failure_stage WHERE source_id = ? AND severity IN ('warning', 'error') GROUP BY stage_kind",
+        [storedSourceId],
+        "idx_loss_audits_source_failure_stage",
+      );
+    } finally {
+      db.close();
+    }
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -508,4 +755,26 @@ function combineSourcePayloads(left: SourceSyncPayload, right: SourceSyncPayload
     turns: [...left.turns, ...right.turns],
     contexts: [...left.contexts, ...right.contexts],
   };
+}
+
+function assertPlanUsesIndex(
+  db: DatabaseSync,
+  statement: string,
+  params: readonly string[],
+  indexName: string,
+): void {
+  assertPlanUsesAnyIndex(db, statement, params, [indexName]);
+}
+
+function assertPlanUsesAnyIndex(
+  db: DatabaseSync,
+  statement: string,
+  params: readonly string[],
+  indexNames: readonly string[],
+): void {
+  const rows = db.prepare(`EXPLAIN QUERY PLAN ${statement}`).all(...params) as Array<{ detail: string }>;
+  assert.ok(
+    rows.some((row) => indexNames.some((indexName) => row.detail.includes(indexName))),
+    `Expected query plan to use one of ${indexNames.join(", ")}; got ${rows.map((row) => row.detail).join(" | ")}`,
+  );
 }

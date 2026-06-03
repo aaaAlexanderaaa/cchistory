@@ -46,6 +46,15 @@ The repository currently registers 12 source adapters, spanning local coding-age
 | `codebuddy` | `local_coding_agent` | `stable` | real-archive-backed `.codebuddy/projects/**/*.jsonl` intake with `settings.json` and `local_storage/*.info` preserved as companion evidence; `providerData.skipRun` noise stays evidence-only and zero-byte sibling JSONL files do not become standalone sessions |
 | `accio` | `local_runtime_sessions` | `experimental` | Accio Work agent session JSONL under `~/.accio/accounts/<id>/agents/<did>/sessions/` with subagent sessions from `subagent-sessions/`; meta.jsonc sidecars provide session titles and parent-child linkage |
 
+Source value tier is separate from the self-host v1 support tier above. It
+records product priority and default recall weight from the design freeze.
+
+| Value tier | Current registered platforms | Runtime meaning |
+| --- | --- | --- |
+| Primary | `codex`, `claude_code` | Highest-value recall sources; correctness, ranking, sync behavior, and UX polish should be optimized here first. |
+| Standard | `codebuddy`, `cursor`, `antigravity`, `gemini`, `openclaw`, `opencode`, `lobechat`, `accio` | Normal-value sources; keep ingestion truthful and searchable without letting these sources override Primary-source priorities. |
+| Low | `amp`, `factory_droid` | Lowest-value sources; preserve evidence and searchability, but keep default ranking, QA breadth, and roadmap investment conservative. |
+
 The adapter registry is defined in [`packages/source-adapters/src/platforms/registry.ts`](../../packages/source-adapters/src/platforms/registry.ts).
 
 The self-host v1 release gate is defined in [`docs/design/SELF_HOST_V1_RELEASE_GATE.md`](./SELF_HOST_V1_RELEASE_GATE.md).
