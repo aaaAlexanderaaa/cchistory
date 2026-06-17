@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type {
@@ -147,15 +147,63 @@ export class CCHistoryStorage {
     this.dbPath = dbPath;
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA busy_timeout = 5000;");
+    // A.4: pragma tuning for multi-GB stores. page_size must be set BEFORE
+    // journal_mode = WAL — SQLite rejects page_size changes on a WAL-mode
+    // database. On an existing DB page_size is silently ignored until VACUUM
+    // (see `cchistory maintenance vacuum`); mmap_size + synchronous NORMAL
+    // apply immediately.
+    this.db.exec("PRAGMA page_size = 16384;");
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA foreign_keys = ON;");
+    this.db.exec("PRAGMA mmap_size = 268435456;");
+    this.db.exec("PRAGMA synchronous = NORMAL;");
     const initialization = this.initialize();
     this.searchIndexAvailable = initialization.searchIndexReady;
-    this.searchIndexUsable = initialization.searchIndexReady && !initialization.searchIndexNeedsRebuild;
+    // A.1: FTS5 is no longer maintained on the refresh hot path. searchMode
+    // defaults to "fallback" until an operator explicitly calls
+    // `rebuildSearchIndex()` (exposed as `cchistory maintenance rebuild-search-index`).
+    this.searchIndexUsable = false;
   }
 
   close(): void {
+    // A.4: checkpoint the WAL into the main file and truncate the WAL so the
+    // on-disk footprint stays bounded. Best-effort: a checkpoint failure must
+    // not block close (callers may close on error paths).
+    try {
+      this.db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+    } catch {
+      // ignore — close must not throw
+    }
     this.db.close();
+  }
+
+  /**
+   * Rebuild the FTS5 search_index table from current user_turns rows.
+   *
+   * After A.1 the refreshDerivedState hot path no longer maintains FTS5, so
+   * the index drifts as turns are added/removed. This method is the explicit
+   * operator hook to repopulate it; once it returns, searchMode reports
+   * "fts5" until the next refresh (which does not touch FTS5).
+   *
+   * Returns the count of turns indexed and whether the FTS5 schema is in use.
+   * If FTS5 is unavailable in the current build (searchIndexAvailable = false),
+   * the call is a no-op and returns ready=false.
+   */
+  rebuildSearchIndex(): { rows_indexed: number; ready: boolean } {
+    if (!this.searchIndexAvailable) {
+      return { rows_indexed: 0, ready: false };
+    }
+    const turns = this.listResolvedTurns();
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      replaceSearchIndex(this.db, this.searchIndexAvailable, turns);
+      this.searchIndexUsable = this.searchIndexAvailable;
+      this.db.exec("COMMIT;");
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+    return { rows_indexed: turns.length, ready: this.searchIndexUsable };
   }
 
   get searchMode(): "fts5" | "fallback" {
@@ -224,10 +272,12 @@ export class CCHistoryStorage {
       });
     }
     const sourceIdsAfterReplace = new Set(this.listSources().map((source) => source.id));
-    retireStorageBoundaryV2Sources({
+    const retirement = retireStorageBoundaryV2Sources({
       db: this.db,
       sourceIds: sourceIdsBeforeReplace.filter((sourceId) => !sourceIdsAfterReplace.has(sourceId)),
     });
+    // A.2: unlink content-addressed evidence files whose rows were dropped.
+    this.unlinkEvidenceBlobFiles(retirement.pruned_evidence_shas);
     this.writeStorageBoundaryV2Sidecars(payload, { writeMode: "replace" });
 
     this.invalidateProjectLinkSnapshot();
@@ -769,6 +819,12 @@ export class CCHistoryStorage {
         deleted_artifact_ids: string[];
         updated_artifact_ids: string[];
         tombstones: TombstoneProjection[];
+        /**
+         * A.2: evidence blob shas whose rows were dropped from evidence_blobs
+         * in the same transaction; the content-addressed files for these shas
+         * were unlinked best-effort before this method returned.
+         */
+        pruned_evidence_shas: string[];
       }
     | undefined {
     const project = this.getProject(projectId);
@@ -786,6 +842,7 @@ export class CCHistoryStorage {
         deleted_artifact_ids: [],
         updated_artifact_ids: [],
         tombstones: [tombstone],
+        pruned_evidence_shas: [],
       };
     }
 
@@ -805,9 +862,37 @@ export class CCHistoryStorage {
       refreshSourceStatusCountsInTransaction: (sourceIds) => Queries.refreshSourceStatusCountsInTransaction(this.db, sourceIds),
     });
 
+    // A.2: unlink content-addressed evidence files whose evidence_blobs rows
+    // were dropped in the same transaction. Best-effort: file unlink failures
+    // are logged but do not raise — the DB rows are already gone, and a
+    // dangling file is recoverable via `cchistory maintenance gc-evidence`.
+    this.unlinkEvidenceBlobFiles(result.pruned_evidence_shas);
+
     this.invalidateProjectLinkSnapshot();
     this.refreshDerivedState();
     return result;
+  }
+
+  /**
+   * A.2: best-effort unlink of content-addressed evidence files. Silently
+   * ignores missing files (they may have been unlinked already or never
+   * written for an in-memory store).
+   */
+  private unlinkEvidenceBlobFiles(shas: readonly string[]): void {
+    if (!this.assetDir || shas.length === 0) return;
+    for (const sha of shas) {
+      if (!/^[a-f0-9]{64}$/u.test(sha)) continue;
+      const file = path.join(this.assetDir, "evidence", "blobs", sha.slice(0, 2), sha);
+      try {
+        unlinkSync(file);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+          // Re-throw unexpected errors so the operator sees them; ENOENT is
+          // the normal case (file already gone or never written).
+          throw error;
+        }
+      }
+    }
   }
 
   garbageCollectCandidateTurns(options: {
@@ -822,6 +907,7 @@ export class CCHistoryStorage {
       (turn) => turn.link_state === "candidate" && turn.submission_started_at < options.before_iso,
     );
     const tombstones: TombstoneProjection[] = [];
+    let prunedEvidenceShas: string[] = [];
 
     this.db.exec("BEGIN IMMEDIATE;");
     try {
@@ -839,11 +925,39 @@ export class CCHistoryStorage {
           tombstones.push(tombstone);
         }
       }
+      if (mode === "purge" && candidates.length > 0) {
+        // A.2: after all candidate turns are purged, find blobs that no
+        // remaining turn references and cascade evidence cleanup once for
+        // the whole batch. Group by source so the (source_id, blob_id)
+        // index hits cleanly.
+        const blobsBySource = new Map<string, string[]>();
+        for (const turn of candidates) {
+          const entry = blobsBySource.get(turn.source_id) ?? [];
+          entry.push(...turn.lineage.blob_refs);
+          blobsBySource.set(turn.source_id, entry);
+        }
+        for (const [sourceId, blobIds] of blobsBySource) {
+          const orphaned = Gc.selectOrphanedBlobIds(this.db, sourceId, blobIds);
+          if (orphaned.length > 0) {
+            prunedEvidenceShas.push(
+              ...Gc.cascadeEvidenceCleanupForOrphanedBlobsInTransaction(this.db, {
+                sourceId,
+                blobIds: orphaned,
+                deleteCapturedBlobs: true,
+              }),
+            );
+          }
+        }
+      }
       this.db.exec("COMMIT;");
     } catch (error) {
       this.db.exec("ROLLBACK;");
       throw error;
     }
+
+    // A.2: unlink the content-addressed evidence files for pruned shas. Done
+    // outside the DB transaction; file unlink failures are best-effort.
+    this.unlinkEvidenceBlobFiles(prunedEvidenceShas);
 
     this.invalidateProjectLinkSnapshot();
     this.refreshDerivedState();
@@ -859,19 +973,104 @@ export class CCHistoryStorage {
       return this.getTombstone(turnId);
     }
 
+    // A.2: pre-compute orphaned blob ids so we can cascade evidence cleanup
+    // in the same transaction. For a single-turn purge this is the set of
+    // blob_refs on the turn that no other turn in the same source references.
+    const orphanedBlobIds = Gc.selectOrphanedBlobIds(this.db, turn.source_id, turn.lineage.blob_refs);
+
     this.db.exec("BEGIN IMMEDIATE;");
     let tombstone: TombstoneProjection;
+    let prunedEvidenceShas: string[] = [];
     try {
       tombstone = Gc.purgeTurnInTransaction(this.db, turn, reason);
+      if (orphanedBlobIds.length > 0) {
+        prunedEvidenceShas = Gc.cascadeEvidenceCleanupForOrphanedBlobsInTransaction(this.db, {
+          sourceId: turn.source_id,
+          blobIds: orphanedBlobIds,
+          deleteCapturedBlobs: true,
+        });
+      }
       this.db.exec("COMMIT;");
     } catch (error) {
       this.db.exec("ROLLBACK;");
       throw error;
     }
 
+    this.unlinkEvidenceBlobFiles(prunedEvidenceShas);
+
     this.invalidateProjectLinkSnapshot();
     this.refreshDerivedState();
     return tombstone;
+  }
+
+  /**
+   * A.2: maintenance hook to reclaim orphaned evidence_blobs rows that
+   * accumulated before evidence GC was wired into the purge paths, or that
+   * were left behind by a crash mid-purge. Returns the count of dropped rows
+   * and the shas whose files the caller should unlink.
+   *
+   * Safe to run any time; never throws on missing files (caller handles
+   * unlink outside the transaction).
+   */
+  pruneOrphanEvidence(): { pruned_shas: string[]; pruned_count: number } {
+    this.db.exec("BEGIN IMMEDIATE;");
+    let shas: string[];
+    try {
+      shas = Gc.pruneUnreferencedEvidenceBlobsInTransaction(this.db);
+      this.db.exec("COMMIT;");
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+    this.unlinkEvidenceBlobFiles(shas);
+    return { pruned_shas: shas, pruned_count: shas.length };
+  }
+
+  /**
+   * A.4: explicit `PRAGMA wal_checkpoint(TRUNCATE)`. Folds the WAL into the
+   * main SQLite file and truncates the WAL to zero bytes. Useful between
+   * long-running sync batches to bound the on-disk WAL footprint.
+   *
+   * The close() path already checkpoints best-effort; this method is the
+   * operator hook for periodic checkpointing without closing the store.
+   */
+  checkpointStore(): {
+    busy: number;
+    locked: number;
+    log_frames: number;
+    checkpointed_frames: number;
+    wal_frames: number;
+  } {
+    const row = this.db
+      .prepare("PRAGMA wal_checkpoint(TRUNCATE);")
+      .get() as { busy: number; log: number; checkpointed: number };
+    return {
+      busy: row.busy,
+      locked: row.busy,
+      log_frames: row.log,
+      checkpointed_frames: row.checkpointed,
+      wal_frames: row.log,
+    };
+  }
+
+  /**
+   * A.4: run VACUUM against the SQLite file. Required once per store to
+   * materialize the new 16 KiB page size (set on every connection via
+   * `PRAGMA page_size = 16384`); without VACUUM, the pragma is silently
+   * ignored on existing databases.
+   *
+   * VACUUM holds an exclusive lock for the duration. On a multi-GB store this
+   * can take minutes. Plan B.6b will later replace this with `VACUUM INTO`
+   * for an atomic swap; for Phase A the in-place VACUUM is sufficient.
+   */
+  vacuumStore(): { page_size_before: number; page_size_after: number } {
+    const before = this.db.prepare("PRAGMA page_size;").get() as { page_size: number };
+    this.db.exec("VACUUM;");
+    const after = this.db.prepare("PRAGMA page_size;").get() as { page_size: number };
+    return {
+      page_size_before: before.page_size,
+      page_size_after: after.page_size,
+    };
   }
 
   listKnowledgeArtifacts(projectId?: string): KnowledgeArtifact[] {
@@ -1690,8 +1889,12 @@ export class CCHistoryStorage {
         }
       }
 
-      replaceSearchIndex(this.db, this.searchIndexAvailable, snapshot.turns);
-      this.searchIndexUsable = this.searchIndexAvailable;
+      // A.1: FTS5 search_index is no longer maintained on the refresh path.
+      // The scan path (queries/search.ts scanSearchCandidateRows) reads
+      // directly from user_turns.payload_json and does not consult FTS5;
+      // the FTS5 schema entries remain inert on disk so a future read-path
+      // switch is a one-line change. To repopulate FTS5 explicitly, call
+      // `rebuildSearchIndex()` via the maintenance command.
       this.db.exec("COMMIT;");
     } catch (error) {
       this.db.exec("ROLLBACK;");

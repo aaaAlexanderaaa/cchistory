@@ -82,6 +82,116 @@ export function purgeTurnInTransaction(
   return tombstone;
 }
 
+/**
+ * A.2: find blob ids in `candidateBlobIds` that are no longer referenced by any
+ * remaining user_turn row in the given source. Uses json_each over
+ * user_turns.payload_json -> $.lineage.blob_refs; works without a covering
+ * index, which is acceptable because candidateBlobIds is typically small
+ * (one turn's blob_refs, or one batch's worth).
+ */
+export function selectOrphanedBlobIds(
+  db: DatabaseSync,
+  sourceId: string,
+  candidateBlobIds: readonly string[],
+): string[] {
+  if (candidateBlobIds.length === 0) return [];
+  const placeholders = candidateBlobIds.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT value AS blob_id
+         FROM user_turns, json_each(json_extract(payload_json, '$.lineage.blob_refs'))
+        WHERE source_id = ?
+          AND value IN (${placeholders})`,
+    )
+    .all(sourceId, ...candidateBlobIds) as Array<{ blob_id: string }>;
+  const stillReferenced = new Set(rows.map((row) => row.blob_id));
+  return uniqueStrings(candidateBlobIds.filter((blobId) => !stillReferenced.has(blobId)));
+}
+
+/**
+ * A.2: cascade evidence cleanup for blobs that no remaining user_turn references.
+ *
+ * For each blob id in `blobIds`:
+ *   - DELETE FROM evidence_captures WHERE source_id = ? AND blob_id = ?
+ *   - DELETE FROM parsed_record_spans WHERE source_id = ? AND blob_id = ?
+ *   - Optionally DELETE FROM captured_blobs WHERE source_id = ? AND id = ?
+ *     (skip when the caller already deleted the captured_blobs row, e.g.
+ *     performDeleteProject does its own captured_blobs sweep).
+ *
+ * Then drop evidence_blobs rows whose sha is no longer referenced from any
+ * evidence_captures or parsed_record_spans row, and return the deleted shas
+ * so the caller can unlink the content-addressed files outside the DB
+ * transaction (file unlink failures must not roll back the DB transaction).
+ *
+ * Must be called inside the caller's transaction; this function does not open
+ * its own.
+ */
+export function cascadeEvidenceCleanupForOrphanedBlobsInTransaction(
+  db: DatabaseSync,
+  options: {
+    sourceId: string;
+    blobIds: readonly string[];
+    deleteCapturedBlobs?: boolean;
+  },
+): string[] {
+  if (options.blobIds.length === 0) return [];
+  const deleteCaptures = db.prepare(
+    "DELETE FROM evidence_captures WHERE source_id = ? AND blob_id = ?",
+  );
+  const deleteSpans = db.prepare(
+    "DELETE FROM parsed_record_spans WHERE source_id = ? AND blob_id = ?",
+  );
+  const deleteCapturedBlobs = db.prepare(
+    "DELETE FROM captured_blobs WHERE source_id = ? AND id = ?",
+  );
+  const shouldDeleteCapturedBlobs = options.deleteCapturedBlobs !== false;
+  for (const blobId of options.blobIds) {
+    deleteCaptures.run(options.sourceId, blobId);
+    deleteSpans.run(options.sourceId, blobId);
+    if (shouldDeleteCapturedBlobs) {
+      deleteCapturedBlobs.run(options.sourceId, blobId);
+    }
+  }
+  return pruneUnreferencedEvidenceBlobsInTransaction(db);
+}
+
+/**
+ * A.2: drop evidence_blobs rows whose sha is no longer referenced from any
+ * of the five tables that point at evidence_blobs.sha256:
+ *   - evidence_captures.evidence_sha256
+ *   - parsed_record_spans.evidence_sha256
+ *   - source_file_ledger.current_evidence_sha256
+ *   - turn_context_refs_v2.context_evidence_sha256
+ *   - derived_cache_refs.evidence_sha256
+ *
+ * Returns the deleted shas. Must be called inside the caller's transaction.
+ */
+export function pruneUnreferencedEvidenceBlobsInTransaction(db: DatabaseSync): string[] {
+  const orphaned = db
+    .prepare(
+      `SELECT eb.sha256 AS sha
+         FROM evidence_blobs eb
+         LEFT JOIN evidence_captures ec ON ec.evidence_sha256 = eb.sha256
+         LEFT JOIN parsed_record_spans prs ON prs.evidence_sha256 = eb.sha256
+         LEFT JOIN source_file_ledger sfl ON sfl.current_evidence_sha256 = eb.sha256
+         LEFT JOIN turn_context_refs_v2 tcr ON tcr.context_evidence_sha256 = eb.sha256
+         LEFT JOIN derived_cache_refs dcr ON dcr.evidence_sha256 = eb.sha256
+        WHERE ec.evidence_sha256 IS NULL
+          AND prs.evidence_sha256 IS NULL
+          AND sfl.current_evidence_sha256 IS NULL
+          AND tcr.context_evidence_sha256 IS NULL
+          AND dcr.evidence_sha256 IS NULL`,
+    )
+    .all() as Array<{ sha: string }>;
+  if (orphaned.length === 0) return [];
+  const shas = uniqueStrings(orphaned.map((row) => row.sha));
+  const deleteStmt = db.prepare("DELETE FROM evidence_blobs WHERE sha256 = ?");
+  for (const sha of shas) {
+    deleteStmt.run(sha);
+  }
+  return shas;
+}
+
 export function performDeleteProject(params: {
   db: DatabaseSync;
   project: ProjectIdentity;
@@ -105,6 +215,12 @@ export function performDeleteProject(params: {
   deleted_artifact_ids: string[];
   updated_artifact_ids: string[];
   tombstones: TombstoneProjection[];
+  /**
+   * A.2: evidence blob shas whose rows were dropped from evidence_blobs in the
+   * same transaction. Caller unlinks the content-addressed files outside the
+   * transaction (file unlink failures must not roll back the DB transaction).
+   */
+  pruned_evidence_shas: string[];
 } {
   const {
     db,
@@ -213,6 +329,7 @@ export function performDeleteProject(params: {
   const tombstones: TombstoneProjection[] = [projectTombstone];
   const deletedArtifactIds: string[] = [];
   const updatedArtifactIds: string[] = [];
+  const prunedEvidenceShas: string[] = [];
   const impactedArtifacts = allKnowledgeArtifacts.filter(
     (artifact) => artifact.project_id === projectId || artifact.source_turn_refs.some((turnId) => deletedTurnIdSet.has(turnId)),
   );
@@ -308,6 +425,31 @@ export function performDeleteProject(params: {
       deleteBlob.run(blobId);
     }
 
+    // A.2: cascade V2 evidence cleanup. captured_blobs rows are already gone
+    // for deletedBlobIds (above), so we pass deleteCapturedBlobs=false here.
+    // Group by source so the (source_id, blob_id) index hits cleanly.
+    const blobsBySource = new Map<string, string[]>();
+    for (const turn of deletedTurns) {
+      const entry = blobsBySource.get(turn.source_id) ?? [];
+      for (const blobId of turn.lineage.blob_refs) {
+        if (deletedBlobIdSet.has(blobId)) {
+          entry.push(blobId);
+        }
+      }
+      if (entry.length > 0) {
+        blobsBySource.set(turn.source_id, uniqueStrings(entry));
+      }
+    }
+    for (const [sourceId, blobIds] of blobsBySource) {
+      prunedEvidenceShas.push(
+        ...cascadeEvidenceCleanupForOrphanedBlobsInTransaction(db, {
+          sourceId,
+          blobIds,
+          deleteCapturedBlobs: false,
+        }),
+      );
+    }
+
     const deleteOverride = db.prepare("DELETE FROM project_manual_overrides WHERE id = ?");
     for (const overrideId of deletedOverrideIds) {
       deleteOverride.run(overrideId);
@@ -339,5 +481,6 @@ export function performDeleteProject(params: {
     deleted_artifact_ids: deletedArtifactIds,
     updated_artifact_ids: updatedArtifactIds,
     tombstones,
+    pruned_evidence_shas: uniqueStrings(prunedEvidenceShas),
   };
 }

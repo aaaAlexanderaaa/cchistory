@@ -28,7 +28,7 @@ export async function runBuiltCliCapture(
   });
 }
 
-export async function runCliCapture(argv: string[], cwd: string): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+export async function runCliCapture(argv: string[], cwd: string = process.cwd()): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   let stdout = "";
   let stderr = "";
   const exitCode = await runCli(argv, {
@@ -43,7 +43,7 @@ export async function runCliCapture(argv: string[], cwd: string): Promise<{ exit
   return { exitCode, stdout, stderr };
 }
 
-export async function runCliJson<T>(argv: string[], cwd: string): Promise<T> {
+export async function runCliJson<T>(argv: string[], cwd: string = process.cwd()): Promise<T> {
   const result = await runCliCapture([...argv, "--json"], cwd);
   assert.equal(result.exitCode, 0, result.stderr);
   return JSON.parse(result.stdout) as T;

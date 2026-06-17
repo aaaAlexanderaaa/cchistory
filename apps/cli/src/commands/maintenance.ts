@@ -462,6 +462,124 @@ export async function handleGc(context: CommandContext): Promise<CommandOutput> 
   }
 }
 
+export async function handleMaintenance(context: CommandContext): Promise<CommandOutput> {
+  const subcommand = context.commandPath[1];
+  if (!subcommand) {
+    throw new Error("`maintenance` requires a subcommand: rebuild-search-index, gc-evidence, checkpoint, or vacuum.");
+  }
+  const layout = resolveStoreLayout({
+    cwd: context.io.cwd,
+    storeArg: context.globals.store,
+    dbArg: context.globals.db,
+  });
+  await requireStoreDatabase(layout.dbPath);
+
+  switch (subcommand) {
+    case "rebuild-search-index":
+      return runMaintenanceRebuildSearchIndex(layout);
+    case "gc-evidence":
+      return runMaintenanceGcEvidence(layout);
+    case "checkpoint":
+      return runMaintenanceCheckpoint(layout);
+    case "vacuum":
+      return runMaintenanceVacuum(layout);
+    default:
+      throw new Error(`Unknown maintenance subcommand: ${subcommand}`);
+  }
+}
+
+async function runMaintenanceRebuildSearchIndex(layout: StoreLayout): Promise<CommandOutput> {
+  const storage = await openStorage(layout);
+  try {
+    const result = storage.rebuildSearchIndex();
+    return {
+      text: renderKeyValue([
+        ["DB", layout.dbPath],
+        ["Subcommand", "rebuild-search-index"],
+        ["FTS5 Available", String(result.ready || result.rows_indexed === 0 ? result.ready : result.ready)],
+        ["Rows Indexed", formatNumber(result.rows_indexed)],
+        ["Search Mode", result.ready ? "fts5" : "fallback"],
+      ]),
+      json: {
+        kind: "maintenance-rebuild-search-index",
+        db_path: layout.dbPath,
+        ready: result.ready,
+        rows_indexed: result.rows_indexed,
+      },
+    };
+  } finally {
+    storage.close();
+  }
+}
+
+async function runMaintenanceGcEvidence(layout: StoreLayout): Promise<CommandOutput> {
+  const storage = await openStorage(layout);
+  try {
+    const result = storage.pruneOrphanEvidence();
+    return {
+      text: renderKeyValue([
+        ["DB", layout.dbPath],
+        ["Subcommand", "gc-evidence"],
+        ["Evidence Blobs Pruned", formatNumber(result.pruned_count)],
+      ]),
+      json: {
+        kind: "maintenance-gc-evidence",
+        db_path: layout.dbPath,
+        pruned_count: result.pruned_count,
+        pruned_shas: result.pruned_shas,
+      },
+    };
+  } finally {
+    storage.close();
+  }
+}
+
+async function runMaintenanceCheckpoint(layout: StoreLayout): Promise<CommandOutput> {
+  const storage = await openStorage(layout);
+  try {
+    const result = storage.checkpointStore();
+    return {
+      text: renderKeyValue([
+        ["DB", layout.dbPath],
+        ["Subcommand", "checkpoint"],
+        ["Busy", String(result.busy)],
+        ["Locked", String(result.locked)],
+        ["WAL Frames", formatNumber(result.wal_frames)],
+        ["Checkpointed Frames", formatNumber(result.checkpointed_frames)],
+      ]),
+      json: {
+        kind: "maintenance-checkpoint",
+        db_path: layout.dbPath,
+        ...result,
+      },
+    };
+  } finally {
+    storage.close();
+  }
+}
+
+async function runMaintenanceVacuum(layout: StoreLayout): Promise<CommandOutput> {
+  const storage = await openStorage(layout);
+  try {
+    const result = storage.vacuumStore();
+    return {
+      text: renderKeyValue([
+        ["DB", layout.dbPath],
+        ["Subcommand", "vacuum"],
+        ["Page Size Before", formatNumber(result.page_size_before)],
+        ["Page Size After", formatNumber(result.page_size_after)],
+      ]),
+      json: {
+        kind: "maintenance-vacuum",
+        db_path: layout.dbPath,
+        ...result,
+      },
+    };
+  } finally {
+    storage.close();
+  }
+}
+
 function renderExportPlanTableFromRows(
   rows: Array<{ source: SourceSyncPayload["source"]; sessions: number; turns: number; blobs: number }>,
 ): string {

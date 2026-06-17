@@ -129,17 +129,32 @@ export function markStorageBoundaryV2SourceAbsentByObservedOrigins(input: {
 export function retireStorageBoundaryV2Sources(input: {
   db: DatabaseSync;
   sourceIds: readonly string[];
-}): void {
+}): {
+  /**
+   * A.2: evidence blob shas whose evidence_blobs rows were dropped because
+   * they are no longer referenced from any evidence_captures or
+   * parsed_record_spans row after this retirement. Caller unlinks the
+   * content-addressed files outside the DB transaction.
+   */
+  pruned_evidence_shas: string[];
+} {
   if (input.sourceIds.length === 0) {
-    return;
+    return { pruned_evidence_shas: [] };
   }
   const now = nowIso();
+  const prunedShas: string[] = [];
   dbTransaction(input.db, () => {
     for (const sourceId of new Set(input.sourceIds)) {
       input.db.prepare("DELETE FROM parsed_record_spans WHERE source_id = ?").run(sourceId);
       input.db.prepare("DELETE FROM turn_context_refs_v2 WHERE source_id = ?").run(sourceId);
       input.db.prepare("DELETE FROM user_turns_v2 WHERE source_id = ?").run(sourceId);
       input.db.prepare("DELETE FROM derived_cache_refs WHERE source_id = ?").run(sourceId);
+      // A.2: also drop evidence_captures rows for this source so their shas
+      // become candidates for pruning. source_file_ledger is left in place
+      // because its `sync_axis = 'source_absent'` marker is the audit trail
+      // for "this source was here once"; the operator can purge the ledger
+      // rows separately if audit retention permits.
+      input.db.prepare("DELETE FROM evidence_captures WHERE source_id = ?").run(sourceId);
       input.db.prepare(`
         UPDATE source_file_ledger
            SET sync_axis = 'source_absent',
@@ -148,7 +163,37 @@ export function retireStorageBoundaryV2Sources(input: {
            AND sync_axis <> 'source_absent'
       `).run(now, sourceId);
     }
+    // A.2: prune evidence_blobs rows whose sha is no longer referenced. Done
+    // once for the whole batch — the LEFT JOINs scan evidence_blobs end-to-end
+    // so per-source iteration would be wasteful. The five reference points are
+    // evidence_captures, parsed_record_spans, source_file_ledger,
+    // turn_context_refs_v2, and derived_cache_refs.
+    const orphaned = input.db
+      .prepare(
+        `SELECT eb.sha256 AS sha
+           FROM evidence_blobs eb
+           LEFT JOIN evidence_captures ec ON ec.evidence_sha256 = eb.sha256
+           LEFT JOIN parsed_record_spans prs ON prs.evidence_sha256 = eb.sha256
+           LEFT JOIN source_file_ledger sfl ON sfl.current_evidence_sha256 = eb.sha256
+           LEFT JOIN turn_context_refs_v2 tcr ON tcr.context_evidence_sha256 = eb.sha256
+           LEFT JOIN derived_cache_refs dcr ON dcr.evidence_sha256 = eb.sha256
+          WHERE ec.evidence_sha256 IS NULL
+            AND prs.evidence_sha256 IS NULL
+            AND sfl.current_evidence_sha256 IS NULL
+            AND tcr.context_evidence_sha256 IS NULL
+            AND dcr.evidence_sha256 IS NULL`,
+      )
+      .all() as Array<{ sha: string }>;
+    if (orphaned.length > 0) {
+      const shas = Array.from(new Set(orphaned.map((row) => row.sha)));
+      const deleteStmt = input.db.prepare("DELETE FROM evidence_blobs WHERE sha256 = ?");
+      for (const sha of shas) {
+        deleteStmt.run(sha);
+      }
+      prunedShas.push(...shas);
+    }
   });
+  return { pruned_evidence_shas: prunedShas };
 }
 
 export function readTurnContextFromV2Cache(input: {

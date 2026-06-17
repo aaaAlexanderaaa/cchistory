@@ -30,7 +30,7 @@ import { handleAgent } from "./commands/agent.js";
 import { handleLs, handleSearch, handleShow, handleTree } from "./commands/browse.js";
 import { handleContext } from "./commands/context.js";
 import { handleInventory } from "./commands/inventory.js";
-import { handleBackup, handleExport, handleGc, handleImport, handleMergeAlias, handleRestoreCheck } from "./commands/maintenance.js";
+import { handleBackup, handleExport, handleGc, handleImport, handleMaintenance, handleMergeAlias, handleRestoreCheck } from "./commands/maintenance.js";
 import { handleQueryAlias, handleTemplates } from "./commands/query.js";
 import { handleStats } from "./commands/stats.js";
 import { handleDiscover, handleDoctor, handleHealth, handleSync, syncSelectedSources } from "./commands/sync.js";
@@ -156,6 +156,8 @@ async function dispatchCommand(context: CommandContext): Promise<CommandOutput> 
       return handleMergeAlias(context);
     case "gc":
       return handleGc(context);
+    case "maintenance":
+      return handleMaintenance(context);
     case "query":
       return handleQueryAlias(context);
     case "templates":

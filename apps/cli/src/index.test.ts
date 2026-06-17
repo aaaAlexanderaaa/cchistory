@@ -4,4 +4,5 @@ import "./test/commands-context.test.js";
 import "./test/commands-diagnostics.test.js";
 import "./test/commands-portability.test.js";
 import "./test/commands-agent.test.js";
+import "./test/commands-maintenance.test.js";
 import "./test/bundle.test.js";

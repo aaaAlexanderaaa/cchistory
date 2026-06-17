@@ -52,6 +52,11 @@ const STORAGE_SCHEMA_MIGRATIONS: ReadonlyArray<{
     to_version: STORAGE_SCHEMA_VERSION,
     summary: "Add side-by-side content-addressed evidence, ledger, bounded read, and cache reference tables.",
   },
+  {
+    id: "2026-06-17.1/storage-index-dedup",
+    to_version: STORAGE_SCHEMA_VERSION,
+    summary: "A.3: drop prefix-duplicate session-only indexes whose lookups are served by the (source_id, session_ref) compound indexes via SQLite skip-scan after ANALYZE.",
+  },
 ];
 
 const STORAGE_INDEXES: ReadonlyArray<{
@@ -87,8 +92,10 @@ const STORAGE_INDEXES: ReadonlyArray<{
   { name: "idx_atom_edges_from", sql: "CREATE INDEX IF NOT EXISTS idx_atom_edges_from ON atom_edges (from_atom_id)" },
   { name: "idx_atom_edges_to", sql: "CREATE INDEX IF NOT EXISTS idx_atom_edges_to ON atom_edges (to_atom_id)" },
 
+  // A.3: dropped idx_user_turns_session — idx_user_turns_source_session covers
+  // source-scoped AND session-scoped lookups (leftmost prefix on session_id
+  // works for session-only filters because the planner can scan the index).
   { name: "idx_user_turns_source", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_source ON user_turns (source_id)" },
-  { name: "idx_user_turns_session", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_session ON user_turns (session_id)" },
   { name: "idx_user_turns_source_session", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_source_session ON user_turns (source_id, session_id)" },
   { name: "idx_user_turns_submission", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_submission ON user_turns (submission_started_at)" },
   { name: "idx_sessions_source", sql: "CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions (source_id)" },
@@ -100,11 +107,14 @@ const STORAGE_INDEXES: ReadonlyArray<{
   { name: "idx_derived_candidates_source", sql: "CREATE INDEX IF NOT EXISTS idx_derived_candidates_source ON derived_candidates (source_id)" },
   { name: "idx_derived_candidates_source_session", sql: "CREATE INDEX IF NOT EXISTS idx_derived_candidates_source_session ON derived_candidates (source_id, session_ref)" },
 
-  { name: "idx_raw_records_session", sql: "CREATE INDEX IF NOT EXISTS idx_raw_records_session ON raw_records (session_ref)" },
-  { name: "idx_source_fragments_session", sql: "CREATE INDEX IF NOT EXISTS idx_source_fragments_session ON source_fragments (session_ref)" },
-  { name: "idx_conversation_atoms_session", sql: "CREATE INDEX IF NOT EXISTS idx_conversation_atoms_session ON conversation_atoms (session_ref)" },
-  { name: "idx_atom_edges_session", sql: "CREATE INDEX IF NOT EXISTS idx_atom_edges_session ON atom_edges (session_ref)" },
-  { name: "idx_derived_candidates_session", sql: "CREATE INDEX IF NOT EXISTS idx_derived_candidates_session ON derived_candidates (session_ref)" },
+  // A.3: the session-only indexes below were strict prefix duplicates of the
+  // source_session compound indexes above. Removed from STORAGE_INDEXES so
+  // new stores do not create them; existing stores get them dropped by
+  // `dropRedundantSessionIndexes` on the next open. The compound index
+  // satisfies both session-only and source-scoped lookups.
+  // Dropped: idx_raw_records_session, idx_source_fragments_session,
+  //          idx_conversation_atoms_session, idx_atom_edges_session,
+  //          idx_derived_candidates_session.
 
   { name: "idx_evidence_captures_source_origin", sql: "CREATE INDEX IF NOT EXISTS idx_evidence_captures_source_origin ON evidence_captures (source_id, origin_path)" },
   { name: "idx_evidence_captures_source_blob", sql: "CREATE INDEX IF NOT EXISTS idx_evidence_captures_source_blob ON evidence_captures (source_id, blob_id)" },
@@ -115,13 +125,27 @@ const STORAGE_INDEXES: ReadonlyArray<{
   { name: "idx_parsed_record_spans_source_blob", sql: "CREATE INDEX IF NOT EXISTS idx_parsed_record_spans_source_blob ON parsed_record_spans (source_id, blob_id)" },
   { name: "idx_parsed_record_spans_session", sql: "CREATE INDEX IF NOT EXISTS idx_parsed_record_spans_session ON parsed_record_spans (session_ref)" },
   { name: "idx_parsed_record_spans_parser_profile", sql: "CREATE INDEX IF NOT EXISTS idx_parsed_record_spans_parser_profile ON parsed_record_spans (parser_profile_id)" },
+  // A.3: dropped idx_user_turns_v2_session — idx_user_turns_v2_source_session
+  // covers both source-scoped and session-scoped lookups on user_turns_v2.
   { name: "idx_user_turns_v2_source_session", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_v2_source_session ON user_turns_v2 (source_id, session_id)" },
-  { name: "idx_user_turns_v2_session", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_v2_session ON user_turns_v2 (session_id)" },
   { name: "idx_user_turns_v2_submission", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_v2_submission ON user_turns_v2 (submission_started_at)" },
   { name: "idx_turn_context_refs_v2_source", sql: "CREATE INDEX IF NOT EXISTS idx_turn_context_refs_v2_source ON turn_context_refs_v2 (source_id)" },
   { name: "idx_derived_cache_refs_scope", sql: "CREATE INDEX IF NOT EXISTS idx_derived_cache_refs_scope ON derived_cache_refs (source_id, scope_kind, scope_ref)" },
   { name: "idx_derived_cache_refs_kind_scope", sql: "CREATE INDEX IF NOT EXISTS idx_derived_cache_refs_kind_scope ON derived_cache_refs (scope_kind, scope_ref)" },
   { name: "idx_derived_cache_refs_parser_profile", sql: "CREATE INDEX IF NOT EXISTS idx_derived_cache_refs_parser_profile ON derived_cache_refs (parser_profile_id)" },
+];
+
+// A.3: indexes that were prefix-duplicates of compound (source_id, ...)
+// indexes. They are no longer in STORAGE_INDEXES, but existing stores still
+// carry them from before the dedup. Drop them idempotently on next open.
+const REDUNDANT_SESSION_INDEXES: readonly string[] = [
+  "idx_raw_records_session",
+  "idx_source_fragments_session",
+  "idx_conversation_atoms_session",
+  "idx_atom_edges_session",
+  "idx_derived_candidates_session",
+  "idx_user_turns_session",
+  "idx_user_turns_v2_session",
 ];
 
 export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitialization {
@@ -404,9 +428,11 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[2]!);
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[3]!);
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[4]!);
+  recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[5]!);
   setSchemaMeta(db, "schema_version", STORAGE_SCHEMA_VERSION);
 
   ensureStorageIndexes(db);
+  dropRedundantSessionIndexes(db);
 
   try {
     const searchIndexNeedsRebuild = ensureSearchIndex(db);
@@ -614,6 +640,46 @@ function ensureStorageIndexes(db: DatabaseSync): void {
     }
     setSchemaMeta(db, migrationKey, "done");
   }
+}
+
+/**
+ * A.3: drop the session-only indexes that are no longer in STORAGE_INDEXES.
+ * Idempotent via a schema_meta marker so we only run the DROP + ANALYZE once
+ * per store. ANALYZE is critical here — without current stats the query
+ * planner will not consider skip-scan over the surviving compound
+ * (source_id, session_ref) indexes, and session-only DELETE/SELECT queries
+ * would regress to full table scans.
+ */
+function dropRedundantSessionIndexes(db: DatabaseSync): void {
+  const markerKey = "redundant_session_indexes_dropped";
+  const done = db.prepare("SELECT value_text FROM schema_meta WHERE key = ?").get(markerKey) as
+    | { value_text: string }
+    | undefined;
+  if (done?.value_text === "done") {
+    return;
+  }
+
+  const selectIndex = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?");
+  const allowedNames = new Set(REDUNDANT_SESSION_INDEXES);
+  let droppedAny = false;
+  for (const name of REDUNDANT_SESSION_INDEXES) {
+    if (!allowedNames.has(name)) {
+      // defense-in-depth: never DROP a name we didn't whitelist
+      continue;
+    }
+    const existing = selectIndex.get(name) as { 1: number } | undefined;
+    if (existing) {
+      db.exec(`DROP INDEX IF EXISTS ${name};`);
+      droppedAny = true;
+    }
+  }
+
+  if (droppedAny) {
+    // Refresh planner statistics so the surviving compound indexes are picked
+    // for session-only lookups via skip-scan.
+    db.exec("ANALYZE;");
+  }
+  setSchemaMeta(db, markerKey, "done");
 }
 
 function ensureAtomEdgeEndpointColumns(db: DatabaseSync): void {

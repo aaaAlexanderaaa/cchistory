@@ -509,6 +509,45 @@ const commandSpecs: CommandSpec[] = [
     examples: ["cchistory gc --dry-run"],
   },
   {
+    path: ["maintenance"],
+    category: "Data Management",
+    usage: "cchistory maintenance rebuild-search-index|gc-evidence|checkpoint|vacuum",
+    summary: "Operator maintenance commands",
+    description:
+      "Low-frequency operator commands for the V1+V2 storage boundary. Use these to reclaim space after Phase A landed: rebuild the FTS5 search index (A.1), prune orphaned V2 evidence blobs (A.2), checkpoint the WAL (A.4), or VACUUM the SQLite file into the new 16 KiB page size (A.4).",
+    children: ["rebuild-search-index", "gc-evidence", "checkpoint", "vacuum"],
+    examples: [
+      "cchistory maintenance rebuild-search-index",
+      "cchistory maintenance gc-evidence",
+      "cchistory maintenance checkpoint",
+      "cchistory maintenance vacuum",
+    ],
+  },
+  {
+    path: ["maintenance", "rebuild-search-index"],
+    usage: "cchistory maintenance rebuild-search-index",
+    description:
+      "Repopulate the FTS5 search_index table from current user_turns rows. After Phase A.1 the refresh hot path no longer maintains FTS5; this is the explicit operator hook. Has no effect on the scan-path search, which reads user_turns directly.",
+  },
+  {
+    path: ["maintenance", "gc-evidence"],
+    usage: "cchistory maintenance gc-evidence",
+    description:
+      "Drop evidence_blobs rows whose sha is no longer referenced from evidence_captures or parsed_record_spans, and unlink the corresponding content-addressed files. Use this to reclaim space accumulated before Phase A.2 wired evidence GC into the purge paths.",
+  },
+  {
+    path: ["maintenance", "checkpoint"],
+    usage: "cchistory maintenance checkpoint",
+    description:
+      "Run PRAGMA wal_checkpoint(TRUNCATE) to fold the WAL into the main SQLite file and truncate the WAL. Useful between long-running sync batches to bound on-disk footprint.",
+  },
+  {
+    path: ["maintenance", "vacuum"],
+    usage: "cchistory maintenance vacuum",
+    description:
+      "Run VACUUM to rebuild the SQLite file. Required once per store to materialize the new 16 KiB page size from Phase A.4; otherwise the pragma is silently ignored on existing databases. Blocks writes for the duration.",
+  },
+  {
     path: ["query"],
     category: "Advanced (experimental)",
     usage: "cchistory query turns|turn|sessions|session|projects|project ...",
