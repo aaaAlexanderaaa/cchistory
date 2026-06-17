@@ -3,10 +3,20 @@ import {
   type BackfillStoreResult,
   listMigrationStates,
   readStorageBoundaryMigrationPreview,
+  runMigrationValidate,
+  type BundleChecksumCompare,
+  type MigrationValidateResult,
+  type MigrationValidatorKind,
+  type MigrationValidatorOutcome,
   type StorageBoundaryMigrationPreview,
 } from "@cchistory/storage";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import type { BundleChecksums, ImportBundleManifest } from "@cchistory/domain";
 import type { CommandContext, CommandOutput } from "../main.js";
 import { openStorage, resolveStoreLayout, type StoreLayout } from "../store.js";
+import { exportBundle } from "../bundle.js";
 import { formatNumber, renderKeyValue, renderSection, renderTable } from "../renderers.js";
 
 export async function handleMigration(context: CommandContext): Promise<CommandOutput> {
@@ -32,6 +42,8 @@ export async function handleMigration(context: CommandContext): Promise<CommandO
       return runMigrationRun(context, layout);
     case "status":
       return runMigrationStatus(layout);
+    case "validate":
+      return runMigrationValidateHandler(context, layout);
     default:
       throw new Error(`Unknown migration subcommand: ${subcommand}`);
   }
@@ -278,4 +290,167 @@ function formatBytes(value: number): string {
   }
   const decimals = unitIndex === 0 ? 0 : size >= 10 ? 1 : 2;
   return `${size.toFixed(decimals)}${units[unitIndex]}`;
+}
+
+const ALLOWED_VALIDATORS: readonly MigrationValidatorKind[] = ["bundle", "inventory", "read-paths"];
+
+async function runMigrationValidateHandler(context: CommandContext, layout: StoreLayout): Promise<CommandOutput> {
+  const requested = context.options.only;
+  for (const value of requested) {
+    if (!ALLOWED_VALIDATORS.includes(value as MigrationValidatorKind)) {
+      throw new Error(
+        `Invalid --only value: ${value}. Expected one of ${ALLOWED_VALIDATORS.join(", ")}.`,
+      );
+    }
+  }
+  const only = requested.length > 0 ? (requested as readonly MigrationValidatorKind[]) : undefined;
+  const wantsBundle = only ? only.includes("bundle") : true;
+  const preBundleDir = context.options.preBundle;
+  if (wantsBundle && !preBundleDir) {
+    throw new Error(
+      "`migration validate` requires --pre-bundle <dir> when the bundle validator runs. Capture it via `cchistory export --out <dir>` BEFORE B.3, then `cchistory migration validate --pre-bundle <dir>`.",
+    );
+  }
+
+  const storage = await openStorage(layout);
+  let postTempDir: string | undefined;
+  try {
+    let preCompare: BundleChecksumCompare | undefined;
+    let postCompare: BundleChecksumCompare | undefined;
+    if (wantsBundle) {
+      preCompare = await readBundleCompare(preBundleDir!);
+      postTempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-b4-validate-"));
+      await exportBundle({
+        storage,
+        bundleDir: postTempDir,
+        includeRawBlobs: true,
+      });
+      postCompare = await readBundleCompare(postTempDir);
+    }
+    const result = await runMigrationValidate({
+      dbPath: layout.dbPath,
+      assetDir: layout.assetDir,
+      only,
+      preBundleChecksums: preCompare,
+      postBundleChecksums: postCompare,
+    });
+    return {
+      text: renderValidateResult(result),
+      json: {
+        kind: "migration-validate",
+        result,
+      },
+      // Surface failure as a non-zero exit code so scripts and CI can gate on it.
+      exitCode: result.exit_code,
+    };
+  } finally {
+    storage.close();
+    if (postTempDir) {
+      await rm(postTempDir, { recursive: true, force: true });
+    }
+  }
+}
+
+async function readBundleCompare(bundleDir: string): Promise<BundleChecksumCompare> {
+  const manifestPath = path.join(bundleDir, "manifest.json");
+  const checksumsPath = path.join(bundleDir, "checksums.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as ImportBundleManifest;
+  const checksums = JSON.parse(await readFile(checksumsPath, "utf8")) as BundleChecksums;
+  return {
+    payload_sha256_by_source_id: checksums.payload_sha256_by_source_id,
+    raw_sha256_by_path: checksums.raw_sha256_by_path,
+    manifest_stable: {
+      bundle_version: manifest.bundle_version,
+      schema_version: manifest.schema_version,
+      source_instance_ids: manifest.source_instance_ids,
+      includes_raw_blobs: manifest.includes_raw_blobs,
+      counts: manifest.counts,
+    },
+  };
+}
+
+function renderValidateResult(result: MigrationValidateResult): string {
+  const lines: string[] = [
+    renderSection(
+      "Migration Validate (B.4)",
+      renderKeyValue([
+        ["Store", result.db_path],
+        ["Validators run", result.ran.join(", ") || "(none)"],
+        ["Outcome", result.exit_code === 0 ? "PASS" : "FAIL"],
+      ]),
+    ),
+  ];
+  for (const outcome of result.outcomes) {
+    lines.push("", renderValidatorOutcome(outcome));
+  }
+  if (result.exit_code !== 0) {
+    lines.push(
+      "",
+      "One or more validators failed. Audit the per-validator output above, fix the underlying drift, and re-run `cchistory migration validate`.",
+    );
+  }
+  return lines.join("\n");
+}
+
+function renderValidatorOutcome(outcome: MigrationValidatorOutcome): string {
+  const header = renderSection(
+    `${outcome.validator} → ${outcome.status.toUpperCase()}`,
+    outcome.error ? `Error: ${outcome.error}` : "",
+  );
+  if (outcome.validator === "bundle" && outcome.bundle) {
+    const b = outcome.bundle;
+    return [
+      header,
+      renderKeyValue([
+        ["Payload mismatches", formatNumber(b.payload_mismatches.length)],
+        ["Raw mismatches", formatNumber(b.raw_mismatches.length)],
+        ["Manifest field mismatches", formatNumber(b.manifest_field_mismatches.length)],
+      ]),
+      ...(b.payload_mismatches.length > 0
+        ? ["", renderTable(["Source", "Pre SHA", "Post SHA"], b.payload_mismatches.map((m) => [m.source_id, m.pre ?? "(missing)", m.post ?? "(missing)"]))]
+        : []),
+      ...(b.raw_mismatches.length > 0
+        ? ["", renderTable(["Path", "Pre SHA", "Post SHA"], b.raw_mismatches.map((m) => [m.path, m.pre ?? "(missing)", m.post ?? "(missing)"]))]
+        : []),
+    ]
+      .filter((s) => s !== "")
+      .join("\n");
+  }
+  if (outcome.validator === "inventory" && outcome.inventory) {
+    const inv = outcome.inventory;
+    return [
+      header,
+      renderTable(
+        ["Pair", "V1 rows", "V2 rows", "Missing"],
+        [
+          ["user_turns ↔ user_turns_v2", formatNumber(inv.mapping.user_turns.v1_rows), formatNumber(inv.mapping.user_turns.v2_rows), formatNumber(inv.mapping.user_turns.missing)],
+          ["turn_contexts ↔ turn_context_refs_v2", formatNumber(inv.mapping.turn_contexts.v1_rows), formatNumber(inv.mapping.turn_contexts.v2_rows), formatNumber(inv.mapping.turn_contexts.missing)],
+          ["raw_records ↔ parsed_record_spans", formatNumber(inv.mapping.raw_records.v1_rows), formatNumber(inv.mapping.raw_records.v2_rows), formatNumber(inv.mapping.raw_records.missing)],
+          ["captured_blobs ↔ evidence_captures", formatNumber(inv.mapping.captured_blobs.v1_rows), formatNumber(inv.mapping.captured_blobs.v2_rows), formatNumber(inv.mapping.captured_blobs.missing)],
+        ],
+        { align: ["left", "right", "right", "right"] },
+      ),
+    ].join("\n");
+  }
+  if (outcome.validator === "read-paths" && outcome.read_paths) {
+    const rp = outcome.read_paths;
+    const sections = [
+      header,
+      renderKeyValue([
+        ["Turns checked", formatNumber(rp.turns_checked)],
+        ["Mismatches", formatNumber(rp.mismatch_count)],
+      ]),
+    ];
+    if (rp.mismatches.length > 0) {
+      sections.push(
+        "",
+        renderTable(
+          ["Turn", "Reason", "Detail"],
+          rp.mismatches.map((m) => [m.turn_id.slice(0, 16), m.reason, m.detail ?? ""]),
+        ),
+      );
+    }
+    return sections.join("\n");
+  }
+  return header;
 }

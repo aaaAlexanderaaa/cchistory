@@ -237,3 +237,270 @@ test("B.3: migration run refuses to auto-resurrect an aborted source", async () 
     assert.equal(result.result.halted_at_source_id, source!.id);
   }, "cchistory-b3-abort-resurrect-");
 });
+
+// B.4 acceptance: `cchistory migration validate` runs three independent
+// validators (bundle byte-diff, inventory diff, read-path parity), writes
+// per-validator markers, and surfaces a non-zero exit code on failure.
+
+test("B.4: validate --only inventory passes on a freshly-synced store and writes one marker", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+
+    const result = await runCliJson<{
+      result: {
+        ran: string[];
+        exit_code: number;
+        outcomes: Array<{ validator: string; status: string; inventory?: { status: string } }>;
+      };
+    }>(["migration", "validate", "--only", "inventory", "--store", storeDir]);
+
+    assert.deepEqual(result.result.ran, ["inventory"]);
+    assert.equal(result.result.exit_code, 0);
+    assert.equal(result.result.outcomes[0]!.validator, "inventory");
+    assert.equal(result.result.outcomes[0]!.status, "pass");
+
+    // Marker is written under the validate phase with store-scoped id.
+    const status = await runCliJson<{
+      states: Array<{ phase: string; scope_kind: string; scope_id: string; status: string }>;
+    }>(["migration", "status", "--store", storeDir]);
+    const inventoryMarker = status.states.find(
+      (s) => s.phase === "storage-boundary.validate" && s.scope_id === "inventory-diff",
+    );
+    assert.ok(inventoryMarker, "inventory-diff marker must be written");
+    assert.equal(inventoryMarker!.status, "completed");
+    assert.equal(inventoryMarker!.scope_kind, "store");
+  }, "cchistory-b4-inventory-pass-");
+});
+
+test("B.4: validate --only read-paths passes on a freshly-synced store", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+
+    const result = await runCliJson<{
+      result: {
+        ran: string[];
+        exit_code: number;
+        outcomes: Array<{
+          validator: string;
+          status: string;
+          read_paths?: { turns_checked: number; mismatch_count: number };
+        }>;
+      };
+    }>(["migration", "validate", "--only", "read-paths", "--store", storeDir]);
+
+    assert.deepEqual(result.result.ran, ["read-paths"]);
+    assert.equal(result.result.exit_code, 0);
+    assert.ok(result.result.outcomes[0]!.read_paths!.turns_checked > 0);
+    assert.equal(result.result.outcomes[0]!.read_paths!.mismatch_count, 0);
+  }, "cchistory-b4-read-paths-pass-");
+});
+
+test("B.4: validate --only bundle passes when --pre-bundle was captured from the same store", async () => {
+  await withSeededHome(async (tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    const preBundleDir = path.join(tempRoot, "pre-bundle");
+    await runCliCapture(["export", "--out", preBundleDir, "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+
+    const result = await runCliJson<{
+      result: {
+        ran: string[];
+        exit_code: number;
+        outcomes: Array<{
+          validator: string;
+          status: string;
+          bundle?: {
+            status: string;
+            payload_mismatches: unknown[];
+            raw_mismatches: unknown[];
+            manifest_field_mismatches: unknown[];
+          };
+        }>;
+      };
+    }>(["migration", "validate", "--only", "bundle", "--pre-bundle", preBundleDir, "--store", storeDir]);
+
+    assert.deepEqual(result.result.ran, ["bundle"]);
+    assert.equal(result.result.exit_code, 0);
+    const bundle = result.result.outcomes[0]!.bundle!;
+    assert.equal(bundle.status, "pass");
+    assert.equal(bundle.payload_mismatches.length, 0);
+    assert.equal(bundle.raw_mismatches.length, 0);
+    assert.equal(bundle.manifest_field_mismatches.length, 0);
+  }, "cchistory-b4-bundle-pass-");
+});
+
+test("B.4: validate --only bundle detects a mutated V1 payload", async () => {
+  await withSeededHome(async (tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    const preBundleDir = path.join(tempRoot, "pre-bundle");
+    await runCliCapture(["export", "--out", preBundleDir, "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+
+    // Mutate a V1 payload after the pre-bundle was captured.
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const row = db.prepare("SELECT id FROM user_turns LIMIT 1").get() as { id: string };
+      db.prepare("UPDATE user_turns SET payload_json = ? WHERE id = ?").run('{"mutated":true}', row.id);
+    } finally {
+      db.close();
+    }
+
+    const capture = await runCliCapture([
+      "migration", "validate", "--only", "bundle",
+      "--pre-bundle", preBundleDir, "--store", storeDir, "--json",
+    ]);
+    assert.equal(capture.exitCode, 1);
+    const result = JSON.parse(capture.stdout) as {
+      result: {
+        exit_code: number;
+        outcomes: Array<{
+          validator: string;
+          status: string;
+          bundle?: { payload_mismatches: Array<{ source_id: string }> };
+        }>;
+      };
+    };
+    assert.equal(result.result.exit_code, 1);
+    assert.equal(result.result.outcomes[0]!.status, "fail");
+    assert.ok(result.result.outcomes[0]!.bundle!.payload_mismatches.length > 0);
+  }, "cchistory-b4-bundle-fail-");
+});
+
+test("B.4: validate --only inventory detects a deleted V2 sidecar row", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const row = db.prepare("SELECT turn_id FROM user_turns_v2 LIMIT 1").get() as { turn_id: string };
+      db.prepare("DELETE FROM user_turns_v2 WHERE turn_id = ?").run(row.turn_id);
+    } finally {
+      db.close();
+    }
+
+    const capture = await runCliCapture([
+      "migration", "validate", "--only", "inventory", "--store", storeDir, "--json",
+    ]);
+    assert.equal(capture.exitCode, 1);
+    const result = JSON.parse(capture.stdout) as {
+      result: {
+        exit_code: number;
+        outcomes: Array<{
+          validator: string;
+          status: string;
+          inventory?: { failing_pairs: Array<{ name: string; missing: number }> };
+        }>;
+      };
+    };
+    assert.equal(result.result.exit_code, 1);
+    assert.equal(result.result.outcomes[0]!.status, "fail");
+    const failing = result.result.outcomes[0]!.inventory!.failing_pairs;
+    assert.ok(failing.some((p) => p.name === "user_turns" && p.missing > 0));
+  }, "cchistory-b4-inventory-fail-");
+});
+
+test("B.4: validate --only read-paths detects a corrupted V2 cache file", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+
+    const { DatabaseSync } = await import("node:sqlite");
+    const { writeFileSync } = await import("node:fs");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    let cachePath: string | null = null;
+    try {
+      const row = db
+        .prepare("SELECT cache_storage_path FROM turn_context_refs_v2 WHERE cache_storage_path IS NOT NULL LIMIT 1")
+        .get() as { cache_storage_path: string } | undefined;
+      cachePath = row?.cache_storage_path ?? null;
+    } finally {
+      db.close();
+    }
+    assert.ok(cachePath, "fixture must have at least one V2 turn context cache file");
+    writeFileSync(path.join(storeDir, cachePath!), "corrupted-bytes");
+
+    const capture = await runCliCapture([
+      "migration", "validate", "--only", "read-paths", "--store", storeDir, "--json",
+    ]);
+    assert.equal(capture.exitCode, 1);
+    const result = JSON.parse(capture.stdout) as {
+      result: {
+        exit_code: number;
+        outcomes: Array<{
+          validator: string;
+          status: string;
+          read_paths?: {
+            mismatch_count: number;
+            mismatches: Array<{ reason: string }>;
+          };
+        }>;
+      };
+    };
+    assert.equal(result.result.exit_code, 1);
+    assert.equal(result.result.outcomes[0]!.status, "fail");
+    assert.ok(result.result.outcomes[0]!.read_paths!.mismatch_count > 0);
+    assert.ok(
+      result.result.outcomes[0]!.read_paths!.mismatches.some((m) => m.reason === "v2_missing"),
+      "corrupted cache must surface as a v2_missing mismatch",
+    );
+  }, "cchistory-b4-read-paths-fail-");
+});
+
+test("B.4: validate with no --only runs all three validators and writes three markers", async () => {
+  await withSeededHome(async (tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    const preBundleDir = path.join(tempRoot, "pre-bundle");
+    await runCliCapture(["export", "--out", preBundleDir, "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+
+    const result = await runCliJson<{
+      result: {
+        ran: string[];
+        exit_code: number;
+        outcomes: Array<{ validator: string; status: string }>;
+      };
+    }>(["migration", "validate", "--pre-bundle", preBundleDir, "--store", storeDir]);
+
+    assert.deepEqual(result.result.ran.sort(), ["bundle", "inventory", "read-paths"]);
+    assert.equal(result.result.exit_code, 0);
+    assert.ok(result.result.outcomes.every((o) => o.status === "pass"));
+
+    const status = await runCliJson<{
+      states: Array<{ phase: string; scope_id: string; status: string }>;
+    }>(["migration", "status", "--store", storeDir]);
+    const validateScopes = status.states
+      .filter((s) => s.phase === "storage-boundary.validate")
+      .map((s) => s.scope_id)
+      .sort();
+    assert.deepEqual(validateScopes, ["bundle-byte-diff", "inventory-diff", "read-path-parity"]);
+  }, "cchistory-b4-all-");
+});
+
+test("B.4: validate --only bundle requires --pre-bundle", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+
+    const result = await runCliCapture([
+      "migration", "validate", "--only", "bundle", "--store", storeDir,
+    ]);
+    assert.notEqual(result.exitCode, 0);
+    assert.match(result.stderr, /--pre-bundle/);
+  }, "cchistory-b4-requires-pre-bundle-");
+});
+
+test("B.4: validate --only rejects unknown validator names", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    const result = await runCliCapture([
+      "migration", "validate", "--only", "nonexistent", "--store", storeDir,
+    ]);
+    assert.notEqual(result.exitCode, 0);
+    assert.match(result.stderr, /Invalid --only value/);
+  }, "cchistory-b4-bad-only-");
+});

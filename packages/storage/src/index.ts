@@ -53,5 +53,17 @@ export {
   type BackfillSourceResult,
   type BackfillStoreResult,
 } from "./migration-write.js";
+export {
+  runMigrationValidate,
+  type BundleByteDiffResult,
+  type BundleChecksumCompare,
+  type InventoryDiffResult,
+  type MigrationValidateInput,
+  type MigrationValidateProgressEvent,
+  type MigrationValidateResult,
+  type MigrationValidatorKind,
+  type MigrationValidatorOutcome,
+  type ReadPathParityResult,
+} from "./migration-validate.js";
 export { matchesSearchCandidateQuery, type SearchCandidateFields } from "./queries/search.js";
 export { installRuntimeWarningFilter } from "./runtime-warning-filter.js";

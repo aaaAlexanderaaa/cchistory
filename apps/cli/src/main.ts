@@ -47,6 +47,7 @@ export interface CliIo {
 export interface CommandOutput {
   text: string;
   json: unknown;
+  exitCode?: number;
 }
 
 export type ReadMode = "index" | "full";
@@ -112,7 +113,7 @@ export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<n
     const output = await dispatchCommand(context);
     const topCommand = context.commandPath[0];
     printOutput(output, parsed.globals.json || topCommand === "query" || topCommand === "templates", io);
-    return 0;
+    return output.exitCode ?? 0;
   } catch (error) {
     configureColorPolicy({ color: !argv.includes("--no-color") });
     printError(error, io, shouldPrintDebug(argv));

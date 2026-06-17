@@ -69,6 +69,8 @@ export interface CommandOptions {
   detail: boolean;
   progress?: string;
   safe: boolean;
+  only: string[];
+  preBundle?: string;
 }
 
 export interface ParsedCommand {
@@ -221,6 +223,17 @@ const commandOptions: Record<string, OptionSpec> = {
     valueName: "mode",
     choices: ["error", "skip", "replace"],
     description: "Conflict behavior",
+  },
+  only: {
+    kind: "string",
+    valueName: "kind",
+    multiple: true,
+    description: "Run only the named migration validator (bundle, inventory, read-paths). Repeatable.",
+  },
+  "pre-bundle": {
+    kind: "string",
+    valueName: "dir",
+    description: "Pre-migration bundle directory captured via `cchistory export` before B.3. Required for the bundle validator.",
   },
   from: {
     kind: "string",
@@ -550,16 +563,18 @@ const commandSpecs: CommandSpec[] = [
   {
     path: ["migration"],
     category: "Data Management",
-    usage: "cchistory migration preview|run|status",
+    usage: "cchistory migration preview|run|status|validate",
     summary: "Storage boundary V1→V2 migration (B.1-B.6)",
     description:
-      "Phase B storage-boundary migration tooling. `preview` is read-only and reports the V1→V2 backfill gap, removable bytes, and VACUUM disk requirement. `run` performs the per-source V2 backfill (B.3) — V1 payloads are not touched. `status` prints migration_state markers.",
-    children: ["preview", "run", "status"],
+      "Phase B storage-boundary migration tooling. `preview` is read-only and reports the V1→V2 backfill gap, removable bytes, and VACUUM disk requirement. `run` performs the per-source V2 backfill (B.3) — V1 payloads are not touched. `status` prints migration_state markers. `validate` runs the three B.4 validators (bundle byte-diff, inventory diff, read-path parity).",
+    children: ["preview", "run", "status", "validate"],
     examples: [
       "cchistory migration preview",
       "cchistory migration run --dry-run",
       "cchistory migration run --source src-1",
       "cchistory migration status",
+      "cchistory migration validate --pre-bundle ./pre-migration-bundle",
+      "cchistory migration validate --only inventory",
     ],
   },
   {
@@ -580,6 +595,14 @@ const commandSpecs: CommandSpec[] = [
     usage: "cchistory migration status [--store <dir>|--db <file>] [--json]",
     description:
       "Print migration_state markers: per-source status (running/completed/aborted) for the storage-boundary.write phase.",
+  },
+  {
+    path: ["migration", "validate"],
+    usage:
+      "cchistory migration validate [--only bundle|inventory|read-paths]... [--pre-bundle <dir>] [--store <dir>|--db <file>]",
+    description:
+      "B.4: post-B.3 validators. Three independent checks prove the V2 sidecars B.3 wrote are equivalent to V1: (a) bundle byte-diff against a pre-migration bundle (--pre-bundle, required when --only bundle is selected); (b) inventory row-count parity across the four V1↔V2 pairs; (c) read-path parity — deepEqual getTurnContext V1 vs V2 cache across every turn. All three run by default; each writes its own migration_state marker.",
+    options: ["only", "pre-bundle"],
   },
   {
     path: ["query"],
@@ -769,6 +792,8 @@ function normalizeCommandOptions(values: Record<string, string | string[] | bool
     detail: readBoolean(values, "detail"),
     progress: readString(values, "progress"),
     safe: readBoolean(values, "safe"),
+    only: readStringArray(values, "only"),
+    preBundle: readString(values, "pre-bundle"),
   };
 }
 
