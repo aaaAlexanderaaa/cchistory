@@ -704,11 +704,16 @@ export class CCHistoryStorage {
     if (!this.getTurn(turnId)) {
       return undefined;
     }
+    // B.5.6: V1 fallback removed. Reads are strictly V2 — operators must
+    // complete B.3 (write migration) and B.4 (validation) before deploying
+    // this code, otherwise unmigrated turns return undefined. The B.4c
+    // read-path parity validator is the gate that proves V2 == V1 across
+    // every turn on the store.
     return readTurnContextFromV2Cache({
       db: this.db,
       assetDir: this.assetDir,
       turnId,
-    }) ?? Queries.getTurnContext(this.db, turnId);
+    });
   }
 
   getSession(sessionId: string): SessionProjection | undefined {

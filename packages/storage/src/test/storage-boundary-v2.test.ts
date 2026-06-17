@@ -223,7 +223,7 @@ test("storage boundary v2 reconstructs turn context from the content-addressed c
   }
 });
 
-test("storage boundary v2 falls back to v1 turn context rows when the context cache is missing or invalid", async () => {
+test("storage boundary v2 returns undefined when the context cache is invalid (B.5.6 — no V1 fallback)", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-boundary-v2-context-fallback-"));
   try {
     const storeDir = path.join(tempRoot, "store");
@@ -253,9 +253,12 @@ test("storage boundary v2 falls back to v1 turn context rows when the context ca
 
     const reopened = new CCHistoryStorage({ dbPath });
     try {
+      // B.5.6: V1 fallback removed. A corrupted V2 cache now returns
+      // undefined rather than silently consulting V1. Operators running
+      // B.4c (read-path parity) catch this before deploying B.5; the
+      // recovery is `cchistory migration run` to rewrite the cache.
       const context = reopened.getTurnContext("turn-v2-context-fallback");
-      assert.ok(context);
-      assert.equal(context.tool_calls[0]?.output, "fallback output");
+      assert.equal(context, undefined);
     } finally {
       reopened.close();
     }
