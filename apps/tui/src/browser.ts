@@ -1,7 +1,7 @@
 import {
-  matchesSearchCandidateQuery,
   type LocalTuiBrowser,
   type LocalTuiBrowserTurn,
+  type LocalTuiSearchPage,
   type LocalTuiSearchResult,
 } from "@cchistory/storage";
 import { tameBrowseMarkup, compactText as compact } from "@cchistory/presentation";
@@ -78,6 +78,7 @@ const DEFAULT_HEIGHT = 40;
 const LEFT_COL_RATIO = 0.28;
 const MIN_LEFT_COL = 24;
 const MAX_LEFT_COL = 60;
+const SEARCH_RESULTS_WINDOW = 64;
 
 // ── Display width utilities (CJK-aware) ──
 
@@ -226,7 +227,7 @@ export function reduceBrowserState(browser: LocalTuiBrowser, state: BrowserState
     case "enter-search-mode":
       return clampState({ ...state, mode: "search", focusPane: "projects", searchCommitted: false, selectedSearchProjectIndex: 0, selectedSearchTurnIndex: 0, detailScrollOffset: 0, conversationScrollOffset: 0 }, browser);
     case "exit-search-mode":
-      _searchCache = null;
+      _searchPageCache = null;
       return clampState({ ...state, mode: "browse", focusPane: "projects" }, browser);
     case "commit-search":
       return clampState({ ...state, searchCommitted: true, selectedSearchProjectIndex: 0, selectedSearchTurnIndex: 0, detailScrollOffset: 0, conversationScrollOffset: 0 }, browser);
@@ -245,10 +246,7 @@ export function reduceBrowserState(browser: LocalTuiBrowser, state: BrowserState
     case "backspace-search": {
       const newQuery = state.searchQuery.slice(0, Math.max(state.searchQuery.length - 1, 0));
       const autoCommit = newQuery.length >= 4;
-      // Only invalidate cache if backspacing past the anchor query
-      if (_searchCache && newQuery.toLowerCase().length < _searchCache.anchorQuery.length) {
-        _searchCache = null;
-      }
+      _searchPageCache = null;
       return clampState({
         ...state,
         searchQuery: newQuery,
@@ -347,7 +345,7 @@ export function renderBrowserSnapshot(browser: LocalTuiBrowser, state: BrowserSt
       ? getSelectedSearchTurn(browser, state)
       : getSelectedTurn(browser, state);
     const sessionTurns = turn ? getSessionTurns(browser, state, turn) : [];
-    const convLines = buildSessionConversationLines(sessionTurns, turn, rightColWidth + leftColWidth);
+    const convLines = buildSessionConversationLines(browser, sessionTurns, turn, rightColWidth + leftColWidth);
     const total = convLines.length;
     const offset = Math.min(state.conversationScrollOffset, Math.max(0, total - conversationViewportSize));
     const visibleEnd = Math.min(offset + conversationViewportSize, total);
@@ -417,10 +415,9 @@ export function renderBrowserSnapshot(browser: LocalTuiBrowser, state: BrowserSt
 function buildSnapshotMetadataLines(browser: LocalTuiBrowser, state: BrowserState): string[] {
   const lines = state.mode === "search" ? [] : [dim("Browse projects and asks")];
   if (state.mode === "search") {
-    const groups = getSearchGroups(browser, state);
-    const total = groups.reduce((sum, group) => sum + group.results.length, 0);
+    const page = getSearchPage(browser, state);
     lines.push(dim(`Search: ${state.searchQuery || "(empty)"}`));
-    lines.push(dim(`Matches: ${total}`));
+    lines.push(dim(`Matches: ${page.total}`));
   }
 
   if (state.showSourceHealth) {
@@ -650,7 +647,7 @@ function renderSearchProjectPane(browser: LocalTuiBrowser, state: BrowserState, 
     const selected = state.selectedSearchProjectIndex === i;
     const focused = state.focusPane === "projects";
     const prefix = selectionPrefix(selected, focused);
-    const countText = `${group.results.length}`;
+    const countText = `${group.total}`;
     const countW = displayWidth(countText);
     const nameMaxW = Math.max(colWidth - countW - 5, 6);
     const name = compact(group.projectName, nameMaxW);
@@ -666,23 +663,23 @@ function renderSearchProjectPane(browser: LocalTuiBrowser, state: BrowserState, 
 function renderSearchTurnPane(browser: LocalTuiBrowser, state: BrowserState, viewportSize: number, colWidth: number): string[] {
   const titleLine = state.focusPane === "turns" ? activeSectionTitle("▸ Results") : sectionTitle("  Results");
   const lines: string[] = [titleLine];
-  const searchGroups = getSearchGroups(browser, state);
-  const selectedGroup = searchGroups[state.selectedSearchProjectIndex];
-  if (!selectedGroup || selectedGroup.results.length === 0) {
+  const page = getSearchPage(browser, state);
+  const selectedGroup = page.groups[page.selectedGroupIndex];
+  if (!selectedGroup || selectedGroup.total === 0) {
     lines.push(emptyRow("No results in this project"));
     return lines;
   }
-  // Group search results by session for display
-  const results = selectedGroup.results;
-  const sessionGroups = groupSearchResultsBySession(results);
+  const sessionGroups = groupSearchResultsBySession(page.results, page.resultOffset);
   const displayItems = buildSearchDisplayItems(sessionGroups, state, colWidth);
   const selectedIdx = findSelectedDisplayIndex(displayItems, state.selectedSearchTurnIndex);
   const { start, end } = viewportWindow(displayItems.length, selectedIdx, viewportSize);
-  if (start > 0) lines.push(muted(` ↑ ${start} more`));
+  const above = page.resultOffset + start;
+  if (above > 0) lines.push(muted(` ↑ ${above} more`));
   for (let i = start; i < end; i++) {
     lines.push(displayItems[i]!.text);
   }
-  if (end < displayItems.length) lines.push(muted(` ↓ ${displayItems.length - end} more`));
+  const below = selectedGroup.total - page.resultOffset - end;
+  if (below > 0) lines.push(muted(` ↓ ${below} more`));
   return lines;
 }
 
@@ -693,7 +690,7 @@ interface SearchSessionGroup {
   results: Array<{ originalIndex: number; result: LocalTuiSearchResult }>;
 }
 
-function groupSearchResultsBySession(results: LocalTuiSearchResult[]): SearchSessionGroup[] {
+function groupSearchResultsBySession(results: LocalTuiSearchResult[], resultOffset = 0): SearchSessionGroup[] {
   const groupMap = new Map<string, SearchSessionGroup>();
   const order: string[] = [];
   for (let i = 0; i < results.length; i++) {
@@ -704,22 +701,9 @@ function groupSearchResultsBySession(results: LocalTuiSearchResult[]): SearchSes
       groupMap.set(sid, { sessionId: sid, sessionTitle: title, sessionCreatedAt: r.session?.created_at, results: [] });
       order.push(sid);
     }
-    groupMap.get(sid)!.results.push({ originalIndex: i, result: r });
+    groupMap.get(sid)!.results.push({ originalIndex: resultOffset + i, result: r });
   }
-  // Sort sessions by created_at DESC, turns within each session by time ASC (chronological)
-  const groups = order.map(id => groupMap.get(id)!)
-    .sort((a, b) => (b.sessionCreatedAt ?? "").localeCompare(a.sessionCreatedAt ?? ""));
-  for (const g of groups) {
-    g.results.sort((a, b) => a.result.turn.submission_started_at.localeCompare(b.result.turn.submission_started_at));
-  }
-  // Re-index so originalIndex matches the display order (for selection tracking)
-  let idx = 0;
-  for (const g of groups) {
-    for (const item of g.results) {
-      item.originalIndex = idx++;
-    }
-  }
-  return groups;
+  return order.map(id => groupMap.get(id)!);
 }
 
 function buildSearchDisplayItems(groups: SearchSessionGroup[], state: BrowserState, colWidth: number): DisplayItem[] {
@@ -793,12 +777,12 @@ function renderSearchDetailPane(browser: LocalTuiBrowser, state: BrowserState, m
   const focused = state.focusPane === "detail";
   const titleLine = focused ? activeSectionTitle("▸ Detail") : sectionTitle("  Detail");
   const turn = getSelectedSearchTurn(browser, state);
-  const searchGroups = getSearchGroups(browser, state);
-  const group = searchGroups[state.selectedSearchProjectIndex];
+  const page = getSearchPage(browser, state);
+  const group = page.groups[page.selectedGroupIndex];
   const allRows = formatDetailRows(browser, {
     projectName: turn?.project?.display_name ?? group?.projectName,
     selectedTurn: turn ? { turn: turn.turn, session: turn.session, context: turn.context, related_work: turn.related_work } : undefined,
-    turnPosition: group ? `${state.selectedSearchTurnIndex + 1}/${group.results.length}` : undefined,
+    turnPosition: group ? `${state.selectedSearchTurnIndex + 1}/${group.total}` : undefined,
     sessionTitle: turn?.session?.title,
     focused,
     colWidth,
@@ -809,6 +793,7 @@ function renderSearchDetailPane(browser: LocalTuiBrowser, state: BrowserState, m
 // ── Conversation view (session-level) ──
 
 function buildSessionConversationLines(
+  browser: LocalTuiBrowser,
   sessionTurns: LocalTuiBrowserTurn[],
   selectedTurn: LocalTuiBrowserTurn | undefined,
   maxWidth: number,
@@ -829,7 +814,7 @@ function buildSessionConversationLines(
     }
 
     // Replies + tool calls interleaved
-    const ctx = turn.context;
+    const ctx = turn.context ?? browser.getTurnContext(turn.turn.id);
     if (ctx) {
       for (const reply of ctx.assistant_replies) {
         const model = reply.model ?? turn.turn.context_summary.primary_model ?? "";
@@ -900,9 +885,10 @@ function formatDetailRows(browser: LocalTuiBrowser, input: DetailInput): string[
   }
 
   // Related work summary
-  const parents = (t.related_work ?? []).filter(e => e.relation_kind === "delegated_session" && e.direction === "inbound").length;
-  const children = (t.related_work ?? []).filter(e => e.relation_kind === "delegated_session" && e.direction !== "inbound").length;
-  const auto = (t.related_work ?? []).filter(e => e.relation_kind === "automation_run").length;
+  const relatedWork = t.related_work ?? (t.session ? browser.getSessionRelatedWork(t.session.id) : []);
+  const parents = relatedWork.filter(e => e.relation_kind === "delegated_session" && e.direction === "inbound").length;
+  const children = relatedWork.filter(e => e.relation_kind === "delegated_session" && e.direction !== "inbound").length;
+  const auto = relatedWork.filter(e => e.relation_kind === "automation_run").length;
   if (parents > 0 || children > 0 || auto > 0) {
     const parts: string[] = [];
     if (parents > 0) parts.push(`${parents} parent`);
@@ -1185,9 +1171,8 @@ function renderHelpOverlay(maxWidth: number, maxHeight: number): string[] {
 function renderStatusLine(browser: LocalTuiBrowser, state: BrowserState, width: number): string {
   const parts: string[] = [];
   if (state.mode === "search") {
-    const groups = getSearchGroups(browser, state);
-    const total = groups.reduce((sum, g) => sum + g.results.length, 0);
-    parts.push(`Search: ${total} results`);
+    const page = getSearchPage(browser, state);
+    parts.push(`Search: ${page.total} results`);
   }
   parts.push(focusPaneLabel(state.focusPane));
   parts.push(`${browser.overview.counts.projects}P ${browser.overview.counts.turns}A`);
@@ -1235,10 +1220,10 @@ function clampState(state: BrowserState, browser: LocalTuiBrowser): BrowserState
   const turnCount = browser.projects[selectedProjectIndex]?.turns.length ?? 0;
 
   // Search: clamp project and turn indices (only search if committed or query >= 4 chars)
-  const searchGroups = state.mode === "search" && shouldRunSearch(state) ? getSearchGroupsFromQuery(browser, state.searchQuery) : [];
-  const searchProjectCount = searchGroups.length;
-  const searchProjectIdx = searchProjectCount === 0 ? 0 : clampIndex(state.selectedSearchProjectIndex, searchProjectCount);
-  const searchTurnCount = searchGroups[searchProjectIdx]?.results.length ?? 0;
+  const searchPage = state.mode === "search" && shouldRunSearch(state) ? getSearchPage(browser, state) : emptySearchPage();
+  const searchProjectCount = searchPage.groups.length;
+  const searchProjectIdx = searchProjectCount === 0 ? 0 : clampIndex(searchPage.selectedGroupIndex, searchProjectCount);
+  const searchTurnCount = searchPage.groups[searchProjectIdx]?.total ?? 0;
 
   return {
     ...state,
@@ -1264,12 +1249,8 @@ function getSelectedTurn(browser: LocalTuiBrowser, state: BrowserState): LocalTu
 function getSessionTurns(browser: LocalTuiBrowser, state: BrowserState, turn: LocalTuiBrowserTurn): LocalTuiBrowserTurn[] {
   const sessionId = turn.turn.session_id;
   if (state.mode === "search") {
-    // Collect all turns from the project that match this session
-    for (const proj of browser.projects) {
-      const sessionTurns = proj.turns.filter(t => t.turn.session_id === sessionId);
-      if (sessionTurns.length > 0) return sessionTurns;
-    }
-    return [turn];
+    const sessionTurns = browser.getSessionTurns(sessionId);
+    return sessionTurns.length > 0 ? sessionTurns : [turn];
   }
   const allTurns = getSelectedTurns(browser, state);
   return allTurns.filter(t => t.turn.session_id === sessionId);
@@ -1280,7 +1261,9 @@ function getSessionTurns(browser: LocalTuiBrowser, state: BrowserState, turn: Lo
 interface SearchGroup {
   projectName: string;
   projectId: string;
+  total: number;
   results: LocalTuiSearchResult[];
+  resultOffset: number;
 }
 
 function shouldRunSearch(state: BrowserState): boolean {
@@ -1289,70 +1272,71 @@ function shouldRunSearch(state: BrowserState): boolean {
   return state.searchCommitted;
 }
 
-// Search cache: on fallback hosts, store the anchor results and refine locally for query extensions.
-// Backspace past the anchor or exiting search invalidates the cache.
-// On FTS5 hosts we rerun the query because SQLite token-prefix semantics are richer than the local predicate.
-let _searchCache:
-  | { browser: LocalTuiBrowser; anchorQuery: string; anchorResults: LocalTuiSearchResult[] }
+let _searchPageCache:
+  | {
+      browser: LocalTuiBrowser;
+      query: string;
+      groupIndex: number;
+      offset: number;
+      limit: number;
+      page: LocalTuiSearchPage;
+    }
   | null = null;
 
-function getCachedOrFreshResults(browser: LocalTuiBrowser, query: string): LocalTuiSearchResult[] {
-  if (!query) { _searchCache = null; return []; }
-  const q = query.toLowerCase();
-  if (_searchCache && _searchCache.browser !== browser) {
-    _searchCache = null;
-  }
-  if (browser.searchMode === "fallback"
-    && _searchCache
-    && q.startsWith(_searchCache.anchorQuery.toLowerCase())
-    && _searchCache.anchorQuery.length > 0) {
-    if (q === _searchCache.anchorQuery.toLowerCase()) return _searchCache.anchorResults;
-    return _searchCache.anchorResults.filter(r => {
-      return matchesSearchCandidateQuery(
-        {
-          canonical_text: r.turn.canonical_text,
-          path_text: r.turn.path_text,
-        },
-        query,
-      );
-    });
-  }
-  // Full query against storage — store as the next anchor.
-  const results = browser.search(query);
-  _searchCache = { browser, anchorQuery: query, anchorResults: results };
-  return results;
+function emptySearchPage(): LocalTuiSearchPage {
+  return {
+    results: [],
+    total: 0,
+    groups: [],
+    selectedGroupIndex: 0,
+    resultOffset: 0,
+  };
 }
 
-function getSearchGroupsFromQuery(browser: LocalTuiBrowser, query: string): SearchGroup[] {
-  if (!query) return [];
-  const allResults = getCachedOrFreshResults(browser, query);
-  const groupMap = new Map<string, SearchGroup>();
-  for (const r of allResults) {
-    const key = r.project?.project_id ?? "__unlinked__";
-    const name = r.project?.display_name ?? "Unlinked";
-    let group = groupMap.get(key);
-    if (!group) {
-      group = { projectName: name, projectId: key, results: [] };
-      groupMap.set(key, group);
-    }
-    group.results.push(r);
+function searchWindowOffset(selectedIndex: number): number {
+  return Math.max(0, selectedIndex - Math.floor(SEARCH_RESULTS_WINDOW / 2));
+}
+
+function getSearchPage(browser: LocalTuiBrowser, state: BrowserState): LocalTuiSearchPage {
+  if (!shouldRunSearch(state)) {
+    return emptySearchPage();
   }
-  // Sort by result count desc
-  return [...groupMap.values()].sort((a, b) => b.results.length - a.results.length);
+  const query = state.searchQuery;
+  const groupIndex = Math.max(0, state.selectedSearchProjectIndex);
+  const offset = searchWindowOffset(state.selectedSearchTurnIndex);
+  const limit = SEARCH_RESULTS_WINDOW;
+  if (
+    _searchPageCache &&
+    _searchPageCache.browser === browser &&
+    _searchPageCache.query === query &&
+    _searchPageCache.groupIndex === groupIndex &&
+    _searchPageCache.offset === offset &&
+    _searchPageCache.limit === limit
+  ) {
+    return _searchPageCache.page;
+  }
+  const page = browser.searchPage(query, { groupIndex, offset, limit });
+  _searchPageCache = { browser, query, groupIndex, offset, limit, page };
+  return page;
 }
 
 function getSearchGroups(browser: LocalTuiBrowser, state: BrowserState): SearchGroup[] {
   if (!shouldRunSearch(state)) return [];
-  return getSearchGroupsFromQuery(browser, state.searchQuery);
+  const page = getSearchPage(browser, state);
+  return page.groups.map((group, index) => ({
+    projectName: group.projectName,
+    projectId: group.projectId,
+    total: group.total,
+    results: index === page.selectedGroupIndex ? page.results : [],
+    resultOffset: index === page.selectedGroupIndex ? page.resultOffset : 0,
+  }));
 }
 
 function getSelectedSearchTurn(browser: LocalTuiBrowser, state: BrowserState): LocalTuiSearchResult | undefined {
-  const groups = getSearchGroups(browser, state);
-  const selectedGroup = groups[state.selectedSearchProjectIndex];
+  const page = getSearchPage(browser, state);
+  const selectedGroup = page.groups[page.selectedGroupIndex];
   if (!selectedGroup) return undefined;
-  // Results are re-indexed by groupSearchResultsBySession (session grouping + sort),
-  // so we must look up by the re-assigned originalIndex, not by raw array position.
-  const sessionGroups = groupSearchResultsBySession(selectedGroup.results);
+  const sessionGroups = groupSearchResultsBySession(page.results, page.resultOffset);
   for (const sg of sessionGroups) {
     for (const item of sg.results) {
       if (item.originalIndex === state.selectedSearchTurnIndex) return item.result;

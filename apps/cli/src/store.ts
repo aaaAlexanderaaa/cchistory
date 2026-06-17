@@ -53,7 +53,7 @@ export function resolveStoreLayout(input: {
   };
 }
 
-export async function createStorage(location: string | { dataDir?: string; dbPath?: string }): Promise<CCHistoryStorage> {
+export async function createStorage(location: string | { dataDir?: string; dbPath?: string; assetDir?: string }): Promise<CCHistoryStorage> {
   try {
     const { CCHistoryStorage } = await loadStorageModule();
     return new CCHistoryStorage(location);
@@ -63,7 +63,7 @@ export async function createStorage(location: string | { dataDir?: string; dbPat
 }
 
 export async function openStorage(layout: StoreLayout): Promise<CCHistoryStorage> {
-  return createStorage({ dbPath: layout.dbPath });
+  return createStorage({ dbPath: layout.dbPath, assetDir: layout.assetDir });
 }
 
 export async function pruneOrphanRawSnapshotsSafe(input: {

@@ -112,13 +112,13 @@ export async function openReadStorage(input: {
 async function openIndexedStorage(layout: StoreLayout): Promise<CCHistoryStorage> {
   try {
     ensureIndexedStoreExists(layout);
-    return await createStorage({ dbPath: layout.dbPath });
+    return await createStorage({ dbPath: layout.dbPath, assetDir: layout.assetDir });
   } catch (error) {
     throw formatStorageRuntimeError(error);
   }
 }
 
-async function createStorage(location: string | { dataDir?: string; dbPath?: string }): Promise<CCHistoryStorage> {
+async function createStorage(location: string | { dataDir?: string; dbPath?: string; assetDir?: string }): Promise<CCHistoryStorage> {
   try {
     const { CCHistoryStorage } = await loadStorageModule();
     return new CCHistoryStorage(location);

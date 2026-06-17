@@ -51,6 +51,7 @@ export function purgeTurnInTransaction(
   turn: UserTurnProjection,
   reason: string,
 ): TombstoneProjection {
+  const turnIds = uniqueStrings([turn.id, turn.turn_id].filter((value): value is string => Boolean(value)));
   const tombstone: TombstoneProjection = {
     object_kind: "turn",
     logical_id: turn.turn_id ?? turn.id,
@@ -66,9 +67,18 @@ export function purgeTurnInTransaction(
 
   db.prepare("INSERT OR REPLACE INTO tombstones (logical_id, payload_json) VALUES (?, ?)")
     .run(tombstone.logical_id, toJson(tombstone));
-  db.prepare("DELETE FROM user_turns WHERE id = ?").run(turn.id);
-  db.prepare("DELETE FROM turn_contexts WHERE turn_id = ?").run(turn.id);
-  db.prepare("DELETE FROM artifact_coverage WHERE turn_id = ?").run(turn.id);
+  const deleteTurn = db.prepare("DELETE FROM user_turns WHERE id = ?");
+  const deleteContext = db.prepare("DELETE FROM turn_contexts WHERE turn_id = ?");
+  const deleteV2Turn = db.prepare("DELETE FROM user_turns_v2 WHERE turn_id = ?");
+  const deleteV2Context = db.prepare("DELETE FROM turn_context_refs_v2 WHERE turn_id = ?");
+  const deleteCoverage = db.prepare("DELETE FROM artifact_coverage WHERE turn_id = ?");
+  for (const turnId of turnIds) {
+    deleteTurn.run(turnId);
+    deleteContext.run(turnId);
+    deleteV2Turn.run(turnId);
+    deleteV2Context.run(turnId);
+    deleteCoverage.run(turnId);
+  }
   return tombstone;
 }
 

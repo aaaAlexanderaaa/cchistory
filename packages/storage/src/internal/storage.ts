@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -46,13 +47,20 @@ import {
   updateSourceSyncMetadata as updatePersistedSourceSyncMetadata,
   type SourcePayloadWriteProgressEvent,
 } from "../ingest/source-payload.js";
+import {
+  markStorageBoundaryV2SourceAbsentByObservedOrigins,
+  readTurnContextFromV2Cache,
+  retireStorageBoundaryV2Sources,
+  writeStorageBoundaryV2Sidecars,
+} from "../evidence-store.js";
 import { buildFallbackProjectObservationCandidates } from "../linking/fallback.js";
 import { assignProjectRevisions } from "../linking/revisions.js";
 import {
   computeRelevanceScore,
   findHighlights,
-  querySearchIndex,
   replaceSearchIndex,
+  scanSearchCandidateRows,
+  type SearchScanCandidate,
 } from "../queries/search.js";
 import {
   buildLinkingReview,
@@ -66,44 +74,84 @@ import {
   incrementArtifactRevisionId,
   nowIso,
   compositeKey,
+  normalizePathKey,
   toJson,
   uniqueStrings,
 } from "./utils.js";
 import * as Queries from "./queries.js";
 import * as Stats from "./stats.js";
 import * as Gc from "./gc.js";
+import {
+  planStorageBoundaryRebuildScope,
+  type StorageBoundaryRebuildPlan,
+  type StorageBoundaryRebuildScopeSelector,
+} from "./rebuild-scope.js";
 
 type StorageProgressEvent = SourcePayloadWriteProgressEvent | {
   stage: "reindex_start" | "reindex_done";
   source_id: string;
 };
 
+interface RankedSearchCandidate {
+  candidate: SearchScanCandidate;
+  resolvedTurn?: UserTurnProjection;
+  highlights: TurnSearchResult["highlights"];
+  relevance_score: number;
+}
+
+interface ReadSurfaceSearchGroup {
+  project_id: string;
+  project_name: string;
+  total: number;
+}
+
+interface ReadSurfaceSearchProjectResolver {
+  projectsById: Map<string, ProjectIdentity>;
+  projectBySessionId: Map<string, ProjectIdentity>;
+  projectByTurnId: Map<string, ProjectIdentity>;
+}
+
+interface MutableReadSurfaceSearchGroup extends ReadSurfaceSearchGroup {
+  latest_activity_at: string;
+}
+
+const UNLINKED_SEARCH_PROJECT_ID = "__unlinked__";
+
 export class CCHistoryStorage {
   private readonly db: DatabaseSync;
-  private readonly searchIndexReady: boolean;
+  private readonly assetDir?: string;
+  private readonly searchIndexAvailable: boolean;
+  private searchIndexUsable: boolean;
   private cachedProjectLinkSnapshot?: ReturnType<typeof deriveProjectLinkSnapshot>;
   private cachedTurnsById?: Map<string, UserTurnProjection>;
   private cachedProjectsById?: Map<string, ProjectIdentity>;
   private cachedSessionsById?: Map<string, SessionProjection>;
   private cachedRelatedWorkBySessionId?: Map<string, SessionRelatedWorkProjection[]>;
+  private cachedSearchLinkedTurnsById?: Map<string, UserTurnProjection>;
+  private cachedReadSurfaceSearchProjectResolver?: ReadSurfaceSearchProjectResolver;
   readonly dbPath: string;
 
-  constructor(location: string | { dataDir?: string; dbPath?: string }) {
+  constructor(location: string | { dataDir?: string; dbPath?: string; assetDir?: string }) {
     const dbPath =
       typeof location === "string"
         ? path.join(location, "cchistory.sqlite")
         : location.dbPath ?? path.join(location.dataDir ?? ".", "cchistory.sqlite");
-    mkdirSync(path.dirname(dbPath), { recursive: true });
+    const assetDir = resolveStorageAssetDir(location, dbPath);
+    if (dbPath !== ":memory:") {
+      mkdirSync(path.dirname(dbPath), { recursive: true });
+    }
+    if (assetDir) {
+      mkdirSync(assetDir, { recursive: true });
+    }
+    this.assetDir = assetDir;
     this.dbPath = dbPath;
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA busy_timeout = 5000;");
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA foreign_keys = ON;");
     const initialization = this.initialize();
-    this.searchIndexReady = initialization.searchIndexReady;
-    if (initialization.searchIndexNeedsRebuild) {
-      this.rebuildSearchIndex();
-    }
+    this.searchIndexAvailable = initialization.searchIndexReady;
+    this.searchIndexUsable = initialization.searchIndexReady && !initialization.searchIndexNeedsRebuild;
   }
 
   close(): void {
@@ -111,7 +159,7 @@ export class CCHistoryStorage {
   }
 
   get searchMode(): "fts5" | "fallback" {
-    return this.searchIndexReady ? "fts5" : "fallback";
+    return this.searchIndexUsable ? "fts5" : "fallback";
   }
 
   getSchemaInfo(): StorageSchemaInfo {
@@ -122,8 +170,22 @@ export class CCHistoryStorage {
     return initializeStorageSchema(this.db);
   }
 
-  private rebuildSearchIndex(): void {
-    replaceSearchIndex(this.db, this.searchIndexReady, this.listResolvedTurns());
+  private writeStorageBoundaryV2Sidecars(
+    payload: SourceSyncPayload,
+    options: {
+      writeMode: "replace" | "merge";
+      preserveOriginPaths?: readonly string[];
+      observedOriginPaths?: readonly string[];
+    },
+  ): void {
+    writeStorageBoundaryV2Sidecars({
+      db: this.db,
+      payload,
+      assetDir: this.assetDir,
+      writeMode: options.writeMode,
+      preserveOriginPaths: options.preserveOriginPaths,
+      observedOriginPaths: options.observedOriginPaths,
+    });
   }
 
   replaceSourcePayload(
@@ -149,6 +211,7 @@ export class CCHistoryStorage {
       atoms: number;
       blobs: number;
     };
+    const sourceIdsBeforeReplace = this.listSources().map((source) => source.id);
     if (options.allow_host_rekey) {
       result = replacePersistedSourcePayloadWithOptions(this.db, payload, {
         allow_host_rekey: true,
@@ -160,6 +223,12 @@ export class CCHistoryStorage {
         on_progress: options.onProgress,
       });
     }
+    const sourceIdsAfterReplace = new Set(this.listSources().map((source) => source.id));
+    retireStorageBoundaryV2Sources({
+      db: this.db,
+      sourceIds: sourceIdsBeforeReplace.filter((sourceId) => !sourceIdsAfterReplace.has(sourceId)),
+    });
+    this.writeStorageBoundaryV2Sidecars(payload, { writeMode: "replace" });
 
     this.invalidateProjectLinkSnapshot();
     if (options.refreshDerived === false) {
@@ -191,6 +260,11 @@ export class CCHistoryStorage {
       preserve_origin_paths: options.preserve_origin_paths,
       observed_origin_paths: options.observed_origin_paths,
       on_progress: options.onProgress,
+    });
+    this.writeStorageBoundaryV2Sidecars(payload, {
+      writeMode: "merge",
+      preserveOriginPaths: options.preserve_origin_paths,
+      observedOriginPaths: options.observed_origin_paths,
     });
 
     this.invalidateProjectLinkSnapshot();
@@ -239,6 +313,11 @@ export class CCHistoryStorage {
     const result = prunePersistedSourcePayloadByObservedOriginPaths(this.db, sourceId, observedOriginPaths, {
       on_progress: options.onProgress,
     });
+    markStorageBoundaryV2SourceAbsentByObservedOrigins({
+      db: this.db,
+      sourceId,
+      observedOriginPaths,
+    });
     this.invalidateProjectLinkSnapshot();
     if (options.refreshDerived === false) {
       return result;
@@ -257,6 +336,15 @@ export class CCHistoryStorage {
     options.onProgress?.({ stage: "reindex_start", source_id: sourceId });
     this.refreshDerivedState();
     options.onProgress?.({ stage: "reindex_done", source_id: sourceId });
+  }
+
+  planStorageBoundaryRebuildScope(selector: StorageBoundaryRebuildScopeSelector = {}): StorageBoundaryRebuildPlan {
+    return planStorageBoundaryRebuildScope({
+      db: this.db,
+      selector,
+      listResolvedTurns: () => this.listResolvedTurns(),
+      listProjectTurns: (projectId) => this.listProjectTurns(projectId, "all"),
+    });
   }
 
   annotateSourceStageRunStats(
@@ -489,6 +577,71 @@ export class CCHistoryStorage {
     });
   }
 
+  listProjectTurnsForReadSurface(projectId: string, linkState: LinkState | "all" = "all"): UserTurnProjection[] {
+    const project = this.getProject(projectId);
+    if (!project) {
+      return [];
+    }
+
+    const sessionIds = new Set(this.listProjectReadSurfaceSessionIds(project));
+    const turnIds = new Set<string>();
+    for (const override of this.listProjectOverrides().filter((entry) => entry.project_id === project.project_id)) {
+      if (override.target_kind === "turn") {
+        turnIds.add(override.target_ref);
+      } else if (override.target_kind === "session") {
+        sessionIds.add(override.target_ref);
+      } else if (override.target_kind === "observation") {
+        const row = this.db.prepare("SELECT session_ref FROM derived_candidates WHERE id = ?").get(override.target_ref) as
+          | { session_ref: string }
+          | undefined;
+        if (row?.session_ref) {
+          sessionIds.add(row.session_ref);
+        }
+      }
+    }
+
+    const turnsById = new Map<string, UserTurnProjection>();
+    const selectBySession = this.db.prepare(
+      "SELECT payload_json FROM user_turns WHERE session_id = ? ORDER BY submission_started_at ASC, created_at ASC",
+    );
+    for (const sessionId of sessionIds) {
+      for (const row of selectBySession.all(sessionId) as Array<{ payload_json: string }>) {
+        const turn = this.decorateTurnForReadSurfaceProject(fromJson<UserTurnProjection>(row.payload_json), project);
+        if (linkState === "all" || turn.link_state === linkState) {
+          turnsById.set(turn.id, turn);
+        }
+      }
+    }
+
+    for (const turnId of turnIds) {
+      const rawTurn = Queries.getTurn(this.db, turnId);
+      if (!rawTurn) {
+        continue;
+      }
+      const turn = this.decorateTurnForReadSurfaceProject(rawTurn, {
+        ...project,
+        linkage_state: "committed",
+      });
+      if (linkState === "all" || turn.link_state === linkState) {
+        turnsById.set(turn.id, turn);
+      }
+    }
+
+    return [...turnsById.values()].sort((left, right) => {
+      const sessionOrder = (this.getSession(right.session_id)?.created_at ?? right.submission_started_at).localeCompare(
+        this.getSession(left.session_id)?.created_at ?? left.submission_started_at,
+      );
+      return sessionOrder || left.submission_started_at.localeCompare(right.submission_started_at);
+    });
+  }
+
+  listSessionTurnsForReadSurface(sessionId: string): UserTurnProjection[] {
+    return (this.db.prepare(
+      "SELECT payload_json FROM user_turns WHERE session_id = ? ORDER BY submission_started_at ASC, created_at ASC",
+    ).all(sessionId) as Array<{ payload_json: string }>)
+      .map((row) => fromJson<UserTurnProjection>(row.payload_json));
+  }
+
   getTurn(turnId: string): UserTurnProjection | undefined {
     return Queries.getTurn(this.db, turnId);
   }
@@ -498,7 +651,14 @@ export class CCHistoryStorage {
   }
 
   getTurnContext(turnId: string): TurnContextProjection | undefined {
-    return Queries.getTurnContext(this.db, turnId);
+    if (!this.getTurn(turnId)) {
+      return undefined;
+    }
+    return readTurnContextFromV2Cache({
+      db: this.db,
+      assetDir: this.assetDir,
+      turnId,
+    }) ?? Queries.getTurnContext(this.db, turnId);
   }
 
   getSession(sessionId: string): SessionProjection | undefined {
@@ -510,7 +670,7 @@ export class CCHistoryStorage {
   }
 
   getSessionRelatedWork(sessionId: string): SessionRelatedWorkProjection[] {
-    const session = this.getResolvedSession(sessionId) ?? this.getSession(sessionId);
+    const session = this.getSession(sessionId) ?? this.getResolvedSession(sessionId);
     if (!session) {
       return [];
     }
@@ -525,6 +685,19 @@ export class CCHistoryStorage {
       counts[key] = (counts[key] ?? 0) + 1;
     }
     return counts;
+  }
+
+  getReadOverviewCounts(): { sources: number; projects: number; sessions: number; turns: number } {
+    const sources = this.db.prepare("SELECT COUNT(*) AS count FROM source_instances").get() as { count: number };
+    const projects = this.db.prepare("SELECT COUNT(*) AS count FROM project_current").get() as { count: number };
+    const sessions = this.db.prepare("SELECT COUNT(*) AS count FROM sessions").get() as { count: number };
+    const turns = this.db.prepare("SELECT COUNT(*) AS count FROM user_turns").get() as { count: number };
+    return {
+      sources: sources.count,
+      projects: projects.count > 0 ? projects.count : this.listProjects().length,
+      sessions: sessions.count,
+      turns: turns.count,
+    };
   }
 
   listProjects(): ProjectIdentity[] {
@@ -848,67 +1021,195 @@ export class CCHistoryStorage {
     limit?: number;
     offset?: number;
   } = {}): { results: TurnSearchResult[]; total: number } {
-    const limit = options.limit ?? 50;
-    const offset = options.offset ?? 0;
+    const limit = Math.max(0, options.limit ?? 50);
+    const offset = Math.max(0, options.offset ?? 0);
     const query = options.query?.trim() ?? "";
-    const turnsById = this.getTurnsById();
-    let candidateTurnIds: string[];
+    const sourceIds = options.source_ids && options.source_ids.length > 0 ? new Set(options.source_ids) : undefined;
+    const linkStates = options.link_states && options.link_states.length > 0 ? new Set(options.link_states) : undefined;
+    const valueAxes = options.value_axes && options.value_axes.length > 0 ? new Set(options.value_axes) : undefined;
+    const needsResolvedLinkage = Boolean(options.project_id || linkStates);
+    const resolvedTurnsById = needsResolvedLinkage ? this.getSearchLinkedTurnsById() : undefined;
+    const pageCapacity = offset + limit;
+    const retained: RankedSearchCandidate[] = [];
+    let total = 0;
 
-    if (query.length === 0) {
-      candidateTurnIds = [...turnsById.keys()];
-    } else {
-      candidateTurnIds = querySearchIndex({
-        db: this.db,
-        searchIndexReady: this.searchIndexReady,
-        query,
-        limit: (offset + limit) * 5,
-        listResolvedTurns: () => this.listResolvedTurns(),
+    for (const candidate of scanSearchCandidateRows({ db: this.db, query })) {
+      const resolvedTurn = resolvedTurnsById?.get(candidate.id);
+      const projectId = resolvedTurn?.project_id ?? candidate.project_id;
+      const linkState = resolvedTurn?.link_state ?? candidate.link_state;
+      const valueAxis = resolvedTurn?.value_axis ?? candidate.value_axis;
+
+      if (options.project_id && projectId !== options.project_id) {
+        continue;
+      }
+      if (sourceIds && !sourceIds.has(candidate.source_id)) {
+        continue;
+      }
+      if (linkStates && !linkStates.has(linkState)) {
+        continue;
+      }
+      if (valueAxes && !valueAxes.has(valueAxis)) {
+        continue;
+      }
+
+      total += 1;
+      if (pageCapacity === 0) {
+        continue;
+      }
+
+      const highlights = query.length > 0 ? findHighlights(candidate.canonical_text ?? "", query) : [];
+      retained.push({
+        candidate,
+        resolvedTurn,
+        highlights,
+        relevance_score: computeRelevanceScore(candidate, highlights),
       });
+      pruneRankedRetainedIfFull(retained, pageCapacity);
     }
 
+    retained.sort(compareRankedSearchCandidates);
+    const pageCandidates = retained.slice(offset, offset + limit);
+    const pageTurnsById = this.resolveSearchPageTurnsById(pageCandidates);
     const projectsById = this.getProjectsById();
-    const sessionsById = this.getSessionsById();
+    const sessionCache = new Map<string, SessionProjection | undefined>();
     const results: TurnSearchResult[] = [];
 
-    for (const turnId of candidateTurnIds) {
-      const turn = turnsById.get(turnId);
+    for (const entry of pageCandidates) {
+      const turn = pageTurnsById.get(entry.candidate.id);
       if (!turn) {
         continue;
       }
-      if (options.project_id && turn.project_id !== options.project_id) {
-        continue;
+      let session = sessionCache.get(turn.session_id);
+      if (!sessionCache.has(turn.session_id)) {
+        session = this.getSession(turn.session_id);
+        sessionCache.set(turn.session_id, session);
       }
-      if (options.source_ids && options.source_ids.length > 0 && !options.source_ids.includes(turn.source_id)) {
-        continue;
-      }
-      if (options.link_states && options.link_states.length > 0 && !options.link_states.includes(turn.link_state)) {
-        continue;
-      }
-      if (options.value_axes && options.value_axes.length > 0 && !options.value_axes.includes(turn.value_axis)) {
-        continue;
-      }
-
-      const highlights = query.length > 0 ? findHighlights(turn.canonical_text ?? "", query) : [];
       results.push({
         turn,
-        session: sessionsById.get(turn.session_id),
+        session,
         project: turn.project_id ? projectsById.get(turn.project_id) : undefined,
-        highlights,
-        relevance_score: computeRelevanceScore(turn, highlights),
+        highlights: entry.highlights,
+        relevance_score: entry.relevance_score,
       });
     }
 
-    const sorted = results
+    return {
+      results,
+      total,
+    };
+  }
+
+  searchTurnsReadSurfacePage(options: {
+    query?: string;
+    groupIndex?: number;
+    offset?: number;
+    limit?: number;
+  } = {}): {
+    results: TurnSearchResult[];
+    total: number;
+    groups: ReadSurfaceSearchGroup[];
+    selectedGroupIndex: number;
+    resultOffset: number;
+  } {
+    const query = options.query?.trim() ?? "";
+    const requestedGroupIndex = Math.max(0, options.groupIndex ?? 0);
+    const limit = Math.max(0, options.limit ?? 50);
+    const requestedOffset = Math.max(0, options.offset ?? 0);
+    const resolver = this.getReadSurfaceSearchProjectResolver();
+    const groupMap = new Map<string, MutableReadSurfaceSearchGroup>();
+    let total = 0;
+
+    for (const candidate of scanSearchCandidateRows({ db: this.db, query })) {
+      const project = this.resolveReadSurfaceSearchProject(candidate, resolver);
+      const projectId = project?.project_id ?? UNLINKED_SEARCH_PROJECT_ID;
+      const projectName = project?.display_name ?? "Unlinked";
+      const group = groupMap.get(projectId) ?? {
+        project_id: projectId,
+        project_name: projectName,
+        total: 0,
+        latest_activity_at: "",
+      };
+      group.total += 1;
+      if (candidate.submission_started_at > group.latest_activity_at) {
+        group.latest_activity_at = candidate.submission_started_at;
+      }
+      groupMap.set(projectId, group);
+      total += 1;
+    }
+
+    const groups = [...groupMap.values()]
       .sort((left, right) => {
-        if (left.relevance_score !== right.relevance_score) {
-          return right.relevance_score - left.relevance_score;
+        if (right.total !== left.total) {
+          return right.total - left.total;
         }
-        return right.turn.submission_started_at.localeCompare(left.turn.submission_started_at);
+        const activityOrder = right.latest_activity_at.localeCompare(left.latest_activity_at);
+        if (activityOrder !== 0) {
+          return activityOrder;
+        }
+        return left.project_name.localeCompare(right.project_name);
+      })
+      .map(({ latest_activity_at: _latestActivityAt, ...group }) => group);
+
+    const selectedGroupIndex = groups.length === 0
+      ? 0
+      : Math.min(requestedGroupIndex, groups.length - 1);
+    const selectedGroup = groups[selectedGroupIndex];
+    const resultOffset = selectedGroup && limit > 0
+      ? Math.min(requestedOffset, Math.max(0, selectedGroup.total - limit))
+      : 0;
+    const retained: RankedSearchCandidate[] = [];
+    const pageCapacity = resultOffset + limit;
+
+    if (selectedGroup && pageCapacity > 0) {
+      for (const candidate of scanSearchCandidateRows({ db: this.db, query })) {
+        const project = this.resolveReadSurfaceSearchProject(candidate, resolver);
+        const projectId = project?.project_id ?? UNLINKED_SEARCH_PROJECT_ID;
+        if (projectId !== selectedGroup.project_id) {
+          continue;
+        }
+
+        const highlights = query.length > 0 ? findHighlights(candidate.canonical_text ?? "", query) : [];
+        retained.push({
+          candidate,
+          highlights,
+          relevance_score: computeRelevanceScore(candidate, highlights),
+        });
+        pruneRankedRetainedIfFull(retained, pageCapacity);
+      }
+    }
+
+    retained.sort(compareRankedSearchCandidates);
+    const pageCandidates = retained.slice(resultOffset, resultOffset + limit);
+    const sessionCache = new Map<string, SessionProjection | undefined>();
+    const results: TurnSearchResult[] = [];
+
+    for (const entry of pageCandidates) {
+      const rawTurn = Queries.getTurn(this.db, entry.candidate.id);
+      if (!rawTurn) {
+        continue;
+      }
+      const project = this.resolveReadSurfaceSearchProject(entry.candidate, resolver);
+      const turn = project ? this.decorateTurnForReadSurfaceProject(rawTurn, project) : rawTurn;
+      let session = sessionCache.get(turn.session_id);
+      if (!sessionCache.has(turn.session_id)) {
+        session = this.getSession(turn.session_id);
+        sessionCache.set(turn.session_id, session);
+      }
+      results.push({
+        turn,
+        session,
+        project,
+        highlights: entry.highlights,
+        relevance_score: entry.relevance_score,
       });
+    }
 
     return {
-      results: sorted.slice(offset, offset + limit),
-      total: sorted.length,
+      results,
+      total,
+      groups,
+      selectedGroupIndex,
+      resultOffset,
     };
   }
 
@@ -1136,6 +1437,8 @@ export class CCHistoryStorage {
     this.cachedProjectsById = undefined;
     this.cachedSessionsById = undefined;
     this.cachedRelatedWorkBySessionId = undefined;
+    this.cachedSearchLinkedTurnsById = undefined;
+    this.cachedReadSurfaceSearchProjectResolver = undefined;
   }
 
   private getTurnsById(): Map<string, UserTurnProjection> {
@@ -1159,13 +1462,179 @@ export class CCHistoryStorage {
     return this.cachedSessionsById;
   }
 
+  private getSearchLinkedTurnsById(): Map<string, UserTurnProjection> {
+    if (!this.cachedSearchLinkedTurnsById) {
+      this.cachedSearchLinkedTurnsById = new Map(this.listResolvedTurns().map((turn) => [turn.id, turn]));
+    }
+    return this.cachedSearchLinkedTurnsById;
+  }
+
+  private getReadSurfaceSearchProjectResolver(): ReadSurfaceSearchProjectResolver {
+    if (this.cachedReadSurfaceSearchProjectResolver) {
+      return this.cachedReadSurfaceSearchProjectResolver;
+    }
+
+    const projectsById = this.getProjectsById();
+    const projectBySessionId = new Map<string, ProjectIdentity>();
+    const projectByTurnId = new Map<string, ProjectIdentity>();
+    for (const project of projectsById.values()) {
+      for (const sessionId of this.listProjectReadSurfaceSessionIds(project)) {
+        const existing = projectBySessionId.get(sessionId);
+        projectBySessionId.set(sessionId, preferReadSurfaceSearchProject(existing, project));
+      }
+    }
+
+    for (const override of this.listProjectOverrides()) {
+      const project = projectsById.get(override.project_id);
+      if (!project) {
+        continue;
+      }
+      if (override.target_kind === "turn") {
+        projectByTurnId.set(override.target_ref, project);
+      } else if (override.target_kind === "session") {
+        const existing = projectBySessionId.get(override.target_ref);
+        projectBySessionId.set(override.target_ref, preferReadSurfaceSearchProject(existing, project));
+      } else if (override.target_kind === "observation") {
+        const row = this.db.prepare("SELECT session_ref FROM derived_candidates WHERE id = ?").get(override.target_ref) as
+          | { session_ref: string }
+          | undefined;
+        if (row?.session_ref) {
+          const existing = projectBySessionId.get(row.session_ref);
+          projectBySessionId.set(row.session_ref, preferReadSurfaceSearchProject(existing, project));
+        }
+      }
+    }
+
+    this.cachedReadSurfaceSearchProjectResolver = {
+      projectsById,
+      projectBySessionId,
+      projectByTurnId,
+    };
+    return this.cachedReadSurfaceSearchProjectResolver;
+  }
+
+  private resolveReadSurfaceSearchProject(
+    candidate: SearchScanCandidate,
+    resolver: ReadSurfaceSearchProjectResolver,
+  ): ProjectIdentity | undefined {
+    return (
+      resolver.projectByTurnId.get(candidate.id) ??
+      resolver.projectsById.get(candidate.project_id ?? "") ??
+      resolver.projectBySessionId.get(candidate.session_id)
+    );
+  }
+
+  private resolveSearchPageTurnsById(entries: readonly RankedSearchCandidate[]): Map<string, UserTurnProjection> {
+    const rawTurns: UserTurnProjection[] = [];
+    for (const entry of entries) {
+      if (entry.resolvedTurn) {
+        rawTurns.push(entry.resolvedTurn);
+        continue;
+      }
+      const turn = Queries.getTurn(this.db, entry.candidate.id);
+      if (turn) {
+        rawTurns.push(turn);
+      }
+    }
+    if (rawTurns.length === 0) {
+      return new Map();
+    }
+
+    const needsPageLinkage = rawTurns.some((turn) => !turn.project_id || !turn.path_text);
+    const resolvedTurns = needsPageLinkage ? this.resolveSearchPageLinkage(rawTurns) : rawTurns;
+    return new Map(resolvedTurns.map((turn) => [turn.id, turn]));
+  }
+
+  private resolveSearchPageLinkage(turns: readonly UserTurnProjection[]): UserTurnProjection[] {
+    const sessions = this.listSessions();
+    const candidates = Queries.selectAllPayloads<DerivedCandidate>(this.db, "derived_candidates");
+    const snapshot = deriveProjectLinkSnapshot({
+      sessions,
+      turns: [...turns],
+      candidates: [
+        ...candidates,
+        ...buildFallbackProjectObservationCandidates({
+          sessions,
+          turns,
+          candidates,
+          sources: this.listSources(),
+          selectBlobsByIds: (ids) => Queries.selectJsonByIds<CapturedBlob>(this.db, "captured_blobs", ids),
+        }),
+      ],
+      overrides: this.listProjectOverrides(),
+    });
+    return snapshot.turns;
+  }
+
   private buildSessionRelatedWorkIndex(): Map<string, SessionRelatedWorkProjection[]> {
     if (!this.cachedRelatedWorkBySessionId) {
       const sessions = this.listSessions();
-      const fragments = Queries.selectAllPayloads<SourceFragment>(this.db, "source_fragments", "ORDER BY session_ref ASC, id ASC");
+      const fragments = this.listSessionRelationFragments();
       this.cachedRelatedWorkBySessionId = buildSessionRelatedWorkIndex(sessions, fragments);
     }
     return this.cachedRelatedWorkBySessionId;
+  }
+
+  private listProjectReadSurfaceSessionIds(project: ProjectIdentity): string[] {
+    const sessionIds = new Set<string>();
+    const observationRows = this.db.prepare(`
+      SELECT dc.session_ref,
+             json_extract(dc.payload_json, '$.evidence.workspace_path') AS workspace_path,
+             json_extract(dc.payload_json, '$.evidence.workspace_path_normalized') AS workspace_path_normalized,
+             json_extract(dc.payload_json, '$.evidence.repo_root') AS repo_root,
+             json_extract(dc.payload_json, '$.evidence.repo_remote') AS repo_remote,
+             json_extract(dc.payload_json, '$.evidence.repo_fingerprint') AS repo_fingerprint,
+             json_extract(dc.payload_json, '$.evidence.source_native_project_ref') AS source_native_project_ref,
+             json_extract(s.payload_json, '$.host_id') AS host_id,
+             json_extract(s.payload_json, '$.working_directory') AS session_workspace
+        FROM derived_candidates dc
+        LEFT JOIN sessions s ON s.id = dc.session_ref
+       WHERE dc.candidate_kind = 'project_observation'
+    `).all() as unknown as ProjectObservationReadRow[];
+
+    for (const row of observationRows) {
+      if (projectObservationMatchesReadProject(project, row)) {
+        sessionIds.add(row.session_ref);
+      }
+    }
+
+    const sessionRows = this.db.prepare(`
+      SELECT id,
+             json_extract(payload_json, '$.host_id') AS host_id,
+             json_extract(payload_json, '$.working_directory') AS working_directory,
+             json_extract(payload_json, '$.source_native_project_ref') AS source_native_project_ref
+        FROM sessions
+    `).all() as unknown as ProjectSessionReadRow[];
+    for (const row of sessionRows) {
+      if (fallbackSessionMatchesReadProject(project, row)) {
+        sessionIds.add(row.id);
+      }
+    }
+
+    return [...sessionIds];
+  }
+
+  private decorateTurnForReadSurfaceProject(turn: UserTurnProjection, project: ProjectIdentity): UserTurnProjection {
+    return {
+      ...turn,
+      project_id: project.project_id,
+      project_ref: project.slug,
+      link_state: project.linkage_state,
+      project_link_state: project.linkage_state,
+      project_confidence: project.confidence,
+      candidate_project_ids: project.linkage_state === "candidate" ? [project.project_id] : undefined,
+      path_text: buildReadSurfaceTurnPathText(turn, this.getSession(turn.session_id), project),
+    };
+  }
+
+  private listSessionRelationFragments(): SourceFragment[] {
+    const rows = this.db.prepare(`
+      SELECT payload_json
+        FROM source_fragments
+       WHERE json_extract(payload_json, '$.fragment_kind') = 'session_relation'
+       ORDER BY session_ref ASC, id ASC
+    `).all() as Array<{ payload_json: string }>;
+    return rows.map((row) => fromJson<SourceFragment>(row.payload_json));
   }
 
   private computeProjectLinkSnapshot() {
@@ -1221,13 +1690,180 @@ export class CCHistoryStorage {
         }
       }
 
-      replaceSearchIndex(this.db, this.searchIndexReady, snapshot.turns);
+      replaceSearchIndex(this.db, this.searchIndexAvailable, snapshot.turns);
+      this.searchIndexUsable = this.searchIndexAvailable;
       this.db.exec("COMMIT;");
     } catch (error) {
       this.db.exec("ROLLBACK;");
       throw error;
     }
   }
+}
+
+function compareRankedSearchCandidates(left: RankedSearchCandidate, right: RankedSearchCandidate): number {
+  if (left.relevance_score !== right.relevance_score) {
+    return right.relevance_score - left.relevance_score;
+  }
+  const timeOrder = right.candidate.submission_started_at.localeCompare(left.candidate.submission_started_at);
+  if (timeOrder !== 0) {
+    return timeOrder;
+  }
+  return left.candidate.id.localeCompare(right.candidate.id);
+}
+
+// Sort + truncate only when the retained buffer fills past pageCapacity, instead
+// of on every push. Avoids O(N · K log K) behavior on large stores (K = page
+// size, N = matching candidate count).
+const RANKED_RETAINED_PRUNE_FACTOR = 2;
+const RANKED_RETAINED_MIN_PRUNE_SLACK = 16;
+
+function pruneRankedRetainedIfFull(
+  retained: RankedSearchCandidate[],
+  pageCapacity: number,
+): void {
+  const pruneThreshold = Math.max(
+    pageCapacity * RANKED_RETAINED_PRUNE_FACTOR,
+    pageCapacity + RANKED_RETAINED_MIN_PRUNE_SLACK,
+  );
+  if (retained.length < pruneThreshold) {
+    return;
+  }
+  retained.sort(compareRankedSearchCandidates);
+  if (retained.length > pageCapacity) {
+    retained.length = pageCapacity;
+  }
+}
+
+interface ProjectObservationReadRow {
+  session_ref: string;
+  workspace_path?: unknown;
+  workspace_path_normalized?: unknown;
+  repo_root?: unknown;
+  repo_remote?: unknown;
+  repo_fingerprint?: unknown;
+  source_native_project_ref?: unknown;
+  host_id?: unknown;
+  session_workspace?: unknown;
+}
+
+interface ProjectSessionReadRow {
+  id: string;
+  host_id?: unknown;
+  working_directory?: unknown;
+  source_native_project_ref?: unknown;
+}
+
+function projectObservationMatchesReadProject(project: ProjectIdentity, row: ProjectObservationReadRow): boolean {
+  const hostId = asOptionalString(row.host_id);
+  const workspacePath =
+    normalizePathKey(asOptionalString(row.workspace_path_normalized)) ??
+    normalizePathKey(asOptionalString(row.workspace_path)) ??
+    normalizePathKey(asOptionalString(row.session_workspace));
+  const repoRoot = normalizePathKey(asOptionalString(row.repo_root));
+  const repoRemote = asOptionalString(row.repo_remote);
+  const repoFingerprint = asOptionalString(row.repo_fingerprint);
+  const sourceNativeProjectRef = asOptionalString(row.source_native_project_ref);
+  const workspaceIdentity = deriveReadSurfaceWorkspaceSubpath(workspacePath, repoRoot) ?? workspacePath;
+  const candidateKeys: string[] = [];
+
+  if (repoFingerprint && workspaceIdentity) {
+    candidateKeys.push(`fingerprint:${repoFingerprint}|workspace:${workspaceIdentity}`);
+  }
+  if (repoRemote && hostId && workspaceIdentity) {
+    candidateKeys.push(`host:${hostId}|remote:${repoRemote}|workspace:${workspaceIdentity}`);
+  }
+  if (repoRoot && hostId && workspaceIdentity) {
+    candidateKeys.push(`host:${hostId}|repo_root:${repoRoot}|workspace:${workspaceIdentity}`);
+  }
+  if (sourceNativeProjectRef && hostId) {
+    candidateKeys.push(`host:${hostId}|native:${sourceNativeProjectRef}`);
+  }
+  if (workspacePath && hostId) {
+    candidateKeys.push(`host:${hostId}|workspace:${workspacePath}`);
+  }
+  if (repoRemote && hostId) {
+    candidateKeys.push(`host:${hostId}|remote_hint:${repoRemote}`);
+  }
+
+  return candidateKeys.some((key) => stableReadSurfaceProjectId(key) === project.project_id);
+}
+
+function fallbackSessionMatchesReadProject(project: ProjectIdentity, row: ProjectSessionReadRow): boolean {
+  const hostId = asOptionalString(row.host_id);
+  const workspacePath = normalizePathKey(asOptionalString(row.working_directory));
+  const sourceNativeProjectRef = asOptionalString(row.source_native_project_ref);
+  if (sourceNativeProjectRef && hostId && stableReadSurfaceProjectId(`host:${hostId}|native:${sourceNativeProjectRef}`) === project.project_id) {
+    return true;
+  }
+  if (workspacePath && hostId && stableReadSurfaceProjectId(`host:${hostId}|workspace:${workspacePath}`) === project.project_id) {
+    return true;
+  }
+  return Boolean(project.primary_workspace_path && workspacePath && normalizePathKey(project.primary_workspace_path) === workspacePath);
+}
+
+function buildReadSurfaceTurnPathText(
+  turn: UserTurnProjection,
+  session: SessionProjection | undefined,
+  project: ProjectIdentity,
+): string | undefined {
+  const parts = new Set<string>();
+  addReadSurfacePathPart(parts, turn.path_text);
+  addReadSurfacePathPart(parts, session?.working_directory);
+  addReadSurfacePathPart(parts, session?.source_native_project_ref);
+  addReadSurfacePathPart(parts, session?.resume_working_directory);
+  addReadSurfacePathPart(parts, project.primary_workspace_path);
+  addReadSurfacePathPart(parts, project.repo_root);
+  addReadSurfacePathPart(parts, project.source_native_project_ref);
+  return [...parts].join(" ").trim() || undefined;
+}
+
+function addReadSurfacePathPart(target: Set<string>, value: string | undefined): void {
+  if (!value) {
+    return;
+  }
+  target.add(value);
+  const baseName = value.split("/").filter(Boolean).at(-1);
+  if (baseName) {
+    target.add(baseName);
+  }
+}
+
+function deriveReadSurfaceWorkspaceSubpath(workspacePath: string | undefined, repoRoot: string | undefined): string | undefined {
+  if (!workspacePath || !repoRoot) {
+    return undefined;
+  }
+  if (workspacePath === repoRoot) {
+    return ".";
+  }
+  if (!workspacePath.startsWith(`${repoRoot}/`)) {
+    return undefined;
+  }
+  return workspacePath.slice(repoRoot.length + 1) || ".";
+}
+
+function stableReadSurfaceProjectId(key: string): string {
+  return `project-${createHash("sha1").update(key).digest("hex").slice(0, 12)}`;
+}
+
+function preferReadSurfaceSearchProject(
+  existing: ProjectIdentity | undefined,
+  incoming: ProjectIdentity,
+): ProjectIdentity {
+  if (!existing) {
+    return incoming;
+  }
+  if (existing.linkage_state !== incoming.linkage_state) {
+    return incoming.linkage_state === "committed" ? incoming : existing;
+  }
+  if (existing.confidence !== incoming.confidence) {
+    return incoming.confidence > existing.confidence ? incoming : existing;
+  }
+  const existingTurns = existing.committed_turn_count + existing.candidate_turn_count;
+  const incomingTurns = incoming.committed_turn_count + incoming.candidate_turn_count;
+  if (existingTurns !== incomingTurns) {
+    return incomingTurns > existingTurns ? incoming : existing;
+  }
+  return incoming.project_id.localeCompare(existing.project_id) < 0 ? incoming : existing;
 }
 
 interface SessionRelationEdge {
@@ -1526,4 +2162,25 @@ function normalizeRelatedWorkKind(payload: Record<string, unknown>): SessionRela
 
 function isStrictlyTrue(value: unknown): boolean {
   return value === true;
+}
+
+function resolveStorageAssetDir(
+  location: string | { dataDir?: string; dbPath?: string; assetDir?: string },
+  dbPath: string,
+): string | undefined {
+  if (dbPath === ":memory:") {
+    return undefined;
+  }
+  if (typeof location === "string") {
+    return path.resolve(location);
+  }
+  if (location.assetDir) {
+    return path.resolve(location.assetDir);
+  }
+  if (location.dataDir) {
+    return path.resolve(location.dataDir);
+  }
+  return path.basename(dbPath) === "cchistory.sqlite"
+    ? path.resolve(path.dirname(dbPath))
+    : path.resolve(`${dbPath}.cchistory`);
 }

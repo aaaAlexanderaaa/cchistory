@@ -29,6 +29,7 @@ import {
 import { handleAgent } from "./commands/agent.js";
 import { handleLs, handleSearch, handleShow, handleTree } from "./commands/browse.js";
 import { handleContext } from "./commands/context.js";
+import { handleInventory } from "./commands/inventory.js";
 import { handleBackup, handleExport, handleGc, handleImport, handleMergeAlias, handleRestoreCheck } from "./commands/maintenance.js";
 import { handleQueryAlias, handleTemplates } from "./commands/query.js";
 import { handleStats } from "./commands/stats.js";
@@ -129,6 +130,8 @@ async function dispatchCommand(context: CommandContext): Promise<CommandOutput> 
       return handleHealth(context);
     case "doctor":
       return handleDoctor(context);
+    case "inventory":
+      return handleInventory(context);
     case "ls":
       return handleLs(context);
     case "tree":

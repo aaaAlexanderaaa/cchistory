@@ -174,7 +174,7 @@ function buildSnapshotState(
   for (const value of options.searchQuery) {
     state = helpers.reduceBrowserState(browser, state, { type: "append-search-char", value });
   }
-  if (browser.search(options.searchQuery).length > 0) {
+  if (browser.searchPage(options.searchQuery, { limit: 1 }).total > 0) {
     state = helpers.reduceBrowserState(browser, state, { type: "drill" });
     state = helpers.reduceBrowserState(browser, state, { type: "drill" });
   }

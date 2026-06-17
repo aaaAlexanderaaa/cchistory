@@ -26,20 +26,13 @@ export interface LocalReadOverview {
 
 export function buildLocalReadOverview(storage: CCHistoryStorage, options: { readMode?: "index" | "full" } = {}): LocalReadOverview {
   const projects = storage.listProjects();
-  const sessions = storage.listResolvedSessions();
-  const turns = storage.listResolvedTurns();
-  const sources = storage.listSources();
+  const counts = storage.getReadOverviewCounts();
 
   return {
     read_mode: options.readMode ?? "index",
     schema: storage.getSchemaInfo(),
     search_mode: storage.searchMode,
-    counts: {
-      sources: sources.length,
-      projects: projects.length,
-      sessions: sessions.length,
-      turns: turns.length,
-    },
+    counts,
     recent_projects: buildRecentProjectPreviews(projects),
   };
 }

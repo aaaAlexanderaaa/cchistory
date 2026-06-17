@@ -1,11 +1,21 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { SearchHighlight, UserTurnProjection } from "@cchistory/domain";
+import type { LinkState, SearchHighlight, UserTurnProjection, ValueAxis } from "@cchistory/domain";
 import { setSearchIndexStatus } from "../db/schema.js";
 
 export interface SearchCandidateFields {
   canonical_text?: string;
   path_text?: string;
+}
+
+export interface SearchScanCandidate extends SearchCandidateFields {
+  id: string;
+  source_id: string;
+  session_id: string;
+  submission_started_at: string;
+  link_state: LinkState;
+  value_axis: ValueAxis;
+  project_id?: string;
 }
 
 interface SearchPlan {
@@ -155,7 +165,90 @@ export function querySearchIndex(input: {
   }
 }
 
-export function computeRelevanceScore(turn: UserTurnProjection, highlights: SearchHighlight[]): number {
+export function querySearchIndexPage(input: {
+  db: DatabaseSync;
+  searchIndexReady: boolean;
+  query: string;
+  candidateLimit: number;
+}): string[] | undefined {
+  if (!input.searchIndexReady) {
+    return undefined;
+  }
+
+  const plan = buildSearchPlan(input.query);
+  if (plan.requiresLiteralScan) {
+    return undefined;
+  }
+
+  try {
+    const ftsQuery = buildFtsQuery(input.query);
+    const rows = input.db
+      .prepare("SELECT turn_id FROM search_index WHERE search_index MATCH ? ORDER BY rank LIMIT ?")
+      .all(ftsQuery, input.candidateLimit) as Array<{ turn_id: string }>;
+    return rows.map((row) => row.turn_id);
+  } catch {
+    return undefined;
+  }
+}
+
+export function scanSearchCandidateRows(input: {
+  db: DatabaseSync;
+  query: string;
+  candidateTurnIds?: readonly string[];
+}): Generator<SearchScanCandidate> {
+  const plan = buildSearchPlan(input.query);
+  if (input.candidateTurnIds) {
+    const select = input.db.prepare(`
+      SELECT ut.id,
+             ut.source_id,
+             ut.session_id,
+             ut.submission_started_at,
+             json_extract(ut.payload_json, '$.canonical_text') AS canonical_text,
+             ${searchPathTextSql()} AS path_text,
+             json_extract(ut.payload_json, '$.link_state') AS link_state,
+             json_extract(ut.payload_json, '$.value_axis') AS value_axis,
+             json_extract(ut.payload_json, '$.project_id') AS project_id
+        FROM user_turns ut
+        LEFT JOIN sessions s ON s.id = ut.session_id
+       WHERE ut.id = ?
+    `);
+    return (function* (): Generator<SearchScanCandidate> {
+      for (const turnId of input.candidateTurnIds ?? []) {
+        const row = select.get(turnId) as SearchCandidateRow | undefined;
+        if (row && matchesSearchCandidateRow(row, plan)) {
+          yield hydrateSearchCandidateRow(row);
+        }
+      }
+    })();
+  }
+
+  const statement = input.db.prepare(`
+    SELECT ut.id,
+           ut.source_id,
+           ut.session_id,
+           ut.submission_started_at,
+           json_extract(ut.payload_json, '$.canonical_text') AS canonical_text,
+           ${searchPathTextSql()} AS path_text,
+           json_extract(ut.payload_json, '$.link_state') AS link_state,
+           json_extract(ut.payload_json, '$.value_axis') AS value_axis,
+           json_extract(ut.payload_json, '$.project_id') AS project_id
+      FROM user_turns ut
+      LEFT JOIN sessions s ON s.id = ut.session_id
+     ORDER BY ut.submission_started_at DESC, ut.created_at DESC
+  `);
+  return (function* (): Generator<SearchScanCandidate> {
+    for (const row of statement.iterate() as Iterable<SearchCandidateRow>) {
+      if (matchesSearchCandidateRow(row, plan)) {
+        yield hydrateSearchCandidateRow(row);
+      }
+    }
+  })();
+}
+
+export function computeRelevanceScore(
+  turn: Pick<UserTurnProjection, "submission_started_at">,
+  highlights: SearchHighlight[],
+): number {
   const nowMs = Date.now();
   const turnMs = Date.parse(turn.submission_started_at) || 0;
   const ageMs = Math.max(0, nowMs - turnMs);
@@ -260,6 +353,77 @@ export function matchesSearchCandidateQuery(candidate: SearchCandidateFields, qu
 
 function findMatchingTurnIds(turns: UserTurnProjection[], query: string): string[] {
   return turns.filter((turn) => matchesSearchCandidateQuery(turn, query)).map((turn) => turn.id);
+}
+
+interface SearchCandidateRow {
+  id: string;
+  source_id: string;
+  session_id: string;
+  submission_started_at: string;
+  canonical_text: unknown;
+  path_text: unknown;
+  link_state: unknown;
+  value_axis: unknown;
+  project_id: unknown;
+}
+
+function matchesSearchCandidateRow(row: SearchCandidateRow, plan: SearchPlan): boolean {
+  return matchesTurnSearchPlan(
+    {
+      canonical_text: asString(row.canonical_text),
+      path_text: asString(row.path_text),
+    },
+    plan,
+  );
+}
+
+function hydrateSearchCandidateRow(row: SearchCandidateRow): SearchScanCandidate {
+  return {
+    id: row.id,
+    source_id: row.source_id,
+    session_id: row.session_id,
+    submission_started_at: row.submission_started_at,
+    canonical_text: asString(row.canonical_text),
+    path_text: asString(row.path_text),
+    link_state: asLinkState(row.link_state),
+    value_axis: asValueAxis(row.value_axis),
+    project_id: asString(row.project_id),
+  };
+}
+
+function searchPathTextSql(): string {
+  return `
+    COALESCE(json_extract(ut.payload_json, '$.path_text'), '') || ' ' ||
+    COALESCE(json_extract(s.payload_json, '$.working_directory'), '') || ' ' ||
+    COALESCE(json_extract(s.payload_json, '$.resume_working_directory'), '') || ' ' ||
+    COALESCE(json_extract(s.payload_json, '$.source_native_project_ref'), '') || ' ' ||
+    COALESCE((
+      SELECT GROUP_CONCAT(
+        COALESCE(json_extract(dc.payload_json, '$.evidence.workspace_path'), '') || ' ' ||
+        COALESCE(json_extract(dc.payload_json, '$.evidence.workspace_path_normalized'), '') || ' ' ||
+        COALESCE(json_extract(dc.payload_json, '$.evidence.repo_root'), '') || ' ' ||
+        COALESCE(json_extract(dc.payload_json, '$.evidence.repo_remote'), '') || ' ' ||
+        COALESCE(json_extract(dc.payload_json, '$.evidence.repo_fingerprint'), '') || ' ' ||
+        COALESCE(json_extract(dc.payload_json, '$.evidence.source_native_project_ref'), ''),
+        ' '
+      )
+      FROM derived_candidates dc
+      WHERE dc.session_ref = ut.session_id
+        AND dc.candidate_kind = 'project_observation'
+    ), '')
+  `;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function asLinkState(value: unknown): LinkState {
+  return value === "committed" || value === "candidate" || value === "unlinked" ? value : "unlinked";
+}
+
+function asValueAxis(value: unknown): ValueAxis {
+  return value === "covered" || value === "archived" || value === "suppressed" ? value : "active";
 }
 
 function mergeHighlights(highlights: SearchHighlight[]): SearchHighlight[] {

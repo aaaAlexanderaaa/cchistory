@@ -63,6 +63,110 @@ test("health combines discovery, sync preview, and indexed store summary in one 
   }
 });
 
+test("inventory reports a missing store without creating SQLite files", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-inventory-missing-"));
+  try {
+    const storeDir = path.join(tempRoot, "missing-store");
+    const result = await runCliCapture(["inventory", "--store", storeDir, "--json"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const payload = JSON.parse(result.stdout) as {
+      kind: string;
+      inventory: {
+        status: string;
+        evidence_store: { status: string; file_count: number; total_bytes: number };
+        sqlite_files: { main: { exists: boolean } };
+        totals: { row_count: number; payload_json_bytes: number; evidence_store_files: number; evidence_store_bytes: number };
+      };
+    };
+
+    assert.equal(payload.kind, "storage-footprint-inventory");
+    assert.equal(payload.inventory.status, "missing");
+    assert.equal(payload.inventory.evidence_store.status, "missing");
+    assert.equal(payload.inventory.evidence_store.file_count, 0);
+    assert.equal(payload.inventory.evidence_store.total_bytes, 0);
+    assert.equal(payload.inventory.sqlite_files.main.exists, false);
+    assert.equal(payload.inventory.totals.row_count, 0);
+    assert.equal(payload.inventory.totals.payload_json_bytes, 0);
+    assert.equal(payload.inventory.totals.evidence_store_files, 0);
+    assert.equal(payload.inventory.totals.evidence_store_bytes, 0);
+    assert.equal(await fileExists(path.join(storeDir, "cchistory.sqlite")), false);
+    assert.equal(await fileExists(storeDir), false);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("inventory reports table footprint, largest payload rows, search index, and source-root bytes", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-inventory-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+    const storeDir = path.join(tempRoot, "store");
+
+    const syncResult = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"], tempRoot);
+    assert.equal(syncResult.exitCode, 0, syncResult.stderr);
+
+    const human = await runCliCapture(["inventory", "--store", storeDir], tempRoot);
+    assert.equal(human.exitCode, 0, human.stderr);
+    assert.match(human.stdout, /Storage Inventory/);
+    assert.match(human.stdout, /Payload Tables/);
+    assert.match(human.stdout, /Largest Payload Rows/);
+    assert.match(human.stdout, /Evidence Store/);
+    assert.match(human.stdout, /Source Roots/);
+    assert.match(human.stdout, /Search Index/);
+    assert.match(human.stdout, /user_turns/);
+
+    const json = await runCliCapture(["inventory", "--store", storeDir, "--json"], tempRoot);
+    assert.equal(json.exitCode, 0, json.stderr);
+    const payload = JSON.parse(json.stdout) as {
+      kind: string;
+      inventory: {
+        status: string;
+        evidence_store: { status: string; file_count: number; total_bytes: number };
+        sqlite_files: { main: { exists: boolean; size_bytes: number }; wal: { size_bytes: number }; shm: { size_bytes: number } };
+        search_index: { table_exists: boolean; shadow_tables: string[] };
+        tables: Array<{ name: string; row_count: number; payload_json_bytes: number; largest_payload_rows: Array<{ payload_json_bytes: number }> }>;
+        source_roots: Array<{ source_id: string; status: string; file_count: number; total_bytes: number }>;
+        totals: { row_count: number; payload_json_bytes: number; sqlite_file_bytes: number; evidence_store_files: number; evidence_store_bytes: number; source_root_files: number; source_root_bytes: number };
+      };
+    };
+
+    assert.equal(payload.kind, "storage-footprint-inventory");
+    assert.equal(payload.inventory.status, "ok");
+    assert.equal(payload.inventory.sqlite_files.main.exists, true);
+    assert.ok(payload.inventory.sqlite_files.main.size_bytes > 0);
+    assert.ok(payload.inventory.totals.sqlite_file_bytes >= payload.inventory.sqlite_files.main.size_bytes);
+    assert.ok(payload.inventory.totals.row_count > 0);
+    assert.ok(payload.inventory.totals.payload_json_bytes > 0);
+    assert.equal(payload.inventory.evidence_store.status, "ok");
+    assert.ok(payload.inventory.evidence_store.file_count > 0);
+    assert.ok(payload.inventory.evidence_store.total_bytes > 0);
+    assert.equal(payload.inventory.totals.evidence_store_files, payload.inventory.evidence_store.file_count);
+    assert.equal(payload.inventory.totals.evidence_store_bytes, payload.inventory.evidence_store.total_bytes);
+    assert.equal(typeof payload.inventory.search_index.table_exists, "boolean");
+    assert.ok(Array.isArray(payload.inventory.search_index.shadow_tables));
+
+    const turnsTable = payload.inventory.tables.find((table) => table.name === "user_turns");
+    assert.ok(turnsTable, "inventory should include user_turns");
+    assert.ok(turnsTable.row_count > 0);
+    assert.ok(turnsTable.payload_json_bytes > 0);
+    assert.ok((turnsTable.largest_payload_rows[0]?.payload_json_bytes ?? 0) > 0);
+
+    const codexRoot = payload.inventory.source_roots.find((source) => source.source_id.includes("codex"));
+    assert.ok(codexRoot, "inventory should include Codex source root");
+    assert.equal(codexRoot.status, "ok");
+    assert.ok(codexRoot.file_count > 0);
+    assert.ok(codexRoot.total_bytes > 0);
+    assert.ok(payload.inventory.totals.source_root_files >= codexRoot.file_count);
+    assert.ok(payload.inventory.totals.source_root_bytes >= codexRoot.total_bytes);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("sync --detail reports source, file, write, and reindex progress on stderr", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-detail-"));
   const originalHome = process.env.HOME;

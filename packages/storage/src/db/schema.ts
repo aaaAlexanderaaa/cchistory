@@ -3,7 +3,7 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "@cchistory/domain";
 
-export const STORAGE_SCHEMA_VERSION = "2026-06-03.1";
+export const STORAGE_SCHEMA_VERSION = "2026-06-08.1";
 
 export interface StorageSchemaMigration {
   id: string;
@@ -46,6 +46,11 @@ const STORAGE_SCHEMA_MIGRATIONS: ReadonlyArray<{
     id: "2026-06-03.1/loss-audit-severity-column",
     to_version: STORAGE_SCHEMA_VERSION,
     summary: "Add indexed loss audit severity for failure-count aggregation without info diagnostics.",
+  },
+  {
+    id: "2026-06-08.1/storage-boundary-v2-sidecar",
+    to_version: STORAGE_SCHEMA_VERSION,
+    summary: "Add side-by-side content-addressed evidence, ledger, bounded read, and cache reference tables.",
   },
 ];
 
@@ -100,6 +105,23 @@ const STORAGE_INDEXES: ReadonlyArray<{
   { name: "idx_conversation_atoms_session", sql: "CREATE INDEX IF NOT EXISTS idx_conversation_atoms_session ON conversation_atoms (session_ref)" },
   { name: "idx_atom_edges_session", sql: "CREATE INDEX IF NOT EXISTS idx_atom_edges_session ON atom_edges (session_ref)" },
   { name: "idx_derived_candidates_session", sql: "CREATE INDEX IF NOT EXISTS idx_derived_candidates_session ON derived_candidates (session_ref)" },
+
+  { name: "idx_evidence_captures_source_origin", sql: "CREATE INDEX IF NOT EXISTS idx_evidence_captures_source_origin ON evidence_captures (source_id, origin_path)" },
+  { name: "idx_evidence_captures_source_blob", sql: "CREATE INDEX IF NOT EXISTS idx_evidence_captures_source_blob ON evidence_captures (source_id, blob_id)" },
+  { name: "idx_evidence_captures_sha", sql: "CREATE INDEX IF NOT EXISTS idx_evidence_captures_sha ON evidence_captures (evidence_sha256)" },
+  { name: "idx_source_file_ledger_source_origin", sql: "CREATE UNIQUE INDEX IF NOT EXISTS idx_source_file_ledger_source_origin ON source_file_ledger (source_id, origin_path)" },
+  { name: "idx_source_file_ledger_source_checksum", sql: "CREATE INDEX IF NOT EXISTS idx_source_file_ledger_source_checksum ON source_file_ledger (source_id, source_checksum)" },
+  { name: "idx_source_file_ledger_parser_profile", sql: "CREATE INDEX IF NOT EXISTS idx_source_file_ledger_parser_profile ON source_file_ledger (parser_profile_id)" },
+  { name: "idx_parsed_record_spans_source_blob", sql: "CREATE INDEX IF NOT EXISTS idx_parsed_record_spans_source_blob ON parsed_record_spans (source_id, blob_id)" },
+  { name: "idx_parsed_record_spans_session", sql: "CREATE INDEX IF NOT EXISTS idx_parsed_record_spans_session ON parsed_record_spans (session_ref)" },
+  { name: "idx_parsed_record_spans_parser_profile", sql: "CREATE INDEX IF NOT EXISTS idx_parsed_record_spans_parser_profile ON parsed_record_spans (parser_profile_id)" },
+  { name: "idx_user_turns_v2_source_session", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_v2_source_session ON user_turns_v2 (source_id, session_id)" },
+  { name: "idx_user_turns_v2_session", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_v2_session ON user_turns_v2 (session_id)" },
+  { name: "idx_user_turns_v2_submission", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_v2_submission ON user_turns_v2 (submission_started_at)" },
+  { name: "idx_turn_context_refs_v2_source", sql: "CREATE INDEX IF NOT EXISTS idx_turn_context_refs_v2_source ON turn_context_refs_v2 (source_id)" },
+  { name: "idx_derived_cache_refs_scope", sql: "CREATE INDEX IF NOT EXISTS idx_derived_cache_refs_scope ON derived_cache_refs (source_id, scope_kind, scope_ref)" },
+  { name: "idx_derived_cache_refs_kind_scope", sql: "CREATE INDEX IF NOT EXISTS idx_derived_cache_refs_kind_scope ON derived_cache_refs (scope_kind, scope_ref)" },
+  { name: "idx_derived_cache_refs_parser_profile", sql: "CREATE INDEX IF NOT EXISTS idx_derived_cache_refs_parser_profile ON derived_cache_refs (parser_profile_id)" },
 ];
 
 export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitialization {
@@ -256,6 +278,123 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
       bundle_id TEXT PRIMARY KEY,
       payload_json TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS evidence_blobs (
+      sha256 TEXT PRIMARY KEY,
+      storage_path TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      media_type TEXT NOT NULL,
+      encoding TEXT NOT NULL,
+      compression TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS evidence_captures (
+      id TEXT PRIMARY KEY,
+      evidence_sha256 TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      blob_id TEXT NOT NULL,
+      origin_path TEXT NOT NULL DEFAULT '',
+      source_checksum TEXT NOT NULL DEFAULT '',
+      size_bytes INTEGER NOT NULL DEFAULT 0,
+      captured_at TEXT NOT NULL,
+      capture_run_id TEXT NOT NULL DEFAULT '',
+      host_id TEXT NOT NULL DEFAULT '',
+      captured_path TEXT,
+      file_modified_at TEXT,
+      file_changed_at TEXT,
+      file_identity_stable INTEGER NOT NULL DEFAULT 0,
+      capture_kind TEXT NOT NULL DEFAULT 'source_blob',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS source_file_ledger (
+      id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      origin_path TEXT NOT NULL DEFAULT '',
+      current_blob_id TEXT NOT NULL DEFAULT '',
+      current_evidence_sha256 TEXT NOT NULL DEFAULT '',
+      source_checksum TEXT NOT NULL DEFAULT '',
+      size_bytes INTEGER NOT NULL DEFAULT 0,
+      file_modified_at TEXT,
+      file_changed_at TEXT,
+      file_identity_stable INTEGER NOT NULL DEFAULT 0,
+      parser_profile_id TEXT NOT NULL DEFAULT '',
+      parsed_byte_offset INTEGER,
+      last_valid_jsonl_boundary INTEGER,
+      last_record_ordinal INTEGER,
+      last_derived_session_refs TEXT NOT NULL DEFAULT '[]',
+      sync_axis TEXT NOT NULL DEFAULT 'current',
+      observed_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS parsed_record_spans (
+      record_id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      blob_id TEXT NOT NULL DEFAULT '',
+      session_ref TEXT NOT NULL DEFAULT '',
+      ordinal INTEGER NOT NULL DEFAULT 0,
+      evidence_sha256 TEXT NOT NULL DEFAULT '',
+      span_kind TEXT NOT NULL DEFAULT 'logical_record',
+      start_byte INTEGER,
+      end_byte INTEGER,
+      span_label TEXT NOT NULL DEFAULT '',
+      parser_profile_id TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS user_turns_v2 (
+      turn_id TEXT PRIMARY KEY,
+      turn_revision_id TEXT NOT NULL DEFAULT '',
+      source_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      submission_started_at TEXT NOT NULL,
+      canonical_text TEXT NOT NULL DEFAULT '',
+      raw_text_preview TEXT NOT NULL DEFAULT '',
+      raw_text_bytes INTEGER NOT NULL DEFAULT 0,
+      display_segments_json TEXT NOT NULL DEFAULT '[]',
+      context_ref TEXT NOT NULL DEFAULT '',
+      context_summary_json TEXT NOT NULL DEFAULT '{}',
+      lineage_refs_json TEXT NOT NULL DEFAULT '{}',
+      link_state TEXT NOT NULL DEFAULT '',
+      sync_axis TEXT NOT NULL DEFAULT '',
+      value_axis TEXT NOT NULL DEFAULT '',
+      retention_axis TEXT NOT NULL DEFAULT '',
+      payload_bytes INTEGER NOT NULL DEFAULT 0,
+      bounded_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS turn_context_refs_v2 (
+      turn_id TEXT PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      context_evidence_sha256 TEXT NOT NULL DEFAULT '',
+      cache_storage_path TEXT NOT NULL DEFAULT '',
+      assistant_reply_count INTEGER NOT NULL DEFAULT 0,
+      tool_call_count INTEGER NOT NULL DEFAULT 0,
+      system_message_count INTEGER NOT NULL DEFAULT 0,
+      preview_json TEXT NOT NULL DEFAULT '{}',
+      raw_event_refs_json TEXT NOT NULL DEFAULT '[]',
+      full_context_bytes INTEGER NOT NULL DEFAULT 0,
+      inline_budget_bytes INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS derived_cache_refs (
+      id TEXT PRIMARY KEY,
+      cache_kind TEXT NOT NULL,
+      source_id TEXT NOT NULL,
+      scope_kind TEXT NOT NULL,
+      scope_ref TEXT NOT NULL,
+      parser_profile_id TEXT NOT NULL DEFAULT '',
+      evidence_sha256 TEXT NOT NULL DEFAULT '',
+      item_count INTEGER NOT NULL DEFAULT 0,
+      payload_bytes INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[0]!);
@@ -264,6 +403,7 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
   ensureEvidenceQueryColumns(db);
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[2]!);
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[3]!);
+  recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[4]!);
   setSchemaMeta(db, "schema_version", STORAGE_SCHEMA_VERSION);
 
   ensureStorageIndexes(db);

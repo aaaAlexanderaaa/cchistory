@@ -357,6 +357,14 @@ const commandSpecs: CommandSpec[] = [
     examples: ["cchistory doctor", "cchistory doctor --source codex --json", "cchistory doctor --store ./.cchistory --store-only"],
   },
   {
+    path: ["inventory"],
+    category: "Data Management",
+    usage: "cchistory inventory [--store <dir>|--db <file>] [--json]",
+    summary: "Read-only storage footprint inventory",
+    description: "Inspect table rows, payload bytes, SQLite file sizes, search-index state, and source-root bytes without writing.",
+    examples: ["cchistory inventory", "cchistory inventory --store ./.cchistory --json"],
+  },
+  {
     path: ["ls"],
     category: "Browse & Inspect",
     usage: "cchistory ls projects|sessions|sources [--long] [--all] [--limit <n>]",

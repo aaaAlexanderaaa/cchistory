@@ -19,6 +19,11 @@ final reviews. R40 completed in-place on 2026-05-31 after resume provenance,
 path-aware search, CLI/TUI/Web projection work, source-shaped E2E coverage, and
 the CLI/TUI read-side verification gate passed.
 
+R41 completed in-place on 2026-06-08 after Phase 1 through Phase 5 of the
+storage boundary optimization were implemented as one continuous scope and
+validated across storage, CLI, TUI, and API package tests. Phase labels in the
+audit remain internal work-management slices, not user approval gates.
+
 Documentation drift guardrail work from `R36` was completed in-place on
 2026-05-14 and is kept below as the current ownership record for support/runtime
 inventory drift.
@@ -40,6 +45,66 @@ on 2026-05-17.
 | R35 - Managed Remote-Agent Manual Review | active | Waiting for user to start canonical API service |
 
 231 completed objectives were archived and subsequently removed during repository cleanup.
+
+---
+
+## Objective: R41 - Storage Boundary Optimization
+Status: done
+Priority: P0
+Source: user direction on 2026-06-08
+Design: `docs/design/STORAGE_BOUNDARY_AUDIT.md`
+
+Optimize the storage system according to the storage boundary audit. This is a
+storage boundary redesign, not a local sync loop optimization. The work must
+preserve frozen invariants: project-first history, `UserTurn` as the primary
+recall object, evidence-preserving ingestion, and UI/API/CLI/TUI as projections
+of one canonical model.
+
+Execution rule:
+
+- Phase 1 through Phase 5 in the audit are one approved continuous
+  implementation scope. Do not stop between phases for user confirmation unless
+  a frozen design invariant would change, a default implementation decision is
+  proven invalid, or evidence preservation becomes ambiguous.
+
+Initial acceptance:
+
+- Phase 0 records this objective and reconciles the CLI raw snapshot
+  documentation mismatch.
+- Phase 1 adds a read-only storage footprint inventory that reports table row
+  counts, payload bytes, largest payload rows, SQLite main/WAL/SHM sizes, search
+  index state, and source-root file counts/bytes without syncing, vacuuming,
+  migrating, schema-initializing, or rebuilding the search index.
+- Phase 2 defines the V2 storage boundary contract.
+- Phase 3 introduces the side-by-side evidence store and source-file ledger.
+- Phase 4 shrinks hot read/context storage toward reference-first semantics.
+- Phase 5 demotes bulky intermediate payloads while preserving lineage
+  drill-down and scoped rebuild selection.
+
+Completion evidence:
+
+- Phase 1 read-only inventory is available through storage APIs and CLI
+  `inventory`, including missing-store, SQLite, payload table, search index,
+  source-root, and V2 evidence-store reporting.
+- Phase 2 contract is recorded in
+  `docs/design/STORAGE_BOUNDARY_V2_CONTRACT.md`.
+- Phase 3 adds side-by-side content-addressed evidence files plus
+  `evidence_blobs`, `evidence_captures`, `source_file_ledger`, and
+  `parsed_record_spans` while keeping V1 rows populated.
+- Phase 4 adds bounded `user_turns_v2` and reference-first
+  `turn_context_refs_v2`; `getTurnContext` can reconstruct from the V2
+  content-addressed cache and falls back to V1 rows when the cache is invalid.
+- Phase 5 adds scoped `derived_cache_refs` and
+  `planStorageBoundaryRebuildScope(...)` selection by source id, origin path,
+  session id, project id, and parser profile while preserving lineage
+  drill-down.
+- Validation passed: `pnpm --filter @cchistory/storage test`,
+  `pnpm --filter @cchistory/cli test`,
+  `pnpm --filter @cchistory/tui test`, and
+  `pnpm --filter @cchistory/api test`.
+- Phase 5 fixture and real-layout verifier coverage passed:
+  `pnpm run verify:fixture-sync-recall` and
+  `pnpm run verify:real-layout-sync-recall`.
 
 ---
 
