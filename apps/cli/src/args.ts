@@ -550,18 +550,36 @@ const commandSpecs: CommandSpec[] = [
   {
     path: ["migration"],
     category: "Data Management",
-    usage: "cchistory migration preview",
-    summary: "Storage boundary V1→V2 migration preview (read-only)",
+    usage: "cchistory migration preview|run|status",
+    summary: "Storage boundary V1→V2 migration (B.1-B.6)",
     description:
-      "Read-only Phase B migration preview. Reports V1→V2 row mapping, the backfill gap B.3 must close, the V1 payload_json bytes B.6a will free, and the free-disk requirement B.6b needs for VACUUM.",
-    children: ["preview"],
-    examples: ["cchistory migration preview"],
+      "Phase B storage-boundary migration tooling. `preview` is read-only and reports the V1→V2 backfill gap, removable bytes, and VACUUM disk requirement. `run` performs the per-source V2 backfill (B.3) — V1 payloads are not touched. `status` prints migration_state markers.",
+    children: ["preview", "run", "status"],
+    examples: [
+      "cchistory migration preview",
+      "cchistory migration run --dry-run",
+      "cchistory migration run --source src-1",
+      "cchistory migration status",
+    ],
   },
   {
     path: ["migration", "preview"],
     usage: "cchistory migration preview [--store <dir>|--db <file>] [--json]",
     description:
-      "Inspect the storage-boundary migration without writing. Output covers: affected sources/sessions/turns, V1↔V2 row counts and missing sidecars, total removable V1 payload_json bytes, and the VACUUM disk-space requirement.",
+      "Read-only. Inspect V1→V2 row mapping, backfill gap, removable V1 payload_json bytes, and the VACUUM disk-space requirement.",
+  },
+  {
+    path: ["migration", "run"],
+    usage: "cchistory migration run [--source <slot-or-id>] [--dry-run] [--store <dir>|--db <file>]",
+    description:
+      "B.3: per-source V1→V2 backfill. Reads the V1 view of each source and re-runs the canonical V2 write path so missing V2 sidecars are filled. Idempotent: sources already marked completed in migration_state are skipped. V1 payloads are never touched. Halts at the first source that aborts; clear with `cchistory migration reset` after auditing.",
+    options: ["source"],
+  },
+  {
+    path: ["migration", "status"],
+    usage: "cchistory migration status [--store <dir>|--db <file>] [--json]",
+    description:
+      "Print migration_state markers: per-source status (running/completed/aborted) for the storage-boundary.write phase.",
   },
   {
     path: ["query"],

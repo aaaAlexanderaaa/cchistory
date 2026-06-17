@@ -47,5 +47,11 @@ export {
   type MigrationStateRow,
   type MigrationStatus,
 } from "./migration-state.js";
+export {
+  backfillStorageBoundaryV2ForStore,
+  type BackfillProgressEvent,
+  type BackfillSourceResult,
+  type BackfillStoreResult,
+} from "./migration-write.js";
 export { matchesSearchCandidateQuery, type SearchCandidateFields } from "./queries/search.js";
 export { installRuntimeWarningFilter } from "./runtime-warning-filter.js";

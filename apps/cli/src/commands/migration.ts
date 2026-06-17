@@ -1,24 +1,21 @@
 import {
+  backfillStorageBoundaryV2ForStore,
+  type BackfillStoreResult,
+  listMigrationStates,
   readStorageBoundaryMigrationPreview,
   type StorageBoundaryMigrationPreview,
 } from "@cchistory/storage";
 import type { CommandContext, CommandOutput } from "../main.js";
-import { resolveStoreLayout } from "../store.js";
+import { openStorage, resolveStoreLayout, type StoreLayout } from "../store.js";
 import { formatNumber, renderKeyValue, renderSection, renderTable } from "../renderers.js";
 
 export async function handleMigration(context: CommandContext): Promise<CommandOutput> {
   const subcommand = context.commandPath[1];
   if (!subcommand) {
-    throw new Error("`migration` requires a subcommand: preview.");
-  }
-  if (subcommand !== "preview") {
-    throw new Error(`Unknown migration subcommand: ${subcommand}`);
+    throw new Error("`migration` requires a subcommand: preview, run, or status.");
   }
   if (context.positionals.length > 0) {
-    throw new Error("`migration preview` does not take positional arguments.");
-  }
-  if (context.globals.full) {
-    throw new Error("`migration preview` is read-only and does not support --full.");
+    throw new Error(`\`migration ${subcommand}\` does not take positional arguments.`);
   }
 
   const layout = resolveStoreLayout({
@@ -26,6 +23,24 @@ export async function handleMigration(context: CommandContext): Promise<CommandO
     storeArg: context.globals.store,
     dbArg: context.globals.db,
   });
+  // Check store exists for write/status paths; preview tolerates a missing
+  // store so operators can run it before sync.
+  switch (subcommand) {
+    case "preview":
+      return runMigrationPreview(context, layout);
+    case "run":
+      return runMigrationRun(context, layout);
+    case "status":
+      return runMigrationStatus(layout);
+    default:
+      throw new Error(`Unknown migration subcommand: ${subcommand}`);
+  }
+}
+
+async function runMigrationPreview(context: CommandContext, layout: StoreLayout): Promise<CommandOutput> {
+  if (context.globals.full) {
+    throw new Error("`migration preview` is read-only and does not support --full.");
+  }
   const preview = await readStorageBoundaryMigrationPreview({ dbPath: layout.dbPath });
   return {
     text: renderPreview(preview),
@@ -34,6 +49,140 @@ export async function handleMigration(context: CommandContext): Promise<CommandO
       preview,
     },
   };
+}
+
+async function runMigrationRun(context: CommandContext, layout: StoreLayout): Promise<CommandOutput> {
+  // B.3 rewrites V2 state per source; --dry-run reports what would happen
+  // without writing so the operator can audit the preview first.
+  const dryRun = context.globals.dryRun;
+  if (dryRun) {
+    const preview = await readStorageBoundaryMigrationPreview({ dbPath: layout.dbPath });
+    return {
+      text: [
+        renderKeyValue([
+          ["Workflow", "migration run"],
+          ["Mode", "preview (--dry-run)"],
+          ["Would backfill sources", formatNumber(preview.affected.sources)],
+          ["Backfill gap", `${formatNumber(preview.backfill.total_missing)} missing V2 rows`],
+        ]),
+        "",
+        "Re-run without --dry-run to write V2 sidecars. V1 payloads are not touched.",
+      ].join("\n"),
+      json: {
+        kind: "migration-run-dry-run",
+        preview,
+      },
+    };
+  }
+
+  const storage = await openStorage(layout);
+  try {
+    const result = backfillStorageBoundaryV2ForStore({
+      storage,
+      sourceIds: context.options.source.length > 0 ? context.options.source : undefined,
+    });
+    return {
+      text: renderRunResult(result),
+      json: {
+        kind: "migration-run",
+        result,
+      },
+    };
+  } finally {
+    storage.close();
+  }
+}
+
+async function runMigrationStatus(layout: StoreLayout): Promise<CommandOutput> {
+  const preview = await readStorageBoundaryMigrationPreview({ dbPath: layout.dbPath });
+  const storage = await openStorage(layout);
+  try {
+    const states = listMigrationStates(storage.getDatabaseForMigration());
+    return {
+      text: renderStatus(preview, states),
+      json: {
+        kind: "migration-status",
+        preview,
+        states,
+      },
+    };
+  } finally {
+    storage.close();
+  }
+}
+
+function renderRunResult(result: BackfillStoreResult): string {
+  const lines = [
+    renderSection(
+      "Migration Run (B.3)",
+      renderKeyValue([
+        ["Sources total", formatNumber(result.sources_total)],
+        ["Processed", formatNumber(result.sources_processed)],
+        ["Skipped (already completed)", formatNumber(result.sources_skipped)],
+        ["Aborted", formatNumber(result.sources_aborted)],
+        ["Halted at", result.halted_at_source_id ?? "(none)"],
+      ]),
+    ),
+  ];
+  if (result.results.length > 0) {
+    lines.push("", renderSection("Per-source", renderRunResultTable(result)));
+  }
+  if (result.halted_at_source_id) {
+    lines.push(
+      "",
+      `Migration halted at source ${result.halted_at_source_id}. Audit the abort reason, clear with \`cchistory migration reset\`, then re-run \`cchistory migration run\`.`,
+    );
+  }
+  return lines.join("\n");
+}
+
+function renderRunResultTable(result: BackfillStoreResult): string {
+  return renderTable(
+    ["Source", "Status", "Records", "Turns", "Blobs", "Error"],
+    result.results.map((row) => [
+      row.source_id,
+      row.skipped ? "skipped" : row.aborted ? "aborted" : "completed",
+      row.counts ? formatNumber(row.counts.records) : "-",
+      row.counts ? formatNumber(row.counts.turns) : "-",
+      row.counts ? formatNumber(row.counts.blobs) : "-",
+      row.error ?? "",
+    ]),
+  );
+}
+
+function renderStatus(
+  preview: StorageBoundaryMigrationPreview,
+  states: ReturnType<typeof listMigrationStates>,
+): string {
+  const completed = states.filter((s) => s.status === "completed").length;
+  const running = states.filter((s) => s.status === "running").length;
+  const aborted = states.filter((s) => s.status === "aborted").length;
+  return [
+    renderSection(
+      "Migration Status",
+      renderKeyValue([
+        ["Store", preview.db_path],
+        ["Affected sources", formatNumber(preview.affected.sources)],
+        ["B.3 markers", `${completed} completed / ${running} running / ${aborted} aborted`],
+        ["Backfill gap remaining", `${formatNumber(preview.backfill.total_missing)} rows`],
+      ]),
+    ),
+    states.length > 0
+      ? renderSection(
+          "Markers",
+          renderTable(
+            ["Phase", "Scope", "Status", "Started", "Error"],
+            states.map((s) => [
+              s.phase,
+              `${s.scope_kind}:${s.scope_id}`,
+              s.status,
+              s.started_at,
+              s.last_error,
+            ]),
+          ),
+        )
+      : "(no migration markers yet — run `cchistory migration run`)",
+  ].join("\n\n");
 }
 
 function renderPreview(preview: StorageBoundaryMigrationPreview): string {

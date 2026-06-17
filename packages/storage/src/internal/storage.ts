@@ -1073,6 +1073,61 @@ export class CCHistoryStorage {
     };
   }
 
+  /**
+   * B.3: backfill V2 sidecars for one source from the V1 view of the store.
+   *
+   * Reads the V1-derived `SourceSyncPayload` (via `getSourcePayload`) and
+   * re-runs the canonical V2 write path. The V2 writes use INSERT OR REPLACE
+   * semantics, so existing V2 rows for this source are rewritten with
+   * identical content and missing V2 rows are filled. V1 payloads are NOT
+   * touched.
+   *
+   * The implementation calls `writeStorageBoundaryV2Sidecars` in "replace"
+   * mode, which first clears the source's V2 rows and then re-inserts them.
+   * This is acceptable because B.3 runs once per source; the rewrite cost is
+   * paid once. Subsequent incremental syncs land on the normal hot path.
+   *
+   * Returns counts of the V1 rows that drove the backfill so the caller can
+   * report progress.
+   */
+  backfillSourceV2Sidecars(sourceId: string): {
+    source_id: string;
+    records: number;
+    fragments: number;
+    atoms: number;
+    candidates: number;
+    turns: number;
+    contexts: number;
+    blobs: number;
+    sessions: number;
+  } {
+    const payload = this.getSourcePayload(sourceId);
+    if (!payload) {
+      throw new Error(`Cannot backfill source ${sourceId}: source not found in V1 store.`);
+    }
+    this.writeStorageBoundaryV2Sidecars(payload, { writeMode: "replace" });
+    return {
+      source_id: sourceId,
+      records: payload.records.length,
+      fragments: payload.fragments.length,
+      atoms: payload.atoms.length,
+      candidates: payload.candidates.length,
+      turns: payload.turns.length,
+      contexts: payload.contexts.length,
+      blobs: payload.blobs.length,
+      sessions: payload.sessions.length,
+    };
+  }
+
+  /**
+   * Internal: exposes the underlying DatabaseSync so sibling package modules
+   * (migration-state, migration-write) can read/write migration_state rows
+   * against the same connection. Not for external callers.
+   */
+  getDatabaseForMigration(): DatabaseSync {
+    return this.db;
+  }
+
   listKnowledgeArtifacts(projectId?: string): KnowledgeArtifact[] {
     return Queries.listKnowledgeArtifacts(this.db, projectId);
   }

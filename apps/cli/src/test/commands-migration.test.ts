@@ -108,3 +108,132 @@ test("B.1: migration preview is available as a subcommand and requires no positi
     assert.match(result.stderr, /does not take positional/i);
   }, "cchistory-b1-noargs-");
 });
+
+// B.3 acceptance: `cchistory migration run` performs per-source V2 backfill
+// idempotently, `--dry-run` is read-only, and `status` reports the markers.
+
+test("B.3: migration run --dry-run reports the preview without writing markers", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+
+    const result = await runCliJson<{
+      kind: string;
+      preview: { affected: { sources: number }; backfill: { total_missing: number } };
+    }>(["migration", "run", "--dry-run", "--store", storeDir]);
+
+    assert.equal(result.kind, "migration-run-dry-run");
+    assert.ok(result.preview.affected.sources > 0);
+
+    // Dry-run must not write any migration_state markers.
+    const status = await runCliJson<{
+      states: Array<{ status: string }>;
+    }>(["migration", "status", "--store", storeDir]);
+    assert.equal(status.states.length, 0, "dry-run must not create markers");
+  }, "cchistory-b3-dryrun-");
+});
+
+test("B.3: migration run writes V2 sidecars, marks sources completed, and is idempotent on re-run", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+
+    const first = await runCliJson<{
+      result: {
+        sources_processed: number;
+        sources_skipped: number;
+        sources_aborted: number;
+        halted_at_source_id: string | null;
+      };
+    }>(["migration", "run", "--store", storeDir]);
+    assert.equal(first.result.sources_processed, first.result.sources_processed);
+    assert.equal(first.result.sources_aborted, 0);
+    assert.equal(first.result.halted_at_source_id ?? null, null, "first run must not halt");
+    assert.ok(first.result.sources_processed > 0, "first run must process at least one source");
+
+    const second = await runCliJson<{
+      result: { sources_processed: number; sources_skipped: number };
+    }>(["migration", "run", "--store", storeDir]);
+    assert.equal(second.result.sources_processed, 0, "second run must skip — markers say completed");
+    assert.equal(second.result.sources_skipped, first.result.sources_processed);
+
+    const status = await runCliJson<{
+      states: Array<{ status: string }>;
+    }>(["migration", "status", "--store", storeDir]);
+    assert.equal(status.states.length, first.result.sources_processed);
+    assert.ok(status.states.every((s) => s.status === "completed"));
+  }, "cchistory-b3-idempotent-");
+});
+
+test("B.3: migration run reconstructs a missing V2 sidecar row from its V1 source", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+
+    // Pick a turn that exists in V1, drop its V2 row, and clear the source's
+    // marker so B.3 actually re-runs the backfill.
+    const { DatabaseSync } = await import("node:sqlite");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const db = new DatabaseSync(dbPath);
+    let droppedTurnId: string | null = null;
+    let sourceId: string | null = null;
+    try {
+      const turn = db
+        .prepare(
+          "SELECT t.id AS turn_id, t.source_id AS source_id FROM user_turns t INNER JOIN user_turns_v2 v ON v.turn_id = t.id LIMIT 1",
+        )
+        .get() as { turn_id: string; source_id: string } | undefined;
+      if (turn) {
+        droppedTurnId = turn.turn_id;
+        sourceId = turn.source_id;
+        db.prepare("DELETE FROM user_turns_v2 WHERE turn_id = ?").run(turn.turn_id);
+      }
+    } finally {
+      db.close();
+    }
+    assert.ok(droppedTurnId, "fixture must have at least one V1 turn with a V2 sidecar");
+
+    const result = await runCliJson<{
+      result: { results: Array<{ source_id: string; aborted: boolean; skipped: boolean }> };
+    }>(["migration", "run", "--source", sourceId!, "--store", storeDir]);
+    assert.ok(result.result.results.every((r) => !r.aborted && !r.skipped));
+
+    const verifyDb = new DatabaseSync(dbPath);
+    try {
+      const restored = verifyDb
+        .prepare("SELECT turn_id FROM user_turns_v2 WHERE turn_id = ?")
+        .get(droppedTurnId!) as { turn_id: string } | undefined;
+      assert.ok(restored, "B.3 must reconstruct the dropped V2 sidecar row");
+    } finally {
+      verifyDb.close();
+    }
+  }, "cchistory-b3-gap-");
+});
+
+test("B.3: migration run refuses to auto-resurrect an aborted source", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+
+    // Seed an aborted marker directly. B.3 must surface the abort rather
+    // than silently retry the source.
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    const source = db.prepare("SELECT id FROM source_instances LIMIT 1").get() as { id: string } | undefined;
+    assert.ok(source, "fixture must contain at least one source");
+    try {
+      db.prepare(
+        "INSERT INTO migration_state (phase, scope_kind, scope_id, status, cursor_json, started_at, completed_at, last_error) VALUES (?, 'source', ?, 'aborted', '{}', ?, NULL, ?)",
+      ).run(
+        "storage-boundary.write",
+        source!.id,
+        new Date().toISOString(),
+        "synthetic abort for B.3 test",
+      );
+    } finally {
+      db.close();
+    }
+
+    const result = await runCliJson<{
+      result: { sources_aborted: number; halted_at_source_id: string | null };
+    }>(["migration", "run", "--source", source!.id, "--store", storeDir]);
+    assert.equal(result.result.sources_aborted, 1);
+    assert.equal(result.result.halted_at_source_id, source!.id);
+  }, "cchistory-b3-abort-resurrect-");
+});
