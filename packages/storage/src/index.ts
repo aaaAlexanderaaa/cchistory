@@ -32,5 +32,20 @@ export {
   type V1ToV2Mapping,
   type VacuumDiskRequirement,
 } from "./migration-preview.js";
+export {
+  clearMigrationState,
+  isMigrationScopeCompleted,
+  listMigrationStates,
+  readMigrationState,
+  recordMigrationAbort,
+  recordMigrationComplete,
+  recordMigrationProgress,
+  recordMigrationStart,
+  type MigrationPhase,
+  type MigrationScope,
+  type MigrationScopeKind,
+  type MigrationStateRow,
+  type MigrationStatus,
+} from "./migration-state.js";
 export { matchesSearchCandidateQuery, type SearchCandidateFields } from "./queries/search.js";
 export { installRuntimeWarningFilter } from "./runtime-warning-filter.js";

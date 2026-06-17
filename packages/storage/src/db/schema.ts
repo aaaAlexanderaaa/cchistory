@@ -3,7 +3,7 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "@cchistory/domain";
 
-export const STORAGE_SCHEMA_VERSION = "2026-06-08.1";
+export const STORAGE_SCHEMA_VERSION = "2026-06-17.2";
 
 export interface StorageSchemaMigration {
   id: string;
@@ -56,6 +56,11 @@ const STORAGE_SCHEMA_MIGRATIONS: ReadonlyArray<{
     id: "2026-06-17.1/storage-index-dedup",
     to_version: STORAGE_SCHEMA_VERSION,
     summary: "A.3: drop prefix-duplicate session-only indexes whose lookups are served by the (source_id, session_ref) compound indexes via SQLite skip-scan after ANALYZE.",
+  },
+  {
+    id: "2026-06-17.2/migration-state-table",
+    to_version: STORAGE_SCHEMA_VERSION,
+    summary: "B.2: add migration_state table so Phase B write-migration, validation, and cutover can resume per-source after a crash.",
   },
 ];
 
@@ -419,6 +424,21 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS migration_state (
+      phase TEXT NOT NULL,
+      scope_kind TEXT NOT NULL,
+      scope_id TEXT NOT NULL,
+      status TEXT NOT NULL,
+      cursor_json TEXT NOT NULL DEFAULT '{}',
+      started_at TEXT NOT NULL,
+      completed_at TEXT,
+      last_error TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (phase, scope_kind, scope_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_migration_state_phase_status
+      ON migration_state (phase, status);
   `);
 
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[0]!);
@@ -429,6 +449,7 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[3]!);
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[4]!);
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[5]!);
+  recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[6]!);
   setSchemaMeta(db, "schema_version", STORAGE_SCHEMA_VERSION);
 
   ensureStorageIndexes(db);
