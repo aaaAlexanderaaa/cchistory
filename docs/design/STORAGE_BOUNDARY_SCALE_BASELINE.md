@@ -7,25 +7,25 @@ Captured with `scripts/collect-scale-baseline.mjs` against the same fixture
 used by `scripts/verify-scale-recall.mjs` (12 sessions × 100 turns × 2 sources
 = 2400 turns across 24 sessions).
 
-Generated: 2026-06-17T10:39:00.918Z
+Generated: 2026-06-17T14:05:33.032Z
 
 ## Timing (ms)
 
 | Phase | Milliseconds |
 | --- | ---: |
-| first sync (initial population) | 1761 |
-| unchanged sync (everything reused) | 1467 |
-| append sync (+5 turns) | 1529 |
-| search (fallback substring — A.1 leaves FTS5 inert until rebuild) | 1485 |
-| context-detail reconstruction | 237 |
+| first sync (initial population) | 1923 |
+| unchanged sync (everything reused) | 1377 |
+| append sync (+5 turns) | 1570 |
+| search (fallback substring — A.1 leaves FTS5 inert until rebuild) | 1502 |
+| context-detail reconstruction | 246 |
 
 ## Disk Footprint (bytes)
 
 | Resource | Bytes |
 | --- | ---: |
-| WAL peak (sampled during first sync) | 27,302,944 |
+| WAL peak (sampled during first sync) | 27,270,128 |
 | WAL final (after all syncs) | 0 |
-| main SQLite file | 44,859,392 |
+| main SQLite file | 44,793,856 |
 | evidence_blobs.total_bytes (DB sum) | 2,804,305 |
 | evidence/blobs/ on-disk | 2,804,305 |
 

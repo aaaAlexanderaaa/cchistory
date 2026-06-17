@@ -548,6 +548,22 @@ const commandSpecs: CommandSpec[] = [
       "Run VACUUM to rebuild the SQLite file. Required once per store to materialize the new 16 KiB page size from Phase A.4; otherwise the pragma is silently ignored on existing databases. Blocks writes for the duration.",
   },
   {
+    path: ["migration"],
+    category: "Data Management",
+    usage: "cchistory migration preview",
+    summary: "Storage boundary V1→V2 migration preview (read-only)",
+    description:
+      "Read-only Phase B migration preview. Reports V1→V2 row mapping, the backfill gap B.3 must close, the V1 payload_json bytes B.6a will free, and the free-disk requirement B.6b needs for VACUUM.",
+    children: ["preview"],
+    examples: ["cchistory migration preview"],
+  },
+  {
+    path: ["migration", "preview"],
+    usage: "cchistory migration preview [--store <dir>|--db <file>] [--json]",
+    description:
+      "Inspect the storage-boundary migration without writing. Output covers: affected sources/sessions/turns, V1↔V2 row counts and missing sidecars, total removable V1 payload_json bytes, and the VACUUM disk-space requirement.",
+  },
+  {
     path: ["query"],
     category: "Advanced (experimental)",
     usage: "cchistory query turns|turn|sessions|session|projects|project ...",

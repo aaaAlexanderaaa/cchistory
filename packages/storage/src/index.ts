@@ -22,5 +22,15 @@ export {
   type LocalTuiSourceHealth,
 } from "./tui-browser.js";
 export { readStorageFootprintInventory, type EvidenceStoreInventory, type SearchIndexInventory, type SourceRootInventory, type StorageFileInventory, type StorageFootprintInventory, type StoragePayloadRowInventory, type StorageTableInventory } from "./inventory.js";
+export {
+  readStorageBoundaryMigrationPreview,
+  type AffectedCounts,
+  type BackfillGap,
+  type RemovableBytes,
+  type RowMapping,
+  type StorageBoundaryMigrationPreview,
+  type V1ToV2Mapping,
+  type VacuumDiskRequirement,
+} from "./migration-preview.js";
 export { matchesSearchCandidateQuery, type SearchCandidateFields } from "./queries/search.js";
 export { installRuntimeWarningFilter } from "./runtime-warning-filter.js";
