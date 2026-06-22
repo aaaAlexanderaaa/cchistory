@@ -305,7 +305,7 @@ function runReadPathParity(dbPath: string, assetDir?: string): ReadPathParityRes
 
     for (const row of rows) {
       userTurnsChecked += 1;
-      const v2 = Queries.readUserTurnFromV2(db, row.id);
+      const v2 = Queries.readUserTurnFromV2({ db, turnId: row.id, assetDir });
       const v1 = Queries.getTurn(db, row.id);
       if (v2 === undefined && v1 === undefined) continue;
       if (v2 === undefined && v1 !== undefined) {

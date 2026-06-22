@@ -70,7 +70,7 @@ test("storage boundary v2 writes evidence, ledger, spans, and bounded context si
       assert.equal(await readFile(evidencePath, "utf8"), firstLine);
 
       const evidenceBlobCount = db.prepare("SELECT COUNT(*) AS count FROM evidence_blobs").get() as { count: number };
-      assert.equal(evidenceBlobCount.count, 2, "source blob and context cache should each be stored once");
+      assert.equal(evidenceBlobCount.count, 3, "source blob, context cache, and turn lineage blob should each be stored once");
 
       const captureCount = db.prepare("SELECT COUNT(*) AS count FROM evidence_captures WHERE source_id = ?").get(sourceId) as {
         count: number;
@@ -391,11 +391,17 @@ test("storage boundary v2 bounded JSON columns stay parseable when source data e
     // Overwrite display_segments with 40 segments at 512 bytes each (~20 KiB
     // total, well past the 8 KiB bound). Also bloat lineage.atom_refs and one
     // key of context_summary so we exercise the object-shrink path too.
+    // Crucially, the SAME 40 segments are mirrored onto user_messages[0].display_segments
+    // — that's where the parser puts them, and the V2 read path now reconstructs
+    // turn.display_segments from there (the bounded display_segments_json column
+    // is kept only as a scan hint, not as the authoritative source).
     const bigText = "x".repeat(512);
-    payload.turns[0]!.display_segments = Array.from({ length: 40 }, (_, i) => ({
+    const bigSegments = Array.from({ length: 40 }, (_, i) => ({
       type: "text" as const,
       content: `${i}-${bigText}`,
     }));
+    payload.turns[0]!.display_segments = bigSegments;
+    payload.turns[0]!.user_messages[0]!.display_segments = bigSegments;
     payload.turns[0]!.lineage = {
       atom_refs: Array.from({ length: 2000 }, (_, i) => `atom-${i}`),
       candidate_refs: [],
@@ -433,16 +439,25 @@ test("storage boundary v2 bounded JSON columns stay parseable when source data e
       db.close();
     }
 
-    // End-to-end: readUserTurnFromV2 must not throw and must return a usable
-    // projection (subset of the original).
+    // End-to-end: readUserTurnFromV2 reconstructs display_segments from
+    // user_messages[].display_segments (the same way the parser produces it),
+    // so the result is the FULL 40 segments — not the truncated subset stored
+    // in the bounded column. This is the V2-native pattern for derivable
+    // fields: don't pay storage for what you can recompute.
     const reopened = new CCHistoryStorage({ dbPath });
     try {
       const db2 = reopened.getDatabaseForMigration();
+      const assetDir = path.dirname(dbPath);
       const { readUserTurnFromV2 } = await import("../internal/queries.js");
-      const turn = readUserTurnFromV2(db2, "turn-v2-bounded") as UserTurnProjection | undefined;
+      const turn = readUserTurnFromV2({ db: db2, turnId: "turn-v2-bounded", assetDir }) as UserTurnProjection | undefined;
       assert.ok(turn, "V2 read must return a projection");
-      assert.ok(turn.display_segments.length < 40, "segments must be a subset");
-      assert.ok(turn.display_segments.length > 0, "at least one segment survives");
+      assert.equal(turn.display_segments.length, 40, "display_segments is reconstructed in full from user_messages");
+      assert.equal(turn.display_segments[0]!.content, `0-${bigText}`);
+      assert.equal(turn.display_segments[39]!.content, `39-${bigText}`);
+      // B.5.0g: full lineage is fetched from the content-addressed blob, so
+      // atom_refs survives in full (the bounded column would have truncated
+      // the 2000 entries to ~80).
+      assert.equal(turn.lineage.atom_refs.length, 2000, "lineage refs reconstructed in full from blob");
     } finally {
       reopened.close();
     }

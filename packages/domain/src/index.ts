@@ -697,6 +697,17 @@ export interface DisplaySegment {
   original_content?: string;
 }
 
+export function joinDisplaySegments(segmentGroups: readonly (readonly DisplaySegment[])[]): DisplaySegment[] {
+  const segments: DisplaySegment[] = [];
+  for (const [index, group] of segmentGroups.entries()) {
+    if (index > 0) {
+      segments.push({ type: "text", content: "\n\n" });
+    }
+    segments.push(...group);
+  }
+  return segments;
+}
+
 export type ZeroTokenReason = "no_assistant_reply" | "command_only";
 
 export interface TurnContextSummary {

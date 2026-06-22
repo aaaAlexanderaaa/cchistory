@@ -21,7 +21,7 @@ interface EvidenceMaterialization {
   sizeBytes: number;
   bytes: Buffer;
   mediaType: string;
-  captureKind: "source_blob" | "record_snapshot" | "context_cache";
+  captureKind: "source_blob" | "record_snapshot" | "context_cache" | "turn_lineage";
   createdAt: string;
 }
 
@@ -98,7 +98,7 @@ export function writeStorageBoundaryV2Sidecars(input: {
     }
 
     for (const turn of normalizedPayload.turns) {
-      upsertBoundedUserTurn(input.db, turn, now);
+      upsertBoundedUserTurn({ db: input.db, turn, boundedAt: now, assetDir: input.assetDir });
     }
 
     for (const context of normalizedPayload.contexts) {
@@ -245,7 +245,7 @@ export function streamV2SidecarsFromV1(input: {
     );
     for (const row of turnsStmt.iterate(sourceId) as Iterable<{ payload_json: string }>) {
       const turn = fromJson<UserTurnProjection>(row.payload_json);
-      upsertBoundedUserTurn(db, turn, now);
+      upsertBoundedUserTurn({ db, turn, boundedAt: now, assetDir: input.assetDir });
     }
 
     // 3. Contexts (one per turn).
@@ -588,6 +588,59 @@ export function readTurnContextFromV2Cache(input: {
   return context.turn_id === input.turnId ? context : undefined;
 }
 
+/**
+ * B.5.0g: read the full lineage blob for a V2 user turn. Returns undefined if
+ * the sidecar hasn't been backfilled with lineage_blob_sha256 yet (older
+ * stores) or the blob content fails sha256 verification. Callers that only
+ * need counts should read user_turns_v2.lineage_*_count directly — this
+ * helper is for callers that need the actual refs array.
+ */
+export function readTurnLineageFromV2Blob(input: {
+  db: DatabaseSync;
+  assetDir?: string;
+  turnId: string;
+}): UserTurnProjection["lineage"] | undefined {
+  if (!input.assetDir) {
+    return undefined;
+  }
+  const row = input.db
+    .prepare(
+      `SELECT lineage_blob_sha256 AS sha
+         FROM user_turns_v2
+        WHERE turn_id = ?`,
+    )
+    .get(input.turnId) as { sha: string } | undefined;
+  if (!row?.sha) {
+    return undefined;
+  }
+
+  const storagePath = path.join("evidence", "blobs", row.sha.slice(0, 2), row.sha);
+  const absolutePath = path.resolve(input.assetDir, storagePath);
+  if (!isPathWithinDirectory(absolutePath, input.assetDir) || !existsSync(absolutePath)) {
+    return undefined;
+  }
+
+  let bytes: Buffer;
+  try {
+    bytes = readFileSync(absolutePath);
+  } catch {
+    return undefined;
+  }
+
+  if (hashBytes("sha256", bytes) !== row.sha) {
+    return undefined;
+  }
+
+  try {
+    return fromJson<UserTurnProjection["lineage"]>(
+      bytes.toString("utf8"),
+      `turn lineage blob ${input.turnId}`,
+    );
+  } catch {
+    return undefined;
+  }
+}
+
 function prepareReplaceCurrentState(
   db: DatabaseSync,
   sourceId: string,
@@ -799,6 +852,20 @@ function materializeContextCache(input: {
     bytes: Buffer.from(`${JSON.stringify(input.context)}\n`, "utf8"),
     mediaType: "application/vnd.cchistory.turn-context+json",
     captureKind: "context_cache",
+    createdAt: input.createdAt,
+  });
+}
+
+function materializeTurnLineage(input: {
+  assetDir?: string;
+  lineage: UserTurnProjection["lineage"];
+  createdAt: string;
+}): EvidenceMaterialization {
+  return materializeBytes({
+    assetDir: input.assetDir,
+    bytes: Buffer.from(`${JSON.stringify(input.lineage)}\n`, "utf8"),
+    mediaType: "application/vnd.cchistory.turn-lineage+json",
+    captureKind: "turn_lineage",
     createdAt: input.createdAt,
   });
 }
@@ -1041,7 +1108,13 @@ function upsertParsedRecordSpan(
   );
 }
 
-function upsertBoundedUserTurn(db: DatabaseSync, turn: UserTurnProjection, boundedAt: string): void {
+function upsertBoundedUserTurn(input: {
+  db: DatabaseSync;
+  turn: UserTurnProjection;
+  boundedAt: string;
+  assetDir?: string;
+}): void {
+  const { db, turn, boundedAt } = input;
   const rawTextBytes = Buffer.byteLength(turn.raw_text ?? "", "utf8");
   const displaySegmentsJson = boundedJson(turn.display_segments, 8 * 1024);
   const contextSummaryJson = boundedJson(turn.context_summary ?? {}, 8 * 1024);
@@ -1062,6 +1135,23 @@ function upsertBoundedUserTurn(db: DatabaseSync, turn: UserTurnProjection, bound
   const projectLinkState = turn.project_link_state ?? "";
   const lastContextActivityAt = turn.last_context_activity_at ?? "";
   const pathText = turn.path_text ?? "";
+
+  // B.5.0g: full lineage lives in a content-addressed blob; sidecar keeps
+  // counts for fast list-view density and a sha256 for lazy fetch. Mirrors
+  // turn_context_refs_v2 (sha in sidecar, content in evidence_blobs).
+  const lineage = turn.lineage ?? {
+    atom_refs: [],
+    candidate_refs: [],
+    fragment_refs: [],
+    record_refs: [],
+    blob_refs: [],
+  };
+  const lineageMaterialized = materializeTurnLineage({
+    assetDir: input.assetDir,
+    lineage,
+    createdAt: boundedAt,
+  });
+  upsertEvidenceBlob(db, lineageMaterialized);
 
   db.prepare(`
     INSERT OR REPLACE INTO user_turns_v2 (
@@ -1091,8 +1181,14 @@ function upsertBoundedUserTurn(db: DatabaseSync, turn: UserTurnProjection, bound
       project_link_state,
       last_context_activity_at,
       path_text,
-      canonical_text_full
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      canonical_text_full,
+      lineage_blob_sha256,
+      lineage_atom_count,
+      lineage_fragment_count,
+      lineage_record_count,
+      lineage_blob_count,
+      lineage_candidate_count
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     turn.turn_id,
     turn.turn_revision_id,
@@ -1121,6 +1217,12 @@ function upsertBoundedUserTurn(db: DatabaseSync, turn: UserTurnProjection, bound
     lastContextActivityAt,
     pathText,
     canonicalTextFull,
+    lineageMaterialized.sha256,
+    lineage.atom_refs.length,
+    lineage.fragment_refs.length,
+    lineage.record_refs.length,
+    lineage.blob_refs.length,
+    lineage.candidate_refs.length,
   );
 }
 

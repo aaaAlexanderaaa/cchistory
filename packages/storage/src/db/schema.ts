@@ -3,7 +3,7 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "@cchistory/domain";
 
-export const STORAGE_SCHEMA_VERSION = "2026-06-18.2";
+export const STORAGE_SCHEMA_VERSION = "2026-06-22.1";
 
 export interface StorageSchemaMigration {
   id: string;
@@ -73,6 +73,12 @@ const STORAGE_SCHEMA_MIGRATIONS: ReadonlyArray<{
     to_version: STORAGE_SCHEMA_VERSION,
     summary:
       "B.5.0e: add canonical_text_full to user_turns_v2. Without it, B.5.5 (bundle export) cutover would produce different bundle bytes for the 4.3% of turns whose canonical_text exceeds the 16 KiB scan-hint bound.",
+  },
+  {
+    id: "2026-06-22.1/user-turns-v2-lineage-blob",
+    to_version: STORAGE_SCHEMA_VERSION,
+    summary:
+      "B.5.0g: replace over-bounded lineage_refs_json with full-content lineage via content-addressed blob (lineage_blob_sha256) plus 5 INT count columns. The bounded 8 KiB subset truncates 46% of operator turns (worst-case 1.9 MiB loss, 381K atom_refs dropped). Counts drive list-view density; the blob is fetched lazily when refs are needed. Mirrors turn_context_refs_v2 pattern.",
   },
 ];
 
@@ -412,7 +418,13 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
       project_link_state TEXT NOT NULL DEFAULT '',
       last_context_activity_at TEXT NOT NULL DEFAULT '',
       path_text TEXT NOT NULL DEFAULT '',
-      canonical_text_full TEXT NOT NULL DEFAULT ''
+      canonical_text_full TEXT NOT NULL DEFAULT '',
+      lineage_blob_sha256 TEXT NOT NULL DEFAULT '',
+      lineage_atom_count INTEGER NOT NULL DEFAULT 0,
+      lineage_fragment_count INTEGER NOT NULL DEFAULT 0,
+      lineage_record_count INTEGER NOT NULL DEFAULT 0,
+      lineage_blob_count INTEGER NOT NULL DEFAULT 0,
+      lineage_candidate_count INTEGER NOT NULL DEFAULT 0
     );
 
     CREATE TABLE IF NOT EXISTS turn_context_refs_v2 (
@@ -474,6 +486,8 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[7]!);
   ensureUserTurnsV2CanonicalTextFull(db);
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[8]!);
+  ensureUserTurnsV2LineageBlob(db);
+  recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[9]!);
   setSchemaMeta(db, "schema_version", STORAGE_SCHEMA_VERSION);
 
   ensureStorageIndexes(db);
@@ -827,6 +841,17 @@ function ensureUserTurnsV2FullColumns(db: DatabaseSync): void {
 function ensureUserTurnsV2CanonicalTextFull(db: DatabaseSync): void {
   ensureTableColumns(db, "user_turns_v2", [
     "canonical_text_full TEXT NOT NULL DEFAULT ''",
+  ]);
+}
+
+function ensureUserTurnsV2LineageBlob(db: DatabaseSync): void {
+  ensureTableColumns(db, "user_turns_v2", [
+    "lineage_blob_sha256 TEXT NOT NULL DEFAULT ''",
+    "lineage_atom_count INTEGER NOT NULL DEFAULT 0",
+    "lineage_fragment_count INTEGER NOT NULL DEFAULT 0",
+    "lineage_record_count INTEGER NOT NULL DEFAULT 0",
+    "lineage_blob_count INTEGER NOT NULL DEFAULT 0",
+    "lineage_candidate_count INTEGER NOT NULL DEFAULT 0",
   ]);
 }
 

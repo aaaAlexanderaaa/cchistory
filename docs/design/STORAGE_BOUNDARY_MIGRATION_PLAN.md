@@ -214,13 +214,60 @@ B.5  read cutover
        (6) getTurnContext fallback  (storage.ts:653-662 — drop the V1 fallback)
      V1 reads are removed, not made conditional.
 
-     B.5.0 (schema `2026-06-18.1` + `2026-06-18.2`) is a prerequisite sub-phase
-     that extends the V2 sidecar schema before any read cutover can ship. See
-     "B.5.0 — V2 schema extension" below for what landed, what is still bounded,
-     and why this sub-phase exists. B.5.6 (drop getTurnContext V1 fallback) has
-     already shipped; the remaining B.5.1-5 cutovers are blocked on B.5.0
-     landing cleanly on a real-sized store (B.4c `user_turn` parity must report
-     zero mismatches).
+     B.5.0 (schema `2026-06-18.1` + `2026-06-18.2` + `2026-06-22.1`) is a
+     prerequisite sub-phase that extends the V2 sidecar schema before any read
+     cutover can ship. See "B.5.0 — V2 schema extension" below for what landed,
+     what is still bounded, and why this sub-phase exists. B.5.6 (drop
+     getTurnContext V1 fallback) has already shipped; the remaining B.5.1-5
+     cutovers are blocked on B.5.0 landing cleanly on a real-sized store
+     (B.4c `user_turn` parity must report zero mismatches).
+
+     Recommended cutover order (the six read paths are independent but the
+     blast radius differs; this order minimizes rollback cost):
+
+       1. B.5.2 detail/list reads — largest caller surface (5 sites in
+          storage.ts) but every site is internal and easy to revert; do this
+          first to surface any projection drift early.
+       2. B.5.1 search scan — depends on detail reads being V2-backed for the
+          candidate enrichment path; ship after B.5.2.
+       3. B.5.3 linker input — independent of (1) and (2); can run in parallel.
+       4. B.5.4 stats + TUI browser — pure read-side projections; independent.
+       5. B.5.5 bundle/export shape — MUST be last. The bundle is the external
+          interface; once it ships, downstream consumers have a new baseline
+          and rollback no longer matches the pre-migration bundle. Gated on
+          B.4a bundle byte-diff reporting PASS on the operator store (see
+          below).
+
+     Per-cutover acceptance gate (apply after every B.5.x cutover before
+     moving on):
+       - Targeted unit/integration tests in the affected package pass.
+       - `cchistory migration validate --only read-paths` still reports
+         `user_turn.mismatch_count == 0` AND `mismatch_count == 0` (the
+         latter catches TurnContext regressions from B.5.6, which already
+         dropped V1 fallback).
+       - For B.5.5 specifically, also re-run `cchistory migration validate
+         --only bundle` with pre-bundle checksums captured BEFORE the
+         cutover; post-bundle checksums must match.
+
+     B.4a bundle byte-diff baseline: required for B.5.5. Operators must
+     capture a pre-bundle snapshot (bundle export + checksums) from the V1
+     store BEFORE starting B.5.5. For the operator store at
+     `/root/.cchistory/cchistory.sqlite`, the pre-B.5.0g backup at
+     `cchistory.sqlite.bak-pre-b5g` is the source of truth for pre-bundle
+     bytes; V1 user_turns were not modified by B.5.0g, so a bundle exported
+     from the backup and a bundle exported from the current store's V1
+     reads should be byte-identical (and both should match the post-B.5.5
+     V2-exported bundle).
+
+     B.4a timing note: running bundle byte-diff BEFORE B.5.5 cutover is
+     uninformative — `buildSourcePayload` reads V1 tables via `payload_json`,
+     B.3 only wrote to V2 sidecars, so pre-bundle and post-bundle are
+     definitionally byte-identical and the validator trivially passes. B.4a
+     becomes meaningful only at B.5.5 cutover, when bundle export switches
+     from V1 reads to V2 reads; the diff then catches any drift between
+     the two read paths. The pre-bundle snapshot for that diff is the
+     current V1-read bundle export (which equals any pre-B.5.0g V1-read
+     bundle export, since V1 is untouched by B.5.0*).
 
 B.5.0  V2 schema extension (prerequisite for B.5.1-5)
        Original V2 bounded several product-core fields to serve the "bounded
@@ -273,19 +320,70 @@ B.5.0  V2 schema extension (prerequisite for B.5.1-5)
        validator. The bounded `canonical_text` column stays at 16 KiB as a
        fast scan hint for search.
 
-       Still bounded (deliberate, derived/index material only):
+       B.5.0f reconstructs `display_segments` on the V2 read path via
+       `joinDisplaySegments(user_messages[].display_segments)`. The parser
+       produces both `turn.display_segments` and per-message
+       `user_messages[i].display_segments` from the same source, so the join is
+       byte-exact against V1. The bounded `display_segments_json` column stays
+       at 8 KiB as a scan hint for future list views; it is no longer the
+       authoritative source and never gates recall. This change converts the
+       prior "tail truncated, fall back to canonical_text_full" behavior —
+       which was hand-wavy because segments are structured while canonical_text
+       is flat text — into an explicit reconstruct-from-Tier-1 rule. The
+       function lives in `@cchistory/domain` so both the parser
+       (`packages/source-adapters/src/core/projections.ts`) and the V2 read
+       path (`packages/storage/src/internal/queries.ts`) share one definition.
+
+       B.5.0g (schema `2026-06-22.1`) promotes `lineage` from bounded to
+       content-addressed. Adds six columns to `user_turns_v2`:
+         - `lineage_blob_sha256`         — content-addressed ref to evidence blob
+         - `lineage_atom_count`          — fast list-view density
+         - `lineage_fragment_count`
+         - `lineage_record_count`
+         - `lineage_blob_count`
+         - `lineage_candidate_count`
+       The full `{atom_refs, fragment_refs, record_refs, blob_refs,
+       candidate_refs}` object is serialized to a content-addressed blob with
+       media type `application/vnd.cchistory.turn-lineage+json` and capture
+       kind `turn_lineage`, written via `materializeTurnLineage` +
+       `upsertEvidenceBlob`. No `evidence_captures` row is written because
+       lineage is derived rather than a capture of external bytes; the blob is
+       referenced directly from `user_turns_v2.lineage_blob_sha256`. The V2
+       read path (`readUserTurnFromV2`, `listUserTurnsFromV2`) takes an options
+       object with `assetDir` and fetches the blob via
+       `readTurnLineageFromV2Blob`. If the blob is missing (pre-B.5.0g backfill
+       or assetDir omitted), refs default to empty arrays so the projection
+       shape is preserved.
+
+       Why lineage was promoted: lineage refs are not reconstructable from any
+       other Tier 1/2 field — re-deriving them requires re-running the
+       parser/linker. The original 8 KiB Tier 3 cap was therefore functionally
+       lossy on turns with >200 atoms (observed in production), violating the
+       "bounded fields must be reconstructable" rule added to the contract in
+       B.5.0g. The bounded `lineage_refs_json` column is retained as a scan
+       hint but is no longer authoritative.
+
+       Still bounded (deliberate, derived/index material only — all
+       reconstructable from a Tier 1/2 field on the read path):
          - `canonical_text` ≤ 16 KiB (scan hint; full in canonical_text_full)
          - `raw_text_preview` ≤ 4 KiB (scan hint; full in raw_text_full)
-         - `display_segments_json` ≤ 8 KiB (UI hints; rare tail truncation)
+         - `display_segments_json` ≤ 8 KiB (scan hint; full reconstructed from
+           user_messages_json via joinDisplaySegments)
          - `context_summary_json` ≤ 8 KiB (small summary; rarely exceeds)
-         - `lineage_refs_json` ≤ 8 KiB (ref arrays; rarely exceeds)
+         - `lineage_refs_json` ≤ 8 KiB (scan hint; full in lineage blob)
 
        Deliberately not in V2 sidecar (linker-internal only, derivable from
        candidates cache): `project_confidence`, `candidate_project_ids`.
 
        Acceptance gate for B.5.1-5 cutovers: on a real-sized operator store,
        `cchistory migration validate --only read-paths` reports
-       `user_turn.mismatch_count == 0`.
+       `user_turn.mismatch_count == 0`. Confirmed at 0/2804 on the operator
+       store on 2026-06-22 after B.5.0g landed and B.3 was re-run.
+
+       Operators who ran B.3 against any pre-2026-06-22.1 sidecar schema must
+       `cchistory migration reset --phase storage-boundary.write` then re-run,
+       because B.3 was idempotent against the prior schema and won't
+       auto-repopulate the new columns / blob otherwise.
 
 B.6  compact
      Two-step, defaults to running both:

@@ -111,12 +111,19 @@ Default CLI/TUI/Web/API read paths require a turn row that materializes the
 fields read paths actually consume. The original V2 contract set a single 32 KiB
 "hot budget" for the entire sidecar row and pushed everything else into the
 content-addressed blob. That was corrected in B.5.0 (schema `2026-06-18.1`,
-extended in `2026-06-18.2`) after measurement on a 4.4 GiB / 2804-turn operator
-store showed the budget silently dropped product-critical content: 100% of
-turns lost `user_messages`, 33% lost `raw_text` past 4 KiB, 100% lost
-`project_id`/`path_text`/`last_context_activity_at`.
+extended in `2026-06-18.2` and `2026-06-22.1`) after measurement on a 4.4 GiB /
+2804-turn operator store showed the budget silently dropped product-critical
+content: 100% of turns lost `user_messages`, 33% lost `raw_text` past 4 KiB,
+100% lost `project_id`/`path_text`/`last_context_activity_at`, and turns with
+>200 lineage atoms lost the tail of `lineage_refs_json` (unreconstructable
+without re-running the parser/linker).
 
-The corrected principle is a **value hierarchy**, not a byte budget:
+The corrected principle is a **value hierarchy**, not a byte budget. The
+distinguishing test for each field is "if this field were silently truncated,
+would the lost bytes be reconstructable from another field in the sidecar, or
+from following a ref?" If yes, the field may be bounded (Tier 3). If no, it
+must be stored in full (Tier 1) or behind a ref (Tier 4). Truncating an
+unreconstructable field is functionally lossy and forbidden.
 
 1. **Product-core content — inviolable, stored in full.** This is the reason
    cchistory exists. Bounding these fields to serve architectural value props
@@ -140,26 +147,42 @@ The corrected principle is a **value hierarchy**, not a byte budget:
    - lifecycle axes (`link_state`, `sync_axis`, `value_axis`, `retention_axis`)
 
 3. **Bounded derived/index material — best-effort, may be truncated.** These
-   fields feed scans, summaries, and lineage drill-down. They are not the
-   product's core value; truncating them degrades helper features, not recall.
+   fields feed scans and summaries. They are not the product's core value;
+   truncating them degrades helper features, not recall. **Membership rule: a
+   field belongs here only if its full form is reconstructable from another
+   Tier 1/2 field on the read path.** A bounded field that cannot be
+   reconstructed after truncation is functionally lossy and must be promoted to
+   Tier 1 or Tier 4.
    - `canonical_text` ≤ 16 KiB (scan hint; full text is in `canonical_text_full`)
    - `raw_text_preview` ≤ 4 KiB (scan hint; full text is in `raw_text_full`)
-   - `display_segments_json` ≤ 8 KiB (UI rendering hints; for turns with very
-     long segment lists, the tail is truncated — display falls back to
-     `canonical_text_full` if needed)
+   - `display_segments_json` ≤ 8 KiB (scan hint only; the authoritative
+     `display_segments` array is reconstructed on the V2 read path by
+     `joinDisplaySegments(user_messages[].display_segments)`. `user_messages`
+     is Tier 1, so reconstruction is byte-exact and the bounded column never
+     gates recall.)
    - `context_summary_json` ≤ 8 KiB (small summary object; rarely exceeds)
-   - `lineage_refs_json` ≤ 8 KiB (ref arrays; rarely exceeds)
 
 4. **Reference-only — never inlined.** Full assistant replies, full tool input,
    and full tool output are stored in the content-addressed context cache
    (`turn_context_refs_v2` → `evidence/blobs/<sha>`). The sidecar carries only
-   counts, previews, and the cache ref.
+   counts, previews, and the cache ref. The same pattern applies to the
+   `lineage` object (B.5.0g, schema `2026-06-22.1`): the full
+   `{atom_refs, fragment_refs, record_refs, blob_refs, candidate_refs}` payload
+   is serialized to a content-addressed blob
+   (`application/vnd.cchistory.turn-lineage+json`) and the sidecar carries
+   `lineage_blob_sha256` plus five integer count columns
+   (`lineage_atom_count`, `lineage_fragment_count`, `lineage_record_count`,
+   `lineage_blob_count`, `lineage_candidate_count`) for fast list-view density.
+   Lineage was previously Tier 3 with an 8 KiB cap; measurement showed turns
+   with >200 atoms exist in production, so truncation was unreconstructable
+   without re-running the parser/linker. The promotion to Tier 4 corrects that.
 
 The original 32 KiB hot-budget rule is **withdrawn**. Row size is now driven by
 the value hierarchy: product-core content is stored in full regardless of size;
-derived/index material is bounded where truncation is tolerable. The sidecar
-will be larger for turns with large user input — that is the correct trade-off
-for a tool whose purpose is preserving user input.
+derived/index material is bounded only where truncation is tolerable and the
+full form is reconstructable. The sidecar will be larger for turns with large
+user input — that is the correct trade-off for a tool whose purpose is
+preserving user input.
 
 V1 `user_turns` rows remain populated until the B.6 compact step.
 

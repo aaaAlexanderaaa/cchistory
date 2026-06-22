@@ -19,6 +19,7 @@ import type {
   SourcePlatform,
   SourceDefinition,
 } from "@cchistory/domain";
+import { joinDisplaySegments } from "@cchistory/domain";
 import { applyMaskTemplates, LITERAL_PROMPT_MASK_TEMPLATE_IDS } from "../masks.js";
 import {
   stableId,
@@ -889,17 +890,6 @@ export function countLossAuditsByStage(lossAudits: readonly LossAuditRecord[]): 
     counts[audit.stage_kind] += 1;
   }
   return counts;
-}
-
-export function joinDisplaySegments(segmentGroups: readonly (readonly DisplaySegment[])[]): DisplaySegment[] {
-  const segments: DisplaySegment[] = [];
-  for (const [index, group] of segmentGroups.entries()) {
-    if (index > 0) {
-      segments.push({ type: "text", content: "\n\n" });
-    }
-    segments.push(...group);
-  }
-  return segments;
 }
 
 export function extractCanonicalFallback(segments: readonly DisplaySegment[]): string {

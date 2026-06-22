@@ -21,7 +21,9 @@ import type {
   TurnContextProjection,
   UserTurnProjection,
 } from "@cchistory/domain";
+import { joinDisplaySegments } from "@cchistory/domain";
 import { hydrateSourceStatus } from "./source-identity.js";
+import { readTurnLineageFromV2Blob } from "../evidence-store.js";
 import {
   fromJson,
   nowIso,
@@ -289,13 +291,40 @@ interface UserTurnV2Row {
   project_link_state: string;
   last_context_activity_at: string;
   path_text: string;
+  lineage_blob_sha256: string;
+  lineage_atom_count: number;
+  lineage_fragment_count: number;
+  lineage_record_count: number;
+  lineage_blob_count: number;
+  lineage_candidate_count: number;
 }
 
-function userTurnFromV2Row(row: UserTurnV2Row): UserTurnProjection {
+function userTurnFromV2Row(input: {
+  row: UserTurnV2Row;
+  lineage?: UserTurnProjection["lineage"];
+}): UserTurnProjection {
+  const { row, lineage } = input;
   const userMessages = fromJson<UserTurnProjection["user_messages"]>(row.user_messages_json || "[]");
-  const displaySegments = fromJson<UserTurnProjection["display_segments"]>(row.display_segments_json || "[]");
+  // display_segments is derivable from user_messages[].display_segments via
+  // joinDisplaySegments (the same way the parser produces it). The bounded
+  // display_segments_json column is kept only as a scan-hint preview for
+  // future list views; the authoritative field is reconstructed on read so
+  // it is always byte-identical to V1.
+  const displaySegments = joinDisplaySegments(
+    userMessages.map((message) => message.display_segments ?? []),
+  );
   const contextSummary = fromJson<UserTurnProjection["context_summary"]>(row.context_summary_json || "{}");
-  const lineage = fromJson<UserTurnProjection["lineage"]>(row.lineage_refs_json || "{}");
+  // B.5.0g: full lineage is in a content-addressed blob (fetched by the caller
+  // via readTurnLineageFromV2Blob). If the caller didn't fetch it (e.g. list
+  // views that only need counts), fall back to counts + empty refs arrays so
+  // the projection shape is preserved.
+  const resolvedLineage: UserTurnProjection["lineage"] = lineage ?? {
+    atom_refs: [],
+    candidate_refs: [],
+    fragment_refs: [],
+    record_refs: [],
+    blob_refs: [],
+  };
   return {
     turn_id: row.turn_id,
     turn_revision_id: row.turn_revision_id,
@@ -312,7 +341,7 @@ function userTurnFromV2Row(row: UserTurnV2Row): UserTurnProjection {
     user_messages: userMessages,
     context_ref: row.context_ref,
     context_summary: contextSummary,
-    lineage: lineage,
+    lineage: resolvedLineage,
     link_state: row.link_state as UserTurnProjection["link_state"],
     sync_axis: row.sync_axis as UserTurnProjection["sync_axis"],
     value_axis: row.value_axis as UserTurnProjection["value_axis"],
@@ -348,21 +377,54 @@ const USER_TURN_V2_COLUMNS = `
   project_ref,
   project_link_state,
   last_context_activity_at,
-  path_text
+  path_text,
+  lineage_blob_sha256,
+  lineage_atom_count,
+  lineage_fragment_count,
+  lineage_record_count,
+  lineage_blob_count,
+  lineage_candidate_count
 `;
 
-export function readUserTurnFromV2(db: DatabaseSync, turnId: string): UserTurnProjection | undefined {
-  const row = db.prepare(`SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 WHERE turn_id = ?`).get(turnId) as unknown as
-    | UserTurnV2Row
-    | undefined;
-  return row ? userTurnFromV2Row(row) : undefined;
+export function readUserTurnFromV2(input: {
+  db: DatabaseSync;
+  turnId: string;
+  assetDir?: string;
+}): UserTurnProjection | undefined {
+  const row = input.db
+    .prepare(`SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 WHERE turn_id = ?`)
+    .get(input.turnId) as unknown as UserTurnV2Row | undefined;
+  if (!row) {
+    return undefined;
+  }
+  // B.5.0g: full lineage fetched lazily from content-addressed blob. If the
+  // blob is missing (pre-B.5.0g backfill, or assetDir not provided), the row
+  // still returns with counts implicit in the lineage_*_count columns; refs
+  // default to empty arrays. Operators who want refs must run B.3 to populate
+  // lineage_blob_sha256.
+  const lineage = readTurnLineageFromV2Blob({
+    db: input.db,
+    assetDir: input.assetDir,
+    turnId: input.turnId,
+  });
+  return userTurnFromV2Row({ row, lineage });
 }
 
-export function listUserTurnsFromV2(db: DatabaseSync): UserTurnProjection[] {
-  const rows = db
+export function listUserTurnsFromV2(input: {
+  db: DatabaseSync;
+  assetDir?: string;
+}): UserTurnProjection[] {
+  const rows = input.db
     .prepare(`SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 ORDER BY submission_started_at DESC, created_at DESC`)
     .all() as unknown as UserTurnV2Row[];
-  return rows.map(userTurnFromV2Row);
+  return rows.map((row) => {
+    const lineage = readTurnLineageFromV2Blob({
+      db: input.db,
+      assetDir: input.assetDir,
+      turnId: row.turn_id,
+    });
+    return userTurnFromV2Row({ row, lineage });
+  });
 }
 
 export function getTurnContext(db: DatabaseSync, turnId: string): TurnContextProjection | undefined {
