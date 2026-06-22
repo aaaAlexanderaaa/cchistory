@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import type { SourceSyncPayload } from "@cchistory/domain";
+import type { SourceSyncPayload, UserTurnProjection } from "@cchistory/domain";
 import { CCHistoryStorage } from "../index.js";
 import { createFixturePayload } from "./helpers.js";
 
@@ -355,6 +355,94 @@ test("storage boundary v2 does not serve orphaned context refs without a live tu
     const reopened = new CCHistoryStorage({ dbPath });
     try {
       assert.equal(reopened.getTurnContext("turn-v2-context-orphan"), undefined);
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("storage boundary v2 bounded JSON columns stay parseable when source data exceeds the bound", async () => {
+  // Regression: boundedJson previously cut the serialized form mid-string and
+  // appended "...[truncated]", producing invalid JSON. fromJson on read then
+  // threw, so any turn with display_segments > 8 KiB became unreadable via V2.
+  // Fix: structural truncation — drop array elements from the tail and object
+  // keys from the tail so the result is always valid JSON of the same type.
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-boundary-v2-bounded-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+
+    const storage = new CCHistoryStorage({ dbPath });
+    const payload = createFixturePayload(
+      "srcinst-codex-v2-bounded",
+      "Bounded JSON regression",
+      "stage-v2-bounded",
+      {
+        baseDir: sourceRoot,
+        sessionId: "session-v2-bounded",
+        turnId: "turn-v2-bounded",
+      },
+    );
+
+    // Overwrite display_segments with 40 segments at 512 bytes each (~20 KiB
+    // total, well past the 8 KiB bound). Also bloat lineage.atom_refs and one
+    // key of context_summary so we exercise the object-shrink path too.
+    const bigText = "x".repeat(512);
+    payload.turns[0]!.display_segments = Array.from({ length: 40 }, (_, i) => ({
+      type: "text" as const,
+      content: `${i}-${bigText}`,
+    }));
+    payload.turns[0]!.lineage = {
+      atom_refs: Array.from({ length: 2000 }, (_, i) => `atom-${i}`),
+      candidate_refs: [],
+      fragment_refs: [],
+      record_refs: [],
+      blob_refs: [],
+    };
+    storage.replaceSourcePayload(payload);
+    storage.close();
+
+    const db = new DatabaseSync(dbPath);
+    try {
+      // The bounded column itself must be valid JSON.
+      const row = db
+        .prepare(
+          "SELECT display_segments_json, lineage_refs_json FROM user_turns_v2 WHERE turn_id = ?",
+        )
+        .get("turn-v2-bounded") as
+        | { display_segments_json: string; lineage_refs_json: string }
+        | undefined;
+      assert.ok(row, "V2 sidecar row must exist");
+
+      const segments = JSON.parse(row.display_segments_json) as unknown[];
+      assert.ok(Array.isArray(segments), "display_segments_json must parse to an array");
+      assert.ok(segments.length < 40, "array must be truncated to fit budget");
+      assert.ok(segments.length > 0, "array must keep at least one element");
+
+      const lineage = JSON.parse(row.lineage_refs_json) as Record<string, unknown>;
+      assert.ok(typeof lineage === "object" && lineage !== null, "lineage must parse to an object");
+      // Whatever survived shrinking, every value must itself be a valid array.
+      for (const value of Object.values(lineage)) {
+        assert.ok(Array.isArray(value), "lineage values must remain arrays after shrink");
+      }
+    } finally {
+      db.close();
+    }
+
+    // End-to-end: readUserTurnFromV2 must not throw and must return a usable
+    // projection (subset of the original).
+    const reopened = new CCHistoryStorage({ dbPath });
+    try {
+      const db2 = reopened.getDatabaseForMigration();
+      const { readUserTurnFromV2 } = await import("../internal/queries.js");
+      const turn = readUserTurnFromV2(db2, "turn-v2-bounded") as UserTurnProjection | undefined;
+      assert.ok(turn, "V2 read must return a projection");
+      assert.ok(turn.display_segments.length < 40, "segments must be a subset");
+      assert.ok(turn.display_segments.length > 0, "at least one segment survives");
     } finally {
       reopened.close();
     }

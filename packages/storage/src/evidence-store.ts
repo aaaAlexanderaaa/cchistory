@@ -1172,7 +1172,75 @@ function boundedString(value: string, maxBytes: number): string {
 }
 
 function boundedJson(value: unknown, maxBytes: number): string {
-  return boundedString(JSON.stringify(value), maxBytes);
+  const serialized = JSON.stringify(value);
+  if (Buffer.byteLength(serialized, "utf8") <= maxBytes) {
+    return serialized;
+  }
+  return JSON.stringify(shrinkJsonToBudget(value, maxBytes));
+}
+
+/**
+ * Structural truncation for bounded JSON columns. The naive approach —
+ * `boundedString(JSON.stringify(value), maxBytes)` — produces invalid JSON
+ * because it cuts the serialized form mid-string and appends "...[truncated]".
+ * `fromJson` on read then throws, so any turn whose payload exceeds the bound
+ * becomes unreadable via V2 (validator aborts; hot-path reads would too).
+ *
+ * This version drops data structurally: arrays shrink from the tail (binary
+ * search for the largest prefix that fits), objects shrink each value first
+ * and then drop keys (last-first) if still over budget. The result is always
+ * valid JSON of the same top-level type. Readers see a subset of the original
+ * — acceptable for the bounded fields this is used on (display_segments,
+ * context_summary, lineage, context preview, raw_event_refs), which are all
+ * derived/index material per the V2 contract.
+ */
+function shrinkJsonToBudget(value: unknown, maxBytes: number): unknown {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return value;
+    let lo = 0;
+    let hi = value.length;
+    while (lo < hi) {
+      const mid = Math.ceil((lo + hi + 1) / 2);
+      if (Buffer.byteLength(JSON.stringify(value.slice(0, mid)), "utf8") <= maxBytes) {
+        lo = mid;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return value.slice(0, lo);
+  }
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return value;
+    // Reserve bytes for the outer braces + key separators. Per-key budget is
+    // even share of what's left; we don't favor any key. If the per-key budget
+    // is tiny, shrink will still return whatever fits (possibly empty arrays/objects).
+    const overhead = 2 + entries.length * 4;
+    const perKeyBudget = Math.max(32, Math.floor((maxBytes - overhead) / entries.length));
+    const shrunk: Record<string, unknown> = {};
+    for (const [key, child] of entries) {
+      shrunk[key] = shrinkJsonToBudget(child, perKeyBudget);
+    }
+    if (Buffer.byteLength(JSON.stringify(shrunk), "utf8") <= maxBytes) {
+      return shrunk;
+    }
+    // Still over budget after shrinking each value. Drop keys from the tail
+    // (preserves the most-relevant keys at the head — the contract orders
+    // lineage/summary fields by importance, see UserTurnProjection).
+    const keys = Object.keys(shrunk);
+    while (keys.length > 0) {
+      const dropped = keys.pop() as string;
+      delete shrunk[dropped];
+      if (Buffer.byteLength(JSON.stringify(shrunk), "utf8") <= maxBytes) {
+        return shrunk;
+      }
+    }
+    return {};
+  }
+  // primitives can't be structurally shrunk to a smaller valid JSON of the
+  // same type; return as-is. The serialized primitive will exceed budget only
+  // by its own length, which is acceptable (we never silently corrupt values).
+  return value;
 }
 
 function groupBy<T>(items: readonly T[], getKey: (item: T) => string): Map<string, T[]> {
