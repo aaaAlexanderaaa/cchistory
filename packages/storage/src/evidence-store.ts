@@ -126,6 +126,349 @@ export function markStorageBoundaryV2SourceAbsentByObservedOrigins(input: {
   });
 }
 
+/**
+ * B.3 streaming variant: backfill V2 sidecars for one source by streaming from
+ * V1 directly, without materializing the full `SourceSyncPayload` in memory.
+ *
+ * The non-streaming path (`writeStorageBoundaryV2Sidecars` fed by
+ * `getSourcePayload`) loads every record/fragment/atom/candidate for the source
+ * into JS memory at once. For sources with >100k records (e.g. a busy codex
+ * source with 265k records / 304k fragments), this blows past the Node heap
+ * before B.3 can complete.
+ *
+ * This variant streams blob-by-blob: for each blob, load just that blob's
+ * records, materialize evidence, write the blob's V2 rows (evidence_blob,
+ * evidence_capture, source_file_ledger) and the blob's parsed_record_spans,
+ * then release the materialized bytes and move on. Memory at any point holds
+ * one blob's worth of data, not the whole source.
+ *
+ * Turns and contexts are streamed directly from their V1 tables; they are
+ * bounded by turn count (small per source — at most a few thousand).
+ *
+ * derived_cache_refs is computed via SQL aggregation at the end (COUNT and
+ * LENGTH(payload_json) SUM per scope), avoiding the need to load fragments /
+ * atoms / candidates into memory at all.
+ */
+export function streamV2SidecarsFromV1(input: {
+  db: DatabaseSync;
+  sourceId: string;
+  assetDir?: string;
+}): {
+  records: number;
+  fragments: number;
+  atoms: number;
+  candidates: number;
+  turns: number;
+  contexts: number;
+  blobs: number;
+  sessions: number;
+} {
+  const db = input.db;
+  const sourceId = input.sourceId;
+  const now = nowIso();
+
+  const sourceRow = db.prepare("SELECT payload_json FROM source_instances WHERE id = ?").get(sourceId) as
+    | { payload_json: string }
+    | undefined;
+  if (!sourceRow) {
+    throw new Error(`Cannot backfill source ${sourceId}: source not found in V1 store.`);
+  }
+  const source = fromJson<SourceSyncPayload["source"]>(sourceRow.payload_json);
+  const parserProfileId = deriveParserProfileIdFromStageRuns(db, sourceId);
+
+  const counts = {
+    blobs: tableCount(db, "captured_blobs", sourceId),
+    records: tableCount(db, "raw_records", sourceId),
+    fragments: tableCount(db, "source_fragments", sourceId),
+    atoms: tableCount(db, "conversation_atoms", sourceId),
+    candidates: tableCount(db, "derived_candidates", sourceId),
+    turns: tableCount(db, "user_turns", sourceId),
+    contexts: tableCount(db, "turn_contexts", sourceId),
+    sessions: tableCount(db, "sessions", sourceId),
+  };
+
+  dbTransaction(db, () => {
+    // Replace mode: drop existing V2 rows for this source. Same clear set as
+    // `prepareReplaceCurrentState`, minus the origin-path ledger work (B.3
+    // doesn't change sync state — it rebuilds sidecars from existing V1).
+    db.prepare("DELETE FROM parsed_record_spans WHERE source_id = ?").run(sourceId);
+    db.prepare("DELETE FROM turn_context_refs_v2 WHERE source_id = ?").run(sourceId);
+    db.prepare("DELETE FROM user_turns_v2 WHERE source_id = ?").run(sourceId);
+    db.prepare("DELETE FROM derived_cache_refs WHERE source_id = ?").run(sourceId);
+
+    // 1. Blob-by-blob: materialize evidence + write blob-scoped V2 rows +
+    //    parsed_record_spans for this blob's records. Memory peak = one blob.
+    const blobsStmt = db.prepare(
+      "SELECT payload_json FROM captured_blobs WHERE source_id = ? ORDER BY origin_path, id",
+    );
+    const recordsByBlobStmt = db.prepare(
+      "SELECT payload_json FROM raw_records WHERE source_id = ? AND blob_id = ? ORDER BY ordinal",
+    );
+    for (const row of blobsStmt.iterate(sourceId) as Iterable<{ payload_json: string }>) {
+      const blob = fromJson<CapturedBlob>(row.payload_json);
+      const records: RawRecord[] = [];
+      for (const r of recordsByBlobStmt.iterate(sourceId, blob.id) as Iterable<{ payload_json: string }>) {
+        records.push(fromJson<RawRecord>(r.payload_json));
+      }
+      const materialized = materializeBlobEvidence({
+        assetDir: input.assetDir,
+        blob,
+        records,
+        createdAt: now,
+      });
+      const lineSpans =
+        materialized.captureKind === "source_blob" ? indexJsonlLineSpans(materialized.bytes) : undefined;
+      upsertEvidenceBlob(db, materialized);
+      upsertEvidenceCapture(db, sourceId, blob, materialized, now);
+      upsertSourceFileLedger(db, {
+        sourceId,
+        blob,
+        materialized,
+        records,
+        parserProfileId,
+        observedAt: now,
+      });
+      for (const record of records) {
+        upsertParsedRecordSpan(db, {
+          record,
+          materialized,
+          lineSpan: lineSpans?.get(record.ordinal),
+          parserProfileId,
+          createdAt: now,
+        });
+      }
+    }
+
+    // 2. Turns (bounded by turn count per source).
+    const turnsStmt = db.prepare(
+      "SELECT payload_json FROM user_turns WHERE source_id = ? ORDER BY submission_started_at DESC, created_at DESC",
+    );
+    for (const row of turnsStmt.iterate(sourceId) as Iterable<{ payload_json: string }>) {
+      const turn = fromJson<UserTurnProjection>(row.payload_json);
+      upsertBoundedUserTurn(db, turn, now);
+    }
+
+    // 3. Contexts (one per turn).
+    const contextsStmt = db.prepare(
+      "SELECT payload_json FROM turn_contexts WHERE source_id = ? ORDER BY turn_id",
+    );
+    for (const row of contextsStmt.iterate(sourceId) as Iterable<{ payload_json: string }>) {
+      const context = fromJson<TurnContextProjection>(row.payload_json);
+      const materialized = materializeContextCache({ assetDir: input.assetDir, context, createdAt: now });
+      upsertEvidenceBlob(db, materialized);
+      upsertTurnContextRef(db, context, sourceId, materialized, now);
+    }
+
+    // 4. derived_cache_refs via SQL aggregation. No in-memory lists needed.
+    upsertDerivedCacheRefsStreaming(db, sourceId, parserProfileId, now);
+  });
+
+  return counts;
+}
+
+function tableCount(db: DatabaseSync, tableName: string, sourceId: string): number {
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM ${tableName} WHERE source_id = ?`).get(sourceId) as
+    | { n: number }
+    | undefined;
+  return Number(row?.n ?? 0);
+}
+
+function deriveParserProfileIdFromStageRuns(db: DatabaseSync, sourceId: string): string {
+  const rows = db
+    .prepare("SELECT payload_json FROM stage_runs WHERE source_id = ?")
+    .all(sourceId) as Array<{ payload_json: string }>;
+  for (const row of rows) {
+    try {
+      const stageRun = fromJson<{ source_format_profile_ids?: string[]; parser_version?: string }>(
+        row.payload_json,
+      );
+      const profileId = stageRun.source_format_profile_ids?.find((entry) => entry.trim().length > 0);
+      if (profileId) return profileId;
+    } catch {
+      continue;
+    }
+  }
+  for (const row of rows) {
+    try {
+      const stageRun = fromJson<{ parser_version?: string }>(row.payload_json);
+      if (stageRun.parser_version) return stageRun.parser_version;
+    } catch {
+      continue;
+    }
+  }
+  return "";
+}
+
+/**
+ * Streaming variant of `upsertDerivedCacheRefs`. Computes item_count and
+ * payload_bytes per (cache_kind, scope) via SQL aggregation against the V1
+ * tables, avoiding the need to load fragments/atoms/candidates into memory.
+ *
+ * Scope kinds produced (mirrors the non-streaming path):
+ *   - source:      scope_ref = sourceId
+ *   - parser_profile: scope_ref = parserProfileId
+ *   - origin_path: scope_ref = blob.origin_path (from captured_blobs, joined via raw_records.blob_id)
+ *   - session:     scope_ref = session_ref (every distinct session_ref in raw_records)
+ *
+ * The non-streaming path also walks origin_path scopes via per-blob records
+ * and groups by session_refs that appear in those records. That gives the same
+ * per-session numbers as joining raw_records to sessions directly, because
+ * every session_ref that appears in any record is by definition "in scope" for
+ * that session — so the GROUP BY session_ref result is equivalent.
+ */
+function upsertDerivedCacheRefsStreaming(
+  db: DatabaseSync,
+  sourceId: string,
+  parserProfileId: string,
+  now: string,
+): void {
+  const cacheTables: ReadonlyArray<DerivedCacheKind> = [
+    "raw_records",
+    "source_fragments",
+    "conversation_atoms",
+    "derived_candidates",
+  ];
+
+  const upsert = db.prepare(`
+    INSERT OR REPLACE INTO derived_cache_refs (
+      id, cache_kind, source_id, scope_kind, scope_ref, parser_profile_id,
+      evidence_sha256, item_count, payload_bytes, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?)
+  `);
+  const ref = (scopeKind: string, scopeRef: string) =>
+    compositeKey("derived-cache", sourceId, scopeKind, scopeRef, parserProfileId);
+
+  for (const cacheKind of cacheTables) {
+    // Source-scoped
+    const sourceStats = tablePayloadStats(db, cacheKind, "WHERE source_id = ?", [sourceId]);
+    upsert.run(
+      ref("source", sourceId),
+      cacheKind,
+      sourceId,
+      "source",
+      sourceId,
+      parserProfileId,
+      sourceStats.itemCount,
+      sourceStats.payloadBytes,
+      now,
+      now,
+    );
+
+    // Parser-profile-scoped
+    upsert.run(
+      ref("parser_profile", parserProfileId),
+      cacheKind,
+      sourceId,
+      "parser_profile",
+      parserProfileId,
+      parserProfileId,
+      sourceStats.itemCount,
+      sourceStats.payloadBytes,
+      now,
+      now,
+    );
+
+    // Session-scoped (via raw_records.session_ref or column on the table)
+    const sessionColumn = sessionRefColumnFor(cacheKind);
+    if (sessionColumn) {
+      const sessionRows = db
+        .prepare(
+          `SELECT ${sessionColumn} AS session_ref,
+                  COUNT(*) AS item_count,
+                  COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0) AS payload_bytes
+             FROM ${cacheKind}
+            WHERE source_id = ?
+            GROUP BY ${sessionColumn}`,
+        )
+        .all(sourceId) as Array<{ session_ref: string; item_count: number; payload_bytes: number }>;
+      for (const r of sessionRows) {
+        if (!r.session_ref) continue;
+        upsert.run(
+          ref("session", r.session_ref),
+          cacheKind,
+          sourceId,
+          "session",
+          r.session_ref,
+          parserProfileId,
+          Number(r.item_count),
+          Number(r.payload_bytes),
+          now,
+          now,
+        );
+      }
+    }
+
+    // Origin-path-scoped (only for cache kinds that have a blob_id column
+    // joinable to captured_blobs: raw_records, parsed_record_spans). For
+    // tables without blob_id, origin_path scope is left empty — the
+    // non-streaming path also derives origin_path scope from records, so
+    // fragments/atoms/candidates are grouped by session_refs seen in those
+    // records. Doing that join in SQL is possible but adds complexity for
+    // a derived stats table no current read path consumes.
+    if (cacheKind === "raw_records") {
+      const originRows = db
+        .prepare(
+          `SELECT cb.origin_path AS origin_path,
+                  COUNT(*) AS item_count,
+                  COALESCE(SUM(LENGTH(CAST(rr.payload_json AS BLOB))), 0) AS payload_bytes
+             FROM raw_records rr
+             JOIN captured_blobs cb ON cb.id = rr.blob_id
+            WHERE rr.source_id = ?
+            GROUP BY cb.origin_path`,
+        )
+        .all(sourceId) as Array<{ origin_path: string; item_count: number; payload_bytes: number }>;
+      for (const r of originRows) {
+        if (!r.origin_path) continue;
+        const normalized = normalizeOriginPath(r.origin_path);
+        upsert.run(
+          ref("origin_path", normalized),
+          cacheKind,
+          sourceId,
+          "origin_path",
+          normalized,
+          parserProfileId,
+          Number(r.item_count),
+          Number(r.payload_bytes),
+          now,
+          now,
+        );
+      }
+    }
+  }
+}
+
+function sessionRefColumnFor(cacheKind: DerivedCacheKind): string | undefined {
+  switch (cacheKind) {
+    case "raw_records":
+      return "session_ref";
+    case "source_fragments":
+      return "session_ref";
+    case "conversation_atoms":
+      return "session_ref";
+    case "derived_candidates":
+      return "session_ref";
+    default:
+      return undefined;
+  }
+}
+
+function tablePayloadStats(
+  db: DatabaseSync,
+  tableName: string,
+  whereClause: string,
+  params: readonly (string | number | null)[],
+): { itemCount: number; payloadBytes: number } {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS item_count,
+              COALESCE(SUM(LENGTH(CAST(payload_json AS BLOB))), 0) AS payload_bytes
+         FROM ${tableName}
+         ${whereClause}`,
+    )
+    .get(...params) as { item_count: number; payload_bytes: number };
+  return { itemCount: Number(row.item_count), payloadBytes: Number(row.payload_bytes) };
+}
+
 export function retireStorageBoundaryV2Sources(input: {
   db: DatabaseSync;
   sourceIds: readonly string[];

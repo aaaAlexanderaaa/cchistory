@@ -51,6 +51,7 @@ import {
   markStorageBoundaryV2SourceAbsentByObservedOrigins,
   readTurnContextFromV2Cache,
   retireStorageBoundaryV2Sources,
+  streamV2SidecarsFromV1,
   writeStorageBoundaryV2Sidecars,
 } from "../evidence-store.js";
 import { buildFallbackProjectObservationCandidates } from "../linking/fallback.js";
@@ -1081,16 +1082,13 @@ export class CCHistoryStorage {
   /**
    * B.3: backfill V2 sidecars for one source from the V1 view of the store.
    *
-   * Reads the V1-derived `SourceSyncPayload` (via `getSourcePayload`) and
-   * re-runs the canonical V2 write path. The V2 writes use INSERT OR REPLACE
-   * semantics, so existing V2 rows for this source are rewritten with
-   * identical content and missing V2 rows are filled. V1 payloads are NOT
-   * touched.
+   * Streams V1 rows directly into V2 sidecar tables, blob-by-blob, so memory
+   * use is bounded by the largest single blob rather than the whole source.
+   * The previous non-streaming path (load full `SourceSyncPayload` then write)
+   * OOM'd on sources with >100k records.
    *
-   * The implementation calls `writeStorageBoundaryV2Sidecars` in "replace"
-   * mode, which first clears the source's V2 rows and then re-inserts them.
-   * This is acceptable because B.3 runs once per source; the rewrite cost is
-   * paid once. Subsequent incremental syncs land on the normal hot path.
+   * V1 payloads are NOT touched. Existing V2 rows for this source are cleared
+   * (replace semantics) before re-insert.
    *
    * Returns counts of the V1 rows that drove the backfill so the caller can
    * report progress.
@@ -1106,22 +1104,12 @@ export class CCHistoryStorage {
     blobs: number;
     sessions: number;
   } {
-    const payload = this.getSourcePayload(sourceId);
-    if (!payload) {
-      throw new Error(`Cannot backfill source ${sourceId}: source not found in V1 store.`);
-    }
-    this.writeStorageBoundaryV2Sidecars(payload, { writeMode: "replace" });
-    return {
-      source_id: sourceId,
-      records: payload.records.length,
-      fragments: payload.fragments.length,
-      atoms: payload.atoms.length,
-      candidates: payload.candidates.length,
-      turns: payload.turns.length,
-      contexts: payload.contexts.length,
-      blobs: payload.blobs.length,
-      sessions: payload.sessions.length,
-    };
+    const counts = streamV2SidecarsFromV1({
+      db: this.db,
+      sourceId,
+      assetDir: this.assetDir,
+    });
+    return { source_id: sourceId, ...counts };
   }
 
   /**
