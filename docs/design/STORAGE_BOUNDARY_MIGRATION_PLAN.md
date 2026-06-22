@@ -214,6 +214,79 @@ B.5  read cutover
        (6) getTurnContext fallback  (storage.ts:653-662 — drop the V1 fallback)
      V1 reads are removed, not made conditional.
 
+     B.5.0 (schema `2026-06-18.1` + `2026-06-18.2`) is a prerequisite sub-phase
+     that extends the V2 sidecar schema before any read cutover can ship. See
+     "B.5.0 — V2 schema extension" below for what landed, what is still bounded,
+     and why this sub-phase exists. B.5.6 (drop getTurnContext V1 fallback) has
+     already shipped; the remaining B.5.1-5 cutovers are blocked on B.5.0
+     landing cleanly on a real-sized store (B.4c `user_turn` parity must report
+     zero mismatches).
+
+B.5.0  V2 schema extension (prerequisite for B.5.1-5)
+       Original V2 bounded several product-core fields to serve the "bounded
+       sidecar + content-addressed blob" value proposition. Measurement on
+       operator store showed this silently dropped the user's actual input —
+       100% of turns lost `user_messages`, 33% lost `raw_text` past 4 KiB,
+       4.3% lost `canonical_text` past 16 KiB. The tool's purpose is archiving
+       user input; bounding it to serve architectural elegance was wrong.
+       See `STORAGE_BOUNDARY_V2_CONTRACT.md` "Bounded UserTurn Read Model" for
+       the corrected value hierarchy.
+
+       B.5.0a (schema `2026-06-18.1`) added seven full-content columns to
+       `user_turns_v2`:
+         - `user_messages_json`   — full UserMessageProjection array
+         - `raw_text_full`        — full verbatim input
+         - `project_id`, `project_ref`, `project_link_state` — tiny metadata
+         - `last_context_activity_at`
+         - `path_text`
+
+       B.5.0b extended `upsertBoundedUserTurn` to populate the new columns from
+       `UserTurnProjection` (no truncation).
+
+       B.5.0c added the `cchistory migration reset [--phase <name>]` subcommand
+       and the `clearMigrationStatesByPhase` storage helper. Operators who
+       already ran B.3 against the old (pre-2026-06-18.1) sidecar schema must
+       clear the write marker and re-run:
+
+           cchistory migration reset --phase storage-boundary.write
+           cchistory migration run --store <dir>
+           cchistory migration validate --pre-bundle <dir> --store <dir>
+
+       B.5.0d extended B.4c (read-path parity) to deepEqual
+       `UserTurnProjection` reconstructed from V2 against V1, alongside the
+       existing `TurnContextProjection` check. The validator's per-outcome JSON
+       now reports a separate `user_turn` field:
+
+           "read_paths": {
+             "turns_checked": N,
+             "mismatch_count": M,         // TurnContextProjection diffs
+             "user_turn": {
+               "turns_checked": N,
+               "mismatch_count": K        // UserTurnProjection diffs
+             }
+           }
+
+       B.5.0e (schema `2026-06-18.2`) adds `canonical_text_full` to mirror
+       `raw_text_full`. Without this, B.5.5 (bundle export) cutover would
+       produce different bundle bytes for the 4.3% of turns whose
+       canonical_text exceeds 16 KiB, breaking the B.4a bundle-byte-diff
+       validator. The bounded `canonical_text` column stays at 16 KiB as a
+       fast scan hint for search.
+
+       Still bounded (deliberate, derived/index material only):
+         - `canonical_text` ≤ 16 KiB (scan hint; full in canonical_text_full)
+         - `raw_text_preview` ≤ 4 KiB (scan hint; full in raw_text_full)
+         - `display_segments_json` ≤ 8 KiB (UI hints; rare tail truncation)
+         - `context_summary_json` ≤ 8 KiB (small summary; rarely exceeds)
+         - `lineage_refs_json` ≤ 8 KiB (ref arrays; rarely exceeds)
+
+       Deliberately not in V2 sidecar (linker-internal only, derivable from
+       candidates cache): `project_confidence`, `candidate_project_ids`.
+
+       Acceptance gate for B.5.1-5 cutovers: on a real-sized operator store,
+       `cchistory migration validate --only read-paths` reports
+       `user_turn.mismatch_count == 0`.
+
 B.6  compact
      Two-step, defaults to running both:
        (6a) drop V1 payload_json columns (or drop entire V1-only tables once

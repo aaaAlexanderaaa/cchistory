@@ -34,6 +34,7 @@ export {
 } from "./migration-preview.js";
 export {
   clearMigrationState,
+  clearMigrationStatesByPhase,
   isMigrationScopeCompleted,
   listMigrationStates,
   readMigrationState,

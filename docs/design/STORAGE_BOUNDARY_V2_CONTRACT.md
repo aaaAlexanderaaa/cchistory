@@ -107,22 +107,61 @@ future hot traceability path.
 
 ### Bounded UserTurn Read Model
 
-Default CLI/TUI/Web/API read paths require bounded turn rows containing:
+Default CLI/TUI/Web/API read paths require a turn row that materializes the
+fields read paths actually consume. The original V2 contract set a single 32 KiB
+"hot budget" for the entire sidecar row and pushed everything else into the
+content-addressed blob. That was corrected in B.5.0 (schema `2026-06-18.1`,
+extended in `2026-06-18.2`) after measurement on a 4.4 GiB / 2804-turn operator
+store showed the budget silently dropped product-critical content: 100% of
+turns lost `user_messages`, 33% lost `raw_text` past 4 KiB, 100% lost
+`project_id`/`path_text`/`last_context_activity_at`.
 
-- stable turn and revision ids
-- source/session/project references
-- `canonical_text`
-- bounded `raw_text` or raw text refs
-- bounded display segments
-- source/evidence refs
-- path text
-- lifecycle axes
-- context summary
-- lineage refs
+The corrected principle is a **value hierarchy**, not a byte budget:
 
-The hot budget for serialized V2 turn material is 32 KiB per turn. Material above
-that budget belongs in evidence spans or disposable caches. V1 `user_turns` rows
-remain populated until a later migration and compact step.
+1. **Product-core content — inviolable, stored in full.** This is the reason
+   cchistory exists. Bounding these fields to serve architectural value props
+   (dedup, predictable row size, content addressing) is a misuse of the
+   architecture: the sidecar is the de facto read API, so anything not in the
+   sidecar is functionally gone for read paths that don't follow the blob
+   pointer. Stored in full, no cap:
+   - `user_messages_json` (the literal user-typed prompts)
+   - `raw_text_full` (verbatim input including pasted code/attachments)
+   - `canonical_text_full` (B.5.0e, schema `2026-06-18.2` — full canonical form;
+     the bounded `canonical_text` column stays at 16 KiB as a fast scan hint)
+
+2. **Small metadata — inviolable, costs nothing to store.** These are tens of
+   bytes each; omitting them from the sidecar provides no architectural benefit,
+   only capability loss. Stored directly:
+   - `project_id`, `project_ref`, `project_link_state`
+   - `last_context_activity_at`
+   - `path_text`
+   - stable turn and revision ids
+   - source/session references
+   - lifecycle axes (`link_state`, `sync_axis`, `value_axis`, `retention_axis`)
+
+3. **Bounded derived/index material — best-effort, may be truncated.** These
+   fields feed scans, summaries, and lineage drill-down. They are not the
+   product's core value; truncating them degrades helper features, not recall.
+   - `canonical_text` ≤ 16 KiB (scan hint; full text is in `canonical_text_full`)
+   - `raw_text_preview` ≤ 4 KiB (scan hint; full text is in `raw_text_full`)
+   - `display_segments_json` ≤ 8 KiB (UI rendering hints; for turns with very
+     long segment lists, the tail is truncated — display falls back to
+     `canonical_text_full` if needed)
+   - `context_summary_json` ≤ 8 KiB (small summary object; rarely exceeds)
+   - `lineage_refs_json` ≤ 8 KiB (ref arrays; rarely exceeds)
+
+4. **Reference-only — never inlined.** Full assistant replies, full tool input,
+   and full tool output are stored in the content-addressed context cache
+   (`turn_context_refs_v2` → `evidence/blobs/<sha>`). The sidecar carries only
+   counts, previews, and the cache ref.
+
+The original 32 KiB hot-budget rule is **withdrawn**. Row size is now driven by
+the value hierarchy: product-core content is stored in full regardless of size;
+derived/index material is bounded where truncation is tolerable. The sidecar
+will be larger for turns with large user input — that is the correct trade-off
+for a tool whose purpose is preserving user input.
+
+V1 `user_turns` rows remain populated until the B.6 compact step.
 
 ### Reference-First TurnContext
 

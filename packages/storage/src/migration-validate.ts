@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import type { TurnContextProjection } from "@cchistory/domain";
+import type { TurnContextProjection, UserTurnProjection } from "@cchistory/domain";
 import {
   recordMigrationAbort,
   recordMigrationComplete,
@@ -85,6 +85,20 @@ export interface ReadPathParityResult {
     detail?: string;
   }>;
   mismatch_count: number;
+  /**
+   * B.5.0d: UserTurnProjection parity. Tracks whether the V2 full-content
+   * columns round-trip the entire projection the read paths consume. When
+   * this fails, B.5.1-5 cutovers cannot proceed.
+   */
+  user_turn: {
+    turns_checked: number;
+    mismatches: Array<{
+      turn_id: string;
+      reason: "v2_missing" | "v1_missing" | "diff";
+      detail?: string;
+    }>;
+    mismatch_count: number;
+  };
 }
 
 export interface MigrationValidatorOutcome {
@@ -255,8 +269,11 @@ async function runInventoryDiff(dbPath: string): Promise<InventoryDiffResult> {
 function runReadPathParity(dbPath: string, assetDir?: string): ReadPathParityResult {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   const mismatches: ReadPathParityResult["mismatches"] = [];
+  const userTurnMismatches: ReadPathParityResult["user_turn"]["mismatches"] = [];
   let turnsChecked = 0;
   let mismatchCount = 0;
+  let userTurnsChecked = 0;
+  let userTurnMismatchCount = 0;
   try {
     const rows = db.prepare("SELECT id FROM user_turns ORDER BY id").all() as Array<{ id: string }>;
     for (const row of rows) {
@@ -285,15 +302,78 @@ function runReadPathParity(dbPath: string, assetDir?: string): ReadPathParityRes
         }
       }
     }
+
+    for (const row of rows) {
+      userTurnsChecked += 1;
+      const v2 = Queries.readUserTurnFromV2(db, row.id);
+      const v1 = Queries.getTurn(db, row.id);
+      if (v2 === undefined && v1 === undefined) continue;
+      if (v2 === undefined && v1 !== undefined) {
+        userTurnMismatchCount += 1;
+        if (userTurnMismatches.length < MISMATCH_CAP) {
+          userTurnMismatches.push({ turn_id: row.id, reason: "v2_missing" });
+        }
+        continue;
+      }
+      if (v1 === undefined && v2 !== undefined) {
+        userTurnMismatchCount += 1;
+        if (userTurnMismatches.length < MISMATCH_CAP) {
+          userTurnMismatches.push({ turn_id: row.id, reason: "v1_missing" });
+        }
+        continue;
+      }
+      if (!userTurnEqual(v1 as UserTurnProjection, v2 as UserTurnProjection)) {
+        userTurnMismatchCount += 1;
+        if (userTurnMismatches.length < MISMATCH_CAP) {
+          userTurnMismatches.push({
+            turn_id: row.id,
+            reason: "diff",
+            detail: describeUserTurnDiff(v1 as UserTurnProjection, v2 as UserTurnProjection),
+          });
+        }
+      }
+    }
   } finally {
     db.close();
   }
   return {
-    status: mismatchCount > 0 ? "fail" : "pass",
+    status: mismatchCount > 0 || userTurnMismatchCount > 0 ? "fail" : "pass",
     turns_checked: turnsChecked,
     mismatches,
     mismatch_count: mismatchCount,
+    user_turn: {
+      turns_checked: userTurnsChecked,
+      mismatches: userTurnMismatches,
+      mismatch_count: userTurnMismatchCount,
+    },
   };
+}
+
+function userTurnEqual(a: UserTurnProjection, b: UserTurnProjection): boolean {
+  return JSON.stringify(sortKeys(a)) === JSON.stringify(sortKeys(b));
+}
+
+function describeUserTurnDiff(a: UserTurnProjection, b: UserTurnProjection): string {
+  const parts: string[] = [];
+  if (a.user_messages.length !== b.user_messages.length) {
+    parts.push(`user_messages: ${a.user_messages.length} vs ${b.user_messages.length}`);
+  }
+  if ((a.raw_text ?? "").length !== (b.raw_text ?? "").length) {
+    parts.push(`raw_text length: ${(a.raw_text ?? "").length} vs ${(b.raw_text ?? "").length}`);
+  }
+  if ((a.canonical_text ?? "") !== (b.canonical_text ?? "")) {
+    parts.push(`canonical_text differs (${(a.canonical_text ?? "").length} vs ${(b.canonical_text ?? "").length})`);
+  }
+  if ((a.project_id ?? "") !== (b.project_id ?? "")) {
+    parts.push(`project_id: ${a.project_id ?? "(none)"} vs ${b.project_id ?? "(none)"}`);
+  }
+  if ((a.path_text ?? "") !== (b.path_text ?? "")) {
+    parts.push(`path_text differs`);
+  }
+  if ((a.last_context_activity_at ?? "") !== (b.last_context_activity_at ?? "")) {
+    parts.push(`last_context_activity_at: ${a.last_context_activity_at ?? ""} vs ${b.last_context_activity_at ?? ""}`);
+  }
+  return parts.length > 0 ? parts.join("; ") : "serialized projections differ";
 }
 
 function turnContextEqual(a: TurnContextProjection, b: TurnContextProjection): boolean {

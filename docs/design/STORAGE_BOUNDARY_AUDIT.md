@@ -269,6 +269,21 @@ Today those roles are heavily co-located in JSON-over-SQLite.
    project/session references, search fields, summary metrics, and lineage refs.
    It should not inline full tool output or full assistant context.
 
+   > **B.5.0 correction (2026-06-18):** the original reading of this principle
+   > was too aggressive — it bounded `user_messages` and `raw_text` out of the
+   > V2 sidecar entirely, on the assumption that the content-addressed blob
+   > would cover full reads. That assumption broke down because read paths
+   > consume the sidecar, not the blob; the sidecar became the de facto read
+   > API and the blob pointer was rarely followed. Measurement on a 4.4 GiB
+   > operator store showed 100% of turns lost `user_messages` (the user-typed
+   > prompts — the entire reason cchistory exists), 33% lost `raw_text` past
+   > 4 KiB, 4.3% lost `canonical_text` past 16 KiB. B.5.0 added full-content
+   > columns for all three plus five small-metadata fields. See
+   > `STORAGE_BOUNDARY_V2_CONTRACT.md` "Bounded UserTurn Read Model" for the
+   > corrected value hierarchy: product-core content is inviolable; only
+   > derived/index material (scan hints, UI rendering hints, ref arrays) is
+   > bounded going forward.
+
 4. Treat full context as reference-first and lazy.
 
    `TurnContext` should be reconstructed on demand from atoms/fragments/evidence
@@ -431,6 +446,14 @@ Deliverables:
   - lifecycle axes
   - context summary
   - lineage refs
+
+  > **B.5.0 correction (2026-06-18):** see the annotation on principle 3 above.
+  > `user_messages`, `raw_text`, and `canonical_text` are now stored in full
+  > (via `user_messages_json`, `raw_text_full`, `canonical_text_full`); only
+  > their bounded scan-hint counterparts (`canonical_text` ≤ 16 KiB,
+  > `raw_text_preview` ≤ 4 KiB) remain. The other fields in this list are
+  > genuinely bounded derived/index material and remain as originally
+  > specified.
 - Add on-demand context reconstruction for CLI/API/TUI detail paths.
 
 Validation:

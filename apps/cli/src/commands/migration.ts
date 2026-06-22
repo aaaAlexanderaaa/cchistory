@@ -1,10 +1,12 @@
 import {
   backfillStorageBoundaryV2ForStore,
   type BackfillStoreResult,
+  clearMigrationStatesByPhase,
   listMigrationStates,
   readStorageBoundaryMigrationPreview,
   runMigrationValidate,
   type BundleChecksumCompare,
+  type MigrationPhase,
   type MigrationValidateResult,
   type MigrationValidatorKind,
   type MigrationValidatorOutcome,
@@ -22,7 +24,7 @@ import { formatNumber, renderKeyValue, renderSection, renderTable } from "../ren
 export async function handleMigration(context: CommandContext): Promise<CommandOutput> {
   const subcommand = context.commandPath[1];
   if (!subcommand) {
-    throw new Error("`migration` requires a subcommand: preview, run, or status.");
+    throw new Error("`migration` requires a subcommand: preview, run, status, validate, or reset.");
   }
   if (context.positionals.length > 0) {
     throw new Error(`\`migration ${subcommand}\` does not take positional arguments.`);
@@ -44,6 +46,8 @@ export async function handleMigration(context: CommandContext): Promise<CommandO
       return runMigrationStatus(layout);
     case "validate":
       return runMigrationValidateHandler(context, layout);
+    case "reset":
+      return runMigrationReset(context, layout);
     default:
       throw new Error(`Unknown migration subcommand: ${subcommand}`);
   }
@@ -121,6 +125,47 @@ async function runMigrationStatus(layout: StoreLayout): Promise<CommandOutput> {
   } finally {
     storage.close();
   }
+}
+
+async function runMigrationReset(context: CommandContext, layout: StoreLayout): Promise<CommandOutput> {
+  const phaseArg = context.options.phase;
+  if (phaseArg !== undefined && phaseArg.length === 0) {
+    throw new Error("`migration reset --phase <name>` requires a non-empty phase value.");
+  }
+  const phase = phaseArg as MigrationPhase | undefined;
+  const storage = await openStorage(layout);
+  let rowsDeleted = 0;
+  try {
+    rowsDeleted = clearMigrationStatesByPhase(storage.getDatabaseForMigration(), phase);
+  } finally {
+    storage.close();
+  }
+  const lines = [
+    renderSection(
+      "Migration Reset (B.5.0)",
+      renderKeyValue([
+        ["Store", layout.dbPath],
+        ["Phase", phase ?? "(all)"],
+        ["Marker rows deleted", formatNumber(rowsDeleted)],
+      ]),
+    ),
+  ];
+  if (rowsDeleted > 0) {
+    lines.push(
+      "",
+      phase
+        ? `Re-run \`cchistory migration run\` (or \`cchistory migration validate\`) to re-populate ${phase}.`
+        : "All migration_state markers cleared. Re-run the appropriate migration subcommand to re-populate them.",
+    );
+  }
+  return {
+    text: lines.join("\n"),
+    json: {
+      kind: "migration-reset",
+      phase: phase ?? null,
+      rows_deleted: rowsDeleted,
+    },
+  };
 }
 
 function renderRunResult(result: BackfillStoreResult): string {
@@ -439,14 +484,31 @@ function renderValidatorOutcome(outcome: MigrationValidatorOutcome): string {
       renderKeyValue([
         ["Turns checked", formatNumber(rp.turns_checked)],
         ["Mismatches", formatNumber(rp.mismatch_count)],
+        ["UserTurn turns checked", formatNumber(rp.user_turn.turns_checked)],
+        ["UserTurn mismatches", formatNumber(rp.user_turn.mismatch_count)],
       ]),
     ];
     if (rp.mismatches.length > 0) {
       sections.push(
         "",
-        renderTable(
-          ["Turn", "Reason", "Detail"],
-          rp.mismatches.map((m) => [m.turn_id.slice(0, 16), m.reason, m.detail ?? ""]),
+        renderSection(
+          "TurnContext mismatches",
+          renderTable(
+            ["Turn", "Reason", "Detail"],
+            rp.mismatches.map((m) => [m.turn_id.slice(0, 16), m.reason, m.detail ?? ""]),
+          ),
+        ),
+      );
+    }
+    if (rp.user_turn.mismatches.length > 0) {
+      sections.push(
+        "",
+        renderSection(
+          "UserTurnProjection mismatches (B.5.0d)",
+          renderTable(
+            ["Turn", "Reason", "Detail"],
+            rp.user_turn.mismatches.map((m) => [m.turn_id.slice(0, 16), m.reason, m.detail ?? ""]),
+          ),
         ),
       );
     }

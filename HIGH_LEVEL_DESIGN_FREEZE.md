@@ -82,6 +82,17 @@ pattern rather than forcing new product semantics.
 - Raw source material is the truth anchor.
 - Raw evidence is never silently rewritten to match downstream expectations.
 - Provenance must remain reversible.
+- Parser output is derived, not authoritative. The parser's input and its
+  output are distinct kinds of evidence and must be retained independently.
+- Parsers are software. They have bugs, the canonical model evolves, and
+  source formats drift. This is structural, not exceptional. If parser input
+  is not preserved independently of parser output, historical interpretation
+  errors become permanent and accumulate.
+- A derived representation may always be rebuilt from preserved input. Input
+  cannot be reconstructed from derived output. The preservation direction is
+  one-way.
+- "Preserved" means verifiable. The integrity of retained parser input must
+  be checkable — silently corruptible storage is not preservation.
 
 ### 4.2 Derive Stable Objects
 
@@ -756,6 +767,12 @@ Performance intent:
 The following invariants are frozen:
 
 - Raw evidence is retained and traceable unless explicitly purged.
+- For every captured record, the parser's input bytes are preserved
+  independently of any parsed or derived representation, in a form whose
+  integrity can be verified. This invariant holds across any storage layer
+  transition. Dropping parser input is acceptable only as an explicit,
+  human-approved decision to permanently lose reinterpretation capability for
+  that data — never as a migration default.
 - `UserTurn` is always a derived object.
 - `ProjectIdentity` is always derived through evidence linking.
 - Default search targets `UserTurn.canonical_text`.

@@ -71,6 +71,7 @@ export interface CommandOptions {
   safe: boolean;
   only: string[];
   preBundle?: string;
+  phase?: string;
 }
 
 export interface ParsedCommand {
@@ -165,6 +166,11 @@ const commandOptions: Record<string, OptionSpec> = {
     valueName: "slot-or-id",
     multiple: true,
     description: "Limit to a source slot or source ID",
+  },
+  phase: {
+    kind: "string",
+    valueName: "name",
+    description: "Migration phase name (e.g. storage-boundary.write, storage-boundary.validate)",
   },
   "limit-files": {
     kind: "number",
@@ -563,11 +569,11 @@ const commandSpecs: CommandSpec[] = [
   {
     path: ["migration"],
     category: "Data Management",
-    usage: "cchistory migration preview|run|status|validate",
+    usage: "cchistory migration preview|run|status|validate|reset",
     summary: "Storage boundary V1→V2 migration (B.1-B.6)",
     description:
-      "Phase B storage-boundary migration tooling. `preview` is read-only and reports the V1→V2 backfill gap, removable bytes, and VACUUM disk requirement. `run` performs the per-source V2 backfill (B.3) — V1 payloads are not touched. `status` prints migration_state markers. `validate` runs the three B.4 validators (bundle byte-diff, inventory diff, read-path parity).",
-    children: ["preview", "run", "status", "validate"],
+      "Phase B storage-boundary migration tooling. `preview` is read-only and reports the V1→V2 backfill gap, removable bytes, and VACUUM disk requirement. `run` performs the per-source V2 backfill (B.3) — V1 payloads are not touched. `status` prints migration_state markers. `validate` runs the three B.4 validators (bundle byte-diff, inventory diff, read-path parity). `reset` clears migration_state markers so an aborted or stale migration can be re-run.",
+    children: ["preview", "run", "status", "validate", "reset"],
     examples: [
       "cchistory migration preview",
       "cchistory migration run --dry-run",
@@ -575,6 +581,7 @@ const commandSpecs: CommandSpec[] = [
       "cchistory migration status",
       "cchistory migration validate --pre-bundle ./pre-migration-bundle",
       "cchistory migration validate --only inventory",
+      "cchistory migration reset --phase storage-boundary.write",
     ],
   },
   {
@@ -601,8 +608,15 @@ const commandSpecs: CommandSpec[] = [
     usage:
       "cchistory migration validate [--only bundle|inventory|read-paths]... [--pre-bundle <dir>] [--store <dir>|--db <file>]",
     description:
-      "B.4: post-B.3 validators. Three independent checks prove the V2 sidecars B.3 wrote are equivalent to V1: (a) bundle byte-diff against a pre-migration bundle (--pre-bundle, required when --only bundle is selected); (b) inventory row-count parity across the four V1↔V2 pairs; (c) read-path parity — deepEqual getTurnContext V1 vs V2 cache across every turn. All three run by default; each writes its own migration_state marker.",
+      "B.4: post-B.3 validators. Three independent checks prove the V2 sidecars B.3 wrote are equivalent to V1: (a) bundle byte-diff against a pre-migration bundle (--pre-bundle, required when --only bundle is selected); (b) inventory row-count parity across the four V1↔V2 pairs; (c) read-path parity — deepEqual getTurnContext V1 vs V2 cache across every turn, plus UserTurnProjection V1 vs V2 full-content columns (B.5.0d). All three run by default; each writes its own migration_state marker.",
     options: ["only", "pre-bundle"],
+  },
+  {
+    path: ["migration", "reset"],
+    usage: "cchistory migration reset [--phase <name>] [--store <dir>|--db <file>] [--json]",
+    description:
+      "B.5.0: clear migration_state marker rows so an aborted or stale migration can be re-run. Default clears every phase; --phase storage-boundary.write clears just B.3 markers; --phase storage-boundary.validate clears just B.4 markers.",
+    options: ["phase"],
   },
   {
     path: ["query"],
@@ -794,6 +808,7 @@ function normalizeCommandOptions(values: Record<string, string | string[] | bool
     safe: readBoolean(values, "safe"),
     only: readStringArray(values, "only"),
     preBundle: readString(values, "pre-bundle"),
+    phase: readString(values, "phase"),
   };
 }
 

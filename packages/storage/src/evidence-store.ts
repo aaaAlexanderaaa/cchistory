@@ -711,6 +711,14 @@ function upsertBoundedUserTurn(db: DatabaseSync, turn: UserTurnProjection, bound
     Buffer.byteLength(displaySegmentsJson, "utf8") +
     Buffer.byteLength(contextSummaryJson, "utf8") +
     Buffer.byteLength(lineageRefsJson, "utf8");
+  const userMessagesJson = JSON.stringify(turn.user_messages ?? []);
+  const rawTextFull = turn.raw_text ?? "";
+  const canonicalTextFull = turn.canonical_text ?? "";
+  const projectId = turn.project_id ?? "";
+  const projectRef = turn.project_ref ?? "";
+  const projectLinkState = turn.project_link_state ?? "";
+  const lastContextActivityAt = turn.last_context_activity_at ?? "";
+  const pathText = turn.path_text ?? "";
 
   db.prepare(`
     INSERT OR REPLACE INTO user_turns_v2 (
@@ -732,8 +740,16 @@ function upsertBoundedUserTurn(db: DatabaseSync, turn: UserTurnProjection, bound
       value_axis,
       retention_axis,
       payload_bytes,
-      bounded_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      bounded_at,
+      user_messages_json,
+      raw_text_full,
+      project_id,
+      project_ref,
+      project_link_state,
+      last_context_activity_at,
+      path_text,
+      canonical_text_full
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     turn.turn_id,
     turn.turn_revision_id,
@@ -754,6 +770,14 @@ function upsertBoundedUserTurn(db: DatabaseSync, turn: UserTurnProjection, bound
     turn.retention_axis,
     Math.min(payloadBytes, USER_TURN_V2_INLINE_BUDGET_BYTES),
     boundedAt,
+    userMessagesJson,
+    rawTextFull,
+    projectId,
+    projectRef,
+    projectLinkState,
+    lastContextActivityAt,
+    pathText,
+    canonicalTextFull,
   );
 }
 

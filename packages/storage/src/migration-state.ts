@@ -205,6 +205,18 @@ export function clearMigrationState(db: DatabaseSync, scope: MigrationScope): vo
 }
 
 /**
+ * Drop every marker row for a phase (or every phase, when undefined).
+ * Returns the number of rows deleted so the CLI can report it.
+ */
+export function clearMigrationStatesByPhase(db: DatabaseSync, phase?: MigrationPhase): number {
+  const stmt = phase === undefined
+    ? db.prepare("DELETE FROM migration_state")
+    : db.prepare("DELETE FROM migration_state WHERE phase = ?");
+  const result = phase === undefined ? stmt.run() : stmt.run(phase);
+  return Number(result.changes ?? 0);
+}
+
+/**
  * Convenience predicate for B.3/B.4/B.5 orchestration: has this scope been
  * marked completed for this phase?
  */

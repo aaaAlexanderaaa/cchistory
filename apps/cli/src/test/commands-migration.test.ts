@@ -504,3 +504,278 @@ test("B.4: validate --only rejects unknown validator names", async () => {
     assert.match(result.stderr, /Invalid --only value/);
   }, "cchistory-b4-bad-only-");
 });
+
+// B.5.0 — V2 schema extension. The bounded V2 sidecar grew seven full-content
+// columns (user_messages_json, raw_text_full, project_id, project_ref,
+// project_link_state, last_context_activity_at, path_text) so V2 can serve
+// every read path V1 serves. B.3 populates them on backfill; B.4c (read-path
+// parity) deepEquals UserTurnProjection reconstructed from V2 against V1 so a
+// cutover cannot ship with drift. `migration reset` clears markers so an
+// operator can re-run B.3 against the new schema.
+
+test("B.5.0a: schema migration adds the seven full-content columns to user_turns_v2", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const cols = (
+        db.prepare("PRAGMA table_info(user_turns_v2)").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      for (const expected of [
+        "user_messages_json",
+        "raw_text_full",
+        "canonical_text_full",
+        "project_id",
+        "project_ref",
+        "project_link_state",
+        "last_context_activity_at",
+        "path_text",
+      ]) {
+        assert.ok(cols.includes(expected), `user_turns_v2 must have ${expected}`);
+      }
+      const schemaVersion = (
+        db.prepare("SELECT value_text FROM schema_meta WHERE key = 'schema_version'").get() as
+          | { value_text: string }
+          | undefined
+      )?.value_text;
+      assert.equal(schemaVersion, "2026-06-18.2");
+    } finally {
+      db.close();
+    }
+  }, "cchistory-b5-0a-schema-");
+});
+
+test("B.5.0b: B.3 backfill populates the full-content columns on a fresh store", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const row = db
+        .prepare(
+          `SELECT length(user_messages_json)  AS um_len,
+                  length(raw_text_full)      AS rt_len,
+                  length(canonical_text_full) AS ct_len,
+                  project_id,
+                  last_context_activity_at,
+                  path_text
+             FROM user_turns_v2
+            WHERE user_messages_json <> '[]'
+            LIMIT 1`,
+        )
+        .get() as
+        | {
+            um_len: number;
+            rt_len: number;
+            ct_len: number;
+            project_id: string;
+            last_context_activity_at: string;
+            path_text: string;
+          }
+        | undefined;
+      assert.ok(row, "fixture must have at least one populated V2 turn");
+      assert.ok(row!.um_len > 2, "user_messages_json must be non-empty array");
+      assert.ok(row!.ct_len > 0, "canonical_text_full must be non-empty");
+      assert.ok(row!.rt_len > 0, "raw_text_full must be non-empty");
+      assert.ok(row!.last_context_activity_at, "last_context_activity_at must be populated");
+    } finally {
+      db.close();
+    }
+  }, "cchistory-b5-0b-backfill-");
+});
+
+test("B.5.0d: validate --only read-paths catches a mutation in a B.5.0 full-content column", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+
+    // Wipe user_messages_json back to the empty default — V1 still has it.
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      db.prepare("UPDATE user_turns_v2 SET user_messages_json = '[]' WHERE turn_id = (SELECT turn_id FROM user_turns_v2 LIMIT 1)").run();
+    } finally {
+      db.close();
+    }
+
+    const capture = await runCliCapture([
+      "migration", "validate", "--only", "read-paths", "--store", storeDir, "--json",
+    ]);
+    assert.equal(capture.exitCode, 1);
+    const result = JSON.parse(capture.stdout) as {
+      result: {
+        exit_code: number;
+        outcomes: Array<{
+          validator: string;
+          status: string;
+          read_paths?: {
+            user_turn: { mismatch_count: number; mismatches: Array<{ reason: string }> };
+          };
+        }>;
+      };
+    };
+    assert.equal(result.result.exit_code, 1);
+    assert.equal(result.result.outcomes[0]!.status, "fail");
+    assert.ok(
+      result.result.outcomes[0]!.read_paths!.user_turn.mismatch_count > 0,
+      "UserTurnProjection parity must catch the mutated user_messages_json",
+    );
+  }, "cchistory-b5-0d-parity-");
+});
+
+test("B.5.0e: canonical_text_full preserves canonical text past the 16 KiB scan-hint bound", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+
+    // Take an existing V1 turn and rewrite its payload_json to carry a 32 KiB
+    // canonical_text — well past the 16 KiB scan-hint bound. This keeps the
+    // projection shape intact (all required fields) and only stresses the
+    // canonical_text / raw_text length.
+    const { DatabaseSync } = await import("node:sqlite");
+    const longCanonical = "x".repeat(32 * 1024);
+    const longRaw = "y".repeat(32 * 1024);
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    let turnId: string | null = null;
+    try {
+      const row = db.prepare("SELECT id, payload_json FROM user_turns LIMIT 1").get() as
+        | { id: string; payload_json: string }
+        | undefined;
+      assert.ok(row, "fixture must have at least one V1 turn");
+      turnId = row!.id;
+      const payload = JSON.parse(row!.payload_json) as Record<string, unknown>;
+      payload.canonical_text = longCanonical;
+      payload.raw_text = longRaw;
+      // Touch submission_started_at so B.3 sees this source as needing re-backfill
+      // after the reset below.
+      db.prepare("UPDATE user_turns SET payload_json = ? WHERE id = ?").run(
+        JSON.stringify(payload),
+        turnId,
+      );
+    } finally {
+      db.close();
+    }
+
+    // Reset and re-run B.3 so the new V2 schema (canonical_text_full) is populated
+    // from the modified V1 payload.
+    await runCliCapture(["migration", "reset", "--phase", "storage-boundary.write", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+
+    // B.4c must catch any canonical_text truncation as a UserTurnProjection diff.
+    // Pass = canonical_text_full preserved the full 32 KiB and the V2 reader
+    // reconstructed the projection with full text.
+    const capture = await runCliCapture([
+      "migration", "validate", "--only", "read-paths", "--store", storeDir, "--json",
+    ]);
+    assert.equal(
+      capture.exitCode,
+      0,
+      `read-path parity must pass: ${capture.stdout}`,
+    );
+    const result = JSON.parse(capture.stdout) as {
+      result: {
+        exit_code: number;
+        outcomes: Array<{
+          read_paths?: { user_turn: { mismatch_count: number } };
+        }>;
+      };
+    };
+    assert.equal(result.result.exit_code, 0);
+    assert.equal(
+      result.result.outcomes[0]!.read_paths!.user_turn.mismatch_count,
+      0,
+      "canonical_text_full must round-trip without truncation",
+    );
+
+    // Directly verify the V2 row carries the full canonical text.
+    const db2 = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const row = db2
+        .prepare(
+          "SELECT length(canonical_text) AS bounded_len, length(canonical_text_full) AS full_len FROM user_turns_v2 WHERE turn_id = ?",
+        )
+        .get(turnId) as { bounded_len: number; full_len: number } | undefined;
+      assert.ok(row, "V2 row must exist for the modified turn");
+      // bounded canonical_text is roughly 16 KiB (boundedString reserves 20 bytes
+      // for the "...[truncated]" suffix), while canonical_text_full carries the
+      // full 32 KiB.
+      assert.ok(
+        row!.bounded_len > 16 * 1024 - 100 && row!.bounded_len < 16 * 1024,
+        `bounded canonical_text should be near 16 KiB, got ${row!.bounded_len}`,
+      );
+      assert.equal(row!.full_len, 32 * 1024, "canonical_text_full must carry the full 32 KiB");
+    } finally {
+      db2.close();
+    }
+  }, "cchistory-b5-0e-canonical-full-");
+});
+
+test("B.5.0: migration reset clears markers for the named phase and leaves the others alone", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+
+    const before = await runCliJson<{
+      states: Array<{ phase: string; status: string }>;
+    }>(["migration", "status", "--store", storeDir]);
+    const beforePhases = new Set(before.states.map((s) => s.phase));
+    assert.ok(beforePhases.has("storage-boundary.write"), "B.3 must have left write markers");
+
+    const reset = await runCliJson<{
+      kind: string;
+      phase: string | null;
+      rows_deleted: number;
+    }>(["migration", "reset", "--phase", "storage-boundary.write", "--store", storeDir]);
+
+    assert.equal(reset.kind, "migration-reset");
+    assert.equal(reset.phase, "storage-boundary.write");
+    assert.ok(reset.rows_deleted > 0, "reset must delete at least one marker");
+
+    const after = await runCliJson<{
+      states: Array<{ phase: string; status: string }>;
+    }>(["migration", "status", "--store", storeDir]);
+    const writeMarkersAfter = after.states.filter((s) => s.phase === "storage-boundary.write");
+    assert.equal(writeMarkersAfter.length, 0, "no write markers must remain after reset");
+  }, "cchistory-b5-0-reset-phase-");
+});
+
+test("B.5.0: migration reset with no --phase clears every marker", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+
+    const reset = await runCliJson<{ rows_deleted: number }>([
+      "migration", "reset", "--store", storeDir,
+    ]);
+    assert.ok(reset.rows_deleted > 0, "reset must delete at least one marker");
+
+    const status = await runCliJson<{
+      states: Array<{ phase: string }>;
+    }>(["migration", "status", "--store", storeDir]);
+    assert.equal(status.states.length, 0, "no markers must remain");
+  }, "cchistory-b5-0-reset-all-");
+});
+
+test("B.5.0: after reset, migration run can re-populate markers (idempotent re-migration)", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "reset", "--phase", "storage-boundary.write", "--store", storeDir]);
+
+    const result = await runCliJson<{
+      result: { sources_processed: number; sources_skipped: number };
+    }>(["migration", "run", "--store", storeDir]);
+
+    assert.ok(result.result.sources_processed > 0, "re-run must process sources");
+    assert.equal(result.result.sources_skipped, 0, "re-run after reset must skip nothing");
+
+    const status = await runCliJson<{
+      states: Array<{ phase: string; status: string }>;
+    }>(["migration", "status", "--store", storeDir]);
+    const writeMarkers = status.states.filter((s) => s.phase === "storage-boundary.write");
+    assert.ok(writeMarkers.length > 0);
+    assert.ok(writeMarkers.every((s) => s.status === "completed"));
+  }, "cchistory-b5-0-reset-rerun-");
+});

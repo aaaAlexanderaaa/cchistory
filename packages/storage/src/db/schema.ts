@@ -3,7 +3,7 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "@cchistory/domain";
 
-export const STORAGE_SCHEMA_VERSION = "2026-06-17.2";
+export const STORAGE_SCHEMA_VERSION = "2026-06-18.2";
 
 export interface StorageSchemaMigration {
   id: string;
@@ -61,6 +61,18 @@ const STORAGE_SCHEMA_MIGRATIONS: ReadonlyArray<{
     id: "2026-06-17.2/migration-state-table",
     to_version: STORAGE_SCHEMA_VERSION,
     summary: "B.2: add migration_state table so Phase B write-migration, validation, and cutover can resume per-source after a crash.",
+  },
+  {
+    id: "2026-06-18.1/user-turns-v2-full-columns",
+    to_version: STORAGE_SCHEMA_VERSION,
+    summary:
+      "B.5.0a: extend user_turns_v2 with the full-content columns (user_messages, raw_text_full, project_id, project_ref, project_link_state, last_context_activity_at, path_text) so V2 can serve read paths that V1 served.",
+  },
+  {
+    id: "2026-06-18.2/user-turns-v2-canonical-text-full",
+    to_version: STORAGE_SCHEMA_VERSION,
+    summary:
+      "B.5.0e: add canonical_text_full to user_turns_v2. Without it, B.5.5 (bundle export) cutover would produce different bundle bytes for the 4.3% of turns whose canonical_text exceeds the 16 KiB scan-hint bound.",
   },
 ];
 
@@ -392,7 +404,15 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
       value_axis TEXT NOT NULL DEFAULT '',
       retention_axis TEXT NOT NULL DEFAULT '',
       payload_bytes INTEGER NOT NULL DEFAULT 0,
-      bounded_at TEXT NOT NULL
+      bounded_at TEXT NOT NULL,
+      user_messages_json TEXT NOT NULL DEFAULT '[]',
+      raw_text_full TEXT NOT NULL DEFAULT '',
+      project_id TEXT NOT NULL DEFAULT '',
+      project_ref TEXT NOT NULL DEFAULT '',
+      project_link_state TEXT NOT NULL DEFAULT '',
+      last_context_activity_at TEXT NOT NULL DEFAULT '',
+      path_text TEXT NOT NULL DEFAULT '',
+      canonical_text_full TEXT NOT NULL DEFAULT ''
     );
 
     CREATE TABLE IF NOT EXISTS turn_context_refs_v2 (
@@ -450,6 +470,10 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[4]!);
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[5]!);
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[6]!);
+  ensureUserTurnsV2FullColumns(db);
+  recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[7]!);
+  ensureUserTurnsV2CanonicalTextFull(db);
+  recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[8]!);
   setSchemaMeta(db, "schema_version", STORAGE_SCHEMA_VERSION);
 
   ensureStorageIndexes(db);
@@ -786,6 +810,24 @@ function ensureEvidenceQueryColumns(db: DatabaseSync): void {
   }
 
   backfillLossAuditSeverityColumn(db);
+}
+
+function ensureUserTurnsV2FullColumns(db: DatabaseSync): void {
+  ensureTableColumns(db, "user_turns_v2", [
+    "user_messages_json TEXT NOT NULL DEFAULT '[]'",
+    "raw_text_full TEXT NOT NULL DEFAULT ''",
+    "project_id TEXT NOT NULL DEFAULT ''",
+    "project_ref TEXT NOT NULL DEFAULT ''",
+    "project_link_state TEXT NOT NULL DEFAULT ''",
+    "last_context_activity_at TEXT NOT NULL DEFAULT ''",
+    "path_text TEXT NOT NULL DEFAULT ''",
+  ]);
+}
+
+function ensureUserTurnsV2CanonicalTextFull(db: DatabaseSync): void {
+  ensureTableColumns(db, "user_turns_v2", [
+    "canonical_text_full TEXT NOT NULL DEFAULT ''",
+  ]);
 }
 
 function runEvidenceQueryColumnBackfill(db: DatabaseSync, tableName: string, backfill: (db: DatabaseSync) => void): void {

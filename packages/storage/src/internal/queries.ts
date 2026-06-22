@@ -264,6 +264,107 @@ export function getTurn(db: DatabaseSync, turnId: string): UserTurnProjection | 
   return row ? fromJson<UserTurnProjection>(row.payload_json) : undefined;
 }
 
+interface UserTurnV2Row {
+  turn_id: string;
+  turn_revision_id: string;
+  source_id: string;
+  session_id: string;
+  created_at: string;
+  submission_started_at: string;
+  canonical_text: string;
+  canonical_text_full: string;
+  raw_text_full: string;
+  raw_text_bytes: number;
+  display_segments_json: string;
+  context_ref: string;
+  context_summary_json: string;
+  lineage_refs_json: string;
+  link_state: string;
+  sync_axis: string;
+  value_axis: string;
+  retention_axis: string;
+  user_messages_json: string;
+  project_id: string;
+  project_ref: string;
+  project_link_state: string;
+  last_context_activity_at: string;
+  path_text: string;
+}
+
+function userTurnFromV2Row(row: UserTurnV2Row): UserTurnProjection {
+  const userMessages = fromJson<UserTurnProjection["user_messages"]>(row.user_messages_json || "[]");
+  const displaySegments = fromJson<UserTurnProjection["display_segments"]>(row.display_segments_json || "[]");
+  const contextSummary = fromJson<UserTurnProjection["context_summary"]>(row.context_summary_json || "{}");
+  const lineage = fromJson<UserTurnProjection["lineage"]>(row.lineage_refs_json || "{}");
+  return {
+    turn_id: row.turn_id,
+    turn_revision_id: row.turn_revision_id,
+    id: row.turn_id,
+    revision_id: row.turn_revision_id,
+    source_id: row.source_id,
+    session_id: row.session_id,
+    created_at: row.created_at,
+    submission_started_at: row.submission_started_at,
+    last_context_activity_at: row.last_context_activity_at,
+    canonical_text: row.canonical_text_full || row.canonical_text,
+    raw_text: row.raw_text_full,
+    display_segments: displaySegments,
+    user_messages: userMessages,
+    context_ref: row.context_ref,
+    context_summary: contextSummary,
+    lineage: lineage,
+    link_state: row.link_state as UserTurnProjection["link_state"],
+    sync_axis: row.sync_axis as UserTurnProjection["sync_axis"],
+    value_axis: row.value_axis as UserTurnProjection["value_axis"],
+    retention_axis: row.retention_axis as UserTurnProjection["retention_axis"],
+    path_text: row.path_text,
+    project_id: row.project_id || undefined,
+    project_ref: row.project_ref || undefined,
+    project_link_state: (row.project_link_state || undefined) as UserTurnProjection["project_link_state"],
+  };
+}
+
+const USER_TURN_V2_COLUMNS = `
+  turn_id,
+  turn_revision_id,
+  source_id,
+  session_id,
+  created_at,
+  submission_started_at,
+  canonical_text,
+  canonical_text_full,
+  raw_text_full,
+  raw_text_bytes,
+  display_segments_json,
+  context_ref,
+  context_summary_json,
+  lineage_refs_json,
+  link_state,
+  sync_axis,
+  value_axis,
+  retention_axis,
+  user_messages_json,
+  project_id,
+  project_ref,
+  project_link_state,
+  last_context_activity_at,
+  path_text
+`;
+
+export function readUserTurnFromV2(db: DatabaseSync, turnId: string): UserTurnProjection | undefined {
+  const row = db.prepare(`SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 WHERE turn_id = ?`).get(turnId) as unknown as
+    | UserTurnV2Row
+    | undefined;
+  return row ? userTurnFromV2Row(row) : undefined;
+}
+
+export function listUserTurnsFromV2(db: DatabaseSync): UserTurnProjection[] {
+  const rows = db
+    .prepare(`SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 ORDER BY submission_started_at DESC, created_at DESC`)
+    .all() as unknown as UserTurnV2Row[];
+  return rows.map(userTurnFromV2Row);
+}
+
 export function getTurnContext(db: DatabaseSync, turnId: string): TurnContextProjection | undefined {
   const row = db.prepare("SELECT payload_json FROM turn_contexts WHERE turn_id = ?").get(turnId) as
     | { payload_json: string }
