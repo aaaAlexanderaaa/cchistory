@@ -252,6 +252,16 @@ B.5  read cutover
           B.4a bundle byte-diff reporting PASS on the operator store (see
           below).
 
+          **Status (2026-06-23): landed.** `buildSourcePayload` now reads V2
+          for `turns` (via new `listUserTurnsFromV2BySource`) and `contexts`
+          (via `readTurnContextFromV2Cache` per turn). B.4a bundle byte-diff
+          on the operator store (4.5 GiB / 2804 turns / 1159 sessions / 1400
+          blobs) reports 0 payload / 0 raw / 0 manifest mismatches against a
+          pre-cutover V1-read snapshot. Read-paths validator remains at
+          0/2804 mismatches. Storage tests 75/75, CLI tests 93/93. The V1
+          `user_turns` and `turn_contexts` tables are now write-only on the
+          production read path; they remain in dual-write until B.6.
+
      Per-cutover acceptance gate (apply after every B.5.x cutover before
      moving on):
        - Targeted unit/integration tests in the affected package pass.
