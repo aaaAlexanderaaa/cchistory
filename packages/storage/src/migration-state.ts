@@ -31,6 +31,21 @@ export type MigrationPhase =
   // B.6b: VACUUM into the new page size.
   | "storage-boundary.vacuum";
 
+/**
+ * Every valid MigrationPhase value. Exported so the CLI can validate the
+ * `migration reset --phase <name>` argument against this set instead of
+ * accepting any string — a typo would otherwise DELETE 0 rows silently and
+ * the operator would re-run `migration run` expecting the typo'd phase to
+ * be re-populated.
+ */
+export const MIGRATION_PHASES: readonly MigrationPhase[] = [
+  "storage-boundary.write",
+  "storage-boundary.validate",
+  "storage-boundary.cutover",
+  "storage-boundary.compact",
+  "storage-boundary.vacuum",
+] as const;
+
 export type MigrationScopeKind = "store" | "source";
 
 export type MigrationStatus = "running" | "completed" | "aborted";

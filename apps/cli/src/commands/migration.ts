@@ -3,6 +3,7 @@ import {
   type BackfillStoreResult,
   clearMigrationStatesByPhase,
   listMigrationStates,
+  MIGRATION_PHASES,
   readStorageBoundaryMigrationPreview,
   runMigrationValidate,
   type BundleChecksumCompare,
@@ -132,7 +133,19 @@ async function runMigrationReset(context: CommandContext, layout: StoreLayout): 
   if (phaseArg !== undefined && phaseArg.length === 0) {
     throw new Error("`migration reset --phase <name>` requires a non-empty phase value.");
   }
-  const phase = phaseArg as MigrationPhase | undefined;
+  // Validate the phase name against the known set. Without this, a typo like
+  // `storage-boundary.wirte` would DELETE 0 rows silently and the operator
+  // would re-run `migration run` expecting the typo'd phase to be re-populated.
+  // Mirror the ALLOWED_VALIDATORS gate already used by `migration validate`.
+  let phase: MigrationPhase | undefined;
+  if (phaseArg !== undefined) {
+    if (!MIGRATION_PHASES.includes(phaseArg as MigrationPhase)) {
+      throw new Error(
+        `Unknown migration phase '${phaseArg}'. Valid phases: ${MIGRATION_PHASES.join(", ")}.`,
+      );
+    }
+    phase = phaseArg as MigrationPhase;
+  }
   const storage = await openStorage(layout);
   let rowsDeleted = 0;
   try {

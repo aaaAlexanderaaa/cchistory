@@ -850,3 +850,27 @@ test("B.5.0: after reset, migration run can re-populate markers (idempotent re-m
     assert.ok(writeMarkers.every((s) => s.status === "completed"));
   }, "cchistory-b5-0-reset-rerun-");
 });
+
+test("B.5.0: migration reset rejects an unknown --phase name (H6)", async () => {
+  // Regression: `--phase` was cast unchecked to MigrationPhase, so a typo
+  // like `storage-boundary.wirte` would silently DELETE 0 rows. The operator
+  // would then re-run `migration run` expecting the typo'd phase to be
+  // re-populated, when in fact nothing was reset.
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+
+    const result = await runCliCapture([
+      "migration", "reset", "--phase", "storage-boundary.wirte", "--store", storeDir,
+    ]);
+    assert.notEqual(result.exitCode, 0, "reset with a typo'd phase must fail");
+    assert.match(result.stderr, /Unknown migration phase/i);
+    assert.match(result.stderr, /storage-boundary\.write/i);
+
+    // No markers must have been deleted despite the typo.
+    const status = await runCliJson<{
+      states: Array<{ phase: string }>;
+    }>(["migration", "status", "--store", storeDir]);
+    assert.ok(status.states.length > 0, "markers must be untouched after a rejected reset");
+  }, "cchistory-b5-0-reset-unknown-phase-");
+});

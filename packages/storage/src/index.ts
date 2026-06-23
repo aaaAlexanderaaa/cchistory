@@ -37,6 +37,7 @@ export {
   clearMigrationStatesByPhase,
   isMigrationScopeCompleted,
   listMigrationStates,
+  MIGRATION_PHASES,
   readMigrationState,
   recordMigrationAbort,
   recordMigrationComplete,
