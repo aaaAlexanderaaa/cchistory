@@ -277,11 +277,24 @@ B.5  read cutover
      capture a pre-bundle snapshot (bundle export + checksums) from the V1
      store BEFORE starting B.5.5. For the operator store at
      `/root/.cchistory/cchistory.sqlite`, the pre-B.5.0g backup at
-     `cchistory.sqlite.bak-pre-b5g` is the source of truth for pre-bundle
-     bytes; V1 user_turns were not modified by B.5.0g, so a bundle exported
-     from the backup and a bundle exported from the current store's V1
-     reads should be byte-identical (and both should match the post-B.5.5
-     V2-exported bundle).
+     `cchistory.sqlite.bak-pre-b5g` served as the source of truth for
+     pre-bundle bytes during the B.5.5 cutover on 2026-06-23; V1 user_turns
+     were not modified by B.5.0g, so a bundle exported from that backup and
+     a bundle exported from the then-current store's V1 reads were
+     byte-identical, and both matched the post-B.5.5 V2-exported bundle
+     (0 payload / 0 raw / 0 manifest mismatches).
+
+     **Status (2026-06-23): the `cchistory.sqlite.bak-pre-b5g` backup file
+     has been removed.** B.5.5 landed cleanly and the bundle byte-diff
+     marker in `migration_state` (`store:bundle-byte-diff`, status
+     `completed`) records the result; the orphaned `-shm`/`-wal` sidecars
+     from the deleted backup have also been cleaned up. The pre-bundle
+     bytes cannot be re-derived from the live store now that V1 reads are
+     off the bundle path — the baseline was a point-in-time artifact, not
+     a reconstructable invariant. For any future bundle-shape change
+     (e.g., B.6), capture a fresh pre-bundle snapshot via
+     `cchistory export --out <dir>` from the pre-change store BEFORE
+     landing the change.
 
      B.4a timing note: running bundle byte-diff BEFORE B.5.5 cutover is
      uninformative — `buildSourcePayload` reads V1 tables via `payload_json`,
