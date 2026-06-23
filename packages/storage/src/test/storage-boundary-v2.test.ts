@@ -535,6 +535,63 @@ test("storage boundary v2 bounded JSON keeps an oversized single-string value vi
   }
 });
 
+test("storage boundary v2 boundedString preserves a legitimate trailing U+FFFD when the cut is clean (M3)", async () => {
+  // Regression: boundedString unconditionally stripped a trailing U+FFFD
+  // after a subarray cut. When the original value legitimately ended with
+  // U+FFFD AND the cut landed exactly after it (clean boundary), the regex
+  // deleted the user's actual character along with any truncation artifact.
+  // The fix detects clean cuts via byte-length round-trip and only strips
+  // when the cut actually landed mid-multi-byte.
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-boundary-v2-m3-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+
+    const storage = new CCHistoryStorage({ dbPath });
+    const payload = createFixturePayload(
+      "srcinst-codex-v2-m3",
+      "M3 FFMD preservation",
+      "stage-v2-m3",
+      { baseDir: sourceRoot, sessionId: "session-v2-m3", turnId: "turn-v2-m3" },
+    );
+
+    // canonical_text is bounded at 16 * 1024 = 16384 bytes via boundedString.
+    // Reserve for "...[truncated]" is 13 bytes, so the cut lands at byte 16371
+    // (subarray(0, 16371) — exclusive end). Place a legitimate U+FFFD
+    // (3 bytes EF BF BD) ending exactly at byte 16370 — i.e., fully inside
+    // the slice, with the next byte (the cut position) being a clean
+    // boundary. Old behavior stripped the FFMD; fix preserves it.
+    const CUT = 16 * 1024 - Buffer.byteLength("...[truncated]", "utf8"); // 16371
+    const FFMD_BYTES = Buffer.byteLength("�", "utf8"); // 3
+    const filler = "a".repeat(CUT - FFMD_BYTES); // bytes 0..16367 are filler
+    const canonical = filler + "�" + "b".repeat(100); // FFMD at 16368..16370, cut at 16371 is clean
+    payload.turns[0]!.canonical_text = canonical;
+    payload.turns[0]!.raw_text = canonical;
+    storage.replaceSourcePayload(payload);
+    storage.close();
+
+    const db = new DatabaseSync(dbPath);
+    try {
+      const row = db
+        .prepare("SELECT canonical_text FROM user_turns_v2 WHERE turn_id = ?")
+        .get("turn-v2-m3") as { canonical_text: string } | undefined;
+      assert.ok(row, "V2 sidecar row must exist");
+      // The FFMD must be preserved AND the truncator must be appended.
+      // Old behavior produced "aaa...[truncated]" with the FFMD gone.
+      assert.ok(
+        row.canonical_text.endsWith("�...[truncated]"),
+        `canonical_text must preserve the legitimate trailing U+FFFD before the truncator; got: ${JSON.stringify(row.canonical_text.slice(-40))}`,
+      );
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("storage boundary v2 updates ledger current evidence when source content changes", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-boundary-v2-change-"));
   try {

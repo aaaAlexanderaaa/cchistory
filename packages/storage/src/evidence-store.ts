@@ -1697,7 +1697,24 @@ function boundedString(value: string, maxBytes: number): string {
   if (bytes.byteLength <= maxBytes) {
     return value;
   }
-  return bytes.subarray(0, Math.max(0, maxBytes - 20)).toString("utf8").replace(/\uFFFD$/u, "") + "...[truncated]";
+  const TRUNCATOR = "...[truncated]";
+  // Reserve room for the truncation marker. The previous code hard-coded 20;
+  // computing from the actual marker means the bound is honored exactly.
+  const reserve = Buffer.byteLength(TRUNCATOR, "utf8");
+  const cut = Math.max(0, maxBytes - reserve);
+  const sliced = bytes.subarray(0, cut);
+  const decoded = sliced.toString("utf8");
+  // Only strip a trailing U+FFFD if it's a truncation artifact \u2014 i.e., the
+  // cut landed inside a multi-byte character. Detect via byte-length
+  // round-trip: a clean cut re-encodes to the same byte length; a partial-
+  // multi-byte cut yields a 3-byte U+FFFD that's larger than the orphan
+  // bytes it replaced, so re-encoded length > sliced length. Stripping
+  // unconditionally (the old behavior) corrupts values that legitimately
+  // end with U+FFFD when the cut happens to land cleanly after one.
+  if (Buffer.from(decoded, "utf8").byteLength === sliced.byteLength) {
+    return decoded + TRUNCATOR;
+  }
+  return decoded.replace(/\uFFFD$/u, "") + TRUNCATOR;
 }
 
 function boundedJson(value: unknown, maxBytes: number): string {
