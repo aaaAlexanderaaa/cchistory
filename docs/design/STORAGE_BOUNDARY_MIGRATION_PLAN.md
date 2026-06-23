@@ -503,6 +503,7 @@ baseline. Axes to record:
 - payload_json bytes per V1 table
 - evidence_blobs bytes and on-disk `evidence/blobs/` bytes
 - WAL peak size
+- peak RSS per CLI invocation (first-sync, unchanged-sync, append-sync, search, context-detail) — sampled via `/proc/<pid>/status` VmRSS. The V1→V2 migration's stated purpose is to solve OOM and rate issues, so memory is a first-class axis, not a nice-to-have.
 - first-sync time, unchanged-sync time, append-sync time
 - context-detail reconstruction time
 - search time
@@ -519,6 +520,7 @@ Extend `verify-scale-recall.mjs` with the new axes the audit names at lines
 - payload bytes (V2 + on-disk evidence)
 - evidence-store bytes
 - WAL peak size
+- peak RSS per CLI invocation (same set as C.1)
 - the existing time axes
 
 Scenario coverage per audit lines 502-512:

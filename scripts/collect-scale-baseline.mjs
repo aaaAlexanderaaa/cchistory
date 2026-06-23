@@ -19,7 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { mkdir, mkdtemp, rm, writeFile, appendFile, stat, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, appendFile, stat, readdir, readFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 
 const execFileP = promisify(execFile);
@@ -113,6 +113,18 @@ async function main() {
         search: searchRun.ms,
         context_detail_reconstruction: detailRun.ms,
       },
+      // M1: peak RSS per CLI invocation. The V1→V2 migration's whole point
+      // is to solve OOM and rate issues, so memory is a first-class axis —
+      // not an "extra." Captured by sampling /proc/<pid>/status VmRSS while
+      // each child process runs. Zero means /proc was unavailable (non-Linux
+      // host); treat as "not available" rather than "0 bytes."
+      rss_peak_bytes: {
+        first_sync: firstSync.rss_peak_bytes ?? 0,
+        unchanged_sync: unchangedSync.rss_peak_bytes ?? 0,
+        append_sync: appendSync.rss_peak_bytes ?? 0,
+        search: searchRun.rss_peak_bytes ?? 0,
+        context_detail_reconstruction: detailRun.rss_peak_bytes ?? 0,
+      },
       bytes: {
         wal_peak: walPeakBytes,
         wal_final: walFinalBytes,
@@ -140,17 +152,48 @@ async function timeCli(argv, cwd, env) {
 
 async function runNodeEntry(entry, argv, cwd, env) {
   return await new Promise((resolve, reject) => {
-    execFile(process.execPath, [entry, ...argv], { cwd, env, timeout: 240_000 }, (error, stdout, stderr) => {
-      if (error && typeof error.code !== "number") {
-        reject(error);
-        return;
-      }
-      resolve({
-        exitCode: typeof error?.code === "number" ? Number(error.code) : 0,
-        stdout,
-        stderr,
+    let child;
+    let rssPeak = 0;
+    let exited = false;
+    try {
+      child = execFile(process.execPath, [entry, ...argv], { cwd, env, timeout: 240_000 }, (error, stdout, stderr) => {
+        exited = true;
+        if (error && typeof error.code !== "number") {
+          reject(error);
+          return;
+        }
+        resolve({
+          exitCode: typeof error?.code === "number" ? Number(error.code) : 0,
+          stdout,
+          stderr,
+          rss_peak_bytes: rssPeak,
+        });
       });
-    });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    // Sample the child's resident set size while it runs. VmHWM would give
+    // the kernel-tracked peak in a single read but disappears with the
+    // process; sampling VmRSS every ~25 ms captures the same peak in
+    // practice. /proc is Linux-only — non-Linux hosts return 0 (memory
+    // axis recorded as "not available" rather than blocking the baseline).
+    const sampleRss = () => {
+      if (exited || !child?.pid) return;
+      readFile(`/proc/${child.pid}/status`, "utf8")
+        .then((text) => {
+          const m = /VmRSS:\s*(\d+) kB/.exec(text);
+          if (m) {
+            const bytes = Number(m[1]) * 1024;
+            if (bytes > rssPeak) rssPeak = bytes;
+          }
+        })
+        .catch(() => {
+          // pid exited between samples, or non-Linux host — ignore.
+        });
+      if (!exited) setTimeout(sampleRss, 25);
+    };
+    setTimeout(sampleRss, 25);
   });
 }
 
@@ -483,6 +526,20 @@ function renderMarkdown(baseline) {
   lines.push(`| main SQLite file | ${formatNum(baseline.bytes.db_final)} |`);
   lines.push(`| evidence_blobs.total_bytes (DB sum) | ${formatNum(baseline.bytes.evidence_blobs_db)} |`);
   lines.push(`| evidence/blobs/ on-disk | ${formatNum(baseline.bytes.evidence_blobs_disk)} |`);
+  lines.push("");
+  lines.push("## Peak RSS (bytes, sampled via /proc/<pid>/status)");
+  lines.push("");
+  lines.push("The V1→V2 migration's purpose is to solve OOM and rate issues, so memory");
+  lines.push("is a first-class axis. 0 means /proc was unavailable (non-Linux host);");
+  lines.push("treat as \"not available\" rather than \"0 bytes.\"");
+  lines.push("");
+  lines.push("| Phase | Peak RSS |");
+  lines.push("| --- | ---: |");
+  lines.push(`| first sync (initial population) | ${formatNum(baseline.rss_peak_bytes.first_sync)} |`);
+  lines.push(`| unchanged sync (everything reused) | ${formatNum(baseline.rss_peak_bytes.unchanged_sync)} |`);
+  lines.push(`| append sync (+${APPEND_TURN_COUNT} turns) | ${formatNum(baseline.rss_peak_bytes.append_sync)} |`);
+  lines.push(`| search | ${formatNum(baseline.rss_peak_bytes.search)} |`);
+  lines.push(`| context-detail reconstruction | ${formatNum(baseline.rss_peak_bytes.context_detail_reconstruction)} |`);
   lines.push("");
   lines.push("## Per-table Row Counts and payload_json Bytes");
   lines.push("");
