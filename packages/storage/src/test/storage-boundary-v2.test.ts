@@ -802,6 +802,88 @@ test("storage boundary v2 plans scoped rebuild selections by source, origin, ses
   }
 });
 
+test("storage boundary v2 listUserTurnsFromV2 withLineage flag controls blob reads (C1)", async () => {
+  // C1 regression: V2 list reads previously did N+1 SQL queries and N file
+  // reads for lineage blobs (one per turn). List views that don't dereference
+  // .lineage (UI session detail, project view) should be able to skip the
+  // blob read entirely. The withLineage flag defaults to false for list
+  // functions; the lineage_*_count columns stay readable from the row.
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-v2-lazy-lineage-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+    const originPath = path.join(sourceRoot, "session.jsonl");
+    const text = "{\"lazy\":true}\n";
+    await writeFile(originPath, text, "utf8");
+
+    const sourceId = "srcinst-codex-lazy-lineage";
+    const storage = new CCHistoryStorage({ dbPath });
+    const payload = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath,
+      text,
+      canonicalText: "lazy lineage asks",
+      stageRunId: "stage-lazy",
+      sessionId: "session-lazy",
+      turnId: "turn-lazy",
+    });
+    storage.replaceSourcePayload(payload);
+    storage.close();
+
+    const bareDb = new DatabaseSync(dbPath);
+    try {
+      const { listUserTurnsFromV2, readUserTurnFromV2 } = await import("../internal/queries.js");
+      const assetDir = storeDir;
+
+      const withoutLineage = listUserTurnsFromV2({ db: bareDb, assetDir });
+      assert.equal(withoutLineage.length, 1, "list returns the seeded turn");
+      assert.equal(
+        withoutLineage[0]!.lineage.atom_refs.length,
+        0,
+        "withLineage default (false) returns empty atom_refs — blob not read",
+      );
+      assert.equal(
+        withoutLineage[0]!.lineage.blob_refs.length,
+        0,
+        "withLineage default (false) returns empty blob_refs — blob not read",
+      );
+
+      const withLineage = listUserTurnsFromV2({ db: bareDb, assetDir, withLineage: true });
+      assert.equal(withLineage.length, 1);
+      assert.ok(
+        withLineage[0]!.lineage.atom_refs.length > 0,
+        "withLineage:true reads the blob and populates atom_refs",
+      );
+
+      const single = readUserTurnFromV2({ db: bareDb, turnId: "turn-lazy", assetDir });
+      assert.ok(single, "single-turn read returns the projection");
+      assert.ok(
+        single!.lineage.atom_refs.length > 0,
+        "single-turn read defaults to withLineage:true (preserves detail-view behavior)",
+      );
+
+      const singleWithoutLineage = readUserTurnFromV2({
+        db: bareDb,
+        turnId: "turn-lazy",
+        assetDir,
+        withLineage: false,
+      });
+      assert.equal(
+        singleWithoutLineage!.lineage.atom_refs.length,
+        0,
+        "single-turn read with withLineage:false skips the blob",
+      );
+    } finally {
+      bareDb.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("storage boundary v2 pruneOrphanEvidence preserves lineage blobs still referenced from user_turns_v2.lineage_blob_sha256", async () => {
   // Regression: pruneUnreferencedEvidenceBlobsInTransaction originally listed
   // only five ref sources. B.5.0g added a sixth (user_turns_v2.lineage_blob_sha256)

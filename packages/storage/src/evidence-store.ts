@@ -600,6 +600,12 @@ export function readTurnContextFromV2Cache(input: {
  * stores) or the blob content fails sha256 verification. Callers that only
  * need counts should read user_turns_v2.lineage_*_count directly — this
  * helper is for callers that need the actual refs array.
+ *
+ * Performance note (C1 fix): list callers should prefer `loadLineageBlobsBySha`
+ * — it dedupes identical shas in a single batch and avoids the per-turn
+ * `SELECT lineage_blob_sha256` round-trip (the sha is already in the parent
+ * row's columns). This function is kept for single-turn readers where the
+ * overhead is negligible.
  */
 export function readTurnLineageFromV2Blob(input: {
   db: DatabaseSync;
@@ -619,8 +625,37 @@ export function readTurnLineageFromV2Blob(input: {
   if (!row?.sha) {
     return undefined;
   }
+  return readTurnLineageBlobBySha({ assetDir: input.assetDir, sha: row.sha });
+}
 
-  const storagePath = path.join("evidence", "blobs", row.sha.slice(0, 2), row.sha);
+/**
+ * B.5.0g + C1 fix: read lineage blobs in batch, keyed by sha. Returns a map
+ * sha → lineage object. Identical shas (common when many turns share the same
+ * lineage) are read once. Missing files, sha256 mismatches, and JSON parse
+ * failures are silently dropped from the map — the caller's per-row fallback
+ * (empty refs arrays) covers the legitimate "not yet backfilled" case. The
+ * illegitimate case (corrupted blob) is a separate concern (see H1).
+ */
+export function loadLineageBlobsBySha(input: {
+  assetDir: string;
+  shas: readonly string[];
+}): Map<string, UserTurnProjection["lineage"]> {
+  const result = new Map<string, UserTurnProjection["lineage"]>();
+  for (const sha of new Set(input.shas)) {
+    if (!sha) continue;
+    const lineage = readTurnLineageBlobBySha({ assetDir: input.assetDir, sha });
+    if (lineage) {
+      result.set(sha, lineage);
+    }
+  }
+  return result;
+}
+
+function readTurnLineageBlobBySha(input: {
+  assetDir: string;
+  sha: string;
+}): UserTurnProjection["lineage"] | undefined {
+  const storagePath = path.join("evidence", "blobs", input.sha.slice(0, 2), input.sha);
   const absolutePath = path.resolve(input.assetDir, storagePath);
   if (!isPathWithinDirectory(absolutePath, input.assetDir) || !existsSync(absolutePath)) {
     return undefined;
@@ -633,14 +668,14 @@ export function readTurnLineageFromV2Blob(input: {
     return undefined;
   }
 
-  if (hashBytes("sha256", bytes) !== row.sha) {
+  if (hashBytes("sha256", bytes) !== input.sha) {
     return undefined;
   }
 
   try {
     return fromJson<UserTurnProjection["lineage"]>(
       bytes.toString("utf8"),
-      `turn lineage blob ${input.turnId}`,
+      `turn lineage blob sha=${input.sha.slice(0, 12)}`,
     );
   } catch {
     return undefined;

@@ -600,7 +600,14 @@ export class CCHistoryStorage {
   listTurns(): UserTurnProjection[] {
     // B.5.2: V2 read path. V1 payload_json no longer consulted for production
     // reads; Queries.listTurns (V1) is retained as the validator's reference.
-    return Queries.listUserTurnsFromV2({ db: this.db, assetDir: this.assetDir });
+    //
+    // C1 fix: this method feeds computeProjectLinkSnapshot (linker consumes
+    // turn.lineage.blob_refs in buildFallbackProjectObservationCandidates)
+    // and Gc.performDeleteProject (cascade cleanup uses .candidate_refs and
+    // .blob_refs), so lineage is required. UI list paths that don't need
+    // lineage use listSessionTurnsForReadSurface / listTurnsForReadSurfaceProject
+    // which pass withLineage:false.
+    return Queries.listUserTurnsFromV2({ db: this.db, assetDir: this.assetDir, withLineage: true });
   }
 
   listResolvedTurns(): UserTurnProjection[] {
@@ -659,6 +666,7 @@ export class CCHistoryStorage {
         db: this.db,
         sessionId,
         assetDir: this.assetDir,
+        withLineage: false,
       })) {
         const decorated = this.decorateTurnForReadSurfaceProject(turn, project);
         if (linkState === "all" || decorated.link_state === linkState) {
@@ -691,10 +699,13 @@ export class CCHistoryStorage {
 
   listSessionTurnsForReadSurface(sessionId: string): UserTurnProjection[] {
     // B.5.2: V2 read path; mirrors the V1 ORDER BY submission_started_at ASC.
+    // C1 fix: UI list path — TUI/API session detail rendering doesn't
+    // dereference .lineage, so skip the per-turn blob read.
     return Queries.listUserTurnsFromV2BySession({
       db: this.db,
       sessionId,
       assetDir: this.assetDir,
+      withLineage: false,
     });
   }
 
@@ -1589,6 +1600,9 @@ export class CCHistoryStorage {
       sourceId,
       assetDir: this.assetDir,
       orderBy: "ORDER BY submission_started_at DESC, created_at DESC",
+      // Bundle export serializes the full projection; lineage must round-trip
+      // byte-identically for B.4a bundle byte-diff to pass.
+      withLineage: true,
     });
     const contexts = turns
       .map((turn) => this.getTurnContext(turn.id))

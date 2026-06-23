@@ -23,7 +23,7 @@ import type {
 } from "@cchistory/domain";
 import { joinDisplaySegments } from "@cchistory/domain";
 import { hydrateSourceStatus } from "./source-identity.js";
-import { readTurnLineageFromV2Blob } from "../evidence-store.js";
+import { readTurnLineageFromV2Blob, loadLineageBlobsBySha } from "../evidence-store.js";
 import {
   fromJson,
   nowIso,
@@ -310,8 +310,22 @@ function userTurnFromV2Row(input: {
   // display_segments_json column is kept only as a scan-hint preview for
   // future list views; the authoritative field is reconstructed on read so
   // it is always byte-identical to V1.
+  //
+  // The parser's fallback for a message with no display_segments is to
+  // synthesize a single segment ({type: is_injected ? "injected" : "text",
+  // content: raw_text}) — see packages/source-adapters/src/core/projections.ts.
+  // The V2 read path MUST mirror that fallback; using `?? []` here produces
+  // a different array shape (zero segments + a stray "\n\n" separator from
+  // joinDisplaySegments) and silently breaks byte-parity against V1.
   const displaySegments = joinDisplaySegments(
-    userMessages.map((message) => message.display_segments ?? []),
+    userMessages.map((message) =>
+      message.display_segments ?? [
+        {
+          type: message.is_injected ? "injected" : "text",
+          content: message.raw_text,
+        },
+      ],
+    ),
   );
   const contextSummary = fromJson<UserTurnProjection["context_summary"]>(row.context_summary_json || "{}");
   // B.5.0g: full lineage is in a content-addressed blob (fetched by the caller
@@ -390,6 +404,7 @@ export function readUserTurnFromV2(input: {
   db: DatabaseSync;
   turnId: string;
   assetDir?: string;
+  withLineage?: boolean;
 }): UserTurnProjection | undefined {
   const row = input.db
     .prepare(`SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 WHERE turn_id = ?`)
@@ -402,49 +417,44 @@ export function readUserTurnFromV2(input: {
   // still returns with counts implicit in the lineage_*_count columns; refs
   // default to empty arrays. Operators who want refs must run B.3 to populate
   // lineage_blob_sha256.
-  const lineage = readTurnLineageFromV2Blob({
-    db: input.db,
-    assetDir: input.assetDir,
-    turnId: input.turnId,
-  });
+  //
+  // Single-turn reads default to fetching lineage (detail view consumers
+  // historically dereference .lineage). Pass withLineage:false to skip the
+  // blob read for callers that only need metadata.
+  const withLineage = input.withLineage ?? true;
+  const lineage = withLineage
+    ? readTurnLineageFromV2Blob({
+        db: input.db,
+        assetDir: input.assetDir,
+        turnId: input.turnId,
+      })
+    : undefined;
   return userTurnFromV2Row({ row, lineage });
 }
 
 export function listUserTurnsFromV2(input: {
   db: DatabaseSync;
   assetDir?: string;
+  withLineage?: boolean;
 }): UserTurnProjection[] {
   const rows = input.db
     .prepare(`SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 ORDER BY submission_started_at DESC, created_at DESC`)
     .all() as unknown as UserTurnV2Row[];
-  return rows.map((row) => {
-    const lineage = readTurnLineageFromV2Blob({
-      db: input.db,
-      assetDir: input.assetDir,
-      turnId: row.turn_id,
-    });
-    return userTurnFromV2Row({ row, lineage });
-  });
+  return mapV2TurnRows(rows, { assetDir: input.assetDir, withLineage: input.withLineage });
 }
 
 export function listUserTurnsFromV2BySession(input: {
   db: DatabaseSync;
   sessionId: string;
   assetDir?: string;
+  withLineage?: boolean;
 }): UserTurnProjection[] {
   const rows = input.db
     .prepare(
       `SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 WHERE session_id = ? ORDER BY submission_started_at ASC, created_at ASC`,
     )
     .all(input.sessionId) as unknown as UserTurnV2Row[];
-  return rows.map((row) => {
-    const lineage = readTurnLineageFromV2Blob({
-      db: input.db,
-      assetDir: input.assetDir,
-      turnId: row.turn_id,
-    });
-    return userTurnFromV2Row({ row, lineage });
-  });
+  return mapV2TurnRows(rows, { assetDir: input.assetDir, withLineage: input.withLineage });
 }
 
 export function listUserTurnsFromV2BySource(input: {
@@ -452,19 +462,41 @@ export function listUserTurnsFromV2BySource(input: {
   sourceId: string;
   assetDir?: string;
   orderBy?: string;
+  withLineage?: boolean;
 }): UserTurnProjection[] {
   const orderBy = input.orderBy ?? "ORDER BY submission_started_at DESC, created_at DESC";
   const rows = input.db
     .prepare(`SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 WHERE source_id = ? ${orderBy}`)
     .all(input.sourceId) as unknown as UserTurnV2Row[];
-  return rows.map((row) => {
-    const lineage = readTurnLineageFromV2Blob({
-      db: input.db,
-      assetDir: input.assetDir,
-      turnId: row.turn_id,
-    });
-    return userTurnFromV2Row({ row, lineage });
-  });
+  return mapV2TurnRows(rows, { assetDir: input.assetDir, withLineage: input.withLineage });
+}
+
+/**
+ * C1 fix: V2 list reads previously did N+1 SQL queries and N file reads for
+ * lineage blobs (one per row). For list views that don't dereference .lineage
+ * (UI session/project reads, search scan candidates), default to skipping the
+ * blob read entirely — counts stay readable from the lineage_*_count columns.
+ *
+ * When withLineage is true, batch the blob reads: collect distinct shas from
+ * the rows, read each unique blob once (dedupes turns that share lineage),
+ * and map rows to lineage. This collapses the N+1 SQL pattern to 1 query +
+ * M file reads where M is the number of distinct lineage blobs.
+ */
+function mapV2TurnRows(
+  rows: readonly UserTurnV2Row[],
+  input: { assetDir?: string; withLineage?: boolean },
+): UserTurnProjection[] {
+  if (!input.assetDir || !input.withLineage) {
+    return rows.map((row) => userTurnFromV2Row({ row }));
+  }
+  const shas = rows.map((row) => row.lineage_blob_sha256).filter((sha) => sha.length > 0);
+  const lineageBySha = loadLineageBlobsBySha({ assetDir: input.assetDir, shas });
+  return rows.map((row) =>
+    userTurnFromV2Row({
+      row,
+      lineage: row.lineage_blob_sha256 ? lineageBySha.get(row.lineage_blob_sha256) : undefined,
+    }),
+  );
 }
 
 export function getTurnContext(db: DatabaseSync, turnId: string): TurnContextProjection | undefined {
