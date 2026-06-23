@@ -1579,6 +1579,22 @@ export class CCHistoryStorage {
       throw new Error(`Unknown source id: ${sourceId}`);
     }
 
+    // B.5.5: bundle/export reads V2 for user turns + contexts. V1 payload_json
+    // for these tables is no longer consulted; the bundle byte shape is now
+    // derived from V2 sidecars + content-addressed cache. The B.4a bundle
+    // byte-diff validator gate ensures the V2-exported bundle is byte-identical
+    // to the V1-exported pre-bundle snapshot.
+    const turns = Queries.listUserTurnsFromV2BySource({
+      db: this.db,
+      sourceId,
+      assetDir: this.assetDir,
+      orderBy: "ORDER BY submission_started_at DESC, created_at DESC",
+    });
+    const contexts = turns
+      .map((turn) => this.getTurnContext(turn.id))
+      .filter((context): context is TurnContextProjection => context !== undefined)
+      .sort((a, b) => a.turn_id.localeCompare(b.turn_id));
+
     return {
       source,
       stage_runs: Queries.selectPayloadsBySource<StageRun>(this.db, "stage_runs", sourceId),
@@ -1590,13 +1606,8 @@ export class CCHistoryStorage {
       edges: Queries.selectPayloadsBySource<AtomEdge>(this.db, "atom_edges", sourceId),
       candidates: Queries.selectPayloadsBySource<DerivedCandidate>(this.db, "derived_candidates", sourceId),
       sessions: Queries.selectPayloadsBySource<SessionProjection>(this.db, "sessions", sourceId, "ORDER BY created_at ASC, updated_at ASC"),
-      turns: Queries.selectPayloadsBySource<UserTurnProjection>(
-        this.db,
-        "user_turns",
-        sourceId,
-        "ORDER BY submission_started_at DESC, created_at DESC",
-      ),
-      contexts: Queries.selectPayloadsBySource<TurnContextProjection>(this.db, "turn_contexts", sourceId, "ORDER BY turn_id"),
+      turns,
+      contexts,
     };
   }
 

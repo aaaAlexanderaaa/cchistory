@@ -447,6 +447,26 @@ export function listUserTurnsFromV2BySession(input: {
   });
 }
 
+export function listUserTurnsFromV2BySource(input: {
+  db: DatabaseSync;
+  sourceId: string;
+  assetDir?: string;
+  orderBy?: string;
+}): UserTurnProjection[] {
+  const orderBy = input.orderBy ?? "ORDER BY submission_started_at DESC, created_at DESC";
+  const rows = input.db
+    .prepare(`SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 WHERE source_id = ? ${orderBy}`)
+    .all(input.sourceId) as unknown as UserTurnV2Row[];
+  return rows.map((row) => {
+    const lineage = readTurnLineageFromV2Blob({
+      db: input.db,
+      assetDir: input.assetDir,
+      turnId: row.turn_id,
+    });
+    return userTurnFromV2Row({ row, lineage });
+  });
+}
+
 export function getTurnContext(db: DatabaseSync, turnId: string): TurnContextProjection | undefined {
   const row = db.prepare("SELECT payload_json FROM turn_contexts WHERE turn_id = ?").get(turnId) as
     | { payload_json: string }
