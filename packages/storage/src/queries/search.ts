@@ -197,20 +197,26 @@ export function scanSearchCandidateRows(input: {
   candidateTurnIds?: readonly string[];
 }): Generator<SearchScanCandidate> {
   const plan = buildSearchPlan(input.query);
+  // B.5.1: V2 read path. canonical_text reads the bounded 16 KiB scan hint
+  // (per V2 contract — that is the column's purpose). Searches for terms
+  // that appear only past 16 KiB in canonical_text will not match; this is
+  // the accepted tradeoff for keeping the scan fast. link_state, value_axis,
+  // project_id come from native V2 columns; path_text from V2.path_text plus
+  // the session/candidate joins (sessions remain V1 payload_json until B.6).
   if (input.candidateTurnIds) {
     const select = input.db.prepare(`
-      SELECT ut.id,
+      SELECT ut.turn_id AS id,
              ut.source_id,
              ut.session_id,
              ut.submission_started_at,
-             json_extract(ut.payload_json, '$.canonical_text') AS canonical_text,
+             ut.canonical_text AS canonical_text,
              ${searchPathTextSql()} AS path_text,
-             json_extract(ut.payload_json, '$.link_state') AS link_state,
-             json_extract(ut.payload_json, '$.value_axis') AS value_axis,
-             json_extract(ut.payload_json, '$.project_id') AS project_id
-        FROM user_turns ut
+             ut.link_state AS link_state,
+             ut.value_axis AS value_axis,
+             ut.project_id AS project_id
+        FROM user_turns_v2 ut
         LEFT JOIN sessions s ON s.id = ut.session_id
-       WHERE ut.id = ?
+       WHERE ut.turn_id = ?
     `);
     return (function* (): Generator<SearchScanCandidate> {
       for (const turnId of input.candidateTurnIds ?? []) {
@@ -223,16 +229,16 @@ export function scanSearchCandidateRows(input: {
   }
 
   const statement = input.db.prepare(`
-    SELECT ut.id,
+    SELECT ut.turn_id AS id,
            ut.source_id,
            ut.session_id,
            ut.submission_started_at,
-           json_extract(ut.payload_json, '$.canonical_text') AS canonical_text,
+           ut.canonical_text AS canonical_text,
            ${searchPathTextSql()} AS path_text,
-           json_extract(ut.payload_json, '$.link_state') AS link_state,
-           json_extract(ut.payload_json, '$.value_axis') AS value_axis,
-           json_extract(ut.payload_json, '$.project_id') AS project_id
-      FROM user_turns ut
+           ut.link_state AS link_state,
+           ut.value_axis AS value_axis,
+           ut.project_id AS project_id
+      FROM user_turns_v2 ut
       LEFT JOIN sessions s ON s.id = ut.session_id
      ORDER BY ut.submission_started_at DESC, ut.created_at DESC
   `);
@@ -393,7 +399,7 @@ function hydrateSearchCandidateRow(row: SearchCandidateRow): SearchScanCandidate
 
 function searchPathTextSql(): string {
   return `
-    COALESCE(json_extract(ut.payload_json, '$.path_text'), '') || ' ' ||
+    COALESCE(ut.path_text, '') || ' ' ||
     COALESCE(json_extract(s.payload_json, '$.working_directory'), '') || ' ' ||
     COALESCE(json_extract(s.payload_json, '$.resume_working_directory'), '') || ' ' ||
     COALESCE(json_extract(s.payload_json, '$.source_native_project_ref'), '') || ' ' ||
