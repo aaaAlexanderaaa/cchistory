@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { SourceSyncPayload, UserTurnProjection } from "@cchistory/domain";
 import { CCHistoryStorage } from "../index.js";
+import { retireStorageBoundaryV2Sources } from "../evidence-store.js";
 import { createFixturePayload } from "./helpers.js";
 
 test("storage boundary v2 writes evidence, ledger, spans, and bounded context sidecars without changing v1 reads", async () => {
@@ -795,6 +796,215 @@ test("storage boundary v2 plans scoped rebuild selections by source, origin, ses
       assert.ok(storage.getTurnLineage("turn-v2-scope-first")?.blobs.some((blob) => blob.origin_path === firstPath));
     } finally {
       storage.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("storage boundary v2 pruneOrphanEvidence preserves lineage blobs still referenced from user_turns_v2.lineage_blob_sha256", async () => {
+  // Regression: pruneUnreferencedEvidenceBlobsInTransaction originally listed
+  // only five ref sources. B.5.0g added a sixth (user_turns_v2.lineage_blob_sha256)
+  // and lineage blobs have no evidence_captures row, so the maintenance prune
+  // path treated them as orphaned and dropped them while user_turns_v2 still
+  // pointed at them. On the operator store every lineage-only blob would have
+  // been silently pruned on the next GC pass.
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-prune-lineage-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+
+    const sourceId = "srcinst-codex-prune-lineage";
+    const originPath = path.join(sourceRoot, "session.jsonl");
+    const firstLine = "{\"fixture\":true}\n";
+    await writeFile(originPath, firstLine, "utf8");
+
+    const storage = new CCHistoryStorage({ dbPath });
+    const payload = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath,
+      text: firstLine,
+      canonicalText: "prune lineage asks",
+      stageRunId: "stage-prune",
+      sessionId: "session-prune",
+      turnId: "turn-prune",
+    });
+    storage.replaceSourcePayload(payload);
+    storage.close();
+
+    const inspectDb = new DatabaseSync(dbPath);
+    try {
+      const lineageOnly = inspectDb.prepare(
+        `SELECT COUNT(*) AS count FROM evidence_blobs eb
+         WHERE eb.sha256 IN (SELECT DISTINCT lineage_blob_sha256 FROM user_turns_v2 WHERE lineage_blob_sha256 <> '')
+         AND NOT EXISTS (SELECT 1 FROM evidence_captures ec WHERE ec.evidence_sha256 = eb.sha256)
+         AND NOT EXISTS (SELECT 1 FROM parsed_record_spans prs WHERE prs.evidence_sha256 = eb.sha256)
+         AND NOT EXISTS (SELECT 1 FROM source_file_ledger sfl WHERE sfl.current_evidence_sha256 = eb.sha256)
+         AND NOT EXISTS (SELECT 1 FROM turn_context_refs_v2 tcr WHERE tcr.context_evidence_sha256 = eb.sha256)
+         AND NOT EXISTS (SELECT 1 FROM derived_cache_refs dcr WHERE dcr.evidence_sha256 = eb.sha256)`,
+      ).get() as { count: number };
+      assert.equal(
+        lineageOnly.count,
+        1,
+        "fixture should produce exactly one lineage-only blob referenced solely via user_turns_v2.lineage_blob_sha256",
+      );
+    } finally {
+      inspectDb.close();
+    }
+
+    const pruner = new CCHistoryStorage({ dbPath });
+    const result = pruner.pruneOrphanEvidence();
+    pruner.close();
+
+    assert.equal(
+      result.pruned_count,
+      0,
+      "lineage blobs still referenced from user_turns_v2.lineage_blob_sha256 must survive prune",
+    );
+
+    const verifyDb = new DatabaseSync(dbPath);
+    try {
+      const dangling = verifyDb.prepare(
+        `SELECT COUNT(*) AS count FROM user_turns_v2 utv
+         WHERE utv.lineage_blob_sha256 <> ''
+         AND NOT EXISTS (SELECT 1 FROM evidence_blobs eb WHERE eb.sha256 = utv.lineage_blob_sha256)`,
+      ).get() as { count: number };
+      assert.equal(
+        dangling.count,
+        0,
+        "no user_turns_v2.lineage_blob_sha256 should be left dangling after prune",
+      );
+    } finally {
+      verifyDb.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("storage boundary v2 retireStorageBoundaryV2Sources preserves lineage blobs of NON-retired sources", async () => {
+  // Regression (mirror of the pruneOrphanEvidence test, but for the second of
+  // the two ref-inventory sites). retireStorageBoundaryV2Sources runs when a
+  // source is dropped during replaceSourcePayload. It deletes V2 rows for the
+  // retired source ids and then runs the same 6-source orphan prune. Before
+  // the B.5.0g fix, the prune query listed only five ref sources, so a lineage
+  // blob belonging to a NON-retired source (no evidence_captures row, only
+  // referenced via user_turns_v2.lineage_blob_sha256) would have been pruned
+  // as a side effect of retiring an unrelated source. That is the more
+  // dangerous of the two leak sites because it crosses source boundaries.
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-retire-lineage-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+
+    const survivingSourceId = "srcinst-codex-retire-keep";
+    const retiredSourceId = "srcinst-codex-retire-drop";
+    const survivingOrigin = path.join(sourceRoot, "keep-session.jsonl");
+    const retiredOrigin = path.join(sourceRoot, "drop-session.jsonl");
+    const survivingText = "{\"keep\":true}\n";
+    const retiredText = "{\"drop\":true}\n";
+    await writeFile(survivingOrigin, survivingText, "utf8");
+    await writeFile(retiredOrigin, retiredText, "utf8");
+
+    const survivingPayload = createPayloadForSourceFile({
+      sourceId: survivingSourceId,
+      sourceRoot,
+      originPath: survivingOrigin,
+      text: survivingText,
+      canonicalText: "retire keeps this lineage",
+      stageRunId: "stage-keep",
+      sessionId: "session-keep",
+      turnId: "turn-keep",
+    });
+    const retiredPayload = createPayloadForSourceFile({
+      sourceId: retiredSourceId,
+      sourceRoot,
+      originPath: retiredOrigin,
+      text: retiredText,
+      canonicalText: "retire drops this lineage",
+      stageRunId: "stage-drop",
+      sessionId: "session-drop",
+      turnId: "turn-drop",
+    });
+
+    const seedStorage = new CCHistoryStorage({ dbPath });
+    seedStorage.replaceSourcePayload(survivingPayload);
+    seedStorage.mergeSourcePayloadByOriginPath(retiredPayload);
+    seedStorage.close();
+
+    const afterSeedDb = new DatabaseSync(dbPath);
+    let survivingLineageSha = "";
+    let retiredLineageSha = "";
+    try {
+      const survivingRow = afterSeedDb
+        .prepare("SELECT lineage_blob_sha256 AS sha FROM user_turns_v2 WHERE turn_id = ?")
+        .get("turn-keep") as { sha: string } | undefined;
+      const retiredRow = afterSeedDb
+        .prepare("SELECT lineage_blob_sha256 AS sha FROM user_turns_v2 WHERE turn_id = ?")
+        .get("turn-drop") as { sha: string } | undefined;
+      assert.ok(survivingRow?.sha, "surviving source must have a lineage blob before retire");
+      assert.ok(retiredRow?.sha, "retired source must have a lineage blob before retire");
+      assert.notEqual(survivingRow!.sha, retiredRow!.sha, "the two sources should have distinct lineage blobs");
+      survivingLineageSha = survivingRow!.sha;
+      retiredLineageSha = retiredRow!.sha;
+    } finally {
+      afterSeedDb.close();
+    }
+
+    // Simulate the storage-facade flow when retiredSourceId is dropped during
+    // a replace. retireStorageBoundaryV2Sources opens its own transaction and
+    // deletes V2 rows for the retired source ids before running the prune.
+    const retireDb = new DatabaseSync(dbPath);
+    try {
+      const retirement = retireStorageBoundaryV2Sources({
+        db: retireDb,
+        sourceIds: [retiredSourceId],
+      });
+      assert.ok(
+        retirement.pruned_evidence_shas.includes(retiredLineageSha),
+        "retired source's lineage blob should be in the pruned set",
+      );
+      assert.ok(
+        !retirement.pruned_evidence_shas.includes(survivingLineageSha),
+        "surviving source's lineage blob must NOT be pruned (cross-source leak regression)",
+      );
+    } finally {
+      retireDb.close();
+    }
+
+    const afterRetireDb = new DatabaseSync(dbPath);
+    try {
+      const survivingBlob = afterRetireDb
+        .prepare("SELECT COUNT(*) AS count FROM evidence_blobs WHERE sha256 = ?")
+        .get(survivingLineageSha) as { count: number };
+      assert.equal(
+        survivingBlob.count,
+        1,
+        "lineage blob of a non-retired source must survive retireStorageBoundaryV2Sources",
+      );
+      const retiredBlob = afterRetireDb
+        .prepare("SELECT COUNT(*) AS count FROM evidence_blobs WHERE sha256 = ?")
+        .get(retiredLineageSha) as { count: number };
+      assert.equal(
+        retiredBlob.count,
+        0,
+        "lineage blob of the retired source should be pruned after its user_turns_v2 rows are gone",
+      );
+      const dangling = afterRetireDb
+        .prepare(
+          `SELECT COUNT(*) AS count FROM user_turns_v2 utv
+           WHERE utv.lineage_blob_sha256 <> ''
+           AND NOT EXISTS (SELECT 1 FROM evidence_blobs eb WHERE eb.sha256 = utv.lineage_blob_sha256)`,
+        )
+        .get() as { count: number };
+      assert.equal(dangling.count, 0, "no user_turns_v2.lineage_blob_sha256 should be left dangling after retire");
+    } finally {
+      afterRetireDb.close();
     }
   } finally {
     await rm(tempRoot, { recursive: true, force: true });

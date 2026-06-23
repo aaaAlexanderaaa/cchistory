@@ -475,9 +475,11 @@ export function retireStorageBoundaryV2Sources(input: {
 }): {
   /**
    * A.2: evidence blob shas whose evidence_blobs rows were dropped because
-   * they are no longer referenced from any evidence_captures or
-   * parsed_record_spans row after this retirement. Caller unlinks the
-   * content-addressed files outside the DB transaction.
+   * they are no longer referenced from any of the six ref sources
+   * (evidence_captures, parsed_record_spans, source_file_ledger,
+   * turn_context_refs_v2, derived_cache_refs, user_turns_v2.lineage_blob_sha256)
+   * after this retirement. Caller unlinks the content-addressed files
+   * outside the DB transaction.
    */
   pruned_evidence_shas: string[];
 } {
@@ -508,9 +510,11 @@ export function retireStorageBoundaryV2Sources(input: {
     }
     // A.2: prune evidence_blobs rows whose sha is no longer referenced. Done
     // once for the whole batch — the LEFT JOINs scan evidence_blobs end-to-end
-    // so per-source iteration would be wasteful. The five reference points are
+    // so per-source iteration would be wasteful. The six reference points are
     // evidence_captures, parsed_record_spans, source_file_ledger,
-    // turn_context_refs_v2, and derived_cache_refs.
+    // turn_context_refs_v2, derived_cache_refs, and user_turns_v2.lineage_blob_sha256
+    // (B.5.0g — lineage blobs have no evidence_captures row, so omitting this
+    // ref source drops live blobs from OTHER sources during a per-source retire).
     const orphaned = input.db
       .prepare(
         `SELECT eb.sha256 AS sha
@@ -520,11 +524,13 @@ export function retireStorageBoundaryV2Sources(input: {
            LEFT JOIN source_file_ledger sfl ON sfl.current_evidence_sha256 = eb.sha256
            LEFT JOIN turn_context_refs_v2 tcr ON tcr.context_evidence_sha256 = eb.sha256
            LEFT JOIN derived_cache_refs dcr ON dcr.evidence_sha256 = eb.sha256
+           LEFT JOIN user_turns_v2 utv ON utv.lineage_blob_sha256 = eb.sha256
           WHERE ec.evidence_sha256 IS NULL
             AND prs.evidence_sha256 IS NULL
             AND sfl.current_evidence_sha256 IS NULL
             AND tcr.context_evidence_sha256 IS NULL
-            AND dcr.evidence_sha256 IS NULL`,
+            AND dcr.evidence_sha256 IS NULL
+            AND utv.lineage_blob_sha256 IS NULL`,
       )
       .all() as Array<{ sha: string }>;
     if (orphaned.length > 0) {

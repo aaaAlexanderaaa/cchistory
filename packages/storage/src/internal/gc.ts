@@ -157,12 +157,14 @@ export function cascadeEvidenceCleanupForOrphanedBlobsInTransaction(
 
 /**
  * A.2: drop evidence_blobs rows whose sha is no longer referenced from any
- * of the five tables that point at evidence_blobs.sha256:
+ * of the six ref sources that point at evidence_blobs.sha256:
  *   - evidence_captures.evidence_sha256
  *   - parsed_record_spans.evidence_sha256
  *   - source_file_ledger.current_evidence_sha256
  *   - turn_context_refs_v2.context_evidence_sha256
  *   - derived_cache_refs.evidence_sha256
+ *   - user_turns_v2.lineage_blob_sha256  (added by B.5.0g; lineage blobs have
+ *     no evidence_captures row, so omitting this ref source pruned live blobs)
  *
  * Returns the deleted shas. Must be called inside the caller's transaction.
  */
@@ -176,11 +178,13 @@ export function pruneUnreferencedEvidenceBlobsInTransaction(db: DatabaseSync): s
          LEFT JOIN source_file_ledger sfl ON sfl.current_evidence_sha256 = eb.sha256
          LEFT JOIN turn_context_refs_v2 tcr ON tcr.context_evidence_sha256 = eb.sha256
          LEFT JOIN derived_cache_refs dcr ON dcr.evidence_sha256 = eb.sha256
+         LEFT JOIN user_turns_v2 utv ON utv.lineage_blob_sha256 = eb.sha256
         WHERE ec.evidence_sha256 IS NULL
           AND prs.evidence_sha256 IS NULL
           AND sfl.current_evidence_sha256 IS NULL
           AND tcr.context_evidence_sha256 IS NULL
-          AND dcr.evidence_sha256 IS NULL`,
+          AND dcr.evidence_sha256 IS NULL
+          AND utv.lineage_blob_sha256 IS NULL`,
     )
     .all() as Array<{ sha: string }>;
   if (orphaned.length === 0) return [];
