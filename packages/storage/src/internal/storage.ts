@@ -598,7 +598,9 @@ export class CCHistoryStorage {
   }
 
   listTurns(): UserTurnProjection[] {
-    return Queries.listTurns(this.db);
+    // B.5.2: V2 read path. V1 payload_json no longer consulted for production
+    // reads; Queries.listTurns (V1) is retained as the validator's reference.
+    return Queries.listUserTurnsFromV2({ db: this.db, assetDir: this.assetDir });
   }
 
   listResolvedTurns(): UserTurnProjection[] {
@@ -652,20 +654,21 @@ export class CCHistoryStorage {
     }
 
     const turnsById = new Map<string, UserTurnProjection>();
-    const selectBySession = this.db.prepare(
-      "SELECT payload_json FROM user_turns WHERE session_id = ? ORDER BY submission_started_at ASC, created_at ASC",
-    );
     for (const sessionId of sessionIds) {
-      for (const row of selectBySession.all(sessionId) as Array<{ payload_json: string }>) {
-        const turn = this.decorateTurnForReadSurfaceProject(fromJson<UserTurnProjection>(row.payload_json), project);
-        if (linkState === "all" || turn.link_state === linkState) {
-          turnsById.set(turn.id, turn);
+      for (const turn of Queries.listUserTurnsFromV2BySession({
+        db: this.db,
+        sessionId,
+        assetDir: this.assetDir,
+      })) {
+        const decorated = this.decorateTurnForReadSurfaceProject(turn, project);
+        if (linkState === "all" || decorated.link_state === linkState) {
+          turnsById.set(decorated.id, decorated);
         }
       }
     }
 
     for (const turnId of turnIds) {
-      const rawTurn = Queries.getTurn(this.db, turnId);
+      const rawTurn = this.getTurn(turnId);
       if (!rawTurn) {
         continue;
       }
@@ -687,14 +690,17 @@ export class CCHistoryStorage {
   }
 
   listSessionTurnsForReadSurface(sessionId: string): UserTurnProjection[] {
-    return (this.db.prepare(
-      "SELECT payload_json FROM user_turns WHERE session_id = ? ORDER BY submission_started_at ASC, created_at ASC",
-    ).all(sessionId) as Array<{ payload_json: string }>)
-      .map((row) => fromJson<UserTurnProjection>(row.payload_json));
+    // B.5.2: V2 read path; mirrors the V1 ORDER BY submission_started_at ASC.
+    return Queries.listUserTurnsFromV2BySession({
+      db: this.db,
+      sessionId,
+      assetDir: this.assetDir,
+    });
   }
 
   getTurn(turnId: string): UserTurnProjection | undefined {
-    return Queries.getTurn(this.db, turnId);
+    // B.5.2: V2 read path. Queries.getTurn (V1) is retained for the validator.
+    return Queries.readUserTurnFromV2({ db: this.db, turnId, assetDir: this.assetDir });
   }
 
   getResolvedTurn(turnId: string): UserTurnProjection | undefined {
@@ -1431,7 +1437,7 @@ export class CCHistoryStorage {
     const results: TurnSearchResult[] = [];
 
     for (const entry of pageCandidates) {
-      const rawTurn = Queries.getTurn(this.db, entry.candidate.id);
+      const rawTurn = this.getTurn(entry.candidate.id);
       if (!rawTurn) {
         continue;
       }
@@ -1527,9 +1533,37 @@ export class CCHistoryStorage {
       return undefined;
     }
     const nextTurn = updater(turn);
+    const boundedAt = nowIso();
     this.db
       .prepare("UPDATE user_turns SET payload_json = ?, created_at = ?, submission_started_at = ? WHERE id = ?")
       .run(toJson(nextTurn), nextTurn.created_at, nextTurn.submission_started_at, turnId);
+    // B.5.2: keep the V2 sidecar in sync with V1 payload_json. The read path
+    // (storage.getTurn / listTurns) is V2-only; if we only updated V1 here the
+    // next read would observe the pre-mutation value_axis / retention_axis.
+    // Full-content columns (user_messages, raw_text_full, canonical_text_full,
+    // lineage blob) are set at ingestion and not mutated through this path.
+    this.db
+      .prepare(
+        `UPDATE user_turns_v2 SET
+          link_state = ?,
+          value_axis = ?,
+          retention_axis = ?,
+          project_id = ?,
+          project_ref = ?,
+          project_link_state = ?,
+          bounded_at = ?
+        WHERE turn_id = ?`,
+      )
+      .run(
+        nextTurn.link_state ?? "",
+        nextTurn.value_axis ?? "",
+        nextTurn.retention_axis ?? "",
+        nextTurn.project_id ?? "",
+        nextTurn.project_ref ?? "",
+        nextTurn.project_link_state ?? "",
+        boundedAt,
+        turnId,
+      );
     return nextTurn;
   }
 
@@ -1778,7 +1812,7 @@ export class CCHistoryStorage {
         rawTurns.push(entry.resolvedTurn);
         continue;
       }
-      const turn = Queries.getTurn(this.db, entry.candidate.id);
+      const turn = this.getTurn(entry.candidate.id);
       if (turn) {
         rawTurns.push(turn);
       }

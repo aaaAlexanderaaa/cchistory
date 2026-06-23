@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { type UserTurnProjection } from "@cchistory/domain";
 import { CCHistoryStorage } from "../index.js";
 import { createFixturePayload } from "./helpers.js";
 
@@ -317,6 +318,31 @@ test("garbageCollectCandidateTurns with purge mode creates tombstones", async ()
     assert.equal(result.processed_turn_ids.length, 1);
     assert.equal(storage.getTurn(turnId), undefined);
     assert.equal(storage.getTombstone(turnId)?.purge_reason, "candidate_gc");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("B.5.2: rewriteStoredTurn keeps V2 sidecar in sync with V1 payload", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-b52-sync-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(createFixturePayload("src-1", "Archive test", "sr-1"));
+    const turnId = "turn-1";
+
+    const before = storage.getTurn(turnId);
+    assert.equal(before?.value_axis, "active");
+    assert.equal(before?.retention_axis, "keep_raw_and_derived");
+
+    (storage as any).rewriteStoredTurn(turnId, (turn: UserTurnProjection) => ({
+      ...turn,
+      value_axis: "archived",
+      retention_axis: "keep_raw_only",
+    }));
+
+    const after = storage.getTurn(turnId);
+    assert.equal(after?.value_axis, "archived", "V2 value_axis must reflect the archive mutation");
+    assert.equal(after?.retention_axis, "keep_raw_only", "V2 retention_axis must reflect the archive mutation");
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
