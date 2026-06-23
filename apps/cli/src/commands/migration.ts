@@ -427,12 +427,19 @@ async function runMigrationValidateHandler(context: CommandContext, layout: Stor
     );
   }
 
-  const storage = await openStorage(layout);
   let postTempDir: string | undefined;
-  try {
-    let preCompare: BundleChecksumCompare | undefined;
-    let postCompare: BundleChecksumCompare | undefined;
-    if (wantsBundle) {
+  let preCompare: BundleChecksumCompare | undefined;
+  let postCompare: BundleChecksumCompare | undefined;
+  if (wantsBundle) {
+    // Scope the writable store handle to the bundle export only. The
+    // validators below each open their own connection to the same DB file
+    // (runMigrationValidate opens one for migration_state writes;
+    // runReadPathParity / readStorageBoundaryMigrationPreview open readOnly
+    // ones). Holding `storage` open across them would leave two writable
+    // handles on the same SQLite file at once — a pointless lock-contention
+    // risk for no benefit, since exportBundle is the only consumer here.
+    const storage = await openStorage(layout);
+    try {
       preCompare = await readBundleCompare(preBundleDir!);
       await assertSufficientDiskForBundleExport(layout);
       postTempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-b4-validate-"));
@@ -442,7 +449,11 @@ async function runMigrationValidateHandler(context: CommandContext, layout: Stor
         includeRawBlobs: true,
       });
       postCompare = await readBundleCompare(postTempDir);
+    } finally {
+      storage.close();
     }
+  }
+  try {
     const result = await runMigrationValidate({
       dbPath: layout.dbPath,
       assetDir: layout.assetDir,
@@ -460,7 +471,6 @@ async function runMigrationValidateHandler(context: CommandContext, layout: Stor
       exitCode: result.exit_code,
     };
   } finally {
-    storage.close();
     if (postTempDir) {
       await rm(postTempDir, { recursive: true, force: true });
     }
