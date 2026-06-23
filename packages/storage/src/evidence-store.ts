@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import process from "node:process";
 import type {
   CapturedBlob,
   RawRecord,
@@ -577,18 +578,31 @@ export function readTurnContextFromV2Cache(input: {
   let bytes: Buffer;
   try {
     bytes = readFileSync(cachePath);
-  } catch {
+  } catch (err) {
+    emitEvidenceBlobWarning(
+      `turn context cache read failed (turn=${input.turnId}, path=${row.cache_storage_path}): ${(err as Error).message}`,
+    );
     return undefined;
   }
 
   if (row.context_evidence_sha256 && hashBytes("sha256", bytes) !== row.context_evidence_sha256) {
+    // H1: integrity violation. The DB row claims this sha but the file content
+    // hashes differently — corrupted blob, partial write, or tampering. Silent
+    // failure here masks the bug; the turn's lineage_atom_count etc. would
+    // disagree with the now-empty lineage the caller reconstructs.
+    emitEvidenceBlobWarning(
+      `turn context cache sha256 mismatch (turn=${input.turnId}, path=${row.cache_storage_path}) — expected ${row.context_evidence_sha256.slice(0, 12)}, content does not match. Treating as missing.`,
+    );
     return undefined;
   }
 
   let context: TurnContextProjection;
   try {
     context = fromJson<TurnContextProjection>(bytes.toString("utf8"), `turn context cache ${input.turnId}`);
-  } catch {
+  } catch (err) {
+    emitEvidenceBlobWarning(
+      `turn context cache JSON parse failed (turn=${input.turnId}, path=${row.cache_storage_path}): ${(err as Error).message}`,
+    );
     return undefined;
   }
   return context.turn_id === input.turnId ? context : undefined;
@@ -664,11 +678,22 @@ function readTurnLineageBlobBySha(input: {
   let bytes: Buffer;
   try {
     bytes = readFileSync(absolutePath);
-  } catch {
+  } catch (err) {
+    emitEvidenceBlobWarning(
+      `turn lineage blob read failed (sha=${input.sha.slice(0, 12)}, path=${storagePath}): ${(err as Error).message}`,
+    );
     return undefined;
   }
 
   if (hashBytes("sha256", bytes) !== input.sha) {
+    // H1: integrity violation. The sidecar claims this sha but the file content
+    // hashes differently. Silent failure here masks corrupted/tampered blobs —
+    // the turn's lineage_*_count columns would disagree with the empty refs
+    // arrays the caller reconstructs. The right operator action is to re-run
+    // B.3 to re-materialize the blob.
+    emitEvidenceBlobWarning(
+      `turn lineage blob sha256 mismatch (sha=${input.sha.slice(0, 12)}, path=${storagePath}) — content does not match the claimed sha. Treating as missing.`,
+    );
     return undefined;
   }
 
@@ -677,9 +702,27 @@ function readTurnLineageBlobBySha(input: {
       bytes.toString("utf8"),
       `turn lineage blob sha=${input.sha.slice(0, 12)}`,
     );
-  } catch {
+  } catch (err) {
+    emitEvidenceBlobWarning(
+      `turn lineage blob JSON parse failed (sha=${input.sha.slice(0, 12)}, path=${storagePath}): ${(err as Error).message}`,
+    );
     return undefined;
   }
+}
+
+/**
+ * H1: surface evidence-blob integrity violations via process.emitWarning so
+ * they appear in operator logs without forcing a throw on the read path. The
+ * read still returns undefined (callers reconstruct counts-only lineage) so
+ * the migration validator's parity check continues to function; the warning
+ * makes the latent corruption visible. Set CCHISTORY_SHOW_RUNTIME_WARNINGS=1
+ * is not required — these are not Node.js runtime warnings.
+ */
+function emitEvidenceBlobWarning(message: string): void {
+  process.emitWarning(message, {
+    type: "CCHistoryEvidenceBlobIntegrity",
+    code: "CCHISTORY_EVIDENCE_BLOB_INTEGRITY",
+  });
 }
 
 function prepareReplaceCurrentState(
