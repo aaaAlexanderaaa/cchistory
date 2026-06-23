@@ -769,11 +769,12 @@ test("B.5.0e: canonical_text_full preserves canonical text past the 16 KiB scan-
         )
         .get(turnId) as { bounded_len: number; full_len: number } | undefined;
       assert.ok(row, "V2 row must exist for the modified turn");
-      // bounded canonical_text is roughly 16 KiB (boundedString reserves 20 bytes
-      // for the "...[truncated]" suffix), while canonical_text_full carries the
-      // full 32 KiB.
+      // bounded canonical_text is roughly 16 KiB. boundedString (M3) reserves
+      // Buffer.byteLength("...[truncated]") = 13 bytes for the truncator, so
+      // the bounded column can be exactly maxBytes chars when the body is all
+      // ASCII. canonical_text_full carries the full 32 KiB.
       assert.ok(
-        row!.bounded_len > 16 * 1024 - 100 && row!.bounded_len < 16 * 1024,
+        row!.bounded_len > 16 * 1024 - 100 && row!.bounded_len <= 16 * 1024,
         `bounded canonical_text should be near 16 KiB, got ${row!.bounded_len}`,
       );
       assert.equal(row!.full_len, 32 * 1024, "canonical_text_full must carry the full 32 KiB");
