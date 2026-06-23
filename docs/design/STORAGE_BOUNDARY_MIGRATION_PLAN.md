@@ -231,7 +231,21 @@ B.5  read cutover
        2. B.5.1 search scan — depends on detail reads being V2-backed for the
           candidate enrichment path; ship after B.5.2.
        3. B.5.3 linker input — independent of (1) and (2); can run in parallel.
+          **Status (2026-06-23): turned out to be a no-op.** `linker.ts` and
+          `linking/*.ts` are pure functions with no direct DB reads; their
+          `turns` input comes from `storage.computeProjectLinkSnapshot` /
+          `resolveSearchPageLinkage`, both of which call `this.listTurns()`.
+          B.5.2 cut over `listTurns` to V2, so linker input is transitively
+          V2-backed. No code change required; called out here so the next
+          reader knows why there is no B.5.3 commit.
        4. B.5.4 stats + TUI browser — pure read-side projections; independent.
+          **Status (2026-06-23): also a no-op for read paths.** `stats.ts`
+          is a pure transform module (no SQL); `tui-browser.ts` and
+          `read-overview.ts` only call the `CCHistoryStorage` public API,
+          which is V2-backed after B.5.2. The only drive-by change was
+          switching two `COUNT(*) FROM user_turns` queries (`isEmpty`,
+          `getReadOverviewCounts`) to `user_turns_v2` so the counts stay
+          correct after B.6 drops the V1 table.
        5. B.5.5 bundle/export shape — MUST be last. The bundle is the external
           interface; once it ships, downstream consumers have a new baseline
           and rollback no longer matches the pre-migration bundle. Gated on

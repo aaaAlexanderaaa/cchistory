@@ -471,7 +471,7 @@ export class CCHistoryStorage {
   }
 
   isEmpty(): boolean {
-    const turns = this.db.prepare("SELECT COUNT(*) AS count FROM user_turns").get() as { count: number };
+    const turns = this.db.prepare("SELECT COUNT(*) AS count FROM user_turns_v2").get() as { count: number };
     const sources = this.db.prepare("SELECT COUNT(*) AS count FROM source_instances").get() as { count: number };
     const tombstones = this.db.prepare("SELECT COUNT(*) AS count FROM tombstones").get() as { count: number };
     return turns.count === 0 && sources.count === 0 && tombstones.count === 0;
@@ -753,7 +753,9 @@ export class CCHistoryStorage {
     const sources = this.db.prepare("SELECT COUNT(*) AS count FROM source_instances").get() as { count: number };
     const projects = this.db.prepare("SELECT COUNT(*) AS count FROM project_current").get() as { count: number };
     const sessions = this.db.prepare("SELECT COUNT(*) AS count FROM sessions").get() as { count: number };
-    const turns = this.db.prepare("SELECT COUNT(*) AS count FROM user_turns").get() as { count: number };
+    // B.5.4: count from V2 sidecar so the overview stays correct after B.6
+    // drops the V1 user_turns table. Row count is identical today (post-B.3).
+    const turns = this.db.prepare("SELECT COUNT(*) AS count FROM user_turns_v2").get() as { count: number };
     return {
       sources: sources.count,
       projects: projects.count > 0 ? projects.count : this.listProjects().length,
