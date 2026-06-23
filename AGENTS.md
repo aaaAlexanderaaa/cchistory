@@ -231,6 +231,28 @@ directory into repository instructions.
   `/root/.claude`, `/root/.factory`, `/root/.local/share/amp`, or platform
   native Cursor/Antigravity user-data directories as cleanup or debugging.
 
+## Temp File And Disk Hygiene
+
+The operator store at `/root/.cchistory` is multi-gigabyte. Bundle exports,
+pre-bundle snapshots, and B.4a validator comparison dirs can each match
+that size. `/tmp` is on the same filesystem as the operator store, source
+capture roots, and tool caches — large temp artifacts must be managed
+explicitly, not abandoned.
+
+- Before creating any temp artifact expected to exceed 100 MiB (bundle
+  exports, full-store snapshots, byte-diff comparison dirs), run `df -h /`
+  and confirm at least 2x the artifact size is free.
+- Capture pre-bundle snapshots in `mkdtemp` dirs and `rm` them in a
+  `finally` block as soon as the consuming validator has finished. The
+  CLI migration validator already does this for its post-comparison bundle;
+  pre-bundle snapshots captured by hand need the same cleanup.
+- Never leave validation artifacts in `/tmp` across turns. A step that
+  produces a multi-gigabyte file owns its cleanup — surfacing "done" while
+  the artifact sits in `/tmp` is not done.
+- If the disk fills mid-task, stop and tell the user. Do not delete user
+  data (Codex/Claude/Factory session caches, source capture roots,
+  `.local/share`, `.cache/ms-playwright`, etc.) to force the step through.
+
 ## Coding Style And Naming
 
 Keep changes small and trace them back to the design freeze. Reuse canonical
