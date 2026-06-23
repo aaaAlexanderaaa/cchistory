@@ -343,6 +343,69 @@ test("B.5.2: rewriteStoredTurn keeps V2 sidecar in sync with V1 payload", async 
     const after = storage.getTurn(turnId);
     assert.equal(after?.value_axis, "archived", "V2 value_axis must reflect the archive mutation");
     assert.equal(after?.retention_axis, "keep_raw_only", "V2 retention_axis must reflect the archive mutation");
+
+    // M4: assert at the SQL level too, so a future refactor that breaks the
+    // V2 UPDATE (while leaving getTurn's projection somehow consistent) is
+    // still caught. Read every column the dual-write sets.
+    const db = (storage as any).db as DatabaseSync;
+    const row = db
+      .prepare(
+        "SELECT link_state, value_axis, retention_axis, project_id, project_ref, project_link_state FROM user_turns_v2 WHERE turn_id = ?",
+      )
+      .get(turnId) as {
+        link_state: string;
+        value_axis: string;
+        retention_axis: string;
+        project_id: string;
+        project_ref: string;
+        project_link_state: string;
+      };
+    assert.equal(row.value_axis, "archived", "V2 column value_axis must be set directly by UPDATE");
+    assert.equal(row.retention_axis, "keep_raw_only", "V2 column retention_axis must be set directly by UPDATE");
+    assert.ok(row.link_state.length > 0, "V2 link_state must be carried through the dual-write");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("B.5.2 + M4: rewriteStoredTurn throws if the V2 sidecar is missing (dual-write invariant)", async () => {
+  // Regression: if a future refactor drops the V2 UPDATE, or if B.3 backfill
+  // was skipped for a turn, rewriteStoredTurn would silently leave V1 and V2
+  // in drift. The M4 assertion makes this loud: changes !== 1 throws.
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-b52-missing-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(createFixturePayload("src-1", "Missing sidecar test", "sr-1"));
+    const turnId = "turn-1";
+
+    // Simulate a missing sidecar: delete the V2 row but leave V1 intact.
+    const db = (storage as any).db as DatabaseSync;
+    db.prepare("DELETE FROM user_turns_v2 WHERE turn_id = ?").run(turnId);
+    // Also delete the dependent lineage blob ref so the sidecar absence is
+    // the only drift — no FK violation muddies the assertion.
+    // (turn_context_refs_v2 may exist; clear it for the same reason.)
+    db.prepare("DELETE FROM turn_context_refs_v2 WHERE turn_id = ?").run(turnId);
+
+    assert.throws(
+      () => {
+        (storage as any).rewriteStoredTurn(turnId, (turn: UserTurnProjection) => ({
+          ...turn,
+          value_axis: "archived",
+        }));
+      },
+      /dual-write invariant broken/i,
+      "rewriteStoredTurn must throw when the V2 sidecar is missing",
+    );
+
+    // V1 payload_json must still have been updated — the assertion fires
+    // after the V1 UPDATE, so V1 reflects the mutation even though V2 didn't.
+    // This is the correct ordering: we don't roll back V1 just because V2
+    // is broken. The operator runs `migration run` to backfill.
+    const v1After = db
+      .prepare("SELECT payload_json FROM user_turns WHERE id = ?")
+      .get(turnId) as { payload_json: string };
+    const v1Parsed = JSON.parse(v1After.payload_json) as { value_axis: string };
+    assert.equal(v1Parsed.value_axis, "archived", "V1 UPDATE must land even when V2 throws");
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

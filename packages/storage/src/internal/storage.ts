@@ -1541,7 +1541,13 @@ export class CCHistoryStorage {
     turnId: string,
     updater: (turn: UserTurnProjection) => UserTurnProjection,
   ): UserTurnProjection | undefined {
-    const turn = this.getTurn(turnId);
+    // M4: source-of-truth for "does this turn exist?" is V1 payload_json, not
+    // V2. CCHistoryStorage.getTurn is V2-only (B.5.2), so reading through it
+    // here would silently no-op when the V2 sidecar is missing — exactly the
+    // drift case the dual-write invariant is supposed to catch. Reading V1
+    // directly means "V1 exists but V2 doesn't" surfaces as a V2 UPDATE that
+    // affects 0 rows, which the assertion below turns into a loud failure.
+    const turn = Queries.getTurn(this.db, turnId);
     if (!turn) {
       return undefined;
     }
@@ -1555,7 +1561,14 @@ export class CCHistoryStorage {
     // next read would observe the pre-mutation value_axis / retention_axis.
     // Full-content columns (user_messages, raw_text_full, canonical_text_full,
     // lineage blob) are set at ingestion and not mutated through this path.
-    this.db
+    //
+    // M4: assert the V2 UPDATE landed exactly one row. changes === 0 means
+    // the sidecar is missing (B.3 backfill was skipped or the row was
+    // deleted out from under us); changes > 1 means turn_id is no longer
+    // unique. Either way the dual-write invariant is broken and silently
+    // returning would leave V1 and V2 in drift — fail loud so the operator
+    // sees it before any V2-only read serves stale data.
+    const v2Result = this.db
       .prepare(
         `UPDATE user_turns_v2 SET
           link_state = ?,
@@ -1577,6 +1590,12 @@ export class CCHistoryStorage {
         boundedAt,
         turnId,
       );
+    const v2Changes = Number(v2Result.changes ?? 0);
+    if (v2Changes !== 1) {
+      throw new Error(
+        `rewriteStoredTurn dual-write invariant broken for turn ${turnId}: V2 UPDATE affected ${v2Changes} rows (expected 1). V1 payload_json was updated; V2 sidecar was not. Run \`cchistory migration run\` to backfill missing sidecars.`,
+      );
+    }
     return nextTurn;
   }
 
