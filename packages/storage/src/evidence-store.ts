@@ -1766,9 +1766,14 @@ function shrinkJsonToBudget(value: unknown, maxBytes: number): unknown {
     }
     return {};
   }
-  // primitives can't be structurally shrunk to a smaller valid JSON of the
-  // same type; return as-is. The serialized primitive will exceed budget only
-  // by its own length, which is acceptable (we never silently corrupt values).
+  // Primitives: numbers / booleans / null pass through unchanged (can't shrink
+  // to a smaller valid JSON of the same type). Strings get the boundedString
+  // treatment so an object whose only value is one giant string keeps the key
+  // with a truncated value, instead of falling through to the tail-key drop
+  // loop and returning {} (silent total loss of the field).
+  if (typeof value === "string") {
+    return boundedString(value, maxBytes);
+  }
   return value;
 }
 

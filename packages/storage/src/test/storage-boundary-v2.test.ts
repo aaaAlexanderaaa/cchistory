@@ -467,6 +467,74 @@ test("storage boundary v2 bounded JSON columns stay parseable when source data e
   }
 });
 
+test("storage boundary v2 bounded JSON keeps an oversized single-string value via truncation (H5)", async () => {
+  // Regression: shrinkJsonToBudget used to bottom out at the primitive branch
+  // for any non-object/array value, returning it unchanged. An object whose
+  // only value was a single string larger than perKeyBudget (e.g.
+  // {"summary": "<10 KiB string>"} at a 4 KiB bound) would then fail the
+  // "still over budget" check, enter the tail-key drop loop, delete the only
+  // key, and return {} — silent total loss of the field on every read.
+  // Fix: strings take the boundedString path so the key survives with a
+  // truncated value. Numbers/booleans/null still pass through (no smaller
+  // valid JSON of the same type exists).
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-boundary-v2-h5-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+
+    const storage = new CCHistoryStorage({ dbPath });
+    const payload = createFixturePayload(
+      "srcinst-codex-v2-h5",
+      "H5 string-primitive shrink",
+      "stage-v2-h5",
+      { baseDir: sourceRoot, sessionId: "session-v2-h5", turnId: "turn-v2-h5" },
+    );
+    // context_summary is a bounded object column (~4 KiB budget). Stuff one
+    // string field (primary_model) with 16 KiB so perKeyBudget alone can't
+    // fit it; the rest of the object stays small.
+    const hugeModel = "Z".repeat(16 * 1024);
+    payload.turns[0]!.context_summary = {
+      assistant_reply_count: 0,
+      tool_call_count: 0,
+      has_errors: false,
+      primary_model: hugeModel,
+    };
+    storage.replaceSourcePayload(payload);
+    storage.close();
+
+    const db = new DatabaseSync(dbPath);
+    try {
+      const row = db
+        .prepare(
+          "SELECT context_summary_json FROM user_turns_v2 WHERE turn_id = ?",
+        )
+        .get("turn-v2-h5") as { context_summary_json: string } | undefined;
+      assert.ok(row, "V2 sidecar row must exist");
+      const parsed = JSON.parse(row.context_summary_json) as Record<string, unknown>;
+      assert.ok(
+        typeof parsed === "object" && parsed !== null && "primary_model" in parsed,
+        "context_summary must keep the 'primary_model' key (H5: no silent total loss)",
+      );
+      const value = parsed.primary_model;
+      assert.equal(typeof value, "string", "primary_model value must remain a string after shrink");
+      assert.ok(
+        (value as string).length < hugeModel.length,
+        "primary_model value must be truncated to fit the budget",
+      );
+      assert.ok(
+        (value as string).length > 0,
+        "primary_model value must not be empty (would defeat keeping the key)",
+      );
+    } finally {
+      db.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("storage boundary v2 updates ledger current evidence when source content changes", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-boundary-v2-change-"));
   try {
