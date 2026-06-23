@@ -12,7 +12,7 @@ import {
   type MigrationValidatorOutcome,
   type StorageBoundaryMigrationPreview,
 } from "@cchistory/storage";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, statfs } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { BundleChecksums, ImportBundleManifest } from "@cchistory/domain";
@@ -337,6 +337,63 @@ function formatBytes(value: number): string {
   return `${size.toFixed(decimals)}${units[unitIndex]}`;
 }
 
+async function computeDirSizeBytes(dirPath: string): Promise<number> {
+  let total = 0;
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await readdir(dirPath, { withFileTypes: true });
+  } catch {
+    return 0;
+  }
+  for (const entry of entries) {
+    const childPath = path.join(dirPath, entry.name);
+    if (entry.isDirectory()) {
+      total += await computeDirSizeBytes(childPath);
+    } else if (entry.isFile()) {
+      try {
+        total += (await stat(childPath)).size;
+      } catch {
+        // ignore unreadable entries
+      }
+    }
+  }
+  return total;
+}
+
+async function assertSufficientDiskForBundleExport(layout: StoreLayout): Promise<void> {
+  // AGENTS.md Temp File And Disk Hygiene: artifacts >100 MiB must confirm
+  // >=2x free space before creation. The B.4a post-bundle export lives in
+  // /tmp (same FS as the operator store) and includes the store DB plus raw
+  // blobs (includeRawBlobs: true), so the footprint is dbBytes + assetBytes.
+  let dbBytes = 0;
+  try {
+    dbBytes = (await stat(layout.dbPath)).size;
+  } catch {
+    return; // dbPath missing — let openStorage surface a clearer error.
+  }
+  const assetBytes = await computeDirSizeBytes(layout.assetDir);
+  const artifactBytes = dbBytes + assetBytes;
+  const requiredBytes = artifactBytes * 2;
+  const tmpDir = os.tmpdir();
+  const fsInfo = await statfs(tmpDir);
+  const freeBytes = Number(fsInfo.bavail) * Number(fsInfo.bsize);
+  if (freeBytes < requiredBytes) {
+    const shortfall = requiredBytes - freeBytes;
+    throw new Error(
+      [
+        "Insufficient free disk space for B.4a bundle export.",
+        `  Store DB:    ${formatBytes(dbBytes)} (${layout.dbPath})`,
+        `  Asset dir:   ${formatBytes(assetBytes)} (${layout.assetDir})`,
+        `  Artifact:    ${formatBytes(artifactBytes)} (DB + raw blobs)`,
+        `  Required:    ${formatBytes(requiredBytes)} (2x artifact, per AGENTS.md temp file hygiene)`,
+        `  Available:   ${formatBytes(freeBytes)} on ${tmpDir}`,
+        `  Shortfall:   ${formatBytes(shortfall)}`,
+        "Free disk before re-running `migration validate --only bundle`.",
+      ].join("\n"),
+    );
+  }
+}
+
 const ALLOWED_VALIDATORS: readonly MigrationValidatorKind[] = ["bundle", "inventory", "read-paths"];
 
 async function runMigrationValidateHandler(context: CommandContext, layout: StoreLayout): Promise<CommandOutput> {
@@ -364,6 +421,7 @@ async function runMigrationValidateHandler(context: CommandContext, layout: Stor
     let postCompare: BundleChecksumCompare | undefined;
     if (wantsBundle) {
       preCompare = await readBundleCompare(preBundleDir!);
+      await assertSufficientDiskForBundleExport(layout);
       postTempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-b4-validate-"));
       await exportBundle({
         storage,
