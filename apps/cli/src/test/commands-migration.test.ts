@@ -451,6 +451,77 @@ test("B.4: validate --only read-paths detects a corrupted V2 cache file", async 
   }, "cchistory-b4-read-paths-fail-");
 });
 
+test("B.4 + H2: validate --only read-paths detects a corrupted V2 lineage blob", async () => {
+  // Regression (H2): the B.4c read-paths validator must surface a corrupted
+  // lineage blob as a real failure. readTurnLineageFromV2Blob silently returns
+  // undefined on sha256 mismatch (legitimate backfill case) AND on integrity
+  // violation (corrupted blob). Without a positive test exercising the
+  // corrupted case, a regression that flipped the validator's mismatch
+  // detection off for lineage could pass silently.
+  //
+  // Post-H1, the corrupted-blob case also emits a CCHistoryEvidenceBlobIntegrity
+  // warning. This test asserts the read-paths validator catches the resulting
+  // lineage mismatch regardless of the warning.
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--store", storeDir]);
+
+    const { DatabaseSync } = await import("node:sqlite");
+    const { writeFileSync } = await import("node:fs");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    let lineageBlobPath: string | null = null;
+    let v1HasLineage = false;
+    try {
+      const row = db
+        .prepare(
+          `SELECT utv.lineage_blob_sha256 AS sha,
+                  json_extract(ut.payload_json, '$.lineage.atom_refs') AS v1_atom_refs
+             FROM user_turns_v2 utv
+             JOIN user_turns ut ON ut.id = utv.turn_id
+            WHERE utv.lineage_blob_sha256 <> ''
+            LIMIT 1`,
+        )
+        .get() as { sha: string; v1_atom_refs: string } | undefined;
+      if (row?.sha) {
+        lineageBlobPath = path.join(storeDir, "evidence", "blobs", row.sha.slice(0, 2), row.sha);
+        v1HasLineage = !!row.v1_atom_refs && row.v1_atom_refs !== "[]";
+      }
+    } finally {
+      db.close();
+    }
+    assert.ok(lineageBlobPath, "fixture must have at least one V2 lineage blob");
+    assert.ok(v1HasLineage, "fixture's V1 payload for the chosen turn must have non-empty lineage.atom_refs");
+
+    // Corrupt the blob's content. The sha256 check will fail on next read.
+    writeFileSync(lineageBlobPath!, "corrupted-bytes-that-do-not-match-the-sha");
+
+    const capture = await runCliCapture([
+      "migration", "validate", "--only", "read-paths", "--store", storeDir, "--json",
+    ]);
+    assert.equal(capture.exitCode, 1);
+    const result = JSON.parse(capture.stdout) as {
+      result: {
+        exit_code: number;
+        outcomes: Array<{
+          validator: string;
+          status: string;
+          read_paths?: {
+            mismatch_count: number;
+            user_turn?: { mismatch_count: number };
+            mismatches: Array<{ reason: string }>;
+          };
+        }>;
+      };
+    };
+    assert.equal(result.result.exit_code, 1);
+    assert.equal(result.result.outcomes[0]!.status, "fail");
+    assert.ok(
+      (result.result.outcomes[0]!.read_paths?.user_turn?.mismatch_count ?? 0) > 0,
+      "corrupted lineage blob must surface as a user_turn mismatch (otherwise the validator silently passes on a real failure)",
+    );
+  }, "cchistory-b4-read-paths-lineage-fail-");
+});
+
 test("B.4: validate with no --only runs all three validators and writes three markers", async () => {
   await withSeededHome(async (tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
