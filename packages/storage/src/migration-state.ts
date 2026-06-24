@@ -1,5 +1,53 @@
+import process from "node:process";
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "@cchistory/domain";
+
+/**
+ * C2: stale `running` marker reporting.
+ *
+ * A `running` marker is reported as stale when its `started_at` is older than
+ * this threshold. SIGKILL / power loss / OOM-kill bypass the orchestrator's
+ * try/catch (which would otherwise write `aborted`), leaving the marker pinned
+ * at `running` forever. Any existing `running` marker is now a hard stop; the
+ * threshold only makes the refusal message more specific.
+ *
+ * The threshold is deliberately generous (the B.3 streaming backfill bounds
+ * memory by blob, so any single source should finish in seconds to low
+ * minutes even at 100K+ records). Override via env for operator-tuned runs:
+ *
+ *   CCHISTORY_MIGRATION_STALE_RUNNING_MS=600000   // 10 min stale label
+ *   CCHISTORY_MIGRATION_STALE_RUNNING_MS=0        // label any prior running
+ *                                                 // marker as stale
+ *   (unset)                                       // default 30 min
+ *
+ * Negative or non-numeric values throw at module load — silent fallback to
+ * the default would mask operator typos.
+ */
+const STALE_RUNNING_MARKER_MS = parseStaleRunningThreshold(
+  process.env.CCHISTORY_MIGRATION_STALE_RUNNING_MS,
+);
+
+/**
+ * Parse the CCHISTORY_MIGRATION_STALE_RUNNING_MS env var. Exported so the
+ * parse logic (I4) is unit-testable without spawning a subprocess. Pure
+ * function — no side effects, no DB access.
+ */
+export function parseStaleRunningThreshold(env: string | undefined): number {
+  const DEFAULT_MS = 30 * 60 * 1000;
+  if (env === undefined || env === "") return DEFAULT_MS;
+  // Number() accepts whitespace, decimals, and scientific notation; reject
+  // NaN, Infinity, and negatives explicitly. parseInt would silently drop
+  // the fractional part of "1.5" and accept "10abc" as 10 — both wrong.
+  const n = Number(env);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(
+      `CCHISTORY_MIGRATION_STALE_RUNNING_MS=${JSON.stringify(env)} is invalid. ` +
+        `Expected a non-negative number of milliseconds. Use 0 to label any ` +
+        `prior running marker as stale in the refusal message.`,
+    );
+  }
+  return Math.floor(n);
+}
 
 /**
  * B.2: durable markers for the Phase B storage-boundary migration.
@@ -126,10 +174,10 @@ export function listMigrationStates(
 }
 
 /**
- * Mark a scope as running. Idempotent for re-resume: if a row already exists
- * with status=aborted, the caller must clear it explicitly via
- * `clearMigrationState` first — this function refuses to silently resurrect
- * an aborted scope so an operator can audit the abort reason.
+ * Mark a scope as running. If a row already exists with status=running or
+ * status=aborted, the caller must clear it explicitly via `clearMigrationState`
+ * first. A direct second start is treated as a concurrent migration attempt,
+ * even when the marker is fresh.
  *
  * Returns the previous row if one existed (so the caller can decide whether
  * to resume from `cursor_json` or start over).
@@ -145,6 +193,23 @@ export function recordMigrationStart(
       `Refusing to start migration ${scope.phase}/${scope.scopeKind}/${scope.scopeId}: ` +
         `previous run aborted with last_error=${previous.last_error || "(empty)"}. ` +
         `Clear with \`cchistory migration reset\` after auditing the failure.`,
+    );
+  }
+  // C2/I4: any existing `running` marker is a hard stop. The stale threshold is
+  // retained only to make the operator-facing error more specific; it must not
+  // permit a second writer while a fresh marker may still be active.
+  if (previous?.status === "running") {
+    const startedMs = Date.parse(previous.started_at);
+    const isStale = !Number.isFinite(startedMs) || Date.now() - startedMs > STALE_RUNNING_MARKER_MS;
+    const reason = Number.isFinite(startedMs)
+      ? isStale
+        ? `started_at=${previous.started_at} is older than ${STALE_RUNNING_MARKER_MS}ms`
+        : `started_at=${previous.started_at} is still within ${STALE_RUNNING_MARKER_MS}ms`
+      : `started_at=${previous.started_at} is unparseable`;
+    throw new Error(
+      `Refusing to start migration ${scope.phase}/${scope.scopeKind}/${scope.scopeId}: ` +
+        `previous run is already marked 'running' (${reason}). Audit the prior run, then clear ` +
+        `with \`cchistory migration reset --phase ${scope.phase}\` after confirming no process is active.`,
     );
   }
   const cursorJson = options.cursorJson ?? previous?.cursor_json ?? "{}";

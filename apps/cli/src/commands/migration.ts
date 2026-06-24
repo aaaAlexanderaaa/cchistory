@@ -149,7 +149,32 @@ async function runMigrationReset(context: CommandContext, layout: StoreLayout): 
   const storage = await openStorage(layout);
   let rowsDeleted = 0;
   try {
-    rowsDeleted = clearMigrationStatesByPhase(storage.getDatabaseForMigration(), phase);
+    const db = storage.getDatabaseForMigration();
+    // C4: refuse to clear while any marker is still 'running'. The C2 guard
+    // in recordMigrationStart exists to prevent writer-collision resurrection
+    // — but if an operator can wipe a live running marker via `reset`, two
+    // processes end up in BEGIN IMMEDIATE on the same source_id and the
+    // first COMMIT wins silently. Force the operator to acknowledge with
+    // --force after confirming the prior PID is actually dead.
+    const force = context.options.force;
+    if (!force) {
+      const running = listMigrationStates(db)
+        .filter((row) => row.status === "running")
+        .filter((row) => phase === undefined || row.phase === phase);
+      if (running.length > 0) {
+        const markerLines = running
+          .map((row) => `  - ${row.phase}/${row.scope_kind}/${row.scope_id} (started ${row.started_at})`)
+          .join("\n");
+        throw new Error(
+          `Refusing to reset migration_state: ${running.length} marker(s) are currently 'running'.\n` +
+            `Clearing them while a migration is in progress can introduce the writer-collision the C2 guard exists to prevent — ` +
+            `two processes racing on BEGIN IMMEDIATE for the same source_id, where the first COMMIT wins silently.\n\n` +
+            `Audit via \`cchistory migration status\`, confirm the prior PID is actually dead (not just slow), then re-run with --force:\n` +
+            markerLines,
+        );
+      }
+    }
+    rowsDeleted = clearMigrationStatesByPhase(db, phase);
   } finally {
     storage.close();
   }
@@ -407,7 +432,7 @@ async function assertSufficientDiskForBundleExport(layout: StoreLayout): Promise
   }
 }
 
-const ALLOWED_VALIDATORS: readonly MigrationValidatorKind[] = ["bundle", "inventory", "read-paths"];
+const ALLOWED_VALIDATORS: readonly MigrationValidatorKind[] = ["bundle", "inventory", "read-paths", "v1-payload-digest"];
 
 async function runMigrationValidateHandler(context: CommandContext, layout: StoreLayout): Promise<CommandOutput> {
   const requested = context.options.only;
@@ -430,30 +455,31 @@ async function runMigrationValidateHandler(context: CommandContext, layout: Stor
   let postTempDir: string | undefined;
   let preCompare: BundleChecksumCompare | undefined;
   let postCompare: BundleChecksumCompare | undefined;
-  if (wantsBundle) {
-    // Scope the writable store handle to the bundle export only. The
-    // validators below each open their own connection to the same DB file
-    // (runMigrationValidate opens one for migration_state writes;
-    // runReadPathParity / readStorageBoundaryMigrationPreview open readOnly
-    // ones). Holding `storage` open across them would leave two writable
-    // handles on the same SQLite file at once — a pointless lock-contention
-    // risk for no benefit, since exportBundle is the only consumer here.
-    const storage = await openStorage(layout);
-    try {
-      preCompare = await readBundleCompare(preBundleDir!);
-      await assertSufficientDiskForBundleExport(layout);
-      postTempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-b4-validate-"));
-      await exportBundle({
-        storage,
-        bundleDir: postTempDir,
-        includeRawBlobs: true,
-      });
-      postCompare = await readBundleCompare(postTempDir);
-    } finally {
-      storage.close();
-    }
-  }
   try {
+    if (wantsBundle) {
+      // Scope the writable store handle to the bundle export only. The
+      // validators below each open their own connection to the same DB file
+      // (runMigrationValidate opens one for migration_state writes;
+      // runReadPathParity / readStorageBoundaryMigrationPreview open readOnly
+      // ones). Holding `storage` open across them would leave two writable
+      // handles on the same SQLite file at once — a pointless lock-contention
+      // risk for no benefit, since exportBundle is the only consumer here.
+      const storage = await openStorage(layout);
+      try {
+        preCompare = await readBundleCompare(preBundleDir!);
+        await assertSufficientDiskForBundleExport(layout);
+        postTempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-b4-validate-"));
+        await exportBundle({
+          storage,
+          bundleDir: postTempDir,
+          includeRawBlobs: true,
+        });
+        postCompare = await readBundleCompare(postTempDir);
+      } finally {
+        storage.close();
+      }
+    }
+
     const result = await runMigrationValidate({
       dbPath: layout.dbPath,
       assetDir: layout.assetDir,
@@ -589,6 +615,29 @@ function renderValidatorOutcome(outcome: MigrationValidatorOutcome): string {
           renderTable(
             ["Turn", "Reason", "Detail"],
             rp.user_turn.mismatches.map((m) => [m.turn_id.slice(0, 16), m.reason, m.detail ?? ""]),
+          ),
+        ),
+      );
+    }
+    return sections.join("\n");
+  }
+  if (outcome.validator === "v1-payload-digest" && outcome.v1_payload_digest) {
+    const v = outcome.v1_payload_digest;
+    const sections = [
+      header,
+      renderKeyValue([
+        ["Baseline", v.baseline_captured ? "captured this run" : "comparing to prior baseline"],
+        ["Mismatched tables", formatNumber(v.mismatch_count)],
+      ]),
+    ];
+    if (v.mismatches.length > 0) {
+      sections.push(
+        "",
+        renderSection(
+          "Drifted tables",
+          renderTable(
+            ["Table", "Baseline SHA", "Current SHA"],
+            v.mismatches.map((m) => [m.table, (m.baseline ?? "(missing)").slice(0, 16), m.current.slice(0, 16)]),
           ),
         ),
       );

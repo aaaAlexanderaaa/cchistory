@@ -8,6 +8,7 @@ import {
   clearMigrationState,
   isMigrationScopeCompleted,
   listMigrationStates,
+  parseStaleRunningThreshold,
   readMigrationState,
   recordMigrationAbort,
   recordMigrationComplete,
@@ -67,17 +68,19 @@ test("B.2: migration_state starts absent and round-trips through running → com
   });
 });
 
-test("B.2: recordMigrationStart preserves cursor_json from a previous running row", async () => {
+test("B.2: recordMigrationStart refuses an already-running scope without clearing cursor_json", async () => {
   await withStore(async (storage) => {
     const db = (storage as unknown as { db: import("node:sqlite").DatabaseSync }).db;
 
     recordMigrationStart(db, SOURCE_SCOPE, { cursorJson: JSON.stringify({ chunk: 7 }) });
-    // Simulate a crash mid-batch: row stays at running with the cursor.
-    // Next open picks up where it left off.
-    recordMigrationStart(db, SOURCE_SCOPE);
-    const resumed = readMigrationState(db, SOURCE_SCOPE)!;
-    assert.deepEqual(JSON.parse(resumed.cursor_json), { chunk: 7 });
-    assert.equal(resumed.status, "running");
+    assert.throws(
+      () => recordMigrationStart(db, SOURCE_SCOPE),
+      /already marked 'running'/,
+      "a second direct start must not race a possibly live writer",
+    );
+    const stillRunning = readMigrationState(db, SOURCE_SCOPE)!;
+    assert.deepEqual(JSON.parse(stillRunning.cursor_json), { chunk: 7 });
+    assert.equal(stillRunning.status, "running");
   });
 });
 
@@ -121,15 +124,17 @@ test("B.2: listMigrationStates returns all rows for a phase in started_at order"
   });
 });
 
-test("B.2: each (phase, scope_kind, scope_id) tuple is unique", async () => {
+test("B.2: each (phase, scope_kind, scope_id) tuple is unique across completed reruns", async () => {
   await withStore(async (storage) => {
     const db = (storage as unknown as { db: import("node:sqlite").DatabaseSync }).db;
 
     recordMigrationStart(db, SOURCE_SCOPE);
-    // Same key, second start should UPSERT, not insert a duplicate.
+    recordMigrationComplete(db, SOURCE_SCOPE);
+    // Same key after completion should UPSERT, not insert a duplicate.
     recordMigrationStart(db, SOURCE_SCOPE);
     const all = listMigrationStates(db);
     assert.equal(all.length, 1);
+    assert.equal(all[0]!.status, "running");
   });
 });
 
@@ -142,5 +147,62 @@ test("B.2: fresh store has the migration_state table after initialization", asyn
     assert.ok(row, "migration_state table must exist after schema init");
     // No rows in a fresh store.
     assert.equal(listMigrationStates(db).length, 0);
+  });
+});
+
+test("C2/I4: parseStaleRunningThreshold accepts non-negative numbers and rejects garbage", () => {
+  // Default when unset.
+  assert.equal(parseStaleRunningThreshold(undefined), 30 * 60 * 1000);
+  assert.equal(parseStaleRunningThreshold(""), 30 * 60 * 1000);
+  // Explicit values.
+  assert.equal(parseStaleRunningThreshold("0"), 0);
+  assert.equal(parseStaleRunningThreshold("60000"), 60_000);
+  assert.equal(parseStaleRunningThreshold("1.5"), 1); // floor; reject fractional silently
+  assert.equal(parseStaleRunningThreshold("  120000  "), 120_000); // trim whitespace
+  // Reject negatives — I4 regression: previously `Number.parseInt("-1") || DEFAULT`
+  // returned -1 (truthy), making every running marker stale.
+  assert.throws(() => parseStaleRunningThreshold("-1"), /invalid/i);
+  assert.throws(() => parseStaleRunningThreshold("abc"), /invalid/i);
+  assert.throws(() => parseStaleRunningThreshold("Infinity"), /invalid/i);
+  assert.throws(() => parseStaleRunningThreshold("NaN"), /invalid/i);
+});
+
+test("C2/I4: recordMigrationStart treats unparseable started_at as stale (fail-closed)", async () => {
+  await withStore(async (storage) => {
+    const db = (storage as unknown as { db: import("node:sqlite").DatabaseSync }).db;
+    // Seed a running marker with garbage started_at — simulates a corrupted
+    // row from a partial write or schema drift.
+    recordMigrationStart(db, SOURCE_SCOPE);
+    db.prepare("UPDATE migration_state SET started_at = ? WHERE phase = ? AND scope_kind = ? AND scope_id = ?")
+      .run("not-a-timestamp", SOURCE_SCOPE.phase, SOURCE_SCOPE.scopeKind, SOURCE_SCOPE.scopeId);
+
+    // I4 fix: previously `Number.isFinite(startedMs)` returned false and the
+    // guard was silently skipped — the running marker resurrected, exactly
+    // the failure mode C2 was designed to prevent. Now unparseable → stale.
+    assert.throws(
+      () => recordMigrationStart(db, SOURCE_SCOPE),
+      /already marked 'running'(.*)unparseable/s,
+    );
+  });
+});
+
+test("C2: recordMigrationStart refuses resurrection of a stale running marker", async () => {
+  await withStore(async (storage) => {
+    const db = (storage as unknown as { db: import("node:sqlite").DatabaseSync }).db;
+    recordMigrationStart(db, SOURCE_SCOPE);
+    // Move started_at back past the 30-min default threshold.
+    const stale = new Date(Date.now() - 31 * 60 * 1000).toISOString();
+    db.prepare("UPDATE migration_state SET started_at = ? WHERE phase = ? AND scope_kind = ? AND scope_id = ?")
+      .run(stale, SOURCE_SCOPE.phase, SOURCE_SCOPE.scopeKind, SOURCE_SCOPE.scopeId);
+
+    assert.throws(
+      () => recordMigrationStart(db, SOURCE_SCOPE),
+      /older than 30000ms|older than \d+ms/,
+    );
+
+    // After explicit clear, start succeeds.
+    clearMigrationState(db, SOURCE_SCOPE);
+    recordMigrationStart(db, SOURCE_SCOPE);
+    assert.equal(readMigrationState(db, SOURCE_SCOPE)!.status, "running");
   });
 });

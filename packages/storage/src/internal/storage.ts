@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, unlinkSync } from "node:fs";
 import path from "node:path";
+import process from "node:process";
 import { DatabaseSync } from "node:sqlite";
 import type {
   ArtifactCoverageRecord,
@@ -48,6 +49,7 @@ import {
   type SourcePayloadWriteProgressEvent,
 } from "../ingest/source-payload.js";
 import {
+  loadLineageBlobsBySha,
   markStorageBoundaryV2SourceAbsentByObservedOrigins,
   readTurnContextFromV2Cache,
   retireStorageBoundaryV2Sources,
@@ -87,6 +89,7 @@ import {
   type StorageBoundaryRebuildPlan,
   type StorageBoundaryRebuildScopeSelector,
 } from "./rebuild-scope.js";
+import { normalizeSourcePayload } from "./source-identity.js";
 
 type StorageProgressEvent = SourcePayloadWriteProgressEvent | {
   stage: "reindex_start" | "reindex_done";
@@ -226,8 +229,8 @@ export class CCHistoryStorage {
       preserveOriginPaths?: readonly string[];
       observedOriginPaths?: readonly string[];
     },
-  ): void {
-    writeStorageBoundaryV2Sidecars({
+  ): { pruned_evidence_shas: string[] } {
+    const result = writeStorageBoundaryV2Sidecars({
       db: this.db,
       payload,
       assetDir: this.assetDir,
@@ -235,6 +238,45 @@ export class CCHistoryStorage {
       preserveOriginPaths: options.preserveOriginPaths,
       observedOriginPaths: options.observedOriginPaths,
     });
+    // Unlink content-addressed files for blobs whose refs were dropped by
+    // prepareReplace/Merge (mutated lineage, dropped session-scoped turns).
+    // replace path already unlinks retireStorageBoundaryV2Sources output above;
+    // the dedupe in unlinkEvidenceBlobFiles makes the double-call safe.
+    this.unlinkEvidenceBlobFiles(result.pruned_evidence_shas);
+    return result;
+  }
+
+  /**
+   * B4: re-count `turns` from user_turns_v2 after writeStorageBoundaryV2Sidecars
+   * has populated the V2 rows for incoming turns. The other axes (sessions,
+   * records, fragments, atoms, blobs) are written inside the V1 merge/replace
+   * transaction itself, so their pre-sidecar counts are already correct. Only
+   * `turns` is racy because V2 sidecars are written in a follow-up transaction.
+   *
+   * Also refreshes source_instances.total_turns so listSources() reflects the
+   * post-sidecar state. See [[dual-write-mutation-sync]].
+   */
+  private recountSourcePayloadAfterV2Sidecars(
+    sourceId: string,
+    previous: {
+      sessions: number;
+      turns: number;
+      records: number;
+      fragments: number;
+      atoms: number;
+      blobs: number;
+    },
+  ): {
+    sessions: number;
+    turns: number;
+    records: number;
+    fragments: number;
+    atoms: number;
+    blobs: number;
+  } {
+    Queries.refreshSourceStatusCountsInTransaction(this.db, [sourceId]);
+    const turns = Queries.countRowsBySource(this.db, "user_turns_v2", sourceId);
+    return { ...previous, turns };
   }
 
   replaceSourcePayload(
@@ -281,6 +323,22 @@ export class CCHistoryStorage {
     this.unlinkEvidenceBlobFiles(retirement.pruned_evidence_shas);
     this.writeStorageBoundaryV2Sidecars(payload, { writeMode: "replace" });
 
+    // B4: countStoredSourcePayload (inside replacePersistedSourcePayloadWithOptions)
+    // counts turns from user_turns_v2, but writeStorageBoundaryV2Sidecars runs
+    // AFTER that count and is what actually populates V2 rows for the incoming
+    // turns. Pre-B4 the count read V1 and was correct by accident; B4 switched
+    // to V2 so the count survives the B.6 V1 drop, which exposed the ordering
+    // gap. Refresh source_instances.total_turns from V2 and patch the return
+    // value so callers (and tests) see the post-sidecar count. See
+    // [[dual-write-mutation-sync]].
+    //
+    // Use the normalized source id (host-identity re-keying inside
+    // replacePersistedSourcePayloadWithOptions may differ from payload.source.id;
+    // V1/V2 rows are written under the normalized id, so the recount must use
+    // it too or WHERE source_id = ? returns zero rows).
+    const normalizedSourceId = normalizeSourcePayload(payload).source.id;
+    result = this.recountSourcePayloadAfterV2Sidecars(normalizedSourceId, result);
+
     this.invalidateProjectLinkSnapshot();
     if (options.refreshDerived === false) {
       return result;
@@ -318,14 +376,21 @@ export class CCHistoryStorage {
       observedOriginPaths: options.observed_origin_paths,
     });
 
+    // B4: same ordering gap as replaceSourcePayload above — countStoredSourcePayload
+    // ran before V2 sidecars were written, so its `turns` field omits incoming
+    // turns whose V2 rows don't exist yet. Recount from V2 now. Use the
+    // normalized source id for the same host-identity re-keying reason.
+    const normalizedSourceId = normalizeSourcePayload(payload).source.id;
+    const recounted = this.recountSourcePayloadAfterV2Sidecars(normalizedSourceId, result);
+
     this.invalidateProjectLinkSnapshot();
     if (options.refreshDerived === false) {
-      return result;
+      return recounted;
     }
     options.onProgress?.({ stage: "reindex_start", source_id: payload.source.id });
     this.refreshDerivedState();
     options.onProgress?.({ stage: "reindex_done", source_id: payload.source.id });
-    return result;
+    return recounted;
   }
 
   updateSourceSyncMetadata(
@@ -528,13 +593,48 @@ export class CCHistoryStorage {
 
     const counts = { sessions: 0, turns: 0, blobs: 0 };
 
-    // Table configs matching buildSourcePayload field order
+    // C1: turns and contexts read from V2 to match buildSourcePayload. The V1
+    // payload_json path for these tables is no longer consulted; once B.6
+    // drops V1 user_turns/turn_contexts, only the V2 path remains. Other
+    // tables (records/fragments/atoms/etc.) are not migrated and stay on V1
+    // payload_json — the bundle surface is a hybrid until B.6.
+    const turnsOrderBy = "ORDER BY submission_started_at DESC, created_at DESC";
+    const turnsFromV2 = Queries.listUserTurnsFromV2BySource({
+      db: this.db,
+      sourceId,
+      assetDir: this.assetDir,
+      orderBy: turnsOrderBy,
+      // Bundle export serializes the full projection; lineage must round-trip
+      // byte-identically for B.4a bundle byte-diff to pass. Matches
+      // buildSourcePayload exactly.
+      withLineage: true,
+    });
+    const contextTurnIds = turnsFromV2.map((turn) => turn.id).sort((a, b) => a.localeCompare(b));
+    const db = this.db;
+    const assetDir = this.assetDir;
+    function* streamTurnJson(): Iterable<string> {
+      for (const turn of turnsFromV2) {
+        yield JSON.stringify(turn);
+      }
+    }
+    function* streamContextJson(): Iterable<string> {
+      for (const turnId of contextTurnIds) {
+        const context = readTurnContextFromV2Cache({ db, assetDir, turnId });
+        if (context) {
+          yield JSON.stringify(context);
+        }
+      }
+    }
+
+    // Table configs matching buildSourcePayload field order. `turns` and
+    // `contexts` have no `table` because they are sourced from V2 above.
     const arrayFields: Array<{
       key: string;
-      table: string;
+      table?: string;
       orderBy?: string;
       countKey?: keyof typeof counts;
       transform?: (json: string) => string;
+      v2Json?: () => Iterable<string>;
     }> = [
       { key: "stage_runs", table: "stage_runs" },
       { key: "loss_audits", table: "loss_audits" },
@@ -555,8 +655,15 @@ export class CCHistoryStorage {
       { key: "edges", table: "atom_edges" },
       { key: "candidates", table: "derived_candidates" },
       { key: "sessions", table: "sessions", orderBy: "ORDER BY created_at ASC, updated_at ASC", countKey: "sessions" },
-      { key: "turns", table: "user_turns", orderBy: "ORDER BY submission_started_at DESC, created_at DESC", countKey: "turns" },
-      { key: "contexts", table: "turn_contexts", orderBy: "ORDER BY turn_id" },
+      {
+        key: "turns",
+        countKey: "turns",
+        v2Json: streamTurnJson,
+      },
+      {
+        key: "contexts",
+        v2Json: streamContextJson,
+      },
     ];
 
     write(`{"source":${JSON.stringify(source)}`);
@@ -564,15 +671,24 @@ export class CCHistoryStorage {
     for (const field of arrayFields) {
       write(`,"${field.key}":[`);
       let first = true;
-      for (const rawJson of Queries.iterateRawJsonBySource(this.db, field.table, sourceId, field.orderBy)) {
-        if (!first) write(",");
-        first = false;
-        if (field.transform) {
-          write(field.transform(rawJson));
-        } else {
-          write(rawJson);
+      if (field.v2Json) {
+        for (const json of field.v2Json()) {
+          if (!first) write(",");
+          first = false;
+          write(json);
+          if (field.countKey) counts[field.countKey]++;
         }
-        if (field.countKey) counts[field.countKey]++;
+      } else if (field.table) {
+        for (const rawJson of Queries.iterateRawJsonBySource(this.db, field.table, sourceId, field.orderBy)) {
+          if (!first) write(",");
+          first = false;
+          if (field.transform) {
+            write(field.transform(rawJson));
+          } else {
+            write(rawJson);
+          }
+          if (field.countKey) counts[field.countKey]++;
+        }
       }
       write("]");
     }
@@ -900,8 +1016,18 @@ export class CCHistoryStorage {
 
   /**
    * A.2: best-effort unlink of content-addressed evidence files. Silently
-   * ignores missing files (they may have been unlinked already or never
-   * written for an in-memory store).
+   * ignores ENOENT (file already gone or never written — normal for in-memory
+   * stores or already-pruned shas). Other unlink errors (EACCES, EROFS, EBUSY,
+   * ENOTDIR, …) are emitted as warnings rather than thrown: by the time we get
+   * here the DB transaction has already committed, so throwing would leave the
+   * operator with a half-applied state and no record of which shas still have
+   * files on disk. The orphaned files become permanent disk usage but do not
+   * corrupt reads (the DB rows are gone; nothing references the files).
+   *
+   * Operators observing these warnings should run a periodic
+   * `reconcile-evidence-files` scan (not yet implemented) that compares dir
+   * entries to `evidence_blobs.sha256` and unlinks orphans when the underlying
+   * fs condition resolves.
    */
   private unlinkEvidenceBlobFiles(shas: readonly string[]): void {
     if (!this.assetDir || shas.length === 0) return;
@@ -911,11 +1037,19 @@ export class CCHistoryStorage {
       try {
         unlinkSync(file);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-          // Re-throw unexpected errors so the operator sees them; ENOENT is
-          // the normal case (file already gone or never written).
-          throw error;
-        }
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") continue;
+        // DB transaction has already committed by the time unlink runs; throw
+        // would not roll it back and would hide which shas are orphaned.
+        process.emitWarning(
+          `evidence blob file unlink failed (sha=${sha} code=${code ?? "UNKNOWN"}): ${
+            error instanceof Error ? error.message : String(error)
+          }. The DB row is gone; the file is now an orphan and will persist on disk until manually cleaned.`,
+          {
+            type: "CCHistoryEvidenceBlobOrphan",
+            code: "CCHISTORY_EVIDENCE_BLOB_ORPHAN_FILE",
+          },
+        );
       }
     }
   }
@@ -962,7 +1096,12 @@ export class CCHistoryStorage {
           blobsBySource.set(turn.source_id, entry);
         }
         for (const [sourceId, blobIds] of blobsBySource) {
-          const orphaned = Gc.selectOrphanedBlobIds(this.db, sourceId, blobIds);
+          // B1: referenced set comes from V2 lineage blobs (loadReferencedBlobIdsBySource)
+          // so the orphan check survives the B.6 V1 drop. The old V1 json_each path
+          // silently returned empty post-B.6 and would have cascaded-deleted every
+          // referenced blob.
+          const referenced = this.loadReferencedBlobIdsBySource(sourceId);
+          const orphaned = Gc.selectOrphanedBlobIds(blobIds, referenced);
           if (orphaned.length > 0) {
             prunedEvidenceShas.push(
               ...Gc.cascadeEvidenceCleanupForOrphanedBlobsInTransaction(this.db, {
@@ -998,16 +1137,16 @@ export class CCHistoryStorage {
       return this.getTombstone(turnId);
     }
 
-    // A.2: pre-compute orphaned blob ids so we can cascade evidence cleanup
-    // in the same transaction. For a single-turn purge this is the set of
-    // blob_refs on the turn that no other turn in the same source references.
-    const orphanedBlobIds = Gc.selectOrphanedBlobIds(this.db, turn.source_id, turn.lineage.blob_refs);
-
     this.db.exec("BEGIN IMMEDIATE;");
     let tombstone: TombstoneProjection;
     let prunedEvidenceShas: string[] = [];
     try {
       tombstone = Gc.purgeTurnInTransaction(this.db, turn, reason);
+      // A.2 + B1: compute orphaned blob ids after deleting the turn, while
+      // still inside the same transaction. Otherwise the turn being purged
+      // appears in the referenced set and pins its own last blob.
+      const referencedForPurge = this.loadReferencedBlobIdsBySource(turn.source_id);
+      const orphanedBlobIds = Gc.selectOrphanedBlobIds(turn.lineage.blob_refs, referencedForPurge);
       if (orphanedBlobIds.length > 0) {
         prunedEvidenceShas = Gc.cascadeEvidenceCleanupForOrphanedBlobsInTransaction(this.db, {
           sourceId: turn.source_id,
@@ -1049,6 +1188,68 @@ export class CCHistoryStorage {
     }
     this.unlinkEvidenceBlobFiles(shas);
     return { pruned_shas: shas, pruned_count: shas.length };
+  }
+
+  /**
+   * B1: union of `lineage.blob_refs` across every V2 turn in the source. Used
+   * by the GC orphan check (`selectOrphanedBlobIds`) to determine which
+   * candidate blob ids are still referenced by some live turn.
+   *
+   * Pre-B.6 the orphan check read V1 `user_turns.payload_json` via `json_each`
+   * over `$.lineage.blob_refs`. Post-B.6 that table is gone and the V1 query
+   * silently returned zero rows — every candidate would be marked orphaned
+   * and `cascadeEvidenceCleanupForOrphanedBlobsInTransaction` would delete
+   * live evidence. Reading from V2 lineage blobs (B.5.0g) is correct under
+   * both pre- and post-B.6.
+   *
+   * Filters to turns with `lineage_blob_count > 0` so text-only sources
+   * don't pay the per-blob load cost for lineages that contribute no
+   * blob_refs anyway.
+   *
+   * Throws if any lineage blob fails to load (H1 corruption case). Treating
+   * a missing blob as "no blob_refs" would mark live blobs as orphaned —
+   * the destructive direction. The operator must fix the corruption before
+   * GC can safely proceed.
+   */
+  private loadReferencedBlobIdsBySource(sourceId: string): ReadonlySet<string> {
+    if (!this.assetDir) {
+      // In-memory store (no assetDir) cannot have lineage blobs on disk. The
+      // source either has no blob_refs (empty result is correct) or the
+      // operator never set up the asset dir (every GC call would throw). The
+      // former is the common case in tests; treat the latter as "no refs
+      // known" and let the caller decide whether to proceed.
+      return new Set<string>();
+    }
+    const shaRows = this.db
+      .prepare(
+        `SELECT DISTINCT lineage_blob_sha256 AS sha
+           FROM user_turns_v2
+          WHERE source_id = ?
+            AND lineage_blob_count > 0
+            AND lineage_blob_sha256 != ''`,
+      )
+      .all(sourceId) as Array<{ sha: string }>;
+    if (shaRows.length === 0) {
+      return new Set<string>();
+    }
+    const shas = shaRows.map((row) => row.sha);
+    const lineageBySha = loadLineageBlobsBySha({ assetDir: this.assetDir, shas });
+    const missingShas = shas.filter((sha) => !lineageBySha.has(sha));
+    if (missingShas.length > 0) {
+      throw new Error(
+        `Cannot determine blob orphan status for source ${sourceId}: ${missingShas.length} ` +
+          `lineage blob(s) failed to load (first missing sha: ${missingShas[0]!.slice(0, 12)}…). ` +
+          `Treating missing blobs as empty-refs would mark live blobs as orphaned and cascade-delete them. ` +
+          `Fix the H1 integrity warning (or re-run B.3 backfill) before re-running GC.`,
+      );
+    }
+    const referenced = new Set<string>();
+    for (const lineage of lineageBySha.values()) {
+      if (lineage?.blob_refs) {
+        for (const ref of lineage.blob_refs) referenced.add(ref);
+      }
+    }
+    return referenced;
   }
 
   /**
@@ -1547,15 +1748,34 @@ export class CCHistoryStorage {
     // drift case the dual-write invariant is supposed to catch. Reading V1
     // directly means "V1 exists but V2 doesn't" surfaces as a V2 UPDATE that
     // affects 0 rows, which the assertion below turns into a loud failure.
-    const turn = Queries.getTurn(this.db, turnId);
+    //
+    // B2: post-B.6, V1 user_turns is gone and the V1 read returns undefined
+    // for every turn — `garbageCollectCandidateTurns({mode:"archive"})` would
+    // silently no-op every archive. Fall back to V2 when V1 has no row; the
+    // V2 UPDATE count assertion below still catches "V1 had it but V2 didn't"
+    // drift pre-B.6 (because we only entered the fallback when V1 was empty).
+    // Post-B.6 the drift signal naturally disappears because there's no V1
+    // to drift from.
+    let turn = Queries.getTurn(this.db, turnId);
+    const v1HasRow = turn !== undefined;
+    if (!turn) {
+      turn = Queries.readUserTurnFromV2({
+        db: this.db,
+        turnId,
+        assetDir: this.assetDir,
+        withLineage: false,
+      });
+    }
     if (!turn) {
       return undefined;
     }
     const nextTurn = updater(turn);
     const boundedAt = nowIso();
-    this.db
-      .prepare("UPDATE user_turns SET payload_json = ?, created_at = ?, submission_started_at = ? WHERE id = ?")
-      .run(toJson(nextTurn), nextTurn.created_at, nextTurn.submission_started_at, turnId);
+    if (v1HasRow) {
+      this.db
+        .prepare("UPDATE user_turns SET payload_json = ?, created_at = ?, submission_started_at = ? WHERE id = ?")
+        .run(toJson(nextTurn), nextTurn.created_at, nextTurn.submission_started_at, turnId);
+    }
     // B.5.2: keep the V2 sidecar in sync with V1 payload_json. The read path
     // (storage.getTurn / listTurns) is V2-only; if we only updated V1 here the
     // next read would observe the pre-mutation value_axis / retention_axis.

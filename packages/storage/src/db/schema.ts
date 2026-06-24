@@ -148,11 +148,16 @@ const STORAGE_INDEXES: ReadonlyArray<{
   { name: "idx_parsed_record_spans_source_blob", sql: "CREATE INDEX IF NOT EXISTS idx_parsed_record_spans_source_blob ON parsed_record_spans (source_id, blob_id)" },
   { name: "idx_parsed_record_spans_session", sql: "CREATE INDEX IF NOT EXISTS idx_parsed_record_spans_session ON parsed_record_spans (session_ref)" },
   { name: "idx_parsed_record_spans_parser_profile", sql: "CREATE INDEX IF NOT EXISTS idx_parsed_record_spans_parser_profile ON parsed_record_spans (parser_profile_id)" },
+  { name: "idx_parsed_record_spans_sha", sql: "CREATE INDEX IF NOT EXISTS idx_parsed_record_spans_sha ON parsed_record_spans (evidence_sha256)" },
   // A.3: dropped idx_user_turns_v2_session — idx_user_turns_v2_source_session
   // covers both source-scoped and session-scoped lookups on user_turns_v2.
   { name: "idx_user_turns_v2_source_session", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_v2_source_session ON user_turns_v2 (source_id, session_id)" },
   { name: "idx_user_turns_v2_submission", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_v2_submission ON user_turns_v2 (submission_started_at)" },
+  // Prune queries LEFT JOIN evidence_blobs against lineage_blob_sha256;
+  // without this index every prune is a full table scan of user_turns_v2.
+  { name: "idx_user_turns_v2_lineage_sha", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_v2_lineage_sha ON user_turns_v2 (lineage_blob_sha256) WHERE lineage_blob_sha256 != ''" },
   { name: "idx_turn_context_refs_v2_source", sql: "CREATE INDEX IF NOT EXISTS idx_turn_context_refs_v2_source ON turn_context_refs_v2 (source_id)" },
+  { name: "idx_turn_context_refs_v2_sha", sql: "CREATE INDEX IF NOT EXISTS idx_turn_context_refs_v2_sha ON turn_context_refs_v2 (context_evidence_sha256) WHERE context_evidence_sha256 != ''" },
   { name: "idx_derived_cache_refs_scope", sql: "CREATE INDEX IF NOT EXISTS idx_derived_cache_refs_scope ON derived_cache_refs (source_id, scope_kind, scope_ref)" },
   { name: "idx_derived_cache_refs_kind_scope", sql: "CREATE INDEX IF NOT EXISTS idx_derived_cache_refs_kind_scope ON derived_cache_refs (scope_kind, scope_ref)" },
   { name: "idx_derived_cache_refs_parser_profile", sql: "CREATE INDEX IF NOT EXISTS idx_derived_cache_refs_parser_profile ON derived_cache_refs (parser_profile_id)" },

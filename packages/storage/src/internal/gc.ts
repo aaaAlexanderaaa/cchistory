@@ -72,40 +72,60 @@ export function purgeTurnInTransaction(
   const deleteV2Turn = db.prepare("DELETE FROM user_turns_v2 WHERE turn_id = ?");
   const deleteV2Context = db.prepare("DELETE FROM turn_context_refs_v2 WHERE turn_id = ?");
   const deleteCoverage = db.prepare("DELETE FROM artifact_coverage WHERE turn_id = ?");
+  // I13: V2 keys on turn_id, V1 keys on id. If id !== turn_id the loop above
+  // issues 0-row V2 deletes for the id iteration. Sum changes across both
+  // iterations: must be exactly 1 (V2 row existed and was unique). 0 means
+  // the V2 sidecar is missing — dual-write drift of the same shape as the
+  // M4 rewriteStoredTurn fix. >1 means schema corruption (turn_id uniqueness
+  // broken). Either way, surface loudly so the operator doesn't silently
+  // accumulate V2 orphans or V1 orphans.
+  let v2TurnDeletes = 0;
   for (const turnId of turnIds) {
     deleteTurn.run(turnId);
     deleteContext.run(turnId);
-    deleteV2Turn.run(turnId);
+    const result = deleteV2Turn.run(turnId);
+    v2TurnDeletes += Number(result.changes ?? 0);
     deleteV2Context.run(turnId);
     deleteCoverage.run(turnId);
+  }
+  const canonicalTurnId = turn.turn_id ?? turn.id;
+  if (v2TurnDeletes === 0) {
+    throw new Error(
+      `purgeTurnInTransaction: V2 sidecar missing for turn_id=${canonicalTurnId}. ` +
+        `V1 row was deleted but user_turns_v2 had no matching row — this is dual-write drift. ` +
+        `Audit with \`cchistory migration validate --only read-paths\` and re-run B.3 if needed.`,
+    );
+  }
+  if (v2TurnDeletes > 1) {
+    throw new Error(
+      `purgeTurnInTransaction: V2 delete affected ${v2TurnDeletes} user_turns_v2 rows for turn_id=${canonicalTurnId}. ` +
+        `Expected exactly 1 (turn_id should be unique). Indicates schema corruption.`,
+    );
   }
   return tombstone;
 }
 
 /**
- * A.2: find blob ids in `candidateBlobIds` that are no longer referenced by any
- * remaining user_turn row in the given source. Uses json_each over
- * user_turns.payload_json -> $.lineage.blob_refs; works without a covering
- * index, which is acceptable because candidateBlobIds is typically small
- * (one turn's blob_refs, or one batch's worth).
+ * B1: returns the subset of `candidateBlobIds` not present in
+ * `referencedBlobIds`. Pure set difference — no DB access. The caller is
+ * responsible for computing `referencedBlobIds`, typically by loading the V2
+ * lineage blobs for every turn in the source and unioning their `blob_refs`
+ * (see `CCHistoryStorage.loadReferencedBlobIdsBySource`).
+ *
+ * Pre-B.6 this function read V1 `user_turns.payload_json` via `json_each` over
+ * `$.lineage.blob_refs`. Post-B.6 that table is gone and the V1 query
+ * silently returned zero rows, marking every candidate as orphaned —
+ * `cascadeEvidenceCleanupForOrphanedBlobsInTransaction` would then delete
+ * live evidence blobs. Moving the data dependency to the caller (who reads
+ * V2 lineage blobs) keeps gc.ts free of evidence-store imports (would be a
+ * circular dep) and makes this function unit-testable without a DB.
  */
 export function selectOrphanedBlobIds(
-  db: DatabaseSync,
-  sourceId: string,
   candidateBlobIds: readonly string[],
+  referencedBlobIds: ReadonlySet<string>,
 ): string[] {
   if (candidateBlobIds.length === 0) return [];
-  const placeholders = candidateBlobIds.map(() => "?").join(",");
-  const rows = db
-    .prepare(
-      `SELECT DISTINCT value AS blob_id
-         FROM user_turns, json_each(json_extract(payload_json, '$.lineage.blob_refs'))
-        WHERE source_id = ?
-          AND value IN (${placeholders})`,
-    )
-    .all(sourceId, ...candidateBlobIds) as Array<{ blob_id: string }>;
-  const stillReferenced = new Set(rows.map((row) => row.blob_id));
-  return uniqueStrings(candidateBlobIds.filter((blobId) => !stillReferenced.has(blobId)));
+  return uniqueStrings(candidateBlobIds.filter((blobId) => !referencedBlobIds.has(blobId)));
 }
 
 /**
@@ -160,7 +180,7 @@ export function cascadeEvidenceCleanupForOrphanedBlobsInTransaction(
  * of the six ref sources that point at evidence_blobs.sha256:
  *   - evidence_captures.evidence_sha256
  *   - parsed_record_spans.evidence_sha256
- *   - source_file_ledger.current_evidence_sha256
+ *   - current source_file_ledger.current_evidence_sha256
  *   - turn_context_refs_v2.context_evidence_sha256
  *   - derived_cache_refs.evidence_sha256
  *   - user_turns_v2.lineage_blob_sha256  (added by B.5.0g; lineage blobs have
@@ -175,7 +195,9 @@ export function pruneUnreferencedEvidenceBlobsInTransaction(db: DatabaseSync): s
          FROM evidence_blobs eb
          LEFT JOIN evidence_captures ec ON ec.evidence_sha256 = eb.sha256
          LEFT JOIN parsed_record_spans prs ON prs.evidence_sha256 = eb.sha256
-         LEFT JOIN source_file_ledger sfl ON sfl.current_evidence_sha256 = eb.sha256
+         LEFT JOIN source_file_ledger sfl
+           ON sfl.current_evidence_sha256 = eb.sha256
+          AND sfl.sync_axis = 'current'
          LEFT JOIN turn_context_refs_v2 tcr ON tcr.context_evidence_sha256 = eb.sha256
          LEFT JOIN derived_cache_refs dcr ON dcr.evidence_sha256 = eb.sha256
          LEFT JOIN user_turns_v2 utv ON utv.lineage_blob_sha256 = eb.sha256

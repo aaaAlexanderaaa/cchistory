@@ -429,3 +429,43 @@ test("purgeTurn is idempotent - second purge returns existing tombstone", async 
     await rm(dataDir, { recursive: true, force: true });
   }
 });
+
+test("I13: purgeTurn throws if the V2 sidecar is missing (dual-write drift, transaction rolls back)", async () => {
+  // Regression: purgeTurnInTransaction sums V2 row deletes across the id and
+  // turn_id iterations. If the V2 sidecar is missing, the sum stays at 0 and
+  // the V1 row was already deleted in the same transaction — leaving a silent
+  // V1 orphan (read-path returns undefined for the turn but no tombstone,
+  // nothing to surface the drift). The I13 assertion makes this loud and the
+  // caller's ROLLBACK undoes the V1 delete so the operator can fix the sidecar
+  // without losing data.
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-i13-missing-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(createFixturePayload("src-1", "I13 missing sidecar test", "sr-1"));
+    const turnId = "turn-1";
+
+    // Simulate the missing sidecar: delete V2 row + context ref so no FK
+    // violation muddies the assertion. V1 stays intact.
+    const db = (storage as any).db as DatabaseSync;
+    db.prepare("DELETE FROM user_turns_v2 WHERE turn_id = ?").run(turnId);
+    db.prepare("DELETE FROM turn_context_refs_v2 WHERE turn_id = ?").run(turnId);
+
+    assert.throws(
+      () => storage.purgeTurn(turnId, "i13_test"),
+      /V2 sidecar missing/i,
+      "purgeTurn must throw when the V2 sidecar is missing",
+    );
+
+    // Transaction rolled back: V1 row and any tombstone insert must be undone.
+    const v1Row = db
+      .prepare("SELECT id FROM user_turns WHERE id = ?")
+      .get(turnId);
+    assert.ok(v1Row, "V1 row must survive the rolled-back purge");
+    const tombstone = db
+      .prepare("SELECT logical_id FROM tombstones WHERE logical_id = ?")
+      .get(turnId);
+    assert.equal(tombstone, undefined, "tombstone insert must be rolled back");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

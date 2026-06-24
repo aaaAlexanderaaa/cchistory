@@ -52,6 +52,10 @@ const ALLOWED_TABLE_NAMES = new Set([
   "project_current",
   "source_instances",
   "tombstones",
+  // V2 sidecar tables (Phase B). Added so countRowsBySource can read the V2
+  // turn count post-B.4 / post-B.6.
+  "user_turns_v2",
+  "turn_context_refs_v2",
 ]);
 
 function assertTableName(name: string): void {
@@ -349,7 +353,7 @@ function userTurnFromV2Row(input: {
     created_at: row.created_at,
     submission_started_at: row.submission_started_at,
     last_context_activity_at: row.last_context_activity_at,
-    canonical_text: row.canonical_text_full || row.canonical_text,
+    canonical_text: row.canonical_text_full ?? row.canonical_text,
     raw_text: row.raw_text_full,
     display_segments: displaySegments,
     user_messages: userMessages,
@@ -611,6 +615,13 @@ export function refreshSourceStatusCountsInTransaction(db: DatabaseSync, sourceI
 
   const selectSource = db.prepare("SELECT payload_json FROM source_instances WHERE id = ?");
   const updateSource = db.prepare("UPDATE source_instances SET payload_json = ? WHERE id = ?");
+  // B3: count turns from user_turns_v2 so the count survives the B.6 V1 drop.
+  // The other tables here are not migrated by Phase B and stay on V1 payload
+  // (their Counts are correct under both pre- and post-B.6). user_turns is the
+  // one V1 table that goes away at B.6, so its count is special-cased to V2.
+  const countTurnsV2 = db.prepare(
+    "SELECT COUNT(*) AS count FROM user_turns_v2 WHERE source_id = ?",
+  );
   for (const sourceId of sourceIds) {
     const row = selectSource.get(sourceId) as { payload_json: string } | undefined;
     if (!row) {
@@ -624,7 +635,7 @@ export function refreshSourceStatusCountsInTransaction(db: DatabaseSync, sourceI
       total_fragments: countRowsBySource(db, "source_fragments", sourceId),
       total_atoms: countRowsBySource(db, "conversation_atoms", sourceId),
       total_sessions: countRowsBySource(db, "sessions", sourceId),
-      total_turns: countRowsBySource(db, "user_turns", sourceId),
+      total_turns: (countTurnsV2.get(sourceId) as { count: number }).count,
     };
     updateSource.run(toJson(nextSource), sourceId);
   }

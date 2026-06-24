@@ -663,6 +663,18 @@ function deleteSessionScopedRows(db: DatabaseSync, sourceId: string, sessionRef:
     "DELETE FROM turn_contexts WHERE source_id = ? AND turn_id IN (SELECT id FROM user_turns WHERE source_id = ? AND session_id = ?)",
   ).run(sourceId, sourceId, sessionRef);
   db.prepare("DELETE FROM user_turns WHERE source_id = ? AND session_id = ?").run(sourceId, sessionRef);
+  // C3: prune V2 sidecar rows for the same sessions. V2 user_turns_v2 and
+  // turn_context_refs_v2 must mirror the V1 deletes — post-B.5.2 reads are
+  // V2-only, so V1-only deletes silently leave V2 populated. The dropped
+  // sessions' turns would otherwise reappear in every list/detail/bundle
+  // read. Delete V2 contexts first (the WHERE IN subquery needs
+  // user_turns_v2 to still hold the turn_id→session_id mapping), then V2
+  // turns. See [[dual-write-mutation-sync]] — same defect class as the M4
+  // rewriteStoredTurn fix.
+  db.prepare(
+    "DELETE FROM turn_context_refs_v2 WHERE source_id = ? AND turn_id IN (SELECT turn_id FROM user_turns_v2 WHERE source_id = ? AND session_id = ?)",
+  ).run(sourceId, sourceId, sessionRef);
+  db.prepare("DELETE FROM user_turns_v2 WHERE source_id = ? AND session_id = ?").run(sourceId, sessionRef);
   db.prepare("DELETE FROM sessions WHERE source_id = ? AND id = ?").run(sourceId, sessionRef);
   db.prepare("DELETE FROM derived_candidates WHERE source_id = ? AND session_ref = ?").run(sourceId, sessionRef);
   db.prepare("DELETE FROM atom_edges WHERE source_id = ? AND session_ref = ?").run(sourceId, sessionRef);
@@ -690,7 +702,9 @@ function countStoredSourcePayload(
 } {
   return {
     sessions: countRowsBySource(db, "sessions", sourceId),
-    turns: countRowsBySource(db, "user_turns", sourceId),
+    // B4: count from user_turns_v2 so the count survives the B.6 V1 drop.
+    // Other tables here are not migrated by Phase B and stay on V1 payload_json.
+    turns: countRowsBySource(db, "user_turns_v2", sourceId),
     records: countRowsBySource(db, "raw_records", sourceId),
     fragments: countRowsBySource(db, "source_fragments", sourceId),
     atoms: countRowsBySource(db, "conversation_atoms", sourceId),
@@ -719,6 +733,16 @@ function deleteBySource(db: DatabaseSync, sourceId: string): void {
     "DELETE FROM sessions WHERE source_id = ?",
     "DELETE FROM user_turns WHERE source_id = ?",
     "DELETE FROM turn_contexts WHERE source_id = ?",
+    // C3: mirror V1 deletes into V2 sidecar tables. Today the only caller
+    // (replacePersistedSourcePayloadWithOptions → writeStorageBoundaryV2Sidecars
+    // with writeMode="replace" → prepareReplaceCurrentState) re-runs this
+    // delete idempotently, so the dual-write invariant currently holds via
+    // call-site ordering. Making deleteBySource self-contained removes the
+    // ordering dependency — a future caller that invokes this directly
+    // without prepareReplaceCurrentState would otherwise leak V2 rows.
+    // See [[dual-write-mutation-sync]].
+    "DELETE FROM turn_context_refs_v2 WHERE source_id = ?",
+    "DELETE FROM user_turns_v2 WHERE source_id = ?",
   ];
 
   for (const statement of statements) {

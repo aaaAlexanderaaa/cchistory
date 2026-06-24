@@ -120,10 +120,10 @@ export async function readStorageBoundaryMigrationPreview(input: {
 
 function readSchemaVersion(db: DatabaseSync): string | undefined {
   try {
-    const row = db.prepare("SELECT value FROM schema_meta WHERE key = 'schema_version'").get() as
-      | { value: string }
+    const row = db.prepare("SELECT value_text FROM schema_meta WHERE key = 'schema_version'").get() as
+      | { value_text: string }
       | undefined;
-    return row?.value;
+    return row?.value_text;
   } catch {
     return undefined;
   }

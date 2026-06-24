@@ -12,6 +12,7 @@ import type {
 import type { DatabaseSync } from "node:sqlite";
 import { normalizeSourcePayload } from "./internal/source-identity.js";
 import { compositeKey, fromJson, nowIso } from "./internal/utils.js";
+import { pruneUnreferencedEvidenceBlobsInTransaction } from "./internal/gc.js";
 
 export const TURN_CONTEXT_INLINE_BUDGET_BYTES = 16 * 1024;
 export const USER_TURN_V2_INLINE_BUDGET_BYTES = 32 * 1024;
@@ -39,7 +40,7 @@ export function writeStorageBoundaryV2Sidecars(input: {
   writeMode: "replace" | "merge";
   preserveOriginPaths?: readonly string[];
   observedOriginPaths?: readonly string[];
-}): void {
+}): { pruned_evidence_shas: string[] } {
   const normalizedPayload = normalizeSourcePayload(input.payload);
   const now = nowIso();
   const parserProfileId = deriveParserProfileId(normalizedPayload);
@@ -50,6 +51,7 @@ export function writeStorageBoundaryV2Sidecars(input: {
   const incomingOriginPaths = dedupeByKey(normalizedPayload.blobs, (entry) => entry.id)
     .map((blob) => normalizeOriginPath(blob.origin_path));
 
+  let prunedShas: string[] = [];
   dbTransaction(input.db, () => {
     if (input.writeMode === "replace") {
       prepareReplaceCurrentState(input.db, normalizedPayload.source.id, incomingOriginPaths, now);
@@ -113,7 +115,16 @@ export function writeStorageBoundaryV2Sidecars(input: {
     }
 
     upsertDerivedCacheRefs(input.db, normalizedPayload, parserProfileId, now, itemByteSize);
+
+    // Prune evidence blobs whose refs were dropped by prepareReplace/Merge
+    // (e.g. an upserted turn whose lineage mutated drops the previous lineage
+    // blob; a merge that drops session-scoped turns drops their lineage +
+    // context-cache blobs). Without this call the same blob-leak shape as
+    // B.5.0g accumulates on every merge/replace. Done inside the same
+    // transaction so DB rows and file unlinks stay consistent.
+    prunedShas = pruneUnreferencedEvidenceBlobsInTransaction(input.db);
   });
+  return { pruned_evidence_shas: prunedShas };
 }
 
 export function markStorageBoundaryV2SourceAbsentByObservedOrigins(input: {
@@ -149,6 +160,15 @@ export function markStorageBoundaryV2SourceAbsentByObservedOrigins(input: {
  * derived_cache_refs is computed via SQL aggregation at the end (COUNT and
  * LENGTH(payload_json) SUM per scope), avoiding the need to load fragments /
  * atoms / candidates into memory at all.
+ *
+ * B5 invariant: this function is the only path that backfills V2 sidecars
+ * from V1 payload_json. Post-B.6 (when V1 user_turns / turn_contexts are
+ * dropped) the V1 reads at lines ~255 and ~264 return zero rows and this
+ * function becomes a natural no-op for the turns + contexts sections — but
+ * the operator CANNOT recover a missing V2 sidecar post-B.6 because the V1
+ * source is gone. B.3 must reach `migration_state.status = completed` for
+ * every source BEFORE B.6 lands. The C6 v1-payload-digest validator is the
+ * audit gate; the operator workflow is: B.3 → C6 baseline → C6 compare → B.6.
  */
 export function streamV2SidecarsFromV1(input: {
   db: DatabaseSync;
@@ -207,6 +227,48 @@ export function streamV2SidecarsFromV1(input: {
     );
     for (const row of blobsStmt.iterate(sourceId) as Iterable<{ payload_json: string }>) {
       const blob = fromJson<CapturedBlob>(row.payload_json);
+      const trustedBytes = readTrustedBlobBytes(blob);
+      if (trustedBytes) {
+        const materialized = materializeBytes({
+          assetDir: input.assetDir,
+          bytes: trustedBytes,
+          mediaType: "application/octet-stream",
+          captureKind: "source_blob",
+          createdAt: now,
+        });
+        upsertEvidenceBlob(db, materialized);
+        upsertEvidenceCapture(db, sourceId, blob, materialized, now);
+        const summary = readRawRecordSummaryByBlob(db, sourceId, blob.id);
+        upsertSourceFileLedger(db, {
+          sourceId,
+          blob,
+          materialized,
+          sessionRefs: summary.sessionRefs,
+          lastRecordOrdinal: summary.lastRecordOrdinal,
+          parserProfileId,
+          observedAt: now,
+        });
+        const lineSpanIterator = iterateJsonlLineSpans(materialized.bytes)[Symbol.iterator]();
+        let nextLineSpan = lineSpanIterator.next();
+        for (const r of recordsByBlobStmt.iterate(sourceId, blob.id) as Iterable<{ payload_json: string }>) {
+          const record = fromJson<RawRecord>(r.payload_json);
+          while (!nextLineSpan.done && nextLineSpan.value.ordinal < record.ordinal) {
+            nextLineSpan = lineSpanIterator.next();
+          }
+          const lineSpan = !nextLineSpan.done && nextLineSpan.value.ordinal === record.ordinal
+            ? nextLineSpan.value
+            : undefined;
+          upsertParsedRecordSpan(db, {
+            record,
+            materialized,
+            lineSpan,
+            parserProfileId,
+            createdAt: now,
+          });
+        }
+        continue;
+      }
+
       const records: RawRecord[] = [];
       for (const r of recordsByBlobStmt.iterate(sourceId, blob.id) as Iterable<{ payload_json: string }>) {
         records.push(fromJson<RawRecord>(r.payload_json));
@@ -272,6 +334,35 @@ function tableCount(db: DatabaseSync, tableName: string, sourceId: string): numb
     | { n: number }
     | undefined;
   return Number(row?.n ?? 0);
+}
+
+function readRawRecordSummaryByBlob(
+  db: DatabaseSync,
+  sourceId: string,
+  blobId: string,
+): { sessionRefs: string[]; lastRecordOrdinal: number | null } {
+  const ordinalRow = db
+    .prepare(
+      `SELECT MAX(ordinal) AS last_record_ordinal
+         FROM raw_records
+        WHERE source_id = ?
+          AND blob_id = ?`,
+    )
+    .get(sourceId, blobId) as { last_record_ordinal: number | null } | undefined;
+  const sessionRows = db
+    .prepare(
+      `SELECT DISTINCT session_ref
+         FROM raw_records
+        WHERE source_id = ?
+          AND blob_id = ?
+          AND session_ref <> ''
+        ORDER BY session_ref`,
+    )
+    .all(sourceId, blobId) as Array<{ session_ref: string }>;
+  return {
+    sessionRefs: sessionRows.map((row) => row.session_ref),
+    lastRecordOrdinal: ordinalRow?.last_record_ordinal ?? null,
+  };
 }
 
 function deriveParserProfileIdFromStageRuns(db: DatabaseSync, sourceId: string): string {
@@ -476,8 +567,8 @@ export function retireStorageBoundaryV2Sources(input: {
 }): {
   /**
    * A.2: evidence blob shas whose evidence_blobs rows were dropped because
-   * they are no longer referenced from any of the six ref sources
-   * (evidence_captures, parsed_record_spans, source_file_ledger,
+   * they are no longer referenced from any of the six live ref sources
+   * (evidence_captures, parsed_record_spans, current source_file_ledger,
    * turn_context_refs_v2, derived_cache_refs, user_turns_v2.lineage_blob_sha256)
    * after this retirement. Caller unlinks the content-addressed files
    * outside the DB transaction.
@@ -510,38 +601,9 @@ export function retireStorageBoundaryV2Sources(input: {
       `).run(now, sourceId);
     }
     // A.2: prune evidence_blobs rows whose sha is no longer referenced. Done
-    // once for the whole batch — the LEFT JOINs scan evidence_blobs end-to-end
-    // so per-source iteration would be wasteful. The six reference points are
-    // evidence_captures, parsed_record_spans, source_file_ledger,
-    // turn_context_refs_v2, derived_cache_refs, and user_turns_v2.lineage_blob_sha256
-    // (B.5.0g — lineage blobs have no evidence_captures row, so omitting this
-    // ref source drops live blobs from OTHER sources during a per-source retire).
-    const orphaned = input.db
-      .prepare(
-        `SELECT eb.sha256 AS sha
-           FROM evidence_blobs eb
-           LEFT JOIN evidence_captures ec ON ec.evidence_sha256 = eb.sha256
-           LEFT JOIN parsed_record_spans prs ON prs.evidence_sha256 = eb.sha256
-           LEFT JOIN source_file_ledger sfl ON sfl.current_evidence_sha256 = eb.sha256
-           LEFT JOIN turn_context_refs_v2 tcr ON tcr.context_evidence_sha256 = eb.sha256
-           LEFT JOIN derived_cache_refs dcr ON dcr.evidence_sha256 = eb.sha256
-           LEFT JOIN user_turns_v2 utv ON utv.lineage_blob_sha256 = eb.sha256
-          WHERE ec.evidence_sha256 IS NULL
-            AND prs.evidence_sha256 IS NULL
-            AND sfl.current_evidence_sha256 IS NULL
-            AND tcr.context_evidence_sha256 IS NULL
-            AND dcr.evidence_sha256 IS NULL
-            AND utv.lineage_blob_sha256 IS NULL`,
-      )
-      .all() as Array<{ sha: string }>;
-    if (orphaned.length > 0) {
-      const shas = Array.from(new Set(orphaned.map((row) => row.sha)));
-      const deleteStmt = input.db.prepare("DELETE FROM evidence_blobs WHERE sha256 = ?");
-      for (const sha of shas) {
-        deleteStmt.run(sha);
-      }
-      prunedShas.push(...shas);
-    }
+    // once for the whole batch because the shared prune scans evidence_blobs
+    // end-to-end.
+    prunedShas.push(...pruneUnreferencedEvidenceBlobsInTransaction(input.db));
   });
   return { pruned_evidence_shas: prunedShas };
 }
@@ -558,7 +620,6 @@ export function readTurnContextFromV2Cache(input: {
     SELECT context_evidence_sha256,
            cache_storage_path
       FROM turn_context_refs_v2 tcr
-      JOIN user_turns ut ON ut.id = tcr.turn_id
      WHERE tcr.turn_id = ?
   `).get(input.turnId) as
     | {
@@ -1099,14 +1160,18 @@ function upsertSourceFileLedger(
     sourceId: string;
     blob: CapturedBlob;
     materialized: EvidenceMaterialization;
-    records: readonly RawRecord[];
+    records?: readonly RawRecord[];
+    sessionRefs?: readonly string[];
+    lastRecordOrdinal?: number | null;
     parserProfileId: string;
     observedAt: string;
   },
 ): void {
-  const sortedRecords = [...input.records].sort((left, right) => left.ordinal - right.ordinal);
-  const lastRecord = sortedRecords.at(-1);
-  const sessionRefs = [...new Set(sortedRecords.map((record) => record.session_ref).filter(Boolean))].sort();
+  const sortedRecords = input.records ? [...input.records].sort((left, right) => left.ordinal - right.ordinal) : [];
+  const lastRecordOrdinal = input.records ? sortedRecords.at(-1)?.ordinal ?? null : input.lastRecordOrdinal ?? null;
+  const sessionRefs = input.records
+    ? [...new Set(sortedRecords.map((record) => record.session_ref).filter(Boolean))].sort()
+    : [...new Set((input.sessionRefs ?? []).filter(Boolean))].sort();
   db.prepare(`
     INSERT OR REPLACE INTO source_file_ledger (
       id,
@@ -1142,7 +1207,7 @@ function upsertSourceFileLedger(
     input.parserProfileId,
     input.materialized.captureKind === "source_blob" ? input.materialized.sizeBytes : null,
     input.materialized.captureKind === "source_blob" ? findLastJsonlBoundary(input.materialized.bytes) : null,
-    lastRecord?.ordinal ?? null,
+    lastRecordOrdinal,
     JSON.stringify(sessionRefs),
     "current",
     input.observedAt,
@@ -1648,6 +1713,13 @@ function deriveParserProfileId(payload: SourceSyncPayload): string {
 
 function indexJsonlLineSpans(bytes: Buffer): Map<number, JsonlLineSpan> {
   const spans = new Map<number, JsonlLineSpan>();
+  for (const span of iterateJsonlLineSpans(bytes)) {
+    spans.set(span.ordinal, span);
+  }
+  return spans;
+}
+
+function* iterateJsonlLineSpans(bytes: Buffer): Iterable<JsonlLineSpan> {
   let lineStart = 0;
   let ordinal = 0;
   for (let index = 0; index <= bytes.length; index += 1) {
@@ -1666,11 +1738,11 @@ function indexJsonlLineSpans(bytes: Buffer): Map<number, JsonlLineSpan> {
       contentEnd -= 1;
     }
     if (contentEnd > contentStart) {
-      spans.set(ordinal, {
+      yield {
         ordinal,
         startByte: contentStart,
         endByte: contentEnd,
-      });
+      };
       ordinal += 1;
     }
 
@@ -1679,7 +1751,6 @@ function indexJsonlLineSpans(bytes: Buffer): Map<number, JsonlLineSpan> {
     }
     lineStart = index + 1;
   }
-  return spans;
 }
 
 function findLastJsonlBoundary(bytes: Buffer): number | null {
@@ -1739,8 +1810,12 @@ function boundedJson(value: unknown, maxBytes: number): string {
  * — acceptable for the bounded fields this is used on (display_segments,
  * context_summary, lineage, context preview, raw_event_refs), which are all
  * derived/index material per the V2 contract.
+ *
+ * Exported for direct unit testing — the integration path requires multi-KB
+ * fixtures to trigger the bounded branch, which is expensive for a pure
+ * function with obvious correctness invariants.
  */
-function shrinkJsonToBudget(value: unknown, maxBytes: number): unknown {
+export function shrinkJsonToBudget(value: unknown, maxBytes: number): unknown {
   if (Array.isArray(value)) {
     if (value.length === 0) return value;
     let lo = 0;
@@ -1753,7 +1828,25 @@ function shrinkJsonToBudget(value: unknown, maxBytes: number): unknown {
         hi = mid - 1;
       }
     }
-    return value.slice(0, lo);
+    if (lo > 0) {
+      return value.slice(0, lo);
+    }
+    // I8: even one element exceeds maxBytes. Previously this returned `[]`,
+    // silently zeroing the whole field — same shape as the H5 bug for
+    // single-string object values. Fall back to shrinking the first element
+    // so the field survives with truncated content. display_segments is the
+    // field most likely to hit this (single oversized paste).
+    //
+    // Reserve 4 bytes for the wrapper: `[` + `]` (always) plus `"` + `"` when
+    // the element is a string. Using 4 unconditionally is at worst 2 bytes of
+    // unused headroom for non-string elements — the candidate check below
+    // catches the rare case where shrink overshoots.
+    const shrunkFirst = shrinkJsonToBudget(value[0], Math.max(0, maxBytes - 4));
+    const candidate = [shrunkFirst];
+    if (Buffer.byteLength(JSON.stringify(candidate), "utf8") <= maxBytes) {
+      return candidate;
+    }
+    return [];
   }
   if (value !== null && typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>);

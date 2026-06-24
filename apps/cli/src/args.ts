@@ -613,10 +613,10 @@ const commandSpecs: CommandSpec[] = [
   },
   {
     path: ["migration", "reset"],
-    usage: "cchistory migration reset [--phase <name>] [--store <dir>|--db <file>] [--json]",
+    usage: "cchistory migration reset [--phase <name>] [--force] [--store <dir>|--db <file>] [--json]",
     description:
-      "B.5.0: clear migration_state marker rows so an aborted or stale migration can be re-run. Default clears every phase; --phase storage-boundary.write clears just B.3 markers; --phase storage-boundary.validate clears just B.4 markers.",
-    options: ["phase"],
+      "B.5.0: clear migration_state marker rows so an aborted or stale migration can be re-run. Default clears every phase; --phase storage-boundary.write clears just B.3 markers; --phase storage-boundary.validate clears just B.4 markers. Refuses to clear while any marker is still 'running' (would defeat the C2 abort-resurrect guard); pass --force to override after confirming the prior PID is dead.",
+    options: ["phase", "force"],
   },
   {
     path: ["query"],

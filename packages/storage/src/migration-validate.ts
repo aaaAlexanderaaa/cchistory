@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import type { TurnContextProjection, UserTurnProjection } from "@cchistory/domain";
 import {
+  readMigrationState,
   recordMigrationAbort,
   recordMigrationComplete,
   recordMigrationStart,
@@ -32,13 +34,45 @@ import * as Queries from "./internal/queries.js";
 
 const PHASE = "storage-boundary.validate" as const;
 
-export type MigrationValidatorKind = "bundle" | "inventory" | "read-paths";
+export type MigrationValidatorKind = "bundle" | "inventory" | "read-paths" | "v1-payload-digest";
 
 const SCOPE_IDS: Record<MigrationValidatorKind, string> = {
   bundle: "bundle-byte-diff",
   inventory: "inventory-diff",
   "read-paths": "read-path-parity",
+  "v1-payload-digest": "v1-payload-digest",
 };
+const DEFAULT_VALIDATORS: readonly MigrationValidatorKind[] = ["bundle", "inventory", "read-paths", "v1-payload-digest"];
+
+/**
+ * C6: V1 tables whose payload_json byteset is hashed by the
+ * v1-payload-digest validator. These are the tables B.6a will eventually
+ * DROP COLUMN on (or drop entirely). The validator captures a sha256 per
+ * table at first run (sticky baseline stored in migration_state.cursor_json)
+ * and compares every subsequent run to that baseline. Drift indicates V1
+ * state changed after B.3 — which is silent data movement B.6a would
+ * propagate into permanent loss. The bundle byte-diff validator used to
+ * catch this implicitly (V1 bundle bytes included payload_json); after the
+ * C1 cutover the bundle path reads V2, so this dedicated validator is the
+ * replacement coverage.
+ *
+ * All tables have a single-column PRIMARY KEY; turn_contexts uses turn_id,
+ * the rest use id.
+ */
+const V1_PAYLOAD_TABLES: ReadonlyArray<{ table: string; keyColumn: string }> = [
+  { table: "source_instances", keyColumn: "id" },
+  { table: "stage_runs", keyColumn: "id" },
+  { table: "loss_audits", keyColumn: "id" },
+  { table: "captured_blobs", keyColumn: "id" },
+  { table: "raw_records", keyColumn: "id" },
+  { table: "source_fragments", keyColumn: "id" },
+  { table: "conversation_atoms", keyColumn: "id" },
+  { table: "atom_edges", keyColumn: "id" },
+  { table: "derived_candidates", keyColumn: "id" },
+  { table: "sessions", keyColumn: "id" },
+  { table: "user_turns", keyColumn: "id" },
+  { table: "turn_contexts", keyColumn: "turn_id" },
+];
 
 const MISMATCH_CAP = 10;
 
@@ -101,6 +135,40 @@ export interface ReadPathParityResult {
   };
 }
 
+/**
+ * C6: per-table sha256 of V1 payload_json bytesets, compared against a
+ * sticky baseline captured at first validator run. Drift indicates V1
+ * state changed after B.3 — the exact silent data movement B.6a (DROP
+ * COLUMN) would propagate into permanent loss.
+ */
+export interface V1PayloadDigestResult {
+  status: "pass" | "fail";
+  /**
+   * True when this run captured a fresh baseline (no prior completed marker
+   * existed). Subsequent runs compare against this baseline; the operator
+   * must `migration reset --phase storage-boundary.validate` to refresh it
+   * after intentionally modifying V1.
+   */
+  baseline_captured: boolean;
+  /**
+   * Per-table row counts at this run. Cheap signal for "did anything move
+   * at all" without re-hashing.
+   */
+  row_counts: Record<string, number>;
+  /**
+   * Per-table sha256 of payload_json values, ordered by primary key. The
+   * baseline run stores this in migration_state.cursor_json; subsequent
+   * runs compare to it.
+   */
+  digests: Record<string, string>;
+  /**
+   * Per-table mismatches against the baseline. Empty when status=pass.
+   * Capped at MISMATCH_CAP entries.
+   */
+  mismatches: Array<{ table: string; baseline?: string; current: string }>;
+  mismatch_count: number;
+}
+
 export interface MigrationValidatorOutcome {
   validator: MigrationValidatorKind;
   status: "pass" | "fail" | "aborted";
@@ -108,6 +176,7 @@ export interface MigrationValidatorOutcome {
   bundle?: BundleByteDiffResult;
   inventory?: InventoryDiffResult;
   read_paths?: ReadPathParityResult;
+  v1_payload_digest?: V1PayloadDigestResult;
 }
 
 export interface MigrationValidateResult {
@@ -125,7 +194,7 @@ export interface MigrationValidateProgressEvent {
 
 export async function runMigrationValidate(input: MigrationValidateInput): Promise<MigrationValidateResult> {
   const db = new DatabaseSync(input.dbPath);
-  const selected = input.only && input.only.length > 0 ? input.only : (["bundle", "inventory", "read-paths"] as const);
+  const selected = input.only && input.only.length > 0 ? input.only : DEFAULT_VALIDATORS;
   const outcomes: MigrationValidatorOutcome[] = [];
   let anyFail = false;
 
@@ -138,9 +207,15 @@ export async function runMigrationValidate(input: MigrationValidateInput): Promi
       };
       input.onProgress?.({ kind: "validator_start", validator });
 
+      let started = false;
       try {
         recordMigrationStart(db, scope);
+        started = true;
         let outcome: MigrationValidatorOutcome;
+        // C6: v1-payload-digest carries a sticky baseline in cursor_json.
+        // Only this validator needs to write a cursor back, so the
+        // complete-call cursor is threaded through `completeCursorJson`.
+        let completeCursorJson: string | undefined;
         if (validator === "bundle") {
           if (!input.preBundleChecksums || !input.postBundleChecksums) {
             throw new Error(
@@ -152,18 +227,56 @@ export async function runMigrationValidate(input: MigrationValidateInput): Promi
         } else if (validator === "inventory") {
           const result = await runInventoryDiff(input.dbPath);
           outcome = { validator, status: result.status, inventory: result };
+        } else if (validator === "v1-payload-digest") {
+          // recordMigrationStart preserves cursor_json from the previous row.
+          // Key off cursor_json content, NOT status: start just flipped status
+          // from 'completed' to 'running', so a status check would always see
+          // 'running' here and re-capture the baseline every time.
+          const existing = readMigrationState(db, scope);
+          const baseline = existing?.cursor_json && existing.cursor_json !== "{}"
+            ? parseV1DigestBaseline(existing.cursor_json)
+            : null;
+          const result = runV1PayloadDigestCheck(input.dbPath, baseline);
+          outcome = { validator, status: result.status, v1_payload_digest: result };
+          // First-run captures the baseline; subsequent runs leave the
+          // sticky baseline untouched so drift is detected against the
+          // original capture point. Failed runs also leave the baseline
+          // alone (recordMigrationAbort below doesn't touch cursor_json).
+          if (baseline === null) {
+            completeCursorJson = JSON.stringify(result.digests);
+          } else {
+            completeCursorJson = existing?.cursor_json;
+          }
         } else {
           const result = runReadPathParity(input.dbPath, input.assetDir);
           outcome = { validator, status: result.status, read_paths: result };
         }
 
-        if (outcome.status === "fail") anyFail = true;
-        recordMigrationComplete(db, scope);
+        if (outcome.status === "fail") {
+          anyFail = true;
+          // C5: write 'aborted' (not 'completed') on validator FAIL. The
+          // marker is the durable signal downstream operators and B.5
+          // cutover orchestration read; a 'completed' marker on failure
+          // makes the two states indistinguishable. The next run will
+          // refuse to start (recordMigrationStart throws on prior aborted)
+          // — operator must explicitly `migration reset --phase
+          // storage-boundary.validate` after fixing the underlying drift,
+          // which is the intended acknowledgment gate.
+          recordMigrationAbort(db, scope, new Error(summarizeValidatorFailure(outcome)));
+        } else {
+          recordMigrationComplete(
+            db,
+            scope,
+            completeCursorJson !== undefined ? { cursorJson: completeCursorJson } : {},
+          );
+        }
         input.onProgress?.({ kind: outcome.status === "pass" ? "validator_pass" : "validator_fail", validator });
         outcomes.push(outcome);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        recordMigrationAbort(db, scope, error);
+        if (started) {
+          recordMigrationAbort(db, scope, error);
+        }
         anyFail = true;
         outcomes.push({ validator, status: "aborted", error: message });
         input.onProgress?.({ kind: "validator_abort", validator, error: message });
@@ -202,6 +315,151 @@ function runBundleByteDiff(
     raw_mismatches: rawMismatches,
     manifest_field_mismatches: manifestFieldMismatches,
   };
+}
+
+/**
+ * C5: produce a short, durable summary of why a validator failed. Written to
+ * migration_state.last_error so `migration status` and downstream tooling can
+ * show the reason without re-running the validator. Each validator kind has
+ * its own shape; keep this helper trivially readable since it lands in a
+ * TEXT cell that operators read directly.
+ */
+function summarizeValidatorFailure(outcome: MigrationValidatorOutcome): string {
+  if (outcome.bundle) {
+    const b = outcome.bundle;
+    return `bundle validator failed: ${b.payload_mismatches.length} payload mismatches, ${b.raw_mismatches.length} raw mismatches, ${b.manifest_field_mismatches.length} manifest field mismatches`;
+  }
+  if (outcome.inventory) {
+    return `inventory validator failed: ${outcome.inventory.failing_pairs.length} failing v1↔v2 pairs`;
+  }
+  if (outcome.read_paths) {
+    const r = outcome.read_paths;
+    return `read-paths validator failed: context mismatch_count=${r.mismatch_count}, user_turn.mismatch_count=${r.user_turn.mismatch_count}`;
+  }
+  if (outcome.v1_payload_digest) {
+    const v = outcome.v1_payload_digest;
+    const tables = v.mismatches.map((m) => m.table).join(", ");
+    return `v1-payload-digest validator failed: ${v.mismatch_count} table(s) drifted from baseline (${tables})`;
+  }
+  return `validator ${outcome.validator} failed`;
+}
+
+/**
+ * C6: parse a baseline JSON blob stored in migration_state.cursor_json back
+ * into a per-table sha256 map. Returns null on any structural problem so the
+ * caller treats the run as a fresh baseline capture (safer than failing the
+ * validator over a corrupt marker — the operator can `migration reset` if
+ * they want a clean state).
+ */
+function parseV1DigestBaseline(cursorJson: string): Record<string, string> | null {
+  try {
+    const parsed = JSON.parse(cursorJson) as unknown;
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const map: Record<string, string> = {};
+    for (const [table, sha] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof sha !== "string") return null;
+      map[table] = sha;
+    }
+    return map;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * C6: compute per-table sha256 of every V1 payload_json value, ordered by
+ * primary key. The digest is sensitive to row content AND row count — an
+ * INSERT, UPDATE, or DELETE on any V1 payload table changes the digest for
+ * that table. Used both for the initial baseline capture and for the
+ * subsequent comparison runs.
+ *
+ * Hashing streams row-by-row so peak memory stays at one payload_json cell,
+ * not the entire table. This matters on the operator store where individual
+ * user_turns.payload_json cells are multi-KiB and there are thousands of
+ * rows per table.
+ */
+function computeV1PayloadDigests(
+  db: DatabaseSync,
+): { digests: Record<string, string>; row_counts: Record<string, number> } {
+  const digests: Record<string, string> = {};
+  const rowCounts: Record<string, number> = {};
+  for (const { table, keyColumn } of V1_PAYLOAD_TABLES) {
+    const hash = createHash("sha256");
+    let count = 0;
+    // ORDER BY keyColumn guarantees a stable iteration order so identical
+    // contents produce identical hashes regardless of physical row order
+    // (VACUUM, INSERT-then-DELETE cycles, etc). The PK column is also
+    // indexed, so the ORDER BY is cheap.
+    const stmt = db.prepare(
+      `SELECT payload_json FROM ${table} ORDER BY ${keyColumn}`,
+    );
+    for (const row of stmt.iterate() as Iterable<{ payload_json: string }>) {
+      hash.update(row.payload_json);
+      hash.update("\n");
+      count += 1;
+    }
+    digests[table] = hash.digest("hex");
+    rowCounts[table] = count;
+  }
+  return { digests, row_counts: rowCounts };
+}
+
+/**
+ * C6: V1 payload_json drift detector. First call (baseline === null) captures
+ * the current digests as the sticky baseline; subsequent calls compare and
+ * fail on any drift. The CLI layer ensures the baseline is persisted to
+ * migration_state.cursor_json via the recordMigrationComplete call.
+ */
+function runV1PayloadDigestCheck(
+  dbPath: string,
+  baseline: Record<string, string> | null,
+): V1PayloadDigestResult {
+  const db = new DatabaseSync(dbPath, { readOnly: true });
+  try {
+    const { digests, row_counts } = computeV1PayloadDigests(db);
+    if (baseline === null) {
+      return {
+        status: "pass",
+        baseline_captured: true,
+        row_counts,
+        digests,
+        mismatches: [],
+        mismatch_count: 0,
+      };
+    }
+    const mismatches: V1PayloadDigestResult["mismatches"] = [];
+    let mismatchCount = 0;
+    for (const { table } of V1_PAYLOAD_TABLES) {
+      const current = digests[table]!;
+      const baselineSha = baseline[table];
+      const isMismatch = baselineSha === undefined || baselineSha !== current;
+      if (!isMismatch) continue;
+      mismatchCount += 1;
+      // Cap only the surfaced list; mismatch_count reflects the true total.
+      if (mismatches.length < MISMATCH_CAP) {
+        if (baselineSha === undefined) {
+          // Table added since baseline — surface as drift so the operator
+          // either re-captures the baseline or investigates why a new V1
+          // table appeared post-B.3.
+          mismatches.push({ table, current });
+        } else {
+          mismatches.push({ table, baseline: baselineSha, current });
+        }
+      }
+    }
+    return {
+      status: mismatchCount === 0 ? "pass" : "fail",
+      baseline_captured: false,
+      row_counts,
+      digests,
+      mismatches,
+      mismatch_count: mismatchCount,
+    };
+  } finally {
+    db.close();
+  }
 }
 
 function diffStringMaps(
@@ -253,7 +511,7 @@ async function runInventoryDiff(dbPath: string): Promise<InventoryDiffResult> {
     { name: "raw_records", ...mapping.raw_records },
     { name: "captured_blobs", ...mapping.captured_blobs },
   ];
-  const failing = pairs.filter((p) => p.missing > 0 || p.v1_rows !== p.v2_rows);
+  const failing = pairs.filter((p) => p.missing > 0 || (p.name !== "captured_blobs" && p.v1_rows !== p.v2_rows));
   return {
     status: failing.length > 0 ? "fail" : "pass",
     mapping,

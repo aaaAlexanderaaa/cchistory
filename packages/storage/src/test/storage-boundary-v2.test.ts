@@ -7,7 +7,8 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { SourceSyncPayload, UserTurnProjection } from "@cchistory/domain";
 import { CCHistoryStorage } from "../index.js";
-import { retireStorageBoundaryV2Sources } from "../evidence-store.js";
+import { retireStorageBoundaryV2Sources, shrinkJsonToBudget } from "../evidence-store.js";
+import { selectOrphanedBlobIds } from "../internal/gc.js";
 import { createFixturePayload } from "./helpers.js";
 
 test("storage boundary v2 writes evidence, ledger, spans, and bounded context sidecars without changing v1 reads", async () => {
@@ -302,22 +303,34 @@ test("storage boundary v2 does not serve context for purged turns", async () => 
           (SELECT COUNT(*) FROM user_turns WHERE id = ?) AS user_turns,
           (SELECT COUNT(*) FROM turn_contexts WHERE turn_id = ?) AS turn_contexts,
           (SELECT COUNT(*) FROM user_turns_v2 WHERE turn_id = ?) AS user_turns_v2,
-          (SELECT COUNT(*) FROM turn_context_refs_v2 WHERE turn_id = ?) AS turn_context_refs_v2
+          (SELECT COUNT(*) FROM turn_context_refs_v2 WHERE turn_id = ?) AS turn_context_refs_v2,
+          (SELECT COUNT(*) FROM captured_blobs WHERE source_id = ?) AS captured_blobs,
+          (SELECT COUNT(*) FROM evidence_captures WHERE source_id = ?) AS evidence_captures,
+          (SELECT COUNT(*) FROM parsed_record_spans WHERE source_id = ?) AS parsed_record_spans
       `).get(
         "turn-v2-context-purge",
         "turn-v2-context-purge",
         "turn-v2-context-purge",
         "turn-v2-context-purge",
+        "srcinst-codex-v2-context-purge",
+        "srcinst-codex-v2-context-purge",
+        "srcinst-codex-v2-context-purge",
       ) as {
         user_turns: number;
         turn_contexts: number;
         user_turns_v2: number;
         turn_context_refs_v2: number;
+        captured_blobs: number;
+        evidence_captures: number;
+        parsed_record_spans: number;
       };
       assert.equal(counts.user_turns, 0);
       assert.equal(counts.turn_contexts, 0);
       assert.equal(counts.user_turns_v2, 0);
       assert.equal(counts.turn_context_refs_v2, 0);
+      assert.equal(counts.captured_blobs, 0, "single-turn purge must remove orphaned captured blob rows");
+      assert.equal(counts.evidence_captures, 0, "single-turn purge must remove orphaned evidence captures");
+      assert.equal(counts.parsed_record_spans, 0, "single-turn purge must remove orphaned parsed spans");
     } finally {
       db.close();
     }
@@ -348,7 +361,14 @@ test("storage boundary v2 does not serve orphaned context refs without a live tu
     try {
       assert.ok(db.prepare("SELECT 1 FROM turn_context_refs_v2 WHERE turn_id = ?").get("turn-v2-context-orphan"));
       assert.ok(db.prepare("SELECT 1 FROM turn_contexts WHERE turn_id = ?").get("turn-v2-context-orphan"));
+      // C2: previously this test deleted only V1 user_turns to simulate an
+      // orphan, and the read path's JOIN to V1 user_turns caught it. The
+      // JOIN was dead defensive code that breaks at B.6 — removed. The
+      // canonical "is this turn live" check post-B.5.6 is V2-only via
+      // getTurn, so the equivalent orphan simulation is to drop the V2
+      // user_turns_v2 row.
       db.prepare("DELETE FROM user_turns WHERE id = ?").run("turn-v2-context-orphan");
+      db.prepare("DELETE FROM user_turns_v2 WHERE turn_id = ?").run("turn-v2-context-orphan");
     } finally {
       db.close();
     }
@@ -1147,6 +1167,7 @@ test("storage boundary v2 retireStorageBoundaryV2Sources preserves lineage blobs
     const afterSeedDb = new DatabaseSync(dbPath);
     let survivingLineageSha = "";
     let retiredLineageSha = "";
+    let retiredEvidenceSha = "";
     try {
       const survivingRow = afterSeedDb
         .prepare("SELECT lineage_blob_sha256 AS sha FROM user_turns_v2 WHERE turn_id = ?")
@@ -1159,6 +1180,11 @@ test("storage boundary v2 retireStorageBoundaryV2Sources preserves lineage blobs
       assert.notEqual(survivingRow!.sha, retiredRow!.sha, "the two sources should have distinct lineage blobs");
       survivingLineageSha = survivingRow!.sha;
       retiredLineageSha = retiredRow!.sha;
+      const retiredLedger = afterSeedDb
+        .prepare("SELECT current_evidence_sha256 AS sha FROM source_file_ledger WHERE source_id = ?")
+        .get(retiredSourceId) as { sha: string } | undefined;
+      assert.ok(retiredLedger?.sha, "retired source must have source evidence before retire");
+      retiredEvidenceSha = retiredLedger!.sha;
     } finally {
       afterSeedDb.close();
     }
@@ -1202,6 +1228,23 @@ test("storage boundary v2 retireStorageBoundaryV2Sources preserves lineage blobs
         0,
         "lineage blob of the retired source should be pruned after its user_turns_v2 rows are gone",
       );
+      const retiredEvidenceBlob = afterRetireDb
+        .prepare("SELECT COUNT(*) AS count FROM evidence_blobs WHERE sha256 = ?")
+        .get(retiredEvidenceSha) as { count: number };
+      assert.equal(
+        retiredEvidenceBlob.count,
+        0,
+        "source_absent ledger rows must not pin retired source evidence blobs",
+      );
+      const absentLedger = afterRetireDb
+        .prepare(
+          `SELECT sync_axis, current_evidence_sha256
+             FROM source_file_ledger
+            WHERE source_id = ?`,
+        )
+        .get(retiredSourceId) as { sync_axis: string; current_evidence_sha256: string } | undefined;
+      assert.equal(absentLedger?.sync_axis, "source_absent", "retired ledger row remains as audit trail");
+      assert.equal(absentLedger?.current_evidence_sha256, retiredEvidenceSha);
       const dangling = afterRetireDb
         .prepare(
           `SELECT COUNT(*) AS count FROM user_turns_v2 utv
@@ -1277,3 +1320,432 @@ function sha1(value: string): string {
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
+
+// C1 regression: streamSourcePayloadJson must produce the same per-field JSON
+// arrays as the in-memory buildSourcePayload path, because both are now V2-
+// backed and feed the same external consumers (bundle export, payload
+// checksums). Before the C1 fix, streamSourcePayloadJson still iterated V1
+// user_turns/turn_contexts payload_json, so the two paths silently diverged
+// on display_segments reconstruction, lineage blob resolution, and context
+// cache reads. The B.4a bundle byte-diff gate at the operator-store level
+// could not catch this because both pre- and post-cutover bundles were V1.
+//
+// This test ingests a payload with one turn that exercises: short canonical
+// text, multi-message shape (via fixture), large tool output (over the
+// context inline budget), non-empty lineage (forces blob read). It then
+// snapshots each top-level array from getSourcePayload (V2 in-memory path)
+// and from streamSourcePayloadJson (V2 streaming path) and asserts the two
+// snapshots agree byte-for-byte per array element.
+test("storage boundary v2 streamSourcePayloadJson matches buildSourcePayload per-array output (C1)", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-v2-stream-parity-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+    const originPath = path.join(sourceRoot, "session.jsonl");
+    const text = "{\"stream\":true}\n";
+    await writeFile(originPath, text, "utf8");
+
+    const sourceId = "srcinst-codex-stream-parity";
+    const storage = new CCHistoryStorage({ dbPath });
+    const payload = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath,
+      text,
+      canonicalText: "stream parity asks",
+      stageRunId: "stage-stream",
+      sessionId: "session-stream",
+      turnId: "turn-stream",
+    });
+    // Force the context to exceed the inline budget so the V2 path must read
+    // from the content-addressed cache, not from any inline column.
+    payload.contexts[0]!.tool_calls[0]!.output = "large tool output ".repeat(1600);
+    storage.replaceSourcePayload(payload);
+
+    // In-memory V2 path (B.5.5 cutover).
+    const inMemory = storage.getSourcePayload(sourceId);
+    assert.ok(inMemory, "getSourcePayload returns the seeded payload");
+
+    // Streaming V2 path (C1 cutover). Collect into a single string then
+    // parse back so we can compare per-array element rather than relying on
+    // undocumented top-level key order from JSON.stringify of an object.
+    const chunks: string[] = [];
+    const counts = storage.streamSourcePayloadJson(sourceId, (chunk) => chunks.push(chunk));
+    assert.ok(counts, "streamSourcePayloadJson returns counts");
+    const streamed = JSON.parse(chunks.join("")) as SourceSyncPayload;
+
+    // The two paths must agree on every array element. We compare per element
+    // rather than via deep-equal on the whole payload so a failure points at
+    // the exact diverging field. Use deep-equal per element to ignore
+    // key-ordering differences in nested objects.
+    const arrayKeys: Array<keyof SourceSyncPayload> = [
+      "stage_runs",
+      "loss_audits",
+      "blobs",
+      "records",
+      "fragments",
+      "atoms",
+      "edges",
+      "candidates",
+      "sessions",
+      "turns",
+      "contexts",
+    ];
+    for (const key of arrayKeys) {
+      const fromInMemory = inMemory![key] as readonly unknown[];
+      const fromStreamed = streamed[key] as readonly unknown[];
+      assert.equal(
+        fromStreamed.length,
+        fromInMemory.length,
+        `streamSourcePayloadJson ${key} count matches buildSourcePayload`,
+      );
+      // Compare via JSON.stringify, not deepEqual, because the bundle surface
+      // IS the JSON form and that's what both paths feed into. JSON.stringify
+      // drops undefined-valued keys; deepEqual does not. The two paths agree
+      // on the bundle bytes iff their JSON serializations agree per element.
+      for (let i = 0; i < fromInMemory.length; i++) {
+        assert.equal(
+          JSON.stringify(fromStreamed[i]),
+          JSON.stringify(fromInMemory[i]),
+          `streamSourcePayloadJson ${key}[${i}] JSON matches buildSourcePayload JSON`,
+        );
+      }
+    }
+
+    // C1 specifically: turns and contexts must round-trip through V2 reads
+    // with lineage fully populated. Confirm the streamed turns array carries
+    // non-empty lineage atom_refs (the blob was actually read on the stream
+    // path, not silently dropped).
+    const streamedTurn = streamed.turns[0] as UserTurnProjection | undefined;
+    assert.ok(streamedTurn, "stream produced at least one turn");
+    assert.ok(
+      streamedTurn!.lineage.atom_refs.length > 0,
+      "streamed turn lineage.atom_refs is populated — the lineage blob was read on the V2 stream path",
+    );
+    assert.ok(
+      streamedTurn!.canonical_text.length > 0,
+      "streamed turn canonical_text is non-empty",
+    );
+
+    const streamedContext = streamed.contexts[0] as
+      | { tool_calls?: Array<{ output?: string }> }
+      | undefined;
+    assert.ok(streamedContext, "stream produced at least one context");
+    assert.equal(
+      streamedContext!.tool_calls?.[0]?.output,
+      payload.contexts[0]!.tool_calls[0]!.output,
+      "streamed context tool_calls[0].output matches the ingested payload — V2 cache read works on the stream path",
+    );
+
+    storage.close();
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("storage boundary v2 shrinkJsonToBudget keeps a single-oversized-element array via element shrink (I8)", () => {
+  // Regression: shrinkJsonToBudget's array branch binary-searched for the
+  // largest prefix that fit. When even one element exceeded maxBytes, lo
+  // stayed at 0 and the function returned [] — silent total loss of the
+  // field, same shape as the H5 bug for single-string object values.
+  // display_segments (the kind of array most likely to contain one giant
+  // paste) was the field most at risk.
+  //
+  // Fix: when lo===0, fall back to shrinking the first element so the field
+  // survives with truncated content rather than vanishing.
+
+  // Sanity: arrays that fit are unchanged.
+  assert.deepEqual(shrinkJsonToBudget([], 1024), []);
+  assert.deepEqual(shrinkJsonToBudget([1, 2, 3], 1024), [1, 2, 3]);
+
+  // Large array shrinks to the largest prefix that fits.
+  const prefixable = ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j"];
+  const shrunk = shrinkJsonToBudget(prefixable, 16) as unknown[];
+  assert.ok(shrunk.length > 0, "prefix shrink produces at least one element");
+  assert.ok(shrunk.length < prefixable.length, "prefix shrink drops the tail");
+  assert.ok(
+    JSON.stringify(shrunk).length <= 16,
+    "shrunk array fits the budget",
+  );
+
+  // I8: single element that alone exceeds maxBytes. Previously returned [].
+  const hugeString = "X".repeat(64);
+  const singleOversized = [hugeString];
+  const recovered = shrinkJsonToBudget(singleOversized, 32) as unknown[];
+  assert.equal(recovered.length, 1, "single-element array survives (not [])");
+  assert.equal(typeof recovered[0], "string", "element type preserved");
+  assert.ok(
+    (recovered[0] as string).length < hugeString.length,
+    "element content is truncated to fit",
+  );
+  assert.ok(
+    (recovered[0] as string).length > 0,
+    "element content is non-empty (not silent total loss)",
+  );
+  assert.ok(
+    JSON.stringify(recovered).length <= 32,
+    "recovered array fits the budget",
+  );
+
+  // Pathological: budget smaller than the array brackets themselves.
+  // Element shrinks to whatever fits; if even an empty string array
+  // exceeds the budget, [] is correct.
+  const tiny = shrinkJsonToBudget([hugeString], 1) as unknown[];
+  assert.ok(Array.isArray(tiny), "tiny budget still returns an array");
+});
+
+// C3 regression: pruneSourcePayloadByObservedOriginPaths must mirror its V1
+// session-scoped deletes into user_turns_v2 and turn_context_refs_v2. Before
+// the fix, only V1 rows were dropped; V2 sidecars for the dropped sessions
+// survived and continued to surface in every list/detail/search/bundle read
+// (production reads are V2-only post-B.5.2). Same defect class as the M4
+// rewriteStoredTurn fix — see [[dual-write-mutation-sync]].
+//
+// Test seeds a store with one source + one session + one turn, verifies the
+// V2 sidecars exist, then calls pruneSourcePayloadByObservedOriginPaths with
+// an empty observed list (forces retire of every session for the source).
+// The bug shape would leave user_turns_v2 / turn_context_refs_v2 rows
+// pointing at the now-deleted session.
+test("storage boundary v2 pruneSourcePayloadByObservedOriginPaths drops V2 sidecar rows for retired sessions (C3)", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-c3-prune-v2-mirror-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+    const originPath = path.join(sourceRoot, "session.jsonl");
+    const text = "{\"c3\":true}\n";
+    await writeFile(originPath, text, "utf8");
+
+    const sourceId = "srcinst-codex-c3-prune";
+    const storage = new CCHistoryStorage({ dbPath });
+    const payload = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath,
+      text,
+      canonicalText: "c3 prune asks",
+      stageRunId: "stage-c3",
+      sessionId: "session-c3",
+      turnId: "turn-c3",
+    });
+    storage.replaceSourcePayload(payload);
+
+    // Sanity: V2 sidecar rows exist before the prune.
+    const db = new DatabaseSync(dbPath);
+    try {
+      const beforeTurn = db.prepare("SELECT COUNT(*) AS count FROM user_turns_v2 WHERE source_id = ?").get(sourceId) as {
+        count: number;
+      };
+      const beforeContext = db.prepare(
+        "SELECT COUNT(*) AS count FROM turn_context_refs_v2 WHERE source_id = ?",
+      ).get(sourceId) as { count: number };
+      assert.equal(beforeTurn.count, 1, "V2 turn sidecar exists before prune");
+      assert.equal(beforeContext.count, 1, "V2 context sidecar exists before prune");
+    } finally {
+      db.close();
+    }
+
+    // Empty observed list → all sessions for the source are stale and dropped.
+    storage.pruneSourcePayloadByObservedOriginPaths(sourceId, []);
+
+    const dbAfter = new DatabaseSync(dbPath);
+    try {
+      const afterTurn = dbAfter.prepare("SELECT COUNT(*) AS count FROM user_turns_v2 WHERE source_id = ?").get(sourceId) as {
+        count: number;
+      };
+      const afterContext = dbAfter
+        .prepare("SELECT COUNT(*) AS count FROM turn_context_refs_v2 WHERE source_id = ?")
+        .get(sourceId) as { count: number };
+      const afterV1Turn = dbAfter.prepare("SELECT COUNT(*) AS count FROM user_turns WHERE source_id = ?").get(sourceId) as {
+        count: number;
+      };
+      assert.equal(afterTurn.count, 0, "V2 turn sidecar dropped with V1 row (dual-write invariant)");
+      assert.equal(afterContext.count, 0, "V2 context sidecar dropped with V1 row");
+      assert.equal(afterV1Turn.count, 0, "V1 user_turns dropped (sanity — V1 path was already correct)");
+    } finally {
+      dbAfter.close();
+    }
+
+    storage.close();
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+// B.6 will drop V1 user_turns / turn_contexts entirely. The B1–B4 fixes above
+// switch the affected read paths to V2 so they keep working post-B.6. These
+// regression tests simulate B.6 (drop the V1 tables after populating both V1
+// and V2) and exercise each fixed path to confirm it no longer silently
+// no-ops or returns zero rows.
+
+test("B1 post-B.6 regression: selectOrphanedBlobIds is a pure set-difference (no V1 read)", () => {
+  // B1 moved selectOrphanedBlobIds from "read V1 json_each over lineage.blob_refs"
+  // to a pure set-difference against a caller-supplied referenced set. The
+  // caller now reads V2 lineage blobs (loadReferencedBlobIdsBySource). This
+  // test fixes the function's contract so a future refactor that re-introduces
+  // a V1 read inside gc.ts would fail loudly here.
+  assert.deepEqual(selectOrphanedBlobIds([], new Set()), []);
+  assert.deepEqual(selectOrphanedBlobIds(["a", "b"], new Set(["a", "b"])), []);
+  assert.deepEqual(
+    selectOrphanedBlobIds(["a", "b", "c", "d"], new Set(["b", "d"])),
+    ["a", "c"],
+  );
+  // Dedupes + preserves candidate order minus referenced.
+  assert.deepEqual(
+    selectOrphanedBlobIds(["a", "a", "b", "c"], new Set(["b"])),
+    ["a", "c"],
+  );
+});
+
+test("B2 post-B.6 regression: rewriteStoredTurn falls back to V2 when V1 row is missing", async () => {
+  // B2: rewriteStoredTurn read V1 first and silently no-op'd when V1 had no
+  // row — exactly the post-B.6 state. Now it falls back to readUserTurnFromV2.
+  // garbageCollectCandidateTurns({mode:"archive"}) exercises rewriteStoredTurn;
+  // pre-B2 every archive would no-op post-B.6.
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-b2-post-b6-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+
+    const sourceId = "srcinst-codex-b2-post-b6";
+    const originPath = path.join(sourceRoot, "session.jsonl");
+    const text = "{\"fixture\":true}\n";
+    await writeFile(originPath, text, "utf8");
+
+    const storage = new CCHistoryStorage({ dbPath });
+    const payload = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath,
+      text,
+      canonicalText: "b2 post-b6 asks",
+      stageRunId: "stage-b2",
+      sessionId: "session-b2",
+      turnId: "turn-b2",
+    });
+    storage.replaceSourcePayload(payload);
+
+    // Force the turn into candidate state so archive GC will pick it up.
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.prepare("UPDATE user_turns SET payload_json = json_set(payload_json, '$.link_state', 'candidate')").run();
+      db.prepare("UPDATE user_turns_v2 SET link_state = 'candidate'").run();
+      // Simulate B.6: drop the V1 row entirely. Post-B.6 this is the steady state.
+      db.prepare("DELETE FROM user_turns WHERE id = ?").run("turn-b2");
+    } finally {
+      db.close();
+    }
+
+    const before = new DatabaseSync(dbPath);
+    try {
+      const row = before.prepare("SELECT value_axis FROM user_turns_v2 WHERE turn_id = ?").get("turn-b2") as {
+        value_axis: string;
+      };
+      assert.notEqual(row.value_axis, "archived", "precondition: V2 row is not yet archived");
+    } finally {
+      before.close();
+    }
+
+    // Archive the candidate. Pre-B2 this would silently no-op because the V1
+    // row is gone and rewriteStoredTurn returned undefined early.
+    storage.garbageCollectCandidateTurns({ before_iso: "9999-01-01T00:00:00.000Z", mode: "archive" });
+
+    const after = new DatabaseSync(dbPath);
+    try {
+      const row = after.prepare("SELECT value_axis, retention_axis FROM user_turns_v2 WHERE turn_id = ?").get("turn-b2") as {
+        value_axis: string;
+        retention_axis: string;
+      };
+      assert.equal(row.value_axis, "archived", "B2: V2 row was archived via V2 fallback read");
+      assert.equal(row.retention_axis, "keep_raw_only");
+    } finally {
+      after.close();
+    }
+
+    storage.close();
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("B3+B4 post-B.6 regression: source counts stay correct after V1 user_turns is dropped", async () => {
+  // B3: refreshSourceStatusCountsInTransaction read V1 user_turns for total_turns
+  // — post-B.6 it would return 0. Now reads V2.
+  // B4: countStoredSourcePayload (called inside merge/replace) had the same V1
+  // dependency plus an ordering gap — V2 sidecars are written AFTER the count
+  // runs. B4 fixed both: V2 source for the count, plus a post-sidecar recount.
+  // This test exercises both: drop V1, run a merge, verify the returned count
+  // AND source_instances.total_turns both equal the pre-drop turn count.
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-b3-b4-post-b6-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+
+    const sourceId = "srcinst-codex-b3-b4";
+    const keepPath = path.join(sourceRoot, "keep.jsonl");
+    const newPath = path.join(sourceRoot, "new.jsonl");
+    const keepText = "{\"k\":1}\n";
+    const newText = "{\"n\":1}\n";
+    await writeFile(keepPath, keepText, "utf8");
+
+    const storage = new CCHistoryStorage({ dbPath });
+    const keep = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: keepPath,
+      text: keepText,
+      canonicalText: "keep asks",
+      stageRunId: "stage-keep",
+      sessionId: "session-keep",
+      turnId: "turn-keep",
+    });
+    storage.replaceSourcePayload(keep);
+    const initialTotalTurns = storage.listSources()[0]!.total_turns;
+    assert.equal(initialTotalTurns, 1, "precondition: V2 sidecars written for the keep turn");
+
+    // Simulate B.6: drop V1 user_turns entirely.
+    const dropDb = new DatabaseSync(dbPath);
+    try {
+      dropDb.exec("DELETE FROM user_turns");
+    } finally {
+      dropDb.close();
+    }
+
+    await writeFile(newPath, newText, "utf8");
+    const incoming = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: newPath,
+      text: newText,
+      canonicalText: "new asks",
+      stageRunId: "stage-new",
+      sessionId: "session-new",
+      turnId: "turn-new",
+    });
+    const counts = storage.mergeSourcePayloadByOriginPath(incoming, {
+      preserve_origin_paths: [keepPath],
+      observed_origin_paths: [keepPath, newPath],
+    });
+
+    // B4: returned counts.turns reflects the post-sidecar V2 state — keep turn
+    // (preserved) + new turn (just written). Pre-B4 this returned 0 because the
+    // count ran before writeStorageBoundaryV2Sidecars wrote the new V2 row.
+    assert.equal(counts.turns, 2, "B4: merge returns V2-backed turn count");
+
+    // B3: source_instances.total_turns was refreshed from V2 after the merge.
+    // Pre-B3 refreshSourceStatusCountsInTransaction would have read V1 (now empty)
+    // and stored 0.
+    assert.equal(storage.listSources()[0]!.total_turns, 2, "B3: source_instances.total_turns read from V2");
+
+    storage.close();
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
