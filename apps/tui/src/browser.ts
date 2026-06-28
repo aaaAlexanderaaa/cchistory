@@ -820,6 +820,8 @@ function buildSessionConversationLines(
         const model = reply.model ?? turn.turn.context_summary.primary_model ?? "";
         const tokenParts: string[] = [];
         if (reply.token_usage?.input_tokens) tokenParts.push(`${formatTokenCountRaw(reply.token_usage.input_tokens)} in`);
+        const replyCachedInput = (reply.token_usage?.cache_read_input_tokens ?? 0) + (reply.token_usage?.cache_creation_input_tokens ?? 0);
+        if (replyCachedInput > 0) tokenParts.push(`${formatTokenCountRaw(replyCachedInput)} cache`);
         if (reply.token_usage?.output_tokens) tokenParts.push(`${formatTokenCountRaw(reply.token_usage.output_tokens)} out`);
         const tokenLabel = tokenParts.length > 0 ? dim(` · ${tokenParts.join("/")}`) : "";
         lines.push(bold(green(`🤖 ${model}`) + tokenLabel));
@@ -863,7 +865,7 @@ function formatDetailRows(browser: LocalTuiBrowser, input: DetailInput): string[
   }
   const t = input.selectedTurn;
   const model = t.turn.context_summary.primary_model ?? "unknown";
-  const tokens = formatTokenCount(t.turn.context_summary.total_tokens);
+  const tokens = formatTurnTokenBreakdown(t.turn.context_summary);
   const source = formatSourceLabel(browser, t.session, t.turn.source_id);
   const date = formatShortDate(t.turn.submission_started_at);
   const contentWidth = Math.max(input.colWidth - 4, 20);
@@ -1525,6 +1527,26 @@ function formatTokenCountRaw(count: number): string {
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}M`;
   if (count >= 1_000) return `${(count / 1_000).toFixed(0)}K`;
   return String(count);
+}
+
+function formatTurnTokenBreakdown(contextSummary: {
+  total_tokens?: number;
+  token_usage?: {
+    input_tokens?: number;
+    cached_input_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+    output_tokens?: number;
+  };
+}): string {
+  const total = contextSummary.total_tokens;
+  if (!total) return "";
+  const tu = contextSummary.token_usage;
+  if (!tu) return formatTokenCountRaw(total);
+  const cached =
+    tu.cached_input_tokens ??
+    (tu.cache_read_input_tokens ?? 0) + (tu.cache_creation_input_tokens ?? 0);
+  return `${formatTokenCountRaw(total)} (in=${formatTokenCountRaw(tu.input_tokens ?? 0)}, cached=${formatTokenCountRaw(cached)}, out=${formatTokenCountRaw(tu.output_tokens ?? 0)})`;
 }
 
 function formatShortDate(isoDate: string | undefined): string {

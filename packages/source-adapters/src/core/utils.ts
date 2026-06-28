@@ -1077,7 +1077,10 @@ export function normalizeTokenUsageObject(value: Record<string, unknown>): Token
     cachedInput = (cacheCreation ?? 0) + (cacheRead ?? 0);
   }
 
-  // Compute total including cache tokens: input + output + cache_creation + cache_read
+  // Total = input + output + cache_creation + cache_read ("option B" — true billed
+  // throughput, intentionally includes cache). Vendor dashboards and most agent
+  // headlines show input + output only; our number is meant to be higher. Do not
+  // revert without updating every display surface that decomposes Total.
   const computedTotal =
     total ??
     sumDefinedNumbers(input, output, cacheCreation, cacheRead);

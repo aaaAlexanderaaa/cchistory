@@ -310,43 +310,23 @@ function normalizeTokenUsageShape(
   usage?: TokenUsageSummary,
   fallbackTotal?: number,
 ): NormalizedTokenUsageShape {
-  const totalTokens = usage?.total_tokens ?? fallbackTotal
   const cacheCreationInputTokens = usage?.cache_creation_input_tokens
-  const combinedCachedTokens =
-    usage?.cached_input_tokens ??
-    sumDefinedNumbers(usage?.cache_read_input_tokens, cacheCreationInputTokens)
-
-  const legacyInclusiveInput =
-    typeof usage?.input_tokens === 'number' &&
-    usage?.cache_read_input_tokens === undefined &&
-    cacheCreationInputTokens === undefined &&
-    typeof combinedCachedTokens === 'number' &&
-    combinedCachedTokens <= usage.input_tokens &&
-    typeof usage?.output_tokens === 'number' &&
-    typeof totalTokens === 'number' &&
-    Math.abs(totalTokens - (usage.input_tokens + usage.output_tokens)) <= 1
-
-  const cacheReadInputTokens =
-    usage?.cache_read_input_tokens ??
-    (legacyInclusiveInput ? combinedCachedTokens : usage?.cached_input_tokens)
-  const inputTokens =
-    typeof usage?.input_tokens === 'number' && legacyInclusiveInput
-      ? Math.max(usage.input_tokens - (cacheReadInputTokens ?? 0), 0)
-      : usage?.input_tokens
+  const cacheReadInputTokens = usage?.cache_read_input_tokens
   const cachedInputTokens =
-    combinedCachedTokens ??
+    usage?.cached_input_tokens ??
     sumDefinedNumbers(cacheReadInputTokens, cacheCreationInputTokens)
   const resolvedTotalTokens =
-    totalTokens ??
+    usage?.total_tokens ??
+    fallbackTotal ??
     sumDefinedNumbers(
-      inputTokens,
+      usage?.input_tokens,
       cacheReadInputTokens,
       cacheCreationInputTokens,
       usage?.output_tokens,
     )
 
   return {
-    input_tokens: inputTokens,
+    input_tokens: usage?.input_tokens,
     cache_read_input_tokens: cacheReadInputTokens,
     cache_creation_input_tokens: cacheCreationInputTokens,
     cached_input_tokens: cachedInputTokens,

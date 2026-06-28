@@ -78,6 +78,8 @@ test("sync, ls, search, and stats usage render human-readable output for real so
     const codexUsageText = await runCliCapture(["stats", "--store", storeDir, "--source", "codex", "--by", "model"], tempRoot);
     assert.equal(codexUsageText.exitCode, 0, codexUsageText.stderr);
     assert.match(codexUsageText.stdout, /Source Scope\s+:\s+Codex \(codex\)/);
+    assert.match(codexUsageText.stdout, /Cached/);
+    assert.match(codexUsageText.stdout, /Input\s+Cached\s+Output/);
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });

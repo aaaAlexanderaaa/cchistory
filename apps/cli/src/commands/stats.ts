@@ -123,7 +123,7 @@ export function createStatsUsageOutput(
     text: [
       sourceScope ? renderKeyValue([["Source Scope", sourceScope]]) : undefined,
       renderTable(
-        ["Label", "Turns", "Covered", "Coverage", "Total Tokens", "Input", "Output"],
+        ["Label", "Turns", "Covered", "Coverage", "Total Tokens", "Input", "Cached", "Output"],
         rollup.rows.map((row) => [
           formatUsageRollupLabel(dimension, row.label),
           String(row.turn_count),
@@ -131,9 +131,10 @@ export function createStatsUsageOutput(
           formatRatio(row.turn_coverage_ratio),
           formatNumber(row.total_tokens),
           formatNumber(row.total_input_tokens),
+          formatNumber(row.total_cached_input_tokens),
           formatNumber(row.total_output_tokens),
         ]),
-        { align: ["left", "right", "right", "right", "right", "right", "right"] },
+        { align: ["left", "right", "right", "right", "right", "right", "right", "right"] },
       ),
       chartText,
       notesText,

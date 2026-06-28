@@ -341,6 +341,10 @@ export async function handleShow(context: CommandContext): Promise<CommandOutput
         ["Sessions", String(project.session_count)],
         ["Asks", String(project.committed_turn_count + project.candidate_turn_count)],
         ["Last Activity", formatCompactDate(project.project_last_activity_at ?? project.updated_at)],
+        ["Input Tokens", formatNumber(usage.total_input_tokens)],
+        ["Cached Input Tokens", formatNumber(usage.total_cached_input_tokens)],
+        ["Output Tokens", formatNumber(usage.total_output_tokens)],
+        ["Reasoning Tokens", formatNumber(usage.total_reasoning_output_tokens)],
         ["Total Tokens", formatNumber(usage.total_tokens)],
         ["Coverage", formatRatio(usage.turn_coverage_ratio)],
       ];
@@ -438,12 +442,16 @@ export async function handleShow(context: CommandContext): Promise<CommandOutput
       const assistantReply = turnContext?.assistant_replies?.[0];
       const longListing = wantsLongListing(context);
 
+      const tokenUsage = turn.context_summary.token_usage;
+      const cachedInput = tokenUsage?.cached_input_tokens
+        ?? ((tokenUsage?.cache_read_input_tokens ?? 0) + (tokenUsage?.cache_creation_input_tokens ?? 0));
+
       const overviewRows: Array<[string, string]> = [
         ["Project", projectLabel(project)],
         ["Source", source ? `${source.display_name} (${source.platform})` : turn.source_id],
         ["Model", turn.context_summary.primary_model ?? "unknown"],
         ["Submitted", formatCompactDate(turn.submission_started_at)],
-        ["Tokens", `${formatNumber(turn.context_summary.total_tokens ?? 0)} (in=${formatNumber(turn.context_summary.token_usage?.input_tokens ?? 0)}, out=${formatNumber(turn.context_summary.token_usage?.output_tokens ?? 0)})`],
+        ["Tokens", `${formatNumber(turn.context_summary.total_tokens ?? 0)} (in=${formatNumber(tokenUsage?.input_tokens ?? 0)}, cached=${formatNumber(cachedInput)}, out=${formatNumber(tokenUsage?.output_tokens ?? 0)})`],
       ];
       if (session?.resume_command) {
         overviewRows.push(["Resume Command", session.resume_command]);
