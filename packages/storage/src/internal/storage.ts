@@ -573,6 +573,38 @@ export class CCHistoryStorage {
     return source ? this.buildSourceIncrementalMetadataPayload(source.id) : undefined;
   }
 
+  getSourceSyncStartedAt(sourceId: string): Date | undefined {
+    const row = this.db
+      .prepare("SELECT value_text FROM schema_meta WHERE key = ?")
+      .get(`sync.started_at.${sourceId}`) as { value_text: string } | undefined;
+    if (!row?.value_text) {
+      return undefined;
+    }
+    const ms = Date.parse(row.value_text);
+    return Number.isNaN(ms) ? undefined : new Date(ms);
+  }
+
+  recordSourceSyncStartedAt(sourceId: string, when: Date): void {
+    const key = `sync.started_at.${sourceId}`;
+    const value = when.toISOString();
+    const existing = this.db
+      .prepare("SELECT value_text FROM schema_meta WHERE key = ?")
+      .get(key) as { value_text: string } | undefined;
+    if (existing?.value_text === value) {
+      return;
+    }
+    const now = new Date().toISOString();
+    if (existing) {
+      this.db
+        .prepare("UPDATE schema_meta SET value_text = ?, updated_at = ? WHERE key = ?")
+        .run(value, now, key);
+      return;
+    }
+    this.db
+      .prepare("INSERT INTO schema_meta (key, value_text, updated_at) VALUES (?, ?, ?)")
+      .run(key, value, now);
+  }
+
   /**
    * Stream a source payload as JSON to a writer callback, one row at a time.
    * This avoids loading the entire payload into memory.

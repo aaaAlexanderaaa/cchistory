@@ -69,6 +69,7 @@ export interface CommandOptions {
   detail: boolean;
   progress?: string;
   safe: boolean;
+  forceFullResync: boolean;
   only: string[];
   preBundle?: string;
   phase?: string;
@@ -345,6 +346,10 @@ const commandOptions: Record<string, OptionSpec> = {
     kind: "boolean",
     description: "Use conservative source probing without live probes or companion evidence.",
   },
+  "force-full-resync": {
+    kind: "boolean",
+    description: "Bypass the per-source auto-resume marker and rescan all source files. The marker is still rewritten on success.",
+  },
 };
 
 const readOptions = ["source", "limit-files"];
@@ -354,11 +359,11 @@ const commandSpecs: CommandSpec[] = [
   {
     path: ["sync"],
     category: "Data Management",
-    usage: "cchistory sync [--source <slot-or-id>] [--limit-files <n>] [--since <time>] [--detail] [--safe] [--dry-run]",
+    usage: "cchistory sync [--source <slot-or-id>] [--limit-files <n>] [--since <time>] [--force-full-resync] [--detail] [--safe] [--dry-run]",
     summary: "Ingest data from local AI tool directories",
-    description: "Ingest local source files into the selected store.",
-    options: ["source", "limit-files", "since", "detail", "progress", "safe"],
-    examples: ["cchistory sync", "cchistory sync --source codex --detail", "cchistory sync --source claude_code --since 7d"],
+    description: "Ingest local source files into the selected store. By default each source auto-resumes from its last successful sync (recorded in schema_meta; floored to UTC 00:00 of that day). Pass --force-full-resync to bypass the marker, or --since to override it with an explicit cutoff.",
+    options: ["source", "limit-files", "since", "detail", "progress", "safe", "force-full-resync"],
+    examples: ["cchistory sync", "cchistory sync --source codex --detail", "cchistory sync --source claude_code --since 7d", "cchistory sync --force-full-resync"],
   },
   {
     path: ["discover"],
@@ -831,6 +836,7 @@ function normalizeCommandOptions(values: Record<string, string | string[] | bool
     detail: readBoolean(values, "detail"),
     progress: readString(values, "progress"),
     safe: readBoolean(values, "safe"),
+    forceFullResync: readBoolean(values, "force-full-resync"),
     only: readStringArray(values, "only"),
     preBundle: readString(values, "pre-bundle"),
     phase: readString(values, "phase"),

@@ -85,6 +85,7 @@ export async function handleSync(context: CommandContext): Promise<CommandOutput
       sourceRefs,
       limitFiles,
       changedSince,
+      forceFullResync: context.options.forceFullResync,
       snapshotRawBlobs: true,
       safeMode: context.options.safe,
       onProgress: progress,
@@ -472,6 +473,7 @@ export async function syncSelectedSources(input: {
   sourceRefs: string[];
   limitFiles?: number;
   changedSince?: string;
+  forceFullResync?: boolean;
   snapshotRawBlobs: boolean;
   safeMode?: boolean;
   onProgress?: (event: SyncProgressEvent) => void;
@@ -511,8 +513,21 @@ export async function syncSelectedSources(input: {
 
   const syncedSources: TimedSyncedSourceSummary[] = [];
   for (const source of sources) {
-    if (shouldUseBatchedCodexSync(source, input)) {
-      const summary = await syncCodexSourceInBatches(source, hostProbe.host.id, input);
+    // Capture sync start time for this source BEFORE any work begins. The
+    // marker records "this sync started at T" (not completion) so the next
+    // sync's auto-resume cutoff covers files modified during this run that
+    // may have been captured mid-write.
+    const sourceSyncStartedAt = new Date();
+    const effectiveChangedSince = deriveEffectiveChangedSince(input, source.id);
+    const perSourceInput = effectiveChangedSince === input.changedSince
+      ? input
+      : { ...input, changedSince: effectiveChangedSince };
+
+    if (shouldUseBatchedCodexSync(source, perSourceInput)) {
+      const summary = await syncCodexSourceInBatches(source, hostProbe.host.id, perSourceInput);
+      if (summary && summary.source.sync_status !== "error") {
+        input.storage.recordSourceSyncStartedAt(source.id, sourceSyncStartedAt);
+      }
       if (summary) {
         syncedSources.push(summary);
         continue;
@@ -585,7 +600,7 @@ export async function syncSelectedSources(input: {
           source_ids: [source.id],
           limit_files_per_source: input.limitFiles,
           safe_mode: input.safeMode,
-          changed_since: input.changedSince,
+          changed_since: effectiveChangedSince,
           source_file_paths: selectedFilePaths ? { [source.id]: selectedFilePaths } : undefined,
           previous_payloads: previousPayload ? { [source.id]: previousPayload } : undefined,
           on_progress: (event) => {
@@ -674,6 +689,9 @@ export async function syncSelectedSources(input: {
     const storedSource = useMergeByOriginPath
       ? input.storage.listSources().find((entry) => entry.id === payload.source.id) ?? payload.source
       : payload.source;
+    if (storedSource.sync_status !== "error") {
+      input.storage.recordSourceSyncStartedAt(source.id, sourceSyncStartedAt);
+    }
     syncedSources.push({
       source: storedSource,
       counts,
@@ -764,7 +782,7 @@ async function syncCodexSourceInBatches(
   });
   const listStartedAt = Date.now();
   const files = await listSourceFiles(source.platform, source.base_dir);
-  const fileBatches = await buildFileBatches(files, resolveCodexSyncBatchTargetBytes());
+  const fileBatches = await buildFileBatchesByRecency(files, input.changedSince);
   timing.scanMs += Date.now() - listStartedAt;
   input.onProgress?.({
     stage: "source_prepare_done",
@@ -1006,6 +1024,85 @@ async function buildFileBatches(files: readonly string[], targetBytes: number): 
     batches.push(currentBatch);
   }
   return batches;
+}
+
+// Recency-bucketed batching: when a changedSince cutoff is in effect, group
+// files by mtime-recency relative to that cutoff before applying
+// byte-accumulation. Recent files get small batches (so the slow path — which
+// triggers whenever ANY file in a batch has mtime >= cutoff — has a tiny blast
+// radius); old files get large batches (since they all hit the metadata-only
+// fast path anyway, batch size is nearly free).
+//
+// Without a cutoff (force-full-resync), every batch is slow regardless of size,
+// so we fall back to flat byte-accumulation at the standard target.
+const RECENCY_BUCKETS = [
+  { key: "recent", maxAgeDays: 1, targetMultiplier: 1 / 6 },
+  { key: "week", maxAgeDays: 7, targetMultiplier: 1 / 2 },
+  { key: "month", maxAgeDays: 30, targetMultiplier: 1 },
+  { key: "old", maxAgeDays: Number.POSITIVE_INFINITY, targetMultiplier: 2 },
+] as const;
+
+export async function buildFileBatchesByRecency(
+  files: readonly string[],
+  changedSince: string | undefined,
+): Promise<string[][]> {
+  const baseTarget = resolveCodexSyncBatchTargetBytes();
+  if (!changedSince || files.length === 0) {
+    return buildFileBatches(files, baseTarget);
+  }
+  const cutoffMs = Date.parse(changedSince);
+  if (Number.isNaN(cutoffMs)) {
+    return buildFileBatches(files, baseTarget);
+  }
+  const dayMs = 24 * 60 * 60 * 1000;
+
+  type Bucket = { key: string; targetBytes: number; files: Array<{ path: string; bytes: number }> };
+  const buckets = new Map<string, Bucket>();
+  for (const bucket of RECENCY_BUCKETS) {
+    buckets.set(bucket.key, { key: bucket.key, targetBytes: Math.max(1, Math.floor(baseTarget * bucket.targetMultiplier)), files: [] });
+  }
+
+  for (const filePath of files) {
+    const stats = await statOrNull(filePath);
+    const fileBytes = stats?.size ?? 0;
+    const mtimeMs = stats?.mtimeMs ?? 0;
+    const ageDays = (cutoffMs - mtimeMs) / dayMs;
+    const matched = RECENCY_BUCKETS.find((bucket) => ageDays <= bucket.maxAgeDays) ?? RECENCY_BUCKETS[RECENCY_BUCKETS.length - 1]!;
+    buckets.get(matched.key)!.files.push({ path: filePath, bytes: fileBytes });
+  }
+
+  const allBatches: string[][] = [];
+  for (const bucketDef of RECENCY_BUCKETS) {
+    const bucket = buckets.get(bucketDef.key);
+    if (!bucket || bucket.files.length === 0) {
+      continue;
+    }
+    // Byte-accumulation within the bucket using pre-computed sizes (no re-stat).
+    let currentBatch: string[] = [];
+    let currentBytes = 0;
+    for (const entry of bucket.files) {
+      if (currentBatch.length > 0 && currentBytes + entry.bytes > bucket.targetBytes) {
+        allBatches.push(currentBatch);
+        currentBatch = [];
+        currentBytes = 0;
+      }
+      currentBatch.push(entry.path);
+      currentBytes += entry.bytes;
+    }
+    if (currentBatch.length > 0) {
+      allBatches.push(currentBatch);
+    }
+  }
+  return allBatches;
+}
+
+async function statOrNull(filePath: string): Promise<{ size: number; mtimeMs: number } | undefined> {
+  try {
+    const stats = await stat(filePath);
+    return { size: stats.size, mtimeMs: stats.mtime.getTime() };
+  } catch {
+    return undefined;
+  }
 }
 
 async function buildCodexMetadataOnlyReusePayloadForStableOldBatch(
@@ -1445,6 +1542,36 @@ function normalizeChangedSince(value: string | undefined): string | undefined {
     return new Date(parsed).toISOString();
   }
   throw new Error(`Invalid --since value: ${value}. Use an ISO timestamp or a relative window such as 30m, 12h, 7d, or 2w.`);
+}
+
+function deriveEffectiveChangedSince(
+  input: {
+    changedSince?: string;
+    forceFullResync?: boolean;
+    storage: CCHistoryStorage;
+  },
+  sourceId: string,
+): string | undefined {
+  if (input.forceFullResync) {
+    return undefined;
+  }
+  if (input.changedSince) {
+    return input.changedSince;
+  }
+  const startedAt = input.storage.getSourceSyncStartedAt(sourceId);
+  if (!startedAt) {
+    return undefined;
+  }
+  // Floor to UTC 00:00 of that day. Safety margin: any file written during
+  // the prior sync (mtime > prior sync start) gets re-read, even if it was
+  // captured mid-write. UTC matches the on-disk timestamp convention.
+  return new Date(
+    Date.UTC(
+      startedAt.getUTCFullYear(),
+      startedAt.getUTCMonth(),
+      startedAt.getUTCDate(),
+    ),
+  ).toISOString();
 }
 
 function supportsIncrementalReuse(platform: SourceDefinition["platform"]): boolean {
