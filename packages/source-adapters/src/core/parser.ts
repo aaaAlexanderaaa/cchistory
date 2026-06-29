@@ -488,6 +488,10 @@ export function buildAdapterBlobResult(
     lossAudits.push(...parsed.lossAudits);
   }
 
+  if (source.platform === "claude_code") {
+    dedupeClaudeCodeTokenUsageFragments(fragments);
+  }
+
   const atomized = atomizeFragments(source.id, sessionId, sourceFormatProfile.id, fragments);
   atoms.push(...atomized.atoms);
   edges.push(...atomized.edges);
@@ -647,6 +651,7 @@ export function buildTextFragmentPayload(
   options: {
     usage?: TokenUsageMetrics;
     stopReason?: AssistantStopReason;
+    messageId?: string;
   } = {},
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {
@@ -667,7 +672,52 @@ export function buildTextFragmentPayload(
   if (options.stopReason) {
     payload.stop_reason = options.stopReason;
   }
+  if (options.messageId) {
+    payload.message_id = options.messageId;
+  }
   return payload;
+}
+
+// Claude Code writes multi-block assistant messages (thinking + text + N tool_use)
+// as one JSONL line per block, each carrying the same Anthropic `message.id` and
+// the same final aggregated usage. Without dedup, every non-text block re-emits a
+// token_usage fragment and the same API call is counted many times.
+// We collapse fragments sharing a `message.id` to one, keeping the highest
+// `total_tokens` (subsequent blocks of a streaming response carry progressively
+// more output, so max-total naturally selects the final state).
+function dedupeClaudeCodeTokenUsageFragments(fragments: SourceFragment[]): void {
+  const indexOfKept = new Map<string, number>();
+  const removed = new Set<number>();
+  for (let i = 0; i < fragments.length; i++) {
+    const frag = fragments[i];
+    if (!frag || frag.fragment_kind !== "token_usage_signal") continue;
+    const messageId = typeof frag.payload.message_id === "string" ? frag.payload.message_id : undefined;
+    if (!messageId) continue;
+    const existingIdx = indexOfKept.get(messageId);
+    if (existingIdx === undefined) {
+      indexOfKept.set(messageId, i);
+      continue;
+    }
+    const existing = fragments[existingIdx];
+    if (existing && tokenUsageTotal(frag.payload) > tokenUsageTotal(existing.payload)) {
+      fragments[existingIdx] = frag;
+    }
+    removed.add(i);
+  }
+  if (removed.size > 0) {
+    for (let i = fragments.length - 1; i >= 0; i--) {
+      if (removed.has(i)) fragments.splice(i, 1);
+    }
+  }
+}
+
+function tokenUsageTotal(payload: Record<string, unknown>): number {
+  const usage = payload.token_usage;
+  if (!usage || typeof usage !== "object") return 0;
+  const u = usage as Record<string, unknown>;
+  const sum = (key: string): number => (typeof u[key] === "number" ? (u[key] as number) : 0);
+  return sum("input_tokens") + sum("cache_read_input_tokens")
+    + sum("cache_creation_input_tokens") + sum("output_tokens");
 }
 
 export function createTokenUsageFragment(
@@ -708,6 +758,7 @@ export function appendChunkedTextFragments(
     usage?: TokenUsageMetrics;
     stopReason?: AssistantStopReason;
     usageApplied?: boolean;
+    messageId?: string;
   } = {},
 ): { nextSeq: number; usageApplied: boolean } {
   let usageApplied = options.usageApplied ?? false;
@@ -719,6 +770,7 @@ export function appendChunkedTextFragments(
         ...buildTextFragmentPayload(actorKind, chunk, {
           usage: firstAssistantChunk ? options.usage : undefined,
           stopReason: firstAssistantChunk ? options.stopReason : undefined,
+          messageId: firstAssistantChunk ? options.messageId : undefined,
         }),
       }),
     );

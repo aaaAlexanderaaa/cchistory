@@ -1193,6 +1193,67 @@ export async function seedClaudeModelSwitchFixture(tempRoot: string): Promise<So
   return createSourceDefinition("src-claude-model-switch", "claude_code", claudeDir);
 }
 
+// Reproduces the Claude Code multi-chunk logging pattern: one logical assistant
+// message with thinking + text + N tool_use blocks gets written as one JSONL line
+// per block, all sharing the same Anthropic `message.id` and the same final usage.
+// Without per-message.id dedup, each non-text block re-emits a token_usage_signal
+// fragment and the same API call is counted many times.
+export async function seedClaudeMultiChunkMessageFixture(tempRoot: string): Promise<SourceDefinition> {
+  const claudeDir = path.join(tempRoot, "claude-multi-chunk");
+  await mkdir(claudeDir, { recursive: true });
+
+  const records: Array<Record<string, unknown>> = [
+    {
+      timestamp: "2026-03-10T04:00:00.000Z",
+      type: "user",
+      cwd: "/workspace/claude-multi-chunk",
+      message: { role: "user", content: [{ type: "text", text: "Schedule all leaf tasks." }] },
+    },
+  ];
+
+  // 1 assistant message with id "msg_abc", written as 5 chunks:
+  //   thinking, text, tool_use, tool_use, tool_use
+  // Each chunk carries the same final usage {in:9, cache_read:132160, out:1824}.
+  const sharedUsage = {
+    input_tokens: 9,
+    cache_read_input_tokens: 132160,
+    cache_creation_input_tokens: 0,
+    output_tokens: 1824,
+  };
+  const chunks: Array<Record<string, unknown>> = [
+    { type: "thinking", thinking: "Planning the schedule." },
+    { type: "text", text: "Scheduling all leaf tasks now." },
+    { type: "tool_use", id: "tool_1", name: "schedule_task", input: { id: "t1" } },
+    { type: "tool_use", id: "tool_2", name: "schedule_task", input: { id: "t2" } },
+    { type: "tool_use", id: "tool_3", name: "schedule_task", input: { id: "t3" } },
+  ];
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i];
+    if (!chunk) continue;
+    records.push({
+      timestamp: `2026-03-10T04:00:0${i + 1}.000Z`,
+      type: "assistant",
+      cwd: "/workspace/claude-multi-chunk",
+      message: {
+        id: "msg_abc",
+        role: "assistant",
+        model: "glm-5.2",
+        stop_reason: "tool_use",
+        usage: sharedUsage,
+        content: [chunk],
+      },
+    });
+  }
+
+  await writeFile(
+    path.join(claudeDir, "conversation.jsonl"),
+    records.map((r) => JSON.stringify(r)).join("\n") + "\n",
+    "utf8",
+  );
+
+  return createSourceDefinition("src-claude-multi-chunk", "claude_code", claudeDir);
+}
+
 export async function seedMultiTurnCodexTokenFixture(tempRoot: string): Promise<SourceDefinition> {
   const codexDir = path.join(tempRoot, "codex-token-checkpoints");
   await mkdir(codexDir, { recursive: true });

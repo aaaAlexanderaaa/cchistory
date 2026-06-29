@@ -4,13 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { runSourceProbe } from "../index.js";
-import { 
-  seedTokenProjectionFixtures, 
-  seedClaudeModelSwitchFixture, 
-  seedMultiTurnCodexTokenFixture, 
-  seedMultiReplyCodexTokenFixture, 
+import {
+  seedTokenProjectionFixtures,
+  seedClaudeModelSwitchFixture,
+  seedMultiTurnCodexTokenFixture,
+  seedMultiReplyCodexTokenFixture,
   seedCodexCumulativeTokenFixture,
   seedCodexDelayedInterleavedTokenFixture,
+  seedClaudeMultiChunkMessageFixture,
 } from "../test-helpers.js";
 
 test("runSourceProbe projects token usage and stop reasons into turn context", async () => {
@@ -236,6 +237,33 @@ test("runSourceProbe attributes delayed interleaved token signals and cache vari
     assert.equal(payload.turns[0]?.context_summary.token_usage?.cache_creation_input_tokens, 10);
     assert.equal(payload.turns[0]?.context_summary.token_usage?.cached_input_tokens, 110);
     assert.equal(payload.turns[0]?.context_summary.token_usage?.output_tokens, 210);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe dedupes Claude Code multi-chunk assistant messages by message.id", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const source = await seedClaudeMultiChunkMessageFixture(tempRoot);
+    const [payload] = (await runSourceProbe({ limit_files_per_source: 1 }, [source])).sources;
+
+    assert.ok(payload);
+    const tokenUsageSignals = payload.fragments.filter(
+      (fragment) => fragment.fragment_kind === "token_usage_signal",
+    );
+    assert.equal(
+      tokenUsageSignals.length,
+      1,
+      `expected 1 token_usage_signal after dedup, got ${tokenUsageSignals.length}`,
+    );
+
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.turns[0]?.context_summary.total_tokens, 9 + 132160 + 1824);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.input_tokens, 9);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 132160);
+    assert.equal(payload.turns[0]?.context_summary.token_usage?.output_tokens, 1824);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

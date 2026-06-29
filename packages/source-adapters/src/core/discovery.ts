@@ -75,7 +75,7 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     id: "claude_code:jsonl:v1",
     family: DEFAULT_SOURCE_FAMILY,
     platform: "claude_code",
-    parser_version: "claude-code-parser@2026-06-02.1",
+    parser_version: "claude-code-parser@2026-06-29.1",
     description: "Claude Code JSONL transcripts with cwd signals, content items, tool use/results, and relation hints.",
     capabilities: ["workspace_signal", ...COMMON_PARSER_CAPABILITIES],
   },

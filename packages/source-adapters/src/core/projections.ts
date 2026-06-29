@@ -528,6 +528,18 @@ export function buildTurnContext(
     }
   }
   const signalsByReply = new Map<number, ConversationAtom[]>();
+  // Maps Claude message.id → index of the assistant reply that contains that
+  // message's text. Used to attribute token_usage_signal atoms to the correct
+  // reply even when the signal atom arrives in the stream before the text atom
+  // (which happens because the signal is emitted from the first non-text chunk
+  // of a multi-block message, and that chunk precedes the text chunk in JSONL).
+  const replyIndexByMessageId = new Map<string, number>();
+  // Signals whose message.id has not yet been seen on a text reply. These are
+  // real billed API calls — either they arrive before their own text reply
+  // (queued until the reply shows up), or they belong to a tool-only / thinking-
+  // only message that has no text reply at all (orphan; attributed to the next
+  // reply in the session so their tokens are not silently dropped).
+  const pendingSignals: ConversationAtom[] = [];
   let currentReplyIndex = -1;
   for (const atom of contextAtoms) {
     for (const fragmentId of atom.fragment_refs) {
@@ -588,20 +600,63 @@ export function buildTurnContext(
       if (replyModel !== "unknown") {
         activeModel = replyModel;
       }
+      const replyMessageId = asString(atom.payload.message_id);
+      if (replyMessageId) {
+        replyIndexByMessageId.set(replyMessageId, currentReplyIndex);
+      }
+      // Flush any signals that arrived earlier in the session without a
+      // matching text reply — either their own reply (now created) or as
+      // orphans attributed to this turn.
+      if (pendingSignals.length > 0) {
+        const signals = signalsByReply.get(currentReplyIndex) ?? [];
+        for (const pending of pendingSignals) {
+          signals.push(pending);
+        }
+        signalsByReply.set(currentReplyIndex, signals);
+        pendingSignals.length = 0;
+      }
       continue;
     }
     if (
       atom.content_kind === "meta_signal" &&
-      atom.payload.signal_kind === "token_usage_signal" &&
-      currentReplyIndex >= 0
+      atom.payload.signal_kind === "token_usage_signal"
     ) {
-      let signals = signalsByReply.get(currentReplyIndex);
-      if (!signals) {
-        signals = [];
-        signalsByReply.set(currentReplyIndex, signals);
+      const signalMessageId = asString(atom.payload.message_id);
+      const matchedReplyIndex =
+        signalMessageId !== undefined ? replyIndexByMessageId.get(signalMessageId) : undefined;
+      if (signalMessageId !== undefined && matchedReplyIndex === undefined) {
+        // Signal's message.id has no text reply yet (and may never have one).
+        // Queue rather than mis-attribute to the most recent reply.
+        pendingSignals.push(atom);
+      } else {
+        const targetReplyIndex = matchedReplyIndex ?? currentReplyIndex;
+        if (targetReplyIndex >= 0) {
+          let signals = signalsByReply.get(targetReplyIndex);
+          if (!signals) {
+            signals = [];
+            signalsByReply.set(targetReplyIndex, signals);
+          }
+          signals.push(atom);
+        } else {
+          pendingSignals.push(atom);
+        }
       }
-      signals.push(atom);
     }
+  }
+
+  // Trailing orphans: signals whose message.id has no text reply anywhere in
+  // the session (tool-only / thinking-only API calls). Attribute them to the
+  // last assistant reply so their billing is not silently dropped. If the
+  // session has no text reply at all, there is nowhere to anchor the cost and
+  // the tokens are dropped — logged as a known limitation.
+  if (pendingSignals.length > 0 && assistantReplies.length > 0) {
+    const lastReplyIndex = assistantReplies.length - 1;
+    const signals = signalsByReply.get(lastReplyIndex) ?? [];
+    for (const pending of pendingSignals) {
+      signals.push(pending);
+    }
+    signalsByReply.set(lastReplyIndex, signals);
+    pendingSignals.length = 0;
   }
 
   // Apply token_usage_signal atoms to the most recent preceding assistant reply.
@@ -615,20 +670,39 @@ export function buildTurnContext(
 
       // Check if signals carry delta_token_usage (cumulative mode)
       const hasDeltas = signals.some((s) => isObject(s.payload.delta_token_usage));
+      // Codex's `last_token_usage` (without `total_token_usage`) is a cumulative
+      // checkpoint within the turn — the last signal already subsumes earlier
+      // ones. Claude Code's per-message.id signals are independent API calls
+      // that must be summed. We tell them apart by Codex's `source_event_type`.
+      const isCodexCumulativeWithinTurn = signals.every(
+        (s) => s.payload.source_event_type === "token_count",
+      );
       let resolvedUsage: TokenUsageMetrics | undefined;
 
       if (hasDeltas) {
-        // Sum all delta_token_usage values
+        // Codex cumulative mode: each signal carries a delta since the prior
+        // checkpoint. Sum deltas to recover the total increment for this reply.
         for (const signal of signals) {
           const delta = extractTokenUsageFromPayload(
             isObject(signal.payload.delta_token_usage) ? { token_usage: signal.payload.delta_token_usage } : {},
           );
           resolvedUsage = mergeTokenUsageMetrics(resolvedUsage, delta);
         }
-      } else {
-        // Use the LAST signal's token_usage directly
+      } else if (isCodexCumulativeWithinTurn) {
+        // Codex without total_token_usage: last_token_usage is cumulative
+        // within the turn, so the final checkpoint is the turn total.
         const lastSignal = signals.at(-1)!;
         resolvedUsage = extractTokenUsageFromPayload(lastSignal.payload);
+      } else {
+        // Claude Code mode: each signal is one API call's standalone usage
+        // (after upstream dedup by message.id). A turn can chain several API
+        // calls behind one text reply (text + tool_use loop + ...), and every
+        // call's tokens must be summed — taking only the last signal silently
+        // drops every preceding call's billing.
+        for (const signal of signals) {
+          const u = extractTokenUsageFromPayload(signal.payload);
+          resolvedUsage = mergeTokenUsageMetrics(resolvedUsage, u);
+        }
       }
 
       if (resolvedUsage) {

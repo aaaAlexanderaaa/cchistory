@@ -59,6 +59,7 @@ export function parseClaudeRecord(
   let localSeq = 0;
 
   if (directMessageText) {
+    const messageId = helpers.asString(message?.id);
     const appended = helpers.appendChunkedTextFragments(
       context,
       record,
@@ -67,7 +68,7 @@ export function parseClaudeRecord(
       actorKind,
       directMessageText,
       localSeq,
-      { usage, stopReason, usageApplied },
+      { usage, stopReason, usageApplied, messageId: actorKind === "assistant" ? messageId : undefined },
     );
     localSeq = appended.nextSeq;
     usageApplied = appended.usageApplied;
@@ -140,7 +141,7 @@ export function parseClaudeRecord(
         actorKind,
         text,
         localSeq,
-        { usage, stopReason, usageApplied },
+        { usage, stopReason, usageApplied, messageId: actorKind === "assistant" ? helpers.asString(message?.id) : undefined },
       );
       localSeq = appended.nextSeq;
       usageApplied = appended.usageApplied;
@@ -159,7 +160,18 @@ export function parseClaudeRecord(
     );
   }
   if (!usageApplied && usage && actorKind === "assistant") {
-    fragments.push(helpers.createTokenUsageFragment(context, record, localSeq++, timeKey, usage, stopReason));
+    const messageId = helpers.asString(message?.id);
+    fragments.push(
+      helpers.createTokenUsageFragment(
+        context,
+        record,
+        localSeq++,
+        timeKey,
+        usage,
+        stopReason,
+        messageId ? { message_id: messageId } : undefined,
+      ),
+    );
   }
   return { fragments, lossAudits };
 }
