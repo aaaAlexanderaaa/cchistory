@@ -896,6 +896,7 @@ async function syncCodexSourceInBatches(
           preserve_origin_paths: [...preservedOriginPaths],
           observed_origin_paths: [...observedOriginPaths],
           refreshDerived: false,
+          skipGlobalScopes: true,
           onProgress: onBatchStorageProgress,
         });
   };
@@ -997,6 +998,17 @@ async function syncCodexSourceInBatches(
     },
   });
   timing.sqlitePruneMs += Date.now() - pruneStartedAt;
+
+  // Per-batch merges passed skipGlobalScopes=true to avoid re-running the
+  // expensive COUNT+SUM(LENGTH) aggregation on operator-scale sources ~30
+  // times per sync. Refresh the source- and parser_profile-scoped cache refs
+  // once here instead. Only needed when at least one batch actually merged
+  // (metadata-only batches don't touch the underlying tables).
+  if (timing.sqliteMergeMs > 0 || timing.sqliteReplaceMs > 0) {
+    const refreshStartedAt = Date.now();
+    input.storage.refreshGlobalDerivedCacheRefs(source.id);
+    timing.sqlitePruneMs += Date.now() - refreshStartedAt;
+  }
 
   const storedSource = input.storage.listSources().find((entry) => entry.id === source.id) ??
     lastPayload?.source ??

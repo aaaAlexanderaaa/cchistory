@@ -52,6 +52,7 @@ import {
   loadLineageBlobsBySha,
   markStorageBoundaryV2SourceAbsentByObservedOrigins,
   readTurnContextFromV2Cache,
+  refreshGlobalDerivedCacheRefsForSource,
   retireStorageBoundaryV2Sources,
   streamV2SidecarsFromV1,
   writeStorageBoundaryV2Sidecars,
@@ -228,6 +229,7 @@ export class CCHistoryStorage {
       writeMode: "replace" | "merge";
       preserveOriginPaths?: readonly string[];
       observedOriginPaths?: readonly string[];
+      skipGlobalScopes?: boolean;
     },
   ): { pruned_evidence_shas: string[] } {
     const result = writeStorageBoundaryV2Sidecars({
@@ -237,6 +239,7 @@ export class CCHistoryStorage {
       writeMode: options.writeMode,
       preserveOriginPaths: options.preserveOriginPaths,
       observedOriginPaths: options.observedOriginPaths,
+      skipGlobalScopes: options.skipGlobalScopes,
     });
     // Unlink content-addressed files for blobs whose refs were dropped by
     // prepareReplace/Merge (mutated lineage, dropped session-scoped turns).
@@ -356,6 +359,7 @@ export class CCHistoryStorage {
       observed_origin_paths?: readonly string[];
       onProgress?: (event: StorageProgressEvent) => void;
       refreshDerived?: boolean;
+      skipGlobalScopes?: boolean;
     } = {},
   ): {
     sessions: number;
@@ -374,6 +378,7 @@ export class CCHistoryStorage {
       writeMode: "merge",
       preserveOriginPaths: options.preserve_origin_paths,
       observedOriginPaths: options.observed_origin_paths,
+      skipGlobalScopes: options.skipGlobalScopes,
     });
 
     // B4: same ordering gap as replaceSourcePayload above — countStoredSourcePayload
@@ -391,6 +396,15 @@ export class CCHistoryStorage {
     this.refreshDerivedState();
     options.onProgress?.({ stage: "reindex_done", source_id: payload.source.id });
     return recounted;
+  }
+
+  refreshGlobalDerivedCacheRefs(
+    sourceId: string,
+  ): void {
+    refreshGlobalDerivedCacheRefsForSource({
+      db: this.db,
+      sourceId,
+    });
   }
 
   updateSourceSyncMetadata(

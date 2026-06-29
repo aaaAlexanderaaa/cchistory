@@ -40,6 +40,7 @@ export function writeStorageBoundaryV2Sidecars(input: {
   writeMode: "replace" | "merge";
   preserveOriginPaths?: readonly string[];
   observedOriginPaths?: readonly string[];
+  skipGlobalScopes?: boolean;
 }): { pruned_evidence_shas: string[] } {
   const normalizedPayload = normalizeSourcePayload(input.payload);
   const now = nowIso();
@@ -114,7 +115,7 @@ export function writeStorageBoundaryV2Sidecars(input: {
       upsertTurnContextRef(input.db, context, normalizedPayload.source.id, materialized, now);
     }
 
-    upsertDerivedCacheRefs(input.db, normalizedPayload, parserProfileId, now, itemByteSize);
+    upsertDerivedCacheRefs(input.db, normalizedPayload, parserProfileId, now, itemByteSize, input.skipGlobalScopes);
 
     // Prune evidence blobs whose refs were dropped by prepareReplace/Merge
     // (e.g. an upserted turn whose lineage mutated drops the previous lineage
@@ -135,6 +136,53 @@ export function markStorageBoundaryV2SourceAbsentByObservedOrigins(input: {
   const now = nowIso();
   dbTransaction(input.db, () => {
     markUnobservedLedgersSourceAbsent(input.db, input.sourceId, input.observedOriginPaths, now);
+  });
+}
+
+/**
+ * Refresh the source- and parser_profile-scoped rows in derived_cache_refs for
+ * a single source. This is the expensive aggregation (COUNT + SUM(LENGTH) over
+ * the full source) that per-batch merges skip via `skipGlobalScopes`. Sync
+ * calls this once after the batch loop instead of N times inside it.
+ *
+ * The parser_profile_id is resolved from the source's stage_runs (same logic
+ * as `writeStorageBoundaryV2Sidecars` uses internally), so the caller doesn't
+ * need to plumb it through.
+ */
+export function refreshGlobalDerivedCacheRefsForSource(input: {
+  db: DatabaseSync;
+  sourceId: string;
+}): void {
+  const parserProfileId = deriveParserProfileIdFromStageRuns(input.db, input.sourceId);
+  const now = nowIso();
+  const cacheKinds: readonly DerivedCacheKind[] = [
+    "raw_records",
+    "source_fragments",
+    "conversation_atoms",
+    "derived_candidates",
+  ];
+  dbTransaction(input.db, () => {
+    for (const cacheKind of cacheKinds) {
+      const stats = readCurrentCacheStats(input.db, cacheKind, input.sourceId);
+      upsertDerivedCacheRef(input.db, {
+        sourceId: input.sourceId,
+        cacheKind,
+        scopeKind: "source",
+        scopeRef: input.sourceId,
+        parserProfileId,
+        ...stats,
+        now,
+      });
+      upsertDerivedCacheRef(input.db, {
+        sourceId: input.sourceId,
+        cacheKind,
+        scopeKind: "parser_profile",
+        scopeRef: parserProfileId,
+        parserProfileId,
+        ...stats,
+        now,
+      });
+    }
   });
 }
 
@@ -1450,6 +1498,7 @@ function upsertDerivedCacheRefs(
   parserProfileId: string,
   now: string,
   itemByteSize: (item: object) => number,
+  skipGlobalScopes = false,
 ): void {
   const sourceId = payload.source.id;
   const cacheKinds: readonly DerivedCacheKind[] = [
@@ -1459,53 +1508,60 @@ function upsertDerivedCacheRefs(
     "derived_candidates",
   ];
 
-  upsertDerivedCacheRef(db, {
-    sourceId,
-    cacheKind: "raw_records",
-    scopeKind: "source",
-    scopeRef: sourceId,
-    parserProfileId,
-    ...readCurrentCacheStats(db, "raw_records", sourceId),
-    now,
-  });
-  upsertDerivedCacheRef(db, {
-    sourceId,
-    cacheKind: "source_fragments",
-    scopeKind: "source",
-    scopeRef: sourceId,
-    parserProfileId,
-    ...readCurrentCacheStats(db, "source_fragments", sourceId),
-    now,
-  });
-  upsertDerivedCacheRef(db, {
-    sourceId,
-    cacheKind: "conversation_atoms",
-    scopeKind: "source",
-    scopeRef: sourceId,
-    parserProfileId,
-    ...readCurrentCacheStats(db, "conversation_atoms", sourceId),
-    now,
-  });
-  upsertDerivedCacheRef(db, {
-    sourceId,
-    cacheKind: "derived_candidates",
-    scopeKind: "source",
-    scopeRef: sourceId,
-    parserProfileId,
-    ...readCurrentCacheStats(db, "derived_candidates", sourceId),
-    now,
-  });
-
-  for (const cacheKind of cacheKinds) {
+  // The source- and parser_profile-scoped cache refs aggregate the entire
+  // source via COUNT(*)+SUM(LENGTH(payload_json)). On operator-scale sources
+  // (100k+ rows per table) each call is multi-second. During per-batch merges
+  // the caller passes skipGlobalScopes=true and refreshes them once at the
+  // end of the sync instead of after every batch.
+  if (!skipGlobalScopes) {
     upsertDerivedCacheRef(db, {
       sourceId,
-      cacheKind,
-      scopeKind: "parser_profile",
-      scopeRef: parserProfileId,
+      cacheKind: "raw_records",
+      scopeKind: "source",
+      scopeRef: sourceId,
       parserProfileId,
-      ...readCurrentCacheStats(db, cacheKind, sourceId),
+      ...readCurrentCacheStats(db, "raw_records", sourceId),
       now,
     });
+    upsertDerivedCacheRef(db, {
+      sourceId,
+      cacheKind: "source_fragments",
+      scopeKind: "source",
+      scopeRef: sourceId,
+      parserProfileId,
+      ...readCurrentCacheStats(db, "source_fragments", sourceId),
+      now,
+    });
+    upsertDerivedCacheRef(db, {
+      sourceId,
+      cacheKind: "conversation_atoms",
+      scopeKind: "source",
+      scopeRef: sourceId,
+      parserProfileId,
+      ...readCurrentCacheStats(db, "conversation_atoms", sourceId),
+      now,
+    });
+    upsertDerivedCacheRef(db, {
+      sourceId,
+      cacheKind: "derived_candidates",
+      scopeKind: "source",
+      scopeRef: sourceId,
+      parserProfileId,
+      ...readCurrentCacheStats(db, "derived_candidates", sourceId),
+      now,
+    });
+
+    for (const cacheKind of cacheKinds) {
+      upsertDerivedCacheRef(db, {
+        sourceId,
+        cacheKind,
+        scopeKind: "parser_profile",
+        scopeRef: parserProfileId,
+        parserProfileId,
+        ...readCurrentCacheStats(db, cacheKind, sourceId),
+        now,
+      });
+    }
   }
 
   const recordsByBlobId = groupBy(payload.records, (record) => record.blob_id);

@@ -165,6 +165,20 @@ const STORAGE_INDEXES: ReadonlyArray<{
   { name: "idx_derived_cache_refs_scope", sql: "CREATE INDEX IF NOT EXISTS idx_derived_cache_refs_scope ON derived_cache_refs (source_id, scope_kind, scope_ref)" },
   { name: "idx_derived_cache_refs_kind_scope", sql: "CREATE INDEX IF NOT EXISTS idx_derived_cache_refs_kind_scope ON derived_cache_refs (scope_kind, scope_ref)" },
   { name: "idx_derived_cache_refs_parser_profile", sql: "CREATE INDEX IF NOT EXISTS idx_derived_cache_refs_parser_profile ON derived_cache_refs (parser_profile_id)" },
+
+  // B.5.0h: pruneUnreferencedEvidenceBlobsInTransaction LEFT JOINs evidence_blobs
+  // against 6 ref tables. The partial indexes above (with `WHERE col != ''`)
+  // are not usable by the LEFT JOIN planner — it must consider all rows of the
+  // right table, so it falls back to building automatic indexes per query
+  // execution. On operator-scale stores (9k+ evidence_blobs × 15k+
+  // derived_cache_refs / 380k+ parsed_record_spans), each prune ended up
+  // rebuilding 4 automatic indexes per call inside the merge transaction,
+  // adding 60-90+ seconds per slow batch. These non-partial indexes give the
+  // planner a persistent index to use instead. Idempotent via IF NOT EXISTS.
+  { name: "idx_user_turns_v2_lineage_sha_full", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_v2_lineage_sha_full ON user_turns_v2 (lineage_blob_sha256)" },
+  { name: "idx_turn_context_refs_v2_sha_full", sql: "CREATE INDEX IF NOT EXISTS idx_turn_context_refs_v2_sha_full ON turn_context_refs_v2 (context_evidence_sha256)" },
+  { name: "idx_source_file_ledger_current_evidence", sql: "CREATE INDEX IF NOT EXISTS idx_source_file_ledger_current_evidence ON source_file_ledger (current_evidence_sha256, sync_axis)" },
+  { name: "idx_derived_cache_refs_evidence_sha", sql: "CREATE INDEX IF NOT EXISTS idx_derived_cache_refs_evidence_sha ON derived_cache_refs (evidence_sha256)" },
 ];
 
 // A.3: indexes that were prefix-duplicates of compound (source_id, ...)
