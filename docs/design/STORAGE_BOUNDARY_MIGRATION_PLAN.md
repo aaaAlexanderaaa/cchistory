@@ -430,6 +430,17 @@ B.6  compact
      The two steps are independently runnable so an operator who cannot afford
      the VACUUM lock can stop at 6a and reclaim pages later.
 
+     Operator visibility: `STORAGE_SCHEMA_VERSION` (`schema_meta.schema_version`)
+     advances at schema-apply time, not at compact time — it reflects the
+     schema the running build understands, not the schema the store currently
+     has on disk. The schema_migrations row `2026-06-24.1/b6-drop-v1-turn-tables`
+     is recorded only when `migration compact --step drop-v1-tables` runs
+     successfully. To determine whether a store has actually dropped the V1
+     tables, query `sqlite_master` directly or check that row's presence in
+     `schema_migrations` — do NOT rely on `schema_version` alone. The
+     `v1TurnTablesExist()` helper in `packages/storage/src/internal/queries.ts`
+     is the canonical check.
+
 B.7  rollback path
      Until B.6 completes, V1 payloads remain intact and readable. Any failure
      in B.1-B.5 leaves the store in its pre-migration state; the marker can
@@ -450,7 +461,7 @@ unless revisited before B.1 starts.
 | Vacuum trigger | Explicit maintenance command, never on the sync path | A 5 GB VACUUM takes minutes and locks the DB. |
 | Validation algorithm | Three independent validators: bundle byte-diff, inventory diff, read-path parity | Single-validator is too weak; bundle parity alone misses read-path regressions. |
 | Partial-migration store read strategy | V1 remains the fallback read path through B.5 | No read-only window for partially migrated stores. |
-| Free-disk threshold | >= current DB size at B.1 preview | VACUUM requires a temporary second copy. |
+| Free-disk threshold | >= 1.5× DB size (2× for stores >2 GiB) at B.6 compact time | VACUUM writes a new compacted file alongside the original; peak transient footprint is ~2× DB. The original 1.1× gate aborted mid-run on the operator store (4.5 GiB DB, 5.3 GiB free); see [[vacuum-disk-headroom]]. |
 
 ### B.3 Workload estimate
 

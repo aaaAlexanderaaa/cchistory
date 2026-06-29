@@ -141,24 +141,11 @@ export function replaceSourcePayloadWithOptions(
       insertSession.run(session.id, normalizedPayload.source.id, session.created_at, session.updated_at, toJson(session));
     }
 
-    const insertTurn = db.prepare(
-      "INSERT INTO user_turns (id, source_id, session_id, created_at, submission_started_at, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
-    );
-    for (const turn of normalizedPayload.turns) {
-      insertTurn.run(
-        turn.id,
-        normalizedPayload.source.id,
-        turn.session_id,
-        turn.created_at,
-        turn.submission_started_at,
-        toJson(turn),
-      );
-    }
-
-    const insertContext = db.prepare("INSERT INTO turn_contexts (turn_id, source_id, payload_json) VALUES (?, ?, ?)");
-    for (const context of normalizedPayload.contexts) {
-      insertContext.run(context.turn_id, normalizedPayload.source.id, toJson(context));
-    }
+    // B.6: V1 user_turns / turn_contexts are dropped. Turns and contexts are
+    // written to their V2 sidecars (user_turns_v2, turn_context_refs_v2) by
+    // writeStorageBoundaryV2Sidecars, called by the CCHistoryStorage wrapper
+    // after this function returns. This loop is intentionally omitted — it
+    // would throw "no such table" against a post-compact store.
 
     db.exec("COMMIT;");
     options.on_progress?.({ stage: "write_store_done", source_id: normalizedPayload.source.id, projection_changed: true });
@@ -410,24 +397,9 @@ export function mergeSourcePayloadByOriginPath(
       insertSession.run(session.id, sourceId, session.created_at, session.updated_at, toJson(session));
     }
 
-    const insertTurn = db.prepare(
-      "INSERT OR REPLACE INTO user_turns (id, source_id, session_id, created_at, submission_started_at, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
-    );
-    for (const turn of turnsForWrite) {
-      insertTurn.run(
-        turn.id,
-        sourceId,
-        turn.session_id,
-        turn.created_at,
-        turn.submission_started_at,
-        toJson(turn),
-      );
-    }
-
-    const insertContext = db.prepare("INSERT OR REPLACE INTO turn_contexts (turn_id, source_id, payload_json) VALUES (?, ?, ?)");
-    for (const context of contextsForWrite) {
-      insertContext.run(context.turn_id, sourceId, toJson(context));
-    }
+    // B.6: V1 user_turns / turn_contexts are dropped; only V2 sidecars are
+    // written. writeStorageBoundaryV2Sidecars (called by CCHistoryStorage
+    // after this function) handles user_turns_v2 and turn_context_refs_v2.
 
     const counts = countStoredSourcePayload(db, sourceId);
     const mergedSource: SourceStatus = {
@@ -659,18 +631,10 @@ function shouldBackfillPreservedBlobIdentity(db: DatabaseSync, sourceId: string,
 }
 
 function deleteSessionScopedRows(db: DatabaseSync, sourceId: string, sessionRef: string): void {
-  db.prepare(
-    "DELETE FROM turn_contexts WHERE source_id = ? AND turn_id IN (SELECT id FROM user_turns WHERE source_id = ? AND session_id = ?)",
-  ).run(sourceId, sourceId, sessionRef);
-  db.prepare("DELETE FROM user_turns WHERE source_id = ? AND session_id = ?").run(sourceId, sessionRef);
-  // C3: prune V2 sidecar rows for the same sessions. V2 user_turns_v2 and
-  // turn_context_refs_v2 must mirror the V1 deletes — post-B.5.2 reads are
-  // V2-only, so V1-only deletes silently leave V2 populated. The dropped
-  // sessions' turns would otherwise reappear in every list/detail/bundle
-  // read. Delete V2 contexts first (the WHERE IN subquery needs
-  // user_turns_v2 to still hold the turn_id→session_id mapping), then V2
-  // turns. See [[dual-write-mutation-sync]] — same defect class as the M4
-  // rewriteStoredTurn fix.
+  // B.6: V1 user_turns / turn_contexts are dropped. V2 sidecar tables are
+  // the source of truth. Delete V2 contexts first (the WHERE IN subquery
+  // needs user_turns_v2 to still hold the turn_id→session_id mapping),
+  // then V2 turns.
   db.prepare(
     "DELETE FROM turn_context_refs_v2 WHERE source_id = ? AND turn_id IN (SELECT turn_id FROM user_turns_v2 WHERE source_id = ? AND session_id = ?)",
   ).run(sourceId, sourceId, sessionRef);
@@ -731,16 +695,9 @@ function deleteBySource(db: DatabaseSync, sourceId: string): void {
     "DELETE FROM atom_edges WHERE source_id = ?",
     "DELETE FROM derived_candidates WHERE source_id = ?",
     "DELETE FROM sessions WHERE source_id = ?",
-    "DELETE FROM user_turns WHERE source_id = ?",
-    "DELETE FROM turn_contexts WHERE source_id = ?",
-    // C3: mirror V1 deletes into V2 sidecar tables. Today the only caller
-    // (replacePersistedSourcePayloadWithOptions → writeStorageBoundaryV2Sidecars
-    // with writeMode="replace" → prepareReplaceCurrentState) re-runs this
-    // delete idempotently, so the dual-write invariant currently holds via
-    // call-site ordering. Making deleteBySource self-contained removes the
-    // ordering dependency — a future caller that invokes this directly
-    // without prepareReplaceCurrentState would otherwise leak V2 rows.
-    // See [[dual-write-mutation-sync]].
+    // B.6: V1 user_turns / turn_contexts dropped; only V2 sidecar tables
+    // remain for turns + contexts. See [[dual-write-mutation-sync]] for the
+    // pre-B.6 dual-write invariant these tables used to participate in.
     "DELETE FROM turn_context_refs_v2 WHERE source_id = ?",
     "DELETE FROM user_turns_v2 WHERE source_id = ?",
   ];

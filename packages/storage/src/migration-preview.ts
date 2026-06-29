@@ -190,8 +190,15 @@ function readCapturedBlobMapping(db: DatabaseSync): RowMapping {
 }
 
 function countRows(db: DatabaseSync, table: string): number {
-  const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
-  return row.n;
+  // B.6: V1 user_turns / turn_contexts may not exist (operator hasn't run
+  // compact, or this is a fresh install post-B.6). COUNT(*) on a missing
+  // table throws — return 0 instead of breaking the preview.
+  try {
+    const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
+    return row.n;
+  } catch {
+    return 0;
+  }
 }
 
 function readBackfillGap(db: DatabaseSync): BackfillGap {

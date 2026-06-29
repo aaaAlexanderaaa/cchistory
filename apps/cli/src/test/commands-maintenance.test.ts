@@ -179,7 +179,6 @@ test("A.3: prefix-duplicate session-only indexes are dropped after open", async 
         "idx_conversation_atoms_session",
         "idx_atom_edges_session",
         "idx_derived_candidates_session",
-        "idx_user_turns_session",
         "idx_user_turns_v2_session",
       ];
       for (const name of dropped) {
@@ -189,10 +188,12 @@ test("A.3: prefix-duplicate session-only indexes are dropped after open", async 
         assert.equal(row, undefined, `${name} must be dropped after open (A.3)`);
       }
 
-      // The surviving compound indexes remain.
+      // The surviving compound indexes remain. Note: idx_user_turns_source_session
+      // (V1) is gone post-B.6 — V1 user_turns is no longer created at schema
+      // apply time, so its indexes don't exist either. Only the V2 compound
+      // index survives.
       const survivors = [
         "idx_raw_records_source_session",
-        "idx_user_turns_source_session",
         "idx_user_turns_v2_source_session",
       ];
       for (const name of survivors) {
@@ -205,4 +206,50 @@ test("A.3: prefix-duplicate session-only indexes are dropped after open", async 
       db.close();
     }
   }, "cchistory-a3-drop-");
+});
+
+test("refresh-projections: rebuilds stale project_current after manual row deletion", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const db = new DatabaseSync(dbPath);
+    try {
+      const beforeRow = db
+        .prepare("SELECT COUNT(*) AS n FROM project_current")
+        .get() as { n: number };
+      assert.ok(beforeRow.n > 0, "seeded sync must produce project_current rows");
+
+      // Simulate the failure mode: sync crashed mid-flight (e.g. OOM) after
+      // writing raw rows but before refreshDerivedProjections committed. The
+      // operator-visible symptom is `ls projects` showing no projects.
+      db.exec("DELETE FROM project_current");
+      const empty = db.prepare("SELECT COUNT(*) AS n FROM project_current").get() as { n: number };
+      assert.equal(empty.n, 0);
+    } finally {
+      db.close();
+    }
+
+    const result = await runCliJson<{
+      kind: string;
+      project_rows_before: number;
+      project_rows_after: number;
+    }>(["maintenance", "refresh-projections", "--store", storeDir]);
+    assert.equal(result.kind, "maintenance-refresh-projections");
+    assert.equal(result.project_rows_before, 0);
+    assert.ok(
+      result.project_rows_after > 0,
+      "refresh-projections must repopulate project_current from canonical rows",
+    );
+
+    const after = new DatabaseSync(dbPath);
+    try {
+      const afterRow = after
+        .prepare("SELECT COUNT(*) AS n FROM project_current")
+        .get() as { n: number };
+      assert.equal(afterRow.n, result.project_rows_after);
+    } finally {
+      after.close();
+    }
+  }, "cchistory-refresh-projections-");
 });

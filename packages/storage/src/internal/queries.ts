@@ -257,6 +257,12 @@ export function upsertImportedBundle(db: DatabaseSync, record: ImportedBundleRec
 }
 
 export function listTurns(db: DatabaseSync): UserTurnProjection[] {
+  // B.6: V1 user_turns table is dropped post-compact. The V2 read path
+  // (listUserTurnsFromV2) is the production read source since B.5.2; the V1
+  // reference was retained only for the read-paths validator, which now
+  // gracefully skips when V1 is missing. Throws "no such table" if called
+  // against a post-B.6 store — surface as a programming error rather than
+  // silently returning empty.
   return db
     .prepare("SELECT payload_json FROM user_turns ORDER BY submission_started_at DESC, created_at DESC")
     .all()
@@ -264,10 +270,27 @@ export function listTurns(db: DatabaseSync): UserTurnProjection[] {
 }
 
 export function getTurn(db: DatabaseSync, turnId: string): UserTurnProjection | undefined {
+  // B.6: V1 user_turns table is dropped post-compact. See listTurns docstring.
   const row = db.prepare("SELECT payload_json FROM user_turns WHERE id = ?").get(turnId) as
     | { payload_json: string }
     | undefined;
   return row ? fromJson<UserTurnProjection>(row.payload_json) : undefined;
+}
+
+/**
+ * B.6: returns true if the V1 user_turns table still exists. Pre-compact stores
+ * have it; post-compact stores don't. Used by the read-paths validator and
+ * v1-payload-digest validator to decide whether to compare V1 vs V2 or skip
+ * with a "post-B.6" note. Cheap query (single sqlite_master lookup, no I/O on
+ * the table itself).
+ */
+export function v1TurnTablesExist(db: DatabaseSync): boolean {
+  const row = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('user_turns', 'turn_contexts')",
+    )
+    .all() as Array<{ name: string }>;
+  return row.length === 2;
 }
 
 interface UserTurnV2Row {

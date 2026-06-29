@@ -181,7 +181,7 @@ test("storage boundary v2 writes evidence, ledger, spans, and bounded context si
   }
 });
 
-test("storage boundary v2 reconstructs turn context from the content-addressed cache when v1 context rows are absent", async () => {
+test("storage boundary v2 reconstructs turn context from the content-addressed cache (B.6: V1 turn_contexts no longer exists)", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-boundary-v2-context-cache-"));
   try {
     const storeDir = path.join(tempRoot, "store");
@@ -200,13 +200,15 @@ test("storage boundary v2 reconstructs turn context from the content-addressed c
     storage.replaceSourcePayload(payload);
     storage.close();
 
+    // B.6: V1 turn_contexts no longer exists; the V2 cache is the only source.
+    // The "DELETE FROM turn_contexts" step from the pre-B.6 version of this
+    // test is now a no-op. Verify the cache file exists and is readable.
     const db = new DatabaseSync(dbPath);
     try {
       const contextRef = db.prepare("SELECT cache_storage_path FROM turn_context_refs_v2 WHERE turn_id = ?")
         .get("turn-v2-context-cache") as { cache_storage_path: string } | undefined;
       assert.ok(contextRef);
       await access(path.join(storeDir, contextRef.cache_storage_path));
-      db.prepare("DELETE FROM turn_contexts WHERE turn_id = ?").run("turn-v2-context-cache");
     } finally {
       db.close();
     }
@@ -300,8 +302,6 @@ test("storage boundary v2 does not serve context for purged turns", async () => 
     try {
       const counts = db.prepare(`
         SELECT
-          (SELECT COUNT(*) FROM user_turns WHERE id = ?) AS user_turns,
-          (SELECT COUNT(*) FROM turn_contexts WHERE turn_id = ?) AS turn_contexts,
           (SELECT COUNT(*) FROM user_turns_v2 WHERE turn_id = ?) AS user_turns_v2,
           (SELECT COUNT(*) FROM turn_context_refs_v2 WHERE turn_id = ?) AS turn_context_refs_v2,
           (SELECT COUNT(*) FROM captured_blobs WHERE source_id = ?) AS captured_blobs,
@@ -310,22 +310,16 @@ test("storage boundary v2 does not serve context for purged turns", async () => 
       `).get(
         "turn-v2-context-purge",
         "turn-v2-context-purge",
-        "turn-v2-context-purge",
-        "turn-v2-context-purge",
         "srcinst-codex-v2-context-purge",
         "srcinst-codex-v2-context-purge",
         "srcinst-codex-v2-context-purge",
       ) as {
-        user_turns: number;
-        turn_contexts: number;
         user_turns_v2: number;
         turn_context_refs_v2: number;
         captured_blobs: number;
         evidence_captures: number;
         parsed_record_spans: number;
       };
-      assert.equal(counts.user_turns, 0);
-      assert.equal(counts.turn_contexts, 0);
       assert.equal(counts.user_turns_v2, 0);
       assert.equal(counts.turn_context_refs_v2, 0);
       assert.equal(counts.captured_blobs, 0, "single-turn purge must remove orphaned captured blob rows");
@@ -360,14 +354,9 @@ test("storage boundary v2 does not serve orphaned context refs without a live tu
     const db = new DatabaseSync(dbPath);
     try {
       assert.ok(db.prepare("SELECT 1 FROM turn_context_refs_v2 WHERE turn_id = ?").get("turn-v2-context-orphan"));
-      assert.ok(db.prepare("SELECT 1 FROM turn_contexts WHERE turn_id = ?").get("turn-v2-context-orphan"));
-      // C2: previously this test deleted only V1 user_turns to simulate an
-      // orphan, and the read path's JOIN to V1 user_turns caught it. The
-      // JOIN was dead defensive code that breaks at B.6 — removed. The
-      // canonical "is this turn live" check post-B.5.6 is V2-only via
-      // getTurn, so the equivalent orphan simulation is to drop the V2
-      // user_turns_v2 row.
-      db.prepare("DELETE FROM user_turns WHERE id = ?").run("turn-v2-context-orphan");
+      // B.6: V1 turn_contexts is no longer written. The read path's "is this
+      // turn live?" check post-B.5.6 is V2-only via getTurn, so the orphan
+      // simulation is to drop the V2 user_turns_v2 row.
       db.prepare("DELETE FROM user_turns_v2 WHERE turn_id = ?").run("turn-v2-context-orphan");
     } finally {
       db.close();
@@ -1559,12 +1548,8 @@ test("storage boundary v2 pruneSourcePayloadByObservedOriginPaths drops V2 sidec
       const afterContext = dbAfter
         .prepare("SELECT COUNT(*) AS count FROM turn_context_refs_v2 WHERE source_id = ?")
         .get(sourceId) as { count: number };
-      const afterV1Turn = dbAfter.prepare("SELECT COUNT(*) AS count FROM user_turns WHERE source_id = ?").get(sourceId) as {
-        count: number;
-      };
-      assert.equal(afterTurn.count, 0, "V2 turn sidecar dropped with V1 row (dual-write invariant)");
-      assert.equal(afterContext.count, 0, "V2 context sidecar dropped with V1 row");
-      assert.equal(afterV1Turn.count, 0, "V1 user_turns dropped (sanity — V1 path was already correct)");
+      assert.equal(afterTurn.count, 0, "V2 turn sidecar dropped when session is retired");
+      assert.equal(afterContext.count, 0, "V2 context sidecar dropped when session is retired");
     } finally {
       dbAfter.close();
     }
@@ -1600,11 +1585,11 @@ test("B1 post-B.6 regression: selectOrphanedBlobIds is a pure set-difference (no
   );
 });
 
-test("B2 post-B.6 regression: rewriteStoredTurn falls back to V2 when V1 row is missing", async () => {
-  // B2: rewriteStoredTurn read V1 first and silently no-op'd when V1 had no
-  // row — exactly the post-B.6 state. Now it falls back to readUserTurnFromV2.
+test("B2 post-B.6 regression: rewriteStoredTurn archives via V2 (no V1 fallback needed)", async () => {
+  // B.6 removed the V1 user_turns table entirely. rewriteStoredTurn now reads
+  // V2 as the source of truth and writes the archive mutation back to V2.
   // garbageCollectCandidateTurns({mode:"archive"}) exercises rewriteStoredTurn;
-  // pre-B2 every archive would no-op post-B.6.
+  // pre-B2 every archive would silently no-op when the V1 row was absent.
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-b2-post-b6-"));
   try {
     const storeDir = path.join(tempRoot, "store");
@@ -1631,12 +1616,10 @@ test("B2 post-B.6 regression: rewriteStoredTurn falls back to V2 when V1 row is 
     storage.replaceSourcePayload(payload);
 
     // Force the turn into candidate state so archive GC will pick it up.
+    // B.6: no V1 mutation — only V2 sidecars exist.
     const db = new DatabaseSync(dbPath);
     try {
-      db.prepare("UPDATE user_turns SET payload_json = json_set(payload_json, '$.link_state', 'candidate')").run();
       db.prepare("UPDATE user_turns_v2 SET link_state = 'candidate'").run();
-      // Simulate B.6: drop the V1 row entirely. Post-B.6 this is the steady state.
-      db.prepare("DELETE FROM user_turns WHERE id = ?").run("turn-b2");
     } finally {
       db.close();
     }
@@ -1652,7 +1635,8 @@ test("B2 post-B.6 regression: rewriteStoredTurn falls back to V2 when V1 row is 
     }
 
     // Archive the candidate. Pre-B2 this would silently no-op because the V1
-    // row is gone and rewriteStoredTurn returned undefined early.
+    // row was gone and rewriteStoredTurn returned undefined early. Post-B.6
+    // the V2 read is the only path.
     storage.garbageCollectCandidateTurns({ before_iso: "9999-01-01T00:00:00.000Z", mode: "archive" });
 
     const after = new DatabaseSync(dbPath);
@@ -1661,7 +1645,7 @@ test("B2 post-B.6 regression: rewriteStoredTurn falls back to V2 when V1 row is 
         value_axis: string;
         retention_axis: string;
       };
-      assert.equal(row.value_axis, "archived", "B2: V2 row was archived via V2 fallback read");
+      assert.equal(row.value_axis, "archived", "B2: V2 row was archived via V2 read");
       assert.equal(row.retention_axis, "keep_raw_only");
     } finally {
       after.close();
@@ -1673,14 +1657,16 @@ test("B2 post-B.6 regression: rewriteStoredTurn falls back to V2 when V1 row is 
   }
 });
 
-test("B3+B4 post-B.6 regression: source counts stay correct after V1 user_turns is dropped", async () => {
+test("B3+B4 post-B.6 regression: source counts stay correct via V2 (no V1 row to drop)", async () => {
   // B3: refreshSourceStatusCountsInTransaction read V1 user_turns for total_turns
   // — post-B.6 it would return 0. Now reads V2.
   // B4: countStoredSourcePayload (called inside merge/replace) had the same V1
   // dependency plus an ordering gap — V2 sidecars are written AFTER the count
   // runs. B4 fixed both: V2 source for the count, plus a post-sidecar recount.
-  // This test exercises both: drop V1, run a merge, verify the returned count
-  // AND source_instances.total_turns both equal the pre-drop turn count.
+  // B.6: V1 user_turns no longer exists at all, so the "drop V1" step from
+  // the pre-B.6 version of this test is now a no-op. The rest of the test
+  // still exercises both fixes: run a merge, verify the returned count AND
+  // source_instances.total_turns both equal the live turn count.
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-b3-b4-post-b6-"));
   try {
     const storeDir = path.join(tempRoot, "store");
@@ -1710,14 +1696,6 @@ test("B3+B4 post-B.6 regression: source counts stay correct after V1 user_turns 
     const initialTotalTurns = storage.listSources()[0]!.total_turns;
     assert.equal(initialTotalTurns, 1, "precondition: V2 sidecars written for the keep turn");
 
-    // Simulate B.6: drop V1 user_turns entirely.
-    const dropDb = new DatabaseSync(dbPath);
-    try {
-      dropDb.exec("DELETE FROM user_turns");
-    } finally {
-      dropDb.close();
-    }
-
     await writeFile(newPath, newText, "utf8");
     const incoming = createPayloadForSourceFile({
       sourceId,
@@ -1740,8 +1718,8 @@ test("B3+B4 post-B.6 regression: source counts stay correct after V1 user_turns 
     assert.equal(counts.turns, 2, "B4: merge returns V2-backed turn count");
 
     // B3: source_instances.total_turns was refreshed from V2 after the merge.
-    // Pre-B3 refreshSourceStatusCountsInTransaction would have read V1 (now empty)
-    // and stored 0.
+    // Pre-B3 refreshSourceStatusCountsInTransaction would have read V1 (now
+    // always empty post-B.6) and stored 0.
     assert.equal(storage.listSources()[0]!.total_turns, 2, "B3: source_instances.total_turns read from V2");
 
     storage.close();

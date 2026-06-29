@@ -592,9 +592,9 @@ test("evidence sync hot paths use indexed structural columns", async () => {
       );
       assertPlanUsesIndex(
         db,
-        "SELECT id FROM user_turns WHERE source_id = ? AND session_id = ?",
+        "SELECT turn_id FROM user_turns_v2 WHERE source_id = ? AND session_id = ?",
         [storedSourceId, payload.records[0]!.session_ref],
-        "idx_user_turns_source_session",
+        "idx_user_turns_v2_source_session",
       );
       assertPlanUsesIndex(
         db,

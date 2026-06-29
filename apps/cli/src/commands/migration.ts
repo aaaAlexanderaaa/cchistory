@@ -4,10 +4,16 @@ import {
   clearMigrationStatesByPhase,
   listMigrationStates,
   MIGRATION_PHASES,
+  readMigrationState,
   readStorageBoundaryMigrationPreview,
+  recordMigrationAbort,
+  recordMigrationComplete,
+  recordMigrationStart,
   runMigrationValidate,
+  STORAGE_SCHEMA_VERSION,
   type BundleChecksumCompare,
   type MigrationPhase,
+  type MigrationScope,
   type MigrationValidateResult,
   type MigrationValidatorKind,
   type MigrationValidatorOutcome,
@@ -16,6 +22,7 @@ import {
 import { mkdtemp, readFile, readdir, rm, stat, statfs } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { BundleChecksums, ImportBundleManifest } from "@cchistory/domain";
 import type { CommandContext, CommandOutput } from "../main.js";
 import { openStorage, resolveStoreLayout, type StoreLayout } from "../store.js";
@@ -25,7 +32,7 @@ import { formatNumber, renderKeyValue, renderSection, renderTable } from "../ren
 export async function handleMigration(context: CommandContext): Promise<CommandOutput> {
   const subcommand = context.commandPath[1];
   if (!subcommand) {
-    throw new Error("`migration` requires a subcommand: preview, run, status, validate, or reset.");
+    throw new Error("`migration` requires a subcommand: preview, run, status, validate, reset, or compact.");
   }
   if (context.positionals.length > 0) {
     throw new Error(`\`migration ${subcommand}\` does not take positional arguments.`);
@@ -49,6 +56,8 @@ export async function handleMigration(context: CommandContext): Promise<CommandO
       return runMigrationValidateHandler(context, layout);
     case "reset":
       return runMigrationReset(context, layout);
+    case "compact":
+      return runMigrationCompact(context, layout);
     default:
       throw new Error(`Unknown migration subcommand: ${subcommand}`);
   }
@@ -204,6 +213,377 @@ async function runMigrationReset(context: CommandContext, layout: StoreLayout): 
       rows_deleted: rowsDeleted,
     },
   };
+}
+
+const ALLOWED_COMPACT_STEPS = ["drop-v1-tables", "vacuum", "both"] as const;
+type CompactStep = (typeof ALLOWED_COMPACT_STEPS)[number];
+
+interface CompactPlan {
+  step: CompactStep;
+  willDropV1Tables: boolean;
+  willVacuum: boolean;
+  v1TablesPresent: { user_turns: boolean; turn_contexts: boolean };
+  dbBytes: number;
+  freeBytes: number;
+  sufficientDisk: boolean;
+  priorMarkers: { phase: string; status: string; scope_id: string }[];
+}
+
+const COMPACT_REQUIRED_VALIDATOR_SCOPES: ReadonlyArray<{
+  validator: MigrationValidatorKind;
+  scopeId: string;
+}> = [
+  { validator: "bundle", scopeId: "bundle-byte-diff" },
+  { validator: "inventory", scopeId: "inventory-diff" },
+  { validator: "read-paths", scopeId: "read-path-parity" },
+  { validator: "v1-payload-digest", scopeId: "v1-payload-digest" },
+];
+
+const COMPACT_RERUN_VALIDATORS: readonly MigrationValidatorKind[] = [
+  "inventory",
+  "read-paths",
+  "v1-payload-digest",
+];
+
+interface CompactValidationGate {
+  missing: Array<{ validator: MigrationValidatorKind; scopeId: string }>;
+  incomplete: Array<{
+    validator: MigrationValidatorKind;
+    scopeId: string;
+    status: string;
+    lastError: string;
+  }>;
+}
+
+function readCompactPlan(
+  db: DatabaseSync,
+  dbBytes: number,
+  freeBytes: number,
+  step: CompactStep,
+): CompactPlan {
+  // VACUUM writes a new compacted file alongside the original, then atomically
+  // renames. Peak transient footprint is ~2× DB size (old + new coexist) plus
+  // SQLite's overhead (freeblock list, journal frames, partial page cache).
+  // The original 1.1× gate aborted mid-run on the operator store (4.5 GiB DB,
+  // 5.3 GiB free); see [[vacuum-disk-headroom]]. 1.5× covers small/medium
+  // stores; large stores (>2 GiB) get the conservative 2× bound.
+  const requiredMultiplier = dbBytes > 2 * 1024 * 1024 * 1024 ? 2.0 : 1.5;
+  const sufficientDisk = freeBytes >= dbBytes * requiredMultiplier;
+  const v1Row = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('user_turns', 'turn_contexts') ORDER BY name",
+    )
+    .all() as Array<{ name: string }>;
+  const v1TablesPresent = {
+    user_turns: v1Row.some((row) => row.name === "user_turns"),
+    turn_contexts: v1Row.some((row) => row.name === "turn_contexts"),
+  };
+  const priorMarkers = listMigrationStates(db)
+    .filter((row) => row.phase === "storage-boundary.compact" || row.phase === "storage-boundary.vacuum")
+    .map((row) => ({ phase: row.phase, status: row.status, scope_id: row.scope_id }));
+  return {
+    step,
+    willDropV1Tables: step === "drop-v1-tables" || step === "both",
+    willVacuum: step === "vacuum" || step === "both",
+    v1TablesPresent,
+    dbBytes,
+    freeBytes,
+    sufficientDisk,
+    priorMarkers,
+  };
+}
+
+async function readCompactPlanForLayout(layout: StoreLayout, step: CompactStep): Promise<CompactPlan> {
+  const dbBytes = (await stat(layout.dbPath).catch(() => ({ size: 0 }))).size ?? 0;
+  const fsInfo = await statfs(layout.dbPath).catch(() => null);
+  const freeBytes = fsInfo ? Number(fsInfo.bavail) * Number(fsInfo.bsize) : 0;
+  const db = new DatabaseSync(layout.dbPath, { readOnly: true });
+  try {
+    return readCompactPlan(db, dbBytes, freeBytes, step);
+  } finally {
+    db.close();
+  }
+}
+
+function compactWillDropExistingV1Tables(plan: CompactPlan): boolean {
+  return plan.willDropV1Tables && (plan.v1TablesPresent.user_turns || plan.v1TablesPresent.turn_contexts);
+}
+
+function assertNoRunningMigrationMarkers(db: DatabaseSync): void {
+  // C2/C4: refuse to compact while any marker is 'running'. The DROP TABLE
+  // and VACUUM both hold an exclusive lock; a concurrent writer would either
+  // block indefinitely or surface as SQLITE_BUSY.
+  const running = listMigrationStates(db).filter((row) => row.status === "running");
+  if (running.length === 0) return;
+  const markerLines = running
+    .map((row) => `  - ${row.phase}/${row.scope_kind}/${row.scope_id} (started ${row.started_at})`)
+    .join("\n");
+  throw new Error(
+    `Refusing to compact: ${running.length} marker(s) are 'running'.\n` +
+      "Audit via `cchistory migration status` and clear with `migration reset --force` after confirming the prior PID is dead.\n" +
+      markerLines,
+  );
+}
+
+function assertSufficientDiskForCompact(plan: CompactPlan): void {
+  // Disk check fires only when VACUUM is in scope. drop-v1-tables alone
+  // needs no extra space (DROP releases pages; subsequent VACUUM reclaims).
+  if (!plan.willVacuum || plan.sufficientDisk) return;
+  const requiredMultiplier = plan.dbBytes > 2 * 1024 * 1024 * 1024 ? 2.0 : 1.5;
+  throw new Error(
+    `Insufficient free disk for VACUUM: ${formatBytes(plan.freeBytes)} available, ` +
+      `>=${requiredMultiplier * 100}% of DB size (${formatBytes(plan.dbBytes)}, ` +
+      `i.e. ${formatBytes(plan.dbBytes * requiredMultiplier)}) required. ` +
+      `Free disk or drop --step vacuum.`,
+  );
+}
+
+function readCompactValidationGate(db: DatabaseSync): CompactValidationGate {
+  const missing: CompactValidationGate["missing"] = [];
+  const incomplete: CompactValidationGate["incomplete"] = [];
+  for (const required of COMPACT_REQUIRED_VALIDATOR_SCOPES) {
+    const row = readMigrationState(db, {
+      phase: "storage-boundary.validate",
+      scopeKind: "store",
+      scopeId: required.scopeId,
+    });
+    if (!row) {
+      missing.push(required);
+      continue;
+    }
+    if (row.status !== "completed") {
+      incomplete.push({
+        validator: required.validator,
+        scopeId: required.scopeId,
+        status: row.status,
+        lastError: row.last_error,
+      });
+    }
+  }
+  return { missing, incomplete };
+}
+
+function assertCompactValidatorsCompleted(db: DatabaseSync): void {
+  const gate = readCompactValidationGate(db);
+  if (gate.missing.length === 0 && gate.incomplete.length === 0) return;
+
+  const lines = [
+    "Refusing to compact: dropping V1 turn tables requires completed validation markers.",
+    "Run `cchistory migration validate --pre-bundle <pre-b3-bundle>` and retry after every validator passes.",
+  ];
+  if (gate.missing.length > 0) {
+    lines.push("", "Missing validators:");
+    for (const row of gate.missing) {
+      lines.push(`  - ${row.validator} (${row.scopeId})`);
+    }
+  }
+  if (gate.incomplete.length > 0) {
+    lines.push("", "Validators not completed:");
+    for (const row of gate.incomplete) {
+      const error = row.lastError ? `: ${row.lastError}` : "";
+      lines.push(`  - ${row.validator} (${row.scopeId}): ${row.status}${error}`);
+    }
+  }
+  throw new Error(lines.join("\n"));
+}
+
+async function assertCompactValidatorsStillPassing(layout: StoreLayout): Promise<void> {
+  const result = await runMigrationValidate({
+    dbPath: layout.dbPath,
+    assetDir: layout.assetDir,
+    only: COMPACT_RERUN_VALIDATORS,
+  });
+  if (result.exit_code === 0) return;
+
+  throw new Error(
+    [
+      "Refusing to compact: current validation failed before dropping V1 turn tables.",
+      "The bundle byte-diff marker must already be completed; compact re-runs inventory, read-paths, and v1-payload-digest because they do not need the pre-B.3 bundle.",
+      "",
+      renderValidateResult(result),
+    ].join("\n"),
+  );
+}
+
+async function runMigrationCompact(context: CommandContext, layout: StoreLayout): Promise<CommandOutput> {
+  const stepArg = context.options.step ?? "both";
+  if (!ALLOWED_COMPACT_STEPS.includes(stepArg as CompactStep)) {
+    throw new Error(
+      `Unknown --step '${stepArg}'. Valid steps: ${ALLOWED_COMPACT_STEPS.join(", ")}.`,
+    );
+  }
+  const step = stepArg as CompactStep;
+
+  if (context.globals.dryRun) {
+    // Dry-run is preview-only: open a read-only SQLite metadata handle and
+    // never run storage initialization, schema migrations, checkpoints, or WAL
+    // maintenance on the operator store.
+    const plan = await readCompactPlanForLayout(layout, step);
+    const lines = [
+      renderSection(
+        "Migration Compact Dry-Run (B.6)",
+        renderKeyValue([
+          ["Store", layout.dbPath],
+          ["Step", step],
+          ["Will drop V1 user_turns", plan.willDropV1Tables ? `yes (present=${plan.v1TablesPresent.user_turns})` : "no"],
+          ["Will drop V1 turn_contexts", plan.willDropV1Tables ? `yes (present=${plan.v1TablesPresent.turn_contexts})` : "no"],
+          ["Will VACUUM", plan.willVacuum ? "yes" : "no"],
+          ["DB size", formatBytes(plan.dbBytes)],
+          ["Free disk", `${formatBytes(plan.freeBytes)} ${plan.sufficientDisk ? "(sufficient for VACUUM)" : "(INSUFFICIENT for VACUUM)"}`],
+        ]),
+      ),
+      "",
+      "B.6 is IRREVERSIBLE. Take a backup before running without --dry-run:",
+      `  cp ${layout.dbPath} ${layout.dbPath}.bak-pre-b6`,
+    ];
+    if (plan.priorMarkers.length > 0) {
+      lines.push("", "Prior compact/vacuum markers found:");
+      for (const marker of plan.priorMarkers) {
+        lines.push(`  - ${marker.phase}/${marker.scope_id}: ${marker.status}`);
+      }
+    }
+    return {
+      text: lines.join("\n"),
+      json: { kind: "migration-compact-dry-run", plan },
+    };
+  }
+
+  const preliminaryPlan = await readCompactPlanForLayout(layout, step);
+
+  const preflightDb = new DatabaseSync(layout.dbPath, { readOnly: true });
+  try {
+    assertNoRunningMigrationMarkers(preflightDb);
+  } finally {
+    preflightDb.close();
+  }
+
+  // Backup confirmation. B.6 is irreversible; the operator must acknowledge
+  // they have a backup. We don't create one for them — cp is their job.
+  if (!context.options.confirmNoBackup) {
+    throw new Error(
+      "Refusing to compact without explicit backup confirmation. B.6 is irreversible — " +
+        "take a backup first, then re-run with --confirm-no-backup.\n" +
+        `  cp ${layout.dbPath} ${layout.dbPath}.bak-pre-b6`,
+    );
+  }
+
+  assertSufficientDiskForCompact(preliminaryPlan);
+
+  if (compactWillDropExistingV1Tables(preliminaryPlan)) {
+    const validationDb = new DatabaseSync(layout.dbPath, { readOnly: true });
+    try {
+      assertCompactValidatorsCompleted(validationDb);
+    } finally {
+      validationDb.close();
+    }
+    await assertCompactValidatorsStillPassing(layout);
+  }
+
+  const storage = await openStorage(layout);
+  try {
+    const db = storage.getDatabaseForMigration();
+    assertNoRunningMigrationMarkers(db);
+
+    const dbBytes = (await stat(layout.dbPath)).size;
+    const fsInfo = await statfs(layout.dbPath);
+    const freeBytes = Number(fsInfo.bavail) * Number(fsInfo.bsize);
+    const plan = readCompactPlan(db, dbBytes, freeBytes, step);
+    assertSufficientDiskForCompact(plan);
+    if (compactWillDropExistingV1Tables(plan)) {
+      assertCompactValidatorsCompleted(db);
+    }
+
+    const bytesBefore = dbBytes;
+    const droppedTables: string[] = [];
+
+    // B.6a: DROP V1 user_turns and turn_contexts. Both have full V2
+    // replacements and are no longer written to (dual-write removed in this
+    // release). DROP TABLE IF EXISTS keeps the run idempotent: a second
+    // invocation reports "already absent" instead of erroring.
+    if (plan.willDropV1Tables) {
+      const scope: MigrationScope = {
+        phase: "storage-boundary.compact",
+        scopeKind: "store",
+        scopeId: layout.dbPath,
+      };
+      try {
+        recordMigrationStart(db, scope);
+        if (plan.v1TablesPresent.user_turns) {
+          db.prepare("DROP TABLE IF EXISTS user_turns").run();
+          droppedTables.push("user_turns");
+        }
+        if (plan.v1TablesPresent.turn_contexts) {
+          db.prepare("DROP TABLE IF EXISTS turn_contexts").run();
+          droppedTables.push("turn_contexts");
+        }
+        // Record the schema migration. STORAGE_SCHEMA_MIGRATIONS[10] is the
+        // B.6 entry; it's declarative only — initializeSchema does not call
+        // recordSchemaMigration for it because the drop is operator-triggered.
+        db.prepare(
+          "INSERT OR IGNORE INTO schema_migrations (id, to_version, summary, applied_at) VALUES (?, ?, ?, ?)",
+        ).run(
+          "2026-06-24.1/b6-drop-v1-turn-tables",
+          STORAGE_SCHEMA_VERSION,
+          "B.6: drop V1 user_turns and turn_contexts tables (operator-triggered via `migration compact`).",
+          new Date().toISOString(),
+        );
+        recordMigrationComplete(db, scope);
+      } catch (error) {
+        recordMigrationAbort(db, scope, error instanceof Error ? error : new Error(String(error)));
+        throw error;
+      }
+    }
+
+    // B.6b: VACUUM rewrites the DB into the configured 16 KiB page size,
+    // reclaiming pages freed by B.6a. Pre-flight checkpoint ensures WAL
+    // frames are flushed so VACUUM sees a consistent snapshot.
+    let vacuumOutcome: { page_size_before: number; page_size_after: number } | undefined;
+    if (plan.willVacuum) {
+      const scope: MigrationScope = {
+        phase: "storage-boundary.vacuum",
+        scopeKind: "store",
+        scopeId: layout.dbPath,
+      };
+      try {
+        recordMigrationStart(db, scope);
+        storage.checkpointStore();
+        vacuumOutcome = storage.vacuumStore();
+        recordMigrationComplete(db, scope);
+      } catch (error) {
+        recordMigrationAbort(db, scope, error instanceof Error ? error : new Error(String(error)));
+        throw error;
+      }
+    }
+
+    const bytesAfter = (await stat(layout.dbPath)).size;
+    const reclaimed = bytesBefore > bytesAfter ? bytesBefore - bytesAfter : 0;
+
+    return {
+      text: renderSection(
+        "Migration Compact (B.6)",
+        renderKeyValue([
+          ["Store", layout.dbPath],
+          ["Step", step],
+          ["Dropped tables", droppedTables.length > 0 ? droppedTables.join(", ") : "(none — already absent)"],
+          ["VACUUM", vacuumOutcome ? `page_size ${vacuumOutcome.page_size_before}→${vacuumOutcome.page_size_after}` : "skipped"],
+          ["DB size before", formatBytes(bytesBefore)],
+          ["DB size after", formatBytes(bytesAfter)],
+          ["Reclaimed", formatBytes(reclaimed)],
+        ]),
+      ),
+      json: {
+        kind: "migration-compact",
+        step,
+        dropped_tables: droppedTables,
+        vacuum: vacuumOutcome ?? null,
+        bytes_before: bytesBefore,
+        bytes_after: bytesAfter,
+        reclaimed_bytes: reclaimed,
+      },
+    };
+  } finally {
+    storage.close();
+  }
 }
 
 function renderRunResult(result: BackfillStoreResult): string {

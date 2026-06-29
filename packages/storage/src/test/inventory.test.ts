@@ -60,15 +60,24 @@ test("storage footprint inventory reports rows, payload bytes, largest rows, SQL
     assert.ok(inventory.evidence_store.file_count > 0);
     assert.ok(inventory.evidence_store.total_bytes > 0);
 
+    // B.6: V1 user_turns and turn_contexts are gone entirely — schema no
+    // longer creates them, and `migration compact` drops any pre-existing
+    // copies on legacy stores. The inventory must not list them at all.
     const turnsTable = inventory.tables.find((table) => table.name === "user_turns");
-    assert.equal(turnsTable?.row_count, 1);
-    assert.ok((turnsTable?.payload_json_bytes ?? 0) > 0);
-    assert.ok((turnsTable?.largest_payload_rows[0]?.payload_json_bytes ?? 0) > 0);
-    assert.equal(turnsTable?.largest_payload_rows[0]?.id, "turn-inventory");
+    assert.equal(turnsTable, undefined, "B.6: V1 user_turns is no longer in the schema");
 
     const contextsTable = inventory.tables.find((table) => table.name === "turn_contexts");
-    assert.equal(contextsTable?.row_count, 1);
-    assert.ok((contextsTable?.payload_json_bytes ?? 0) > (turnsTable?.payload_json_bytes ?? 0) / 2);
+    assert.equal(contextsTable, undefined, "B.6: V1 turn_contexts is no longer in the schema");
+
+    const turnsV2Table = inventory.tables.find((table) => table.name === "user_turns_v2");
+    assert.equal(turnsV2Table?.row_count, 1);
+    // V2 sidecar tables have typed columns, not payload_json. The inventory
+    // surfaces has_payload_json=false for them.
+    assert.equal(turnsV2Table?.has_payload_json, false);
+
+    const contextsV2Table = inventory.tables.find((table) => table.name === "turn_context_refs_v2");
+    assert.equal(contextsV2Table?.row_count, 1);
+    assert.equal(contextsV2Table?.has_payload_json, false);
 
     const sourceRootInventory = inventory.source_roots.find((source) => source.base_dir === sourceRoot);
     assert.equal(sourceRootInventory?.status, "ok");
@@ -77,7 +86,7 @@ test("storage footprint inventory reports rows, payload bytes, largest rows, SQL
     assert.equal(inventory.totals.source_root_files, 2);
     assert.equal(inventory.totals.evidence_store_files, inventory.evidence_store.file_count);
     assert.equal(inventory.totals.evidence_store_bytes, inventory.evidence_store.total_bytes);
-    assert.ok(inventory.totals.payload_json_bytes >= (turnsTable?.payload_json_bytes ?? 0));
+    assert.ok(inventory.totals.payload_json_bytes > 0);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

@@ -1742,52 +1742,27 @@ export class CCHistoryStorage {
     turnId: string,
     updater: (turn: UserTurnProjection) => UserTurnProjection,
   ): UserTurnProjection | undefined {
-    // M4: source-of-truth for "does this turn exist?" is V1 payload_json, not
-    // V2. CCHistoryStorage.getTurn is V2-only (B.5.2), so reading through it
-    // here would silently no-op when the V2 sidecar is missing — exactly the
-    // drift case the dual-write invariant is supposed to catch. Reading V1
-    // directly means "V1 exists but V2 doesn't" surfaces as a V2 UPDATE that
-    // affects 0 rows, which the assertion below turns into a loud failure.
-    //
-    // B2: post-B.6, V1 user_turns is gone and the V1 read returns undefined
-    // for every turn — `garbageCollectCandidateTurns({mode:"archive"})` would
-    // silently no-op every archive. Fall back to V2 when V1 has no row; the
-    // V2 UPDATE count assertion below still catches "V1 had it but V2 didn't"
-    // drift pre-B.6 (because we only entered the fallback when V1 was empty).
-    // Post-B.6 the drift signal naturally disappears because there's no V1
-    // to drift from.
-    let turn = Queries.getTurn(this.db, turnId);
-    const v1HasRow = turn !== undefined;
-    if (!turn) {
-      turn = Queries.readUserTurnFromV2({
-        db: this.db,
-        turnId,
-        assetDir: this.assetDir,
-        withLineage: false,
-      });
-    }
+    // B.6: V1 user_turns is gone. Source-of-truth for "does this turn exist?"
+    // is the V2 sidecar (user_turns_v2). Pre-B.6 this method read V1 first
+    // to surface "V1 exists but V2 doesn't" drift via the assertion below;
+    // post-B.6 the drift case is structurally impossible (no V1 to diverge
+    // from), so we read V2 directly.
+    const turn = Queries.readUserTurnFromV2({
+      db: this.db,
+      turnId,
+      assetDir: this.assetDir,
+      withLineage: false,
+    });
     if (!turn) {
       return undefined;
     }
     const nextTurn = updater(turn);
     const boundedAt = nowIso();
-    if (v1HasRow) {
-      this.db
-        .prepare("UPDATE user_turns SET payload_json = ?, created_at = ?, submission_started_at = ? WHERE id = ?")
-        .run(toJson(nextTurn), nextTurn.created_at, nextTurn.submission_started_at, turnId);
-    }
-    // B.5.2: keep the V2 sidecar in sync with V1 payload_json. The read path
-    // (storage.getTurn / listTurns) is V2-only; if we only updated V1 here the
-    // next read would observe the pre-mutation value_axis / retention_axis.
-    // Full-content columns (user_messages, raw_text_full, canonical_text_full,
-    // lineage blob) are set at ingestion and not mutated through this path.
-    //
-    // M4: assert the V2 UPDATE landed exactly one row. changes === 0 means
-    // the sidecar is missing (B.3 backfill was skipped or the row was
-    // deleted out from under us); changes > 1 means turn_id is no longer
-    // unique. Either way the dual-write invariant is broken and silently
-    // returning would leave V1 and V2 in drift — fail loud so the operator
-    // sees it before any V2-only read serves stale data.
+    // M4 (retained post-B.6): assert the V2 UPDATE landed exactly one row.
+    // changes === 0 means the sidecar was deleted out from under us between
+    // the read and the write; changes > 1 means turn_id is no longer unique.
+    // Either way, silently returning would leave the caller with a stale
+    // projection.
     const v2Result = this.db
       .prepare(
         `UPDATE user_turns_v2 SET
@@ -1813,7 +1788,7 @@ export class CCHistoryStorage {
     const v2Changes = Number(v2Result.changes ?? 0);
     if (v2Changes !== 1) {
       throw new Error(
-        `rewriteStoredTurn dual-write invariant broken for turn ${turnId}: V2 UPDATE affected ${v2Changes} rows (expected 1). V1 payload_json was updated; V2 sidecar was not. Run \`cchistory migration run\` to backfill missing sidecars.`,
+        `rewriteStoredTurn V2 UPDATE affected ${v2Changes} rows for turn ${turnId} (expected 1). The row was deleted or turn_id uniqueness is broken between the read and the write.`,
       );
     }
     return nextTurn;

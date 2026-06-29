@@ -465,7 +465,7 @@ export async function handleGc(context: CommandContext): Promise<CommandOutput> 
 export async function handleMaintenance(context: CommandContext): Promise<CommandOutput> {
   const subcommand = context.commandPath[1];
   if (!subcommand) {
-    throw new Error("`maintenance` requires a subcommand: rebuild-search-index, gc-evidence, checkpoint, or vacuum.");
+    throw new Error("`maintenance` requires a subcommand: rebuild-search-index, gc-evidence, checkpoint, vacuum, or refresh-projections.");
   }
   const layout = resolveStoreLayout({
     cwd: context.io.cwd,
@@ -483,6 +483,8 @@ export async function handleMaintenance(context: CommandContext): Promise<Comman
       return runMaintenanceCheckpoint(layout);
     case "vacuum":
       return runMaintenanceVacuum(layout);
+    case "refresh-projections":
+      return runMaintenanceRefreshProjections(layout);
     default:
       throw new Error(`Unknown maintenance subcommand: ${subcommand}`);
   }
@@ -573,6 +575,54 @@ async function runMaintenanceVacuum(layout: StoreLayout): Promise<CommandOutput>
         kind: "maintenance-vacuum",
         db_path: layout.dbPath,
         ...result,
+      },
+    };
+  } finally {
+    storage.close();
+  }
+}
+
+async function runMaintenanceRefreshProjections(layout: StoreLayout): Promise<CommandOutput> {
+  const storage = await openStorage(layout);
+  try {
+    const db = storage.getDatabaseForMigration();
+    const beforeRows = (
+      db.prepare("SELECT COUNT(*) AS n FROM project_current").get() as { n: number }
+    ).n;
+    const beforeLatest = (
+      db.prepare(
+        "SELECT MAX(payload_json->'$.project_last_activity_at') AS latest FROM project_current",
+      ).get() as { latest: string | null }
+    ).latest;
+    const startedAt = Date.now();
+    storage.refreshDerivedProjections({ source_id: "all" });
+    const elapsedMs = Date.now() - startedAt;
+    const afterRows = (
+      db.prepare("SELECT COUNT(*) AS n FROM project_current").get() as { n: number }
+    ).n;
+    const afterLatest = (
+      db.prepare(
+        "SELECT MAX(payload_json->'$.project_last_activity_at') AS latest FROM project_current",
+      ).get() as { latest: string | null }
+    ).latest;
+    return {
+      text: renderKeyValue([
+        ["DB", layout.dbPath],
+        ["Subcommand", "refresh-projections"],
+        ["Projects Before", formatNumber(beforeRows)],
+        ["Projects After", formatNumber(afterRows)],
+        ["Latest Activity Before", beforeLatest ?? "(none)"],
+        ["Latest Activity After", afterLatest ?? "(none)"],
+        ["Elapsed (ms)", formatNumber(elapsedMs)],
+      ]),
+      json: {
+        kind: "maintenance-refresh-projections",
+        db_path: layout.dbPath,
+        elapsed_ms: elapsedMs,
+        project_rows_before: beforeRows,
+        project_rows_after: afterRows,
+        latest_activity_before: beforeLatest,
+        latest_activity_after: afterLatest,
       },
     };
   } finally {

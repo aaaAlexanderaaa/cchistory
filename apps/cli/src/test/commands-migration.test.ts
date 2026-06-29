@@ -1,9 +1,10 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { runCliCapture, runCliJson, seedCliFixtures } from "./helpers.js";
+import { runCliCapture, runCliJson, seedCliFixtures, createLegacyV1TurnTables, seedLegacyV1FromV2 } from "./helpers.js";
 
 // B.1 acceptance: `cchistory migration preview` is read-only, lists the
 // four required axes (V1→V2 mapping, backfill gap, removable bytes, VACUUM
@@ -23,6 +24,30 @@ async function withSeededHome(
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+const B6_VALIDATOR_SCOPE_IDS = [
+  "bundle-byte-diff",
+  "inventory-diff",
+  "read-path-parity",
+  "v1-payload-digest",
+] as const;
+
+function markB6ValidatorsCompleted(dbPath: string, scopeIds: readonly string[] = B6_VALIDATOR_SCOPE_IDS): void {
+  const db = new DatabaseSync(dbPath);
+  const now = new Date().toISOString();
+  try {
+    const insert = db.prepare(
+      `INSERT OR REPLACE INTO migration_state
+         (phase, scope_kind, scope_id, status, cursor_json, started_at, completed_at, last_error)
+       VALUES ('storage-boundary.validate', 'store', ?, 'completed', '{}', ?, ?, '')`,
+    );
+    for (const scopeId of scopeIds) {
+      insert.run(scopeId, now, now);
+    }
+  } finally {
+    db.close();
   }
 }
 
@@ -68,6 +93,9 @@ test("B.1: migration preview reports V1→V2 mapping and removable bytes without
 test("B.1: migration preview detects V1→V2 backfill gap when V2 sidecar rows are deleted", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 rows from V2 so the
+    // preview's V1→V2 mapping has something to compare against.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
 
     // Simulate an incomplete prior migration: drop one V2 row that has a
     // corresponding V1 row. B.3 must detect and reconstruct this.
@@ -137,6 +165,9 @@ test("B.3: migration run --dry-run reports the preview without writing markers",
 test("B.3: migration run writes V2 sidecars, marks sources completed, and is idempotent on re-run", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: B.3 backfill reads V1 to reconstruct V2 — sync no longer writes V1,
+    // so seed legacy V1 rows so the backfill path has a source to read.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
 
     const first = await runCliJson<{
       result: {
@@ -168,6 +199,8 @@ test("B.3: migration run writes V2 sidecars, marks sources completed, and is ide
 test("B.3: migration run reconstructs a missing V2 sidecar row from its V1 source", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: seed legacy V1 rows so the backfill has a V1 source to reconstruct from.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
 
     // Pick a turn that exists in V1, drop its V2 row, and clear the source's
     // marker so B.3 actually re-runs the backfill.
@@ -247,6 +280,9 @@ test("B.3: migration run refuses to auto-resurrect an aborted source", async () 
 test("B.4: validate --only inventory passes with complete V2 coverage and writes one marker", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
+    // and B.4 read-paths parity have V1 data to compare against.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     await runCliCapture(["migration", "run", "--store", storeDir]);
 
     // evidence_captures can legitimately have multiple rows for one current
@@ -326,6 +362,9 @@ test("B.4: validate --only inventory passes with complete V2 coverage and writes
 test("B.4: validate --only read-paths passes on a freshly-synced store", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
+    // and B.4 read-paths parity have V1 data to compare against.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     await runCliCapture(["migration", "run", "--store", storeDir]);
 
     const result = await runCliJson<{
@@ -429,6 +468,9 @@ test("B.4: validate --only bundle detects a mutated V2 payload", async () => {
 test("B.4: validate --only inventory detects a deleted V2 sidecar row", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
+    // and B.4 read-paths parity have V1 data to compare against.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     await runCliCapture(["migration", "run", "--store", storeDir]);
 
     const { DatabaseSync } = await import("node:sqlite");
@@ -464,6 +506,9 @@ test("B.4: validate --only inventory detects a deleted V2 sidecar row", async ()
 test("B.4: validate --only read-paths detects a corrupted V2 cache file", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
+    // and B.4 read-paths parity have V1 data to compare against.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     await runCliCapture(["migration", "run", "--store", storeDir]);
 
     const { DatabaseSync } = await import("node:sqlite");
@@ -521,6 +566,9 @@ test("B.4 + H2: validate --only read-paths detects a corrupted V2 lineage blob",
   // lineage mismatch regardless of the warning.
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
+    // and B.4 read-paths parity have V1 data to compare against.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     await runCliCapture(["migration", "run", "--store", storeDir]);
 
     const { DatabaseSync } = await import("node:sqlite");
@@ -582,6 +630,11 @@ test("B.4 + H2: validate --only read-paths detects a corrupted V2 lineage blob",
 test("B.4: validate with no --only runs all default validators and writes markers", async () => {
   await withSeededHome(async (tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so read-paths and
+    // v1-payload-digest have a V1 reference to compare against. Without this,
+    // those two validators return post_b6_skipped (synthetic PASS without
+    // coverage), which would mask a regression in parity.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     const preBundleDir = path.join(tempRoot, "pre-bundle");
     await runCliCapture(["export", "--out", preBundleDir, "--store", storeDir]);
     await runCliCapture(["migration", "run", "--store", storeDir]);
@@ -612,6 +665,9 @@ test("B.4: validate with no --only runs all default validators and writes marker
 test("B.4: validate --only bundle requires --pre-bundle", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
+    // and B.4 read-paths parity have V1 data to compare against.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     await runCliCapture(["migration", "run", "--store", storeDir]);
 
     const result = await runCliCapture([
@@ -668,7 +724,7 @@ test("B.5.0a: schema migration adds the seven full-content columns to user_turns
           | { value_text: string }
           | undefined
       )?.value_text;
-      assert.equal(schemaVersion, "2026-06-22.1");
+      assert.equal(schemaVersion, "2026-06-24.1");
     } finally {
       db.close();
     }
@@ -718,6 +774,9 @@ test("B.5.0b: B.3 backfill populates the full-content columns on a fresh store",
 test("B.5.0d: validate --only read-paths catches a mutation in a B.5.0 full-content column", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
+    // and B.4 read-paths parity have V1 data to compare against.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     await runCliCapture(["migration", "run", "--store", storeDir]);
 
     // Wipe user_messages_json back to the empty default — V1 still has it.
@@ -757,6 +816,9 @@ test("B.5.0d: validate --only read-paths catches a mutation in a B.5.0 full-cont
 test("B.5.0e: canonical_text_full preserves canonical text past the 16 KiB scan-hint bound", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so we have a V1
+    // row to mutate — B.3 backfill reads from V1 to populate canonical_text_full.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
 
     // Take an existing V1 turn and rewrite its payload_json to carry a 32 KiB
     // canonical_text — well past the 16 KiB scan-hint bound. This keeps the
@@ -844,6 +906,9 @@ test("B.5.0e: canonical_text_full preserves canonical text past the 16 KiB scan-
 test("B.5.0: migration reset clears markers for the named phase and leaves the others alone", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
+    // and B.4 read-paths parity have V1 data to compare against.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     await runCliCapture(["migration", "run", "--store", storeDir]);
 
     const before = await runCliJson<{
@@ -873,6 +938,9 @@ test("B.5.0: migration reset clears markers for the named phase and leaves the o
 test("B.5.0: migration reset with no --phase clears every marker", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
+    // and B.4 read-paths parity have V1 data to compare against.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     await runCliCapture(["migration", "run", "--store", storeDir]);
 
     const reset = await runCliJson<{ rows_deleted: number }>([
@@ -890,6 +958,9 @@ test("B.5.0: migration reset with no --phase clears every marker", async () => {
 test("B.5.0: after reset, migration run can re-populate markers (idempotent re-migration)", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
+    // and B.4 read-paths parity have V1 data to compare against.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     await runCliCapture(["migration", "run", "--store", storeDir]);
     await runCliCapture(["migration", "reset", "--phase", "storage-boundary.write", "--store", storeDir]);
 
@@ -916,6 +987,9 @@ test("B.5.0: migration reset rejects an unknown --phase name (H6)", async () => 
   // re-populated, when in fact nothing was reset.
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
+    // and B.4 read-paths parity have V1 data to compare against.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     await runCliCapture(["migration", "run", "--store", storeDir]);
 
     const result = await runCliCapture([
@@ -990,6 +1064,9 @@ test("C5: validate writes 'aborted' (not 'completed') on validator FAIL", async 
   // ran and failed". Fix: write 'aborted' on fail with a last_error summary.
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
+    // and B.4 read-paths parity have V1 data to compare against.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     await runCliCapture(["migration", "run", "--store", storeDir]);
 
     // Mutate V2 to force read-paths to fail.
@@ -1040,6 +1117,9 @@ test("C6: validate --only v1-payload-digest captures a sticky baseline on first 
   // COLUMN) would propagate into permanent loss.
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
+    // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
+    // and B.4 read-paths parity have V1 data to compare against.
+    await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     await runCliCapture(["migration", "run", "--store", storeDir]);
 
     // First run captures the baseline. Status must be PASS.
@@ -1154,4 +1234,329 @@ test("C6: validate --only v1-payload-digest captures a sticky baseline on first 
       "after reset, the validator captures a new sticky baseline",
     );
   }, "cchistory-c6-v1-payload-digest-");
+});
+
+// B.6 acceptance: `cchistory migration compact` runs the irreversible DROP +
+// VACUUM step. Operators must back up the store first; the CLI gates on
+// --confirm-no-backup to make that explicit.
+
+test("B.6: compact refuses to run without --confirm-no-backup", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    createLegacyV1TurnTables(path.join(storeDir, "cchistory.sqlite"));
+    const result = await runCliCapture([
+      "migration", "compact", "--step", "drop-v1-tables", "--store", storeDir,
+    ]);
+    assert.notEqual(result.exitCode, 0, "compact without --confirm-no-backup must fail");
+    assert.match(result.stderr, /--confirm-no-backup/, "error must mention the flag");
+
+    // Tables must still exist — the refusal happened before any mutation.
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const row = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('user_turns', 'turn_contexts')")
+        .all() as Array<{ name: string }>;
+      assert.equal(row.length, 2, "V1 tables must still exist after refusal");
+    } finally {
+      db.close();
+    }
+  }, "cchistory-b6-refuse-no-backup-");
+});
+
+test("B.6: compact refuses to drop V1 tables without completed validator markers", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    await seedLegacyV1FromV2(dbPath);
+
+    const result = await runCliCapture([
+      "migration", "compact", "--step", "drop-v1-tables", "--confirm-no-backup", "--store", storeDir,
+    ]);
+    assert.notEqual(result.exitCode, 0, "compact must refuse without validator sign-off");
+    assert.match(result.stderr, /completed validation markers/i);
+    assert.match(result.stderr, /bundle-byte-diff/i);
+
+    const db = new DatabaseSync(dbPath);
+    try {
+      const row = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('user_turns', 'turn_contexts')")
+        .all() as Array<{ name: string }>;
+      assert.equal(row.length, 2, "V1 tables must survive missing-marker refusal");
+    } finally {
+      db.close();
+    }
+  }, "cchistory-b6-refuse-missing-validators-");
+});
+
+test("B.6: compact re-runs validators and refuses drift after validation markers completed", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    await seedLegacyV1FromV2(dbPath);
+    markB6ValidatorsCompleted(dbPath);
+
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.prepare(
+        "UPDATE user_turns_v2 SET canonical_text_full = ? WHERE turn_id = (SELECT turn_id FROM user_turns_v2 LIMIT 1)",
+      ).run("mutated after validation marker completion");
+    } finally {
+      db.close();
+    }
+
+    const result = await runCliCapture([
+      "migration", "compact", "--step", "drop-v1-tables", "--confirm-no-backup", "--store", storeDir,
+    ]);
+    assert.notEqual(result.exitCode, 0, "compact must refuse when current validation fails");
+    assert.match(result.stderr, /current validation failed/i);
+    assert.match(result.stderr, /read-paths/i);
+
+    const verifyDb = new DatabaseSync(dbPath);
+    try {
+      const row = verifyDb
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('user_turns', 'turn_contexts')")
+        .all() as Array<{ name: string }>;
+      assert.equal(row.length, 2, "V1 tables must survive current-validation refusal");
+    } finally {
+      verifyDb.close();
+    }
+  }, "cchistory-b6-refuse-validator-drift-");
+});
+
+test("B.6a: compact --step drop-v1-tables drops V1 user_turns and turn_contexts and writes the compact marker", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    // Simulate a pre-B.6 legacy store: sync no longer creates V1 tables, so
+    // seed them explicitly to verify compact actually drops them.
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    await seedLegacyV1FromV2(dbPath);
+    markB6ValidatorsCompleted(dbPath);
+
+    const result = await runCliJson<{
+      kind: string;
+      step: string;
+      dropped_tables: string[];
+      vacuum: null;
+    }>(["migration", "compact", "--step", "drop-v1-tables", "--confirm-no-backup", "--store", storeDir]);
+
+    assert.equal(result.kind, "migration-compact");
+    assert.equal(result.step, "drop-v1-tables");
+    assert.equal(result.vacuum, null, "vacuum step must not run");
+    assert.ok(
+      result.dropped_tables.includes("user_turns"),
+      "user_turns must be reported as dropped",
+    );
+    assert.ok(
+      result.dropped_tables.includes("turn_contexts"),
+      "turn_contexts must be reported as dropped",
+    );
+
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const row = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('user_turns', 'turn_contexts')")
+        .all() as Array<{ name: string }>;
+      assert.equal(row.length, 0, "both V1 tables must be gone");
+
+      // The compact marker must be recorded as 'completed'.
+      const marker = db
+        .prepare("SELECT status FROM migration_state WHERE phase = ? AND scope_kind = 'store'")
+        .get("storage-boundary.compact") as { status: string } | undefined;
+      assert.equal(marker?.status, "completed");
+
+      // The schema_migrations row must be present (declarative B.6 record).
+      const migrationRow = db
+        .prepare("SELECT 1 FROM schema_migrations WHERE id = ?")
+        .get("2026-06-24.1/b6-drop-v1-turn-tables") as { 1: number } | undefined;
+      assert.ok(migrationRow, "schema_migrations entry for B.6 must be recorded");
+    } finally {
+      db.close();
+    }
+  }, "cchistory-b6a-drop-v1-");
+});
+
+test("B.6a: compact --step drop-v1-tables is idempotent — re-running reports tables already absent", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    await seedLegacyV1FromV2(dbPath);
+    markB6ValidatorsCompleted(dbPath);
+
+    const first = await runCliJson<{ dropped_tables: string[] }>([
+      "migration", "compact", "--step", "drop-v1-tables", "--confirm-no-backup", "--store", storeDir,
+    ]);
+    assert.ok(first.dropped_tables.length === 2, "first run must drop both V1 tables");
+
+    const second = await runCliJson<{ dropped_tables: string[] }>([
+      "migration", "compact", "--step", "drop-v1-tables", "--confirm-no-backup", "--store", storeDir,
+    ]);
+    assert.equal(second.dropped_tables.length, 0, "second run must report zero drops (already absent)");
+  }, "cchistory-b6a-idempotent-");
+});
+
+test("B.6b: compact --step vacuum reclaims bytes and writes the vacuum marker", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+
+    const { stat } = await import("node:fs/promises");
+    const sizeBefore = (await stat(path.join(storeDir, "cchistory.sqlite"))).size;
+
+    const result = await runCliJson<{
+      kind: string;
+      step: string;
+      vacuum: { page_size_before: number; page_size_after: number } | null;
+      bytes_before: number;
+      bytes_after: number;
+    }>(["migration", "compact", "--step", "vacuum", "--confirm-no-backup", "--store", storeDir]);
+
+    assert.equal(result.kind, "migration-compact");
+    assert.equal(result.step, "vacuum");
+    assert.ok(result.vacuum, "vacuum outcome must be reported");
+    assert.equal(result.bytes_before, sizeBefore, "bytes_before must match the pre-run file size");
+
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const marker = db
+        .prepare("SELECT status FROM migration_state WHERE phase = ? AND scope_kind = 'store'")
+        .get("storage-boundary.vacuum") as { status: string } | undefined;
+      assert.equal(marker?.status, "completed");
+    } finally {
+      db.close();
+    }
+  }, "cchistory-b6b-vacuum-");
+});
+
+test("B.6: compact --step both drops tables and vacuums, writing both markers in order", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    await seedLegacyV1FromV2(dbPath);
+    markB6ValidatorsCompleted(dbPath);
+
+    const result = await runCliJson<{
+      kind: string;
+      step: string;
+      dropped_tables: string[];
+      vacuum: { page_size_before: number; page_size_after: number } | null;
+    }>(["migration", "compact", "--step", "both", "--confirm-no-backup", "--store", storeDir]);
+
+    assert.equal(result.kind, "migration-compact");
+    assert.equal(result.step, "both");
+    assert.ok(result.dropped_tables.length === 2, "both V1 tables must be dropped");
+    assert.ok(result.vacuum, "vacuum must run");
+
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const markers = db
+        .prepare("SELECT phase, status FROM migration_state WHERE scope_kind = 'store' ORDER BY started_at ASC")
+        .all() as Array<{ phase: string; status: string }>;
+      const phases = markers.map((m) => m.phase);
+      assert.ok(phases.includes("storage-boundary.compact"));
+      assert.ok(phases.includes("storage-boundary.vacuum"));
+      // compact must precede vacuum (DROP releases pages before VACUUM reclaims them).
+      assert.ok(phases.indexOf("storage-boundary.compact") < phases.indexOf("storage-boundary.vacuum"));
+    } finally {
+      db.close();
+    }
+  }, "cchistory-b6-both-");
+});
+
+test("B.6: compact --dry-run previews without mutating", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    createLegacyV1TurnTables(dbPath);
+    const oldSchemaVersion = "2026-06-22.1";
+    const beforeDb = new DatabaseSync(dbPath);
+    try {
+      beforeDb
+        .prepare("UPDATE schema_meta SET value_text = ? WHERE key = 'schema_version'")
+        .run(oldSchemaVersion);
+    } finally {
+      beforeDb.close();
+    }
+
+    const result = await runCliJson<{
+      kind: string;
+      plan: {
+        step: string;
+        willDropV1Tables: boolean;
+        willVacuum: boolean;
+        v1TablesPresent: { user_turns: boolean; turn_contexts: boolean };
+      };
+    }>(["migration", "compact", "--dry-run", "--store", storeDir]);
+
+    assert.equal(result.kind, "migration-compact-dry-run");
+    assert.equal(result.plan.willDropV1Tables, true);
+    assert.equal(result.plan.willVacuum, true);
+    assert.equal(result.plan.v1TablesPresent.user_turns, true, "dry-run must detect legacy V1 user_turns");
+    assert.equal(result.plan.v1TablesPresent.turn_contexts, true);
+
+    // Tables and schema metadata must still exist post-dry-run. The metadata
+    // assertion catches accidental `openStorage()` usage, which would run
+    // schema initialization on a writable handle during a preview-only command.
+    const db = new DatabaseSync(dbPath);
+    try {
+      const row = db
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('user_turns', 'turn_contexts')")
+        .all() as Array<{ name: string }>;
+      assert.equal(row.length, 2, "dry-run must not drop tables");
+      const schemaVersion = db
+        .prepare("SELECT value_text FROM schema_meta WHERE key = 'schema_version'")
+        .get() as { value_text: string } | undefined;
+      assert.equal(schemaVersion?.value_text, oldSchemaVersion, "dry-run must not run schema initialization");
+    } finally {
+      db.close();
+    }
+  }, "cchistory-b6-dry-run-");
+});
+
+test("B.6: compact refuses to run while a marker is still 'running'", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+
+    // Simulate a stuck marker from a prior in-flight migration.
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      db.prepare(
+        "INSERT INTO migration_state (phase, scope_kind, scope_id, status, cursor_json, started_at, completed_at, last_error) " +
+          "VALUES ('storage-boundary.write', 'source', 'stuck-src', 'running', '{}', ?, NULL, '')",
+      ).run(new Date().toISOString());
+    } finally {
+      db.close();
+    }
+
+    const result = await runCliCapture([
+      "migration", "compact", "--step", "drop-v1-tables", "--confirm-no-backup", "--store", storeDir,
+    ]);
+    assert.notEqual(result.exitCode, 0, "compact must refuse while a marker is running");
+    assert.match(result.stderr, /running/i);
+  }, "cchistory-b6-running-marker-");
+});
+
+test("B.6: post-compact, capture + listTurns + search still work (V2-only path)", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    await seedLegacyV1FromV2(dbPath);
+    markB6ValidatorsCompleted(dbPath);
+    await runCliCapture(["migration", "compact", "--step", "both", "--confirm-no-backup", "--store", storeDir]);
+
+    // query turns must still surface the seeded turn from V2. The output is a
+    // bare JSON array (no envelope object) — see commands/query.ts.
+    const turnsCapture = await runCliCapture(["query", "turns", "--limit", "5", "--store", storeDir, "--json"]);
+    assert.equal(turnsCapture.exitCode, 0, "query turns must succeed post-compact");
+    const turns = JSON.parse(turnsCapture.stdout) as unknown[];
+    assert.ok(Array.isArray(turns), "post-compact query turns must return a list");
+    assert.ok(turns.length > 0, "post-compact query turns must return at least one turn");
+
+    // A fresh sync must still write V2 rows without V1 errors.
+    const syncCapture = await runCliCapture(["sync", "--store", storeDir]);
+    assert.equal(syncCapture.exitCode, 0, "post-compact sync must succeed");
+  }, "cchistory-b6-post-compact-readwrite-");
 });

@@ -242,6 +242,11 @@ explicitly, not abandoned.
 - Before creating any temp artifact expected to exceed 100 MiB (bundle
   exports, full-store snapshots, byte-diff comparison dirs), run `df -h /`
   and confirm at least 2x the artifact size is free.
+- SQLite VACUUM (in-place rewrite) needs the same 2x headroom — it writes a
+  new compacted file alongside the original, then atomically renames. The
+  `migration compact` pre-flight gate enforces 1.5x for stores ≤2 GiB and
+  2x for stores >2 GiB; the same rule applies to `VACUUM INTO`, schema
+  rebuilds, and any "rewrite-the-whole-file" operation.
 - Capture pre-bundle snapshots in `mkdtemp` dirs and `rm` them in a
   `finally` block as soon as the consuming validator has finished. The
   CLI migration validator already does this for its post-comparison bundle;
@@ -252,6 +257,47 @@ explicitly, not abandoned.
 - If the disk fills mid-task, stop and tell the user. Do not delete user
   data (Codex/Claude/Factory session caches, source capture roots,
   `.local/share`, `.cache/ms-playwright`, etc.) to force the step through.
+
+## Storage And Preservation Invariants
+
+These invariants apply across every storage layer transition (V1→V2 was
+one; there will be others). The rules are written at logic level — current
+implementation names (V1, V2, payload_json, evidence/blobs, SQLite) appear
+only in examples and can be updated independently of the rule.
+
+- **Parser input is authoritative; parser output is derived.** Raw capture
+  bytes must be preserved independently of any derived representation, in a
+  form whose integrity can be verified (checksummed or content-addressed).
+  Derived data can always be rebuilt from input; input cannot be rebuilt
+  from output. Any proposal to drop parser input "to save space" is
+  rejected by default — the only acceptable path is an explicit,
+  human-approved decision to permanently lose reinterpretation capability
+  for that data.
+
+- **Product value hierarchy when designing bounded fields.** In order:
+  1. User input (`user_messages`, `raw_text`) — inviolable
+  2. Session statistics and AI interaction process — secondary
+  3. Architectural value props (dedup, page cache hit rate, content-
+     addressed integrity) — means, not ends
+
+  Never let architectural elegance (bounded sidecar, predictable row size)
+  dictate dropping fields from tier 1. Bounded fields holding tier-1
+  content must be functionally lossless for real-world data (e.g. 256 KiB
+  to 1 MiB for text), or the field must be stored in full. Tiny metadata
+  fields (timestamps, IDs, paths) cost essentially nothing to store —
+  never omit them from a sidecar.
+
+- **Evidence blob ref inventory.** `evidence_blobs.sha256` is referenced
+  from six columns today (`evidence_captures.evidence_sha256`,
+  `parsed_record_spans.evidence_sha256`,
+  `source_file_ledger.current_evidence_sha256`,
+  `turn_context_refs_v2.context_evidence_sha256`,
+  `derived_cache_refs.evidence_sha256`,
+  `user_turns_v2.lineage_blob_sha256`). When adding a new ref column,
+  update BOTH prune sites: `pruneUnreferencedEvidenceBlobsInTransaction`
+  in `packages/storage/src/internal/gc.ts` AND
+  `retireStorageBoundaryV2Sources` in `packages/storage/src/evidence-store.ts`.
+  Missing one silently prunes live blobs on the next GC pass.
 
 ## Coding Style And Naming
 

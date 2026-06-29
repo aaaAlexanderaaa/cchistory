@@ -58,6 +58,93 @@ export async function fileExists(targetPath: string): Promise<boolean> {
   }
 }
 
+/**
+ * B.6 test helper: create the legacy V1 user_turns and turn_contexts tables
+ * that the schema no longer creates at apply time. Used by tests that verify
+ * `migration compact` actually drops tables (and by validator tests that need
+ * a populated V1 to compare against V2). The shape mirrors the pre-B.6 schema
+ * 1:1 — same columns, same payload_json blob.
+ */
+export function createLegacyV1TurnTables(dbPath: string): void {
+  const db = new DatabaseSync(dbPath);
+  try {
+    db.prepare(
+      "CREATE TABLE IF NOT EXISTS user_turns (id TEXT PRIMARY KEY, source_id TEXT NOT NULL, session_id TEXT NOT NULL, created_at TEXT NOT NULL, submission_started_at TEXT NOT NULL, payload_json TEXT NOT NULL)",
+    ).run();
+    db.prepare(
+      "CREATE TABLE IF NOT EXISTS turn_contexts (turn_id TEXT PRIMARY KEY, source_id TEXT NOT NULL, payload_json TEXT NOT NULL)",
+    ).run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_user_turns_source ON user_turns (source_id)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_user_turns_source_session ON user_turns (source_id, session_id)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_turn_contexts_source ON turn_contexts (source_id)").run();
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * B.6 test helper: simulate a pre-B.6 legacy store by populating V1 user_turns
+ * and turn_contexts with payload_json derived from the V2 sidecar rows.
+ *
+ * Tests that exercise B.3 backfill, B.4 read-paths parity, and C6
+ * v1-payload-digest drift detection all need V1 data. Post-dual-write-removal
+ * sync no longer populates V1 — so tests must opt in by calling this after
+ * sync. The V1 payload_json is reconstructed by reading the V2-side
+ * UserTurnProjection / TurnContextProjection via the storage API.
+ *
+ * Returns the count of rows written so tests can assert non-trivial seeding.
+ */
+export async function seedLegacyV1FromV2(dbPath: string): Promise<{ turns: number; contexts: number }> {
+  // B.6: schema no longer creates V1 tables, so the helper must create them
+  // before populating.
+  createLegacyV1TurnTables(dbPath);
+  const { CCHistoryStorage } = await import("@cchistory/storage");
+  const storage = new CCHistoryStorage({ dbPath });
+  try {
+    const db = (storage as unknown as { db: DatabaseSync }).db;
+    // Read V2 rows with source_id directly from the sidecar — listResolvedTurns
+    // applies project linking and would produce projections whose project_id
+    // differs from what storage.getTurn (the V2 read path) returns. The
+    // validator compares V1 payload_json against storage.getTurn, so seeding
+    // from listResolvedTurns would introduce false drift. We pull source_id
+    // from the row directly because neither UserTurnProjection nor
+    // TurnContextProjection expose it.
+    const rows = db
+      .prepare("SELECT turn_id, source_id FROM user_turns_v2 ORDER BY turn_id")
+      .all() as Array<{ turn_id: string; source_id: string }>;
+    const insertTurn = db.prepare(
+      "INSERT OR REPLACE INTO user_turns (id, source_id, session_id, created_at, submission_started_at, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+    );
+    let turnsWritten = 0;
+    for (const row of rows) {
+      const turn = storage.getTurn(row.turn_id);
+      if (!turn) continue;
+      insertTurn.run(
+        turn.id,
+        row.source_id,
+        turn.session_id,
+        turn.created_at,
+        turn.submission_started_at,
+        JSON.stringify(turn),
+      );
+      turnsWritten += 1;
+    }
+    let contextsWritten = 0;
+    const insertContext = db.prepare(
+      "INSERT OR REPLACE INTO turn_contexts (turn_id, source_id, payload_json) VALUES (?, ?, ?)",
+    );
+    for (const row of rows) {
+      const context = storage.getTurnContext(row.turn_id);
+      if (!context) continue;
+      insertContext.run(row.turn_id, row.source_id, JSON.stringify(context));
+      contextsWritten += 1;
+    }
+    return { turns: turnsWritten, contexts: contextsWritten };
+  } finally {
+    storage.close();
+  }
+}
+
 export function rewriteAtomEdgesAsLegacyTable(dbPath: string): void {
   const db = new DatabaseSync(dbPath);
 

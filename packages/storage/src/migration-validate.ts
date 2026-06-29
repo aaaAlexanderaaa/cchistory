@@ -112,6 +112,13 @@ export interface InventoryDiffResult {
 
 export interface ReadPathParityResult {
   status: "pass" | "fail";
+  /**
+   * B.6: true when the V1 reference tables are missing (post-compact store).
+   * The parity check has nothing to compare against in this state, so it
+   * returns a synthetic PASS with `turns_checked: 0`. Operators see the flag
+   * in CLI output and know the validator is no longer load-bearing.
+   */
+  post_b6_skipped?: boolean;
   turns_checked: number;
   mismatches: Array<{
     turn_id: string;
@@ -158,9 +165,10 @@ export interface V1PayloadDigestResult {
   /**
    * Per-table sha256 of payload_json values, ordered by primary key. The
    * baseline run stores this in migration_state.cursor_json; subsequent
-   * runs compare to it.
+   * runs compare to it. B.6: null for tables dropped by `migration compact`
+   * (user_turns, turn_contexts) — current state, not drift.
    */
-  digests: Record<string, string>;
+  digests: Record<string, string | null>;
   /**
    * Per-table mismatches against the baseline. Empty when status=pass.
    * Capped at MISMATCH_CAP entries.
@@ -382,10 +390,25 @@ function parseV1DigestBaseline(cursorJson: string): Record<string, string> | nul
  */
 function computeV1PayloadDigests(
   db: DatabaseSync,
-): { digests: Record<string, string>; row_counts: Record<string, number> } {
-  const digests: Record<string, string> = {};
+): { digests: Record<string, string | null>; row_counts: Record<string, number> } {
+  const digests: Record<string, string | null> = {};
   const rowCounts: Record<string, number> = {};
   for (const { table, keyColumn } of V1_PAYLOAD_TABLES) {
+    // B.6: post-compact stores have dropped user_turns and turn_contexts.
+    // Record null digest + 0 row count rather than throwing, so the
+    // comparison logic can distinguish "table legitimately dropped" from
+    // "table content drifted". Only the two B.6 tables are eligible for
+    // this null treatment; if any of the other 10 are missing the table
+    // itself is the problem and we want to surface it loudly below.
+    const tableExists =
+      db
+        .prepare("SELECT 1 AS hit FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get(table) !== undefined;
+    if (!tableExists) {
+      digests[table] = null;
+      rowCounts[table] = 0;
+      continue;
+    }
     const hash = createHash("sha256");
     let count = 0;
     // ORDER BY keyColumn guarantees a stable iteration order so identical
@@ -405,6 +428,15 @@ function computeV1PayloadDigests(
   }
   return { digests, row_counts: rowCounts };
 }
+
+/**
+ * B.6: tables dropped by `migration compact --step drop-v1-tables`. Their
+ * current digest is null post-compact; comparing that against a non-null
+ * baseline is the EXPECTED outcome, not drift. Other V1 tables (raw_records,
+ * captured_blobs, etc.) are still required to match their baseline — they
+ * have no V2 replacement yet and dropping them would break bundle export.
+ */
+const B6_DROPPED_TABLES: ReadonlySet<string> = new Set(["user_turns", "turn_contexts"]);
 
 /**
  * C6: V1 payload_json drift detector. First call (baseline === null) captures
@@ -432,8 +464,16 @@ function runV1PayloadDigestCheck(
     const mismatches: V1PayloadDigestResult["mismatches"] = [];
     let mismatchCount = 0;
     for (const { table } of V1_PAYLOAD_TABLES) {
-      const current = digests[table]!;
+      const current = digests[table] ?? null;
       const baselineSha = baseline[table];
+      // B.6: a table dropped by `migration compact` is expected to read as
+      // null post-compact. The baseline had a real digest (captured before
+      // the drop); current === null against a non-null baseline is the
+      // expected post-B.6 state for user_turns and turn_contexts ONLY.
+      // Treat as a match for these two; treat as drift for any other table.
+      if (current === null && baselineSha !== undefined && B6_DROPPED_TABLES.has(table)) {
+        continue;
+      }
       const isMismatch = baselineSha === undefined || baselineSha !== current;
       if (!isMismatch) continue;
       mismatchCount += 1;
@@ -443,9 +483,9 @@ function runV1PayloadDigestCheck(
           // Table added since baseline — surface as drift so the operator
           // either re-captures the baseline or investigates why a new V1
           // table appeared post-B.3.
-          mismatches.push({ table, current });
+          mismatches.push({ table, current: current ?? "" });
         } else {
-          mismatches.push({ table, baseline: baselineSha, current });
+          mismatches.push({ table, baseline: baselineSha, current: current ?? "" });
         }
       }
     }
@@ -533,6 +573,21 @@ function runReadPathParity(dbPath: string, assetDir?: string): ReadPathParityRes
   let userTurnsChecked = 0;
   let userTurnMismatchCount = 0;
   try {
+    // B.6: post-compact stores have no V1 reference. The parity check exists
+    // to gate B.5 cutovers on real-sized stores; once B.6 lands it has no
+    // reference to compare against. Return synthetic PASS with a flag so the
+    // CLI can render "post-B.6, skipped" rather than failing or pretending
+    // to have run.
+    if (!Queries.v1TurnTablesExist(db)) {
+      return {
+        status: "pass",
+        post_b6_skipped: true,
+        turns_checked: 0,
+        mismatches: [],
+        mismatch_count: 0,
+        user_turn: { turns_checked: 0, mismatches: [], mismatch_count: 0 },
+      };
+    }
     const rows = db.prepare("SELECT id FROM user_turns ORDER BY id").all() as Array<{ id: string }>;
     for (const row of rows) {
       turnsChecked += 1;

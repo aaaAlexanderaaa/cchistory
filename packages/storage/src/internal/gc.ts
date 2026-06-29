@@ -67,22 +67,17 @@ export function purgeTurnInTransaction(
 
   db.prepare("INSERT OR REPLACE INTO tombstones (logical_id, payload_json) VALUES (?, ?)")
     .run(tombstone.logical_id, toJson(tombstone));
-  const deleteTurn = db.prepare("DELETE FROM user_turns WHERE id = ?");
-  const deleteContext = db.prepare("DELETE FROM turn_contexts WHERE turn_id = ?");
+  // B.6: V1 user_turns / turn_contexts are dropped. Only V2 DELETEs remain.
   const deleteV2Turn = db.prepare("DELETE FROM user_turns_v2 WHERE turn_id = ?");
   const deleteV2Context = db.prepare("DELETE FROM turn_context_refs_v2 WHERE turn_id = ?");
   const deleteCoverage = db.prepare("DELETE FROM artifact_coverage WHERE turn_id = ?");
-  // I13: V2 keys on turn_id, V1 keys on id. If id !== turn_id the loop above
-  // issues 0-row V2 deletes for the id iteration. Sum changes across both
-  // iterations: must be exactly 1 (V2 row existed and was unique). 0 means
-  // the V2 sidecar is missing — dual-write drift of the same shape as the
-  // M4 rewriteStoredTurn fix. >1 means schema corruption (turn_id uniqueness
-  // broken). Either way, surface loudly so the operator doesn't silently
-  // accumulate V2 orphans or V1 orphans.
+  // I13 (retained post-B.6): if id !== turn_id the loop above issues 0-row
+  // V2 deletes for the id iteration. Sum changes across both iterations:
+  // must be exactly 1 (V2 row existed and was unique). 0 means the V2
+  // sidecar is missing; >1 means turn_id uniqueness is broken. Either way,
+  // surface loudly so the operator doesn't silently accumulate V2 orphans.
   let v2TurnDeletes = 0;
   for (const turnId of turnIds) {
-    deleteTurn.run(turnId);
-    deleteContext.run(turnId);
     const result = deleteV2Turn.run(turnId);
     v2TurnDeletes += Number(result.changes ?? 0);
     deleteV2Context.run(turnId);
@@ -92,8 +87,7 @@ export function purgeTurnInTransaction(
   if (v2TurnDeletes === 0) {
     throw new Error(
       `purgeTurnInTransaction: V2 sidecar missing for turn_id=${canonicalTurnId}. ` +
-        `V1 row was deleted but user_turns_v2 had no matching row — this is dual-write drift. ` +
-        `Audit with \`cchistory migration validate --only read-paths\` and re-run B.3 if needed.`,
+        `user_turns_v2 had no matching row. Audit with \`cchistory migration validate --only read-paths\` and re-run B.3 if needed.`,
     );
   }
   if (v2TurnDeletes > 1) {

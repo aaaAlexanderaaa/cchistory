@@ -72,6 +72,8 @@ export interface CommandOptions {
   only: string[];
   preBundle?: string;
   phase?: string;
+  step?: string;
+  confirmNoBackup: boolean;
 }
 
 export interface ParsedCommand {
@@ -171,6 +173,15 @@ const commandOptions: Record<string, OptionSpec> = {
     kind: "string",
     valueName: "name",
     description: "Migration phase name (e.g. storage-boundary.write, storage-boundary.validate)",
+  },
+  step: {
+    kind: "string",
+    valueName: "drop-v1-tables|vacuum|both",
+    description: "B.6 compact step (defaults to both)",
+  },
+  "confirm-no-backup": {
+    kind: "boolean",
+    description: "Skip the B.6 pre-run backup confirmation prompt",
   },
   "limit-files": {
     kind: "number",
@@ -530,16 +541,17 @@ const commandSpecs: CommandSpec[] = [
   {
     path: ["maintenance"],
     category: "Data Management",
-    usage: "cchistory maintenance rebuild-search-index|gc-evidence|checkpoint|vacuum",
+    usage: "cchistory maintenance rebuild-search-index|gc-evidence|checkpoint|vacuum|refresh-projections",
     summary: "Operator maintenance commands",
     description:
       "Low-frequency operator commands for the V1+V2 storage boundary. Use these to reclaim space after Phase A landed: rebuild the FTS5 search index (A.1), prune orphaned V2 evidence blobs (A.2), checkpoint the WAL (A.4), or VACUUM the SQLite file into the new 16 KiB page size (A.4).",
-    children: ["rebuild-search-index", "gc-evidence", "checkpoint", "vacuum"],
+    children: ["rebuild-search-index", "gc-evidence", "checkpoint", "vacuum", "refresh-projections"],
     examples: [
       "cchistory maintenance rebuild-search-index",
       "cchistory maintenance gc-evidence",
       "cchistory maintenance checkpoint",
       "cchistory maintenance vacuum",
+      "cchistory maintenance refresh-projections",
     ],
   },
   {
@@ -567,13 +579,19 @@ const commandSpecs: CommandSpec[] = [
       "Run VACUUM to rebuild the SQLite file. Required once per store to materialize the new 16 KiB page size from Phase A.4; otherwise the pragma is silently ignored on existing databases. Blocks writes for the duration.",
   },
   {
+    path: ["maintenance", "refresh-projections"],
+    usage: "cchistory maintenance refresh-projections",
+    description:
+      "Rebuild project_current (and the project link revision lineage) from the canonical session/turn rows. Use this when sync crashed mid-flight (e.g. OOM) and left project_current pointing at stale data — `ls projects` will show old `Last Active` even though the raw rows are fresh. Idempotent.",
+  },
+  {
     path: ["migration"],
     category: "Data Management",
-    usage: "cchistory migration preview|run|status|validate|reset",
+    usage: "cchistory migration preview|run|status|validate|reset|compact",
     summary: "Storage boundary V1→V2 migration (B.1-B.6)",
     description:
-      "Phase B storage-boundary migration tooling. `preview` is read-only and reports the V1→V2 backfill gap, removable bytes, and VACUUM disk requirement. `run` performs the per-source V2 backfill (B.3) — V1 payloads are not touched. `status` prints migration_state markers. `validate` runs the three B.4 validators (bundle byte-diff, inventory diff, read-path parity). `reset` clears migration_state markers so an aborted or stale migration can be re-run.",
-    children: ["preview", "run", "status", "validate", "reset"],
+      "Phase B storage-boundary migration tooling. `preview` is read-only and reports the V1→V2 backfill gap, removable bytes, and VACUUM disk requirement. `run` performs the per-source V2 backfill (B.3) — V1 payloads are not touched. `status` prints migration_state markers. `validate` runs the B.4/B.6 validators (bundle byte-diff, inventory diff, read-path parity, V1 payload digest). `reset` clears migration_state markers so an aborted or stale migration can be re-run. `compact` runs B.6 (drop V1 user_turns/turn_contexts tables and VACUUM) — irreversible, requires a pre-run backup.",
+    children: ["preview", "run", "status", "validate", "reset", "compact"],
     examples: [
       "cchistory migration preview",
       "cchistory migration run --dry-run",
@@ -606,9 +624,9 @@ const commandSpecs: CommandSpec[] = [
   {
     path: ["migration", "validate"],
     usage:
-      "cchistory migration validate [--only bundle|inventory|read-paths]... [--pre-bundle <dir>] [--store <dir>|--db <file>]",
+      "cchistory migration validate [--only bundle|inventory|read-paths|v1-payload-digest]... [--pre-bundle <dir>] [--store <dir>|--db <file>]",
     description:
-      "B.4: post-B.3 validators. Three independent checks prove the V2 sidecars B.3 wrote are equivalent to V1: (a) bundle byte-diff against a pre-migration bundle (--pre-bundle, required when --only bundle is selected); (b) inventory row-count parity across the four V1↔V2 pairs; (c) read-path parity — deepEqual getTurnContext V1 vs V2 cache across every turn, plus UserTurnProjection V1 vs V2 full-content columns (B.5.0d). All three run by default; each writes its own migration_state marker.",
+      "B.4/B.6: post-B.3 validators. Four independent checks prove the V2 sidecars B.3 wrote are equivalent to V1 and that V1 has not drifted before B.6: (a) bundle byte-diff against a pre-migration bundle (--pre-bundle, required when --only bundle is selected); (b) inventory row-count parity across the four V1↔V2 pairs; (c) read-path parity — deepEqual getTurnContext V1 vs V2 cache across every turn, plus UserTurnProjection V1 vs V2 full-content columns (B.5.0d); (d) V1 payload digest drift detection. All four run by default; each writes its own migration_state marker.",
     options: ["only", "pre-bundle"],
   },
   {
@@ -617,6 +635,13 @@ const commandSpecs: CommandSpec[] = [
     description:
       "B.5.0: clear migration_state marker rows so an aborted or stale migration can be re-run. Default clears every phase; --phase storage-boundary.write clears just B.3 markers; --phase storage-boundary.validate clears just B.4 markers. Refuses to clear while any marker is still 'running' (would defeat the C2 abort-resurrect guard); pass --force to override after confirming the prior PID is dead.",
     options: ["phase", "force"],
+  },
+  {
+    path: ["migration", "compact"],
+    usage: "cchistory migration compact [--step <drop-v1-tables|vacuum|both>] [--dry-run] [--confirm-no-backup] [--store <dir>|--db <file>] [--json]",
+    description:
+      "B.6: drop V1 user_turns and turn_contexts tables (step=drop-v1-tables) and/or VACUUM to reclaim pages (step=vacuum). Default step is `both`. IRREVERSIBLE — there is no rollback path; a pre-run backup is mandatory. Pre-flight gates refuse if any validator has drifted, if any marker is still 'running', or if free disk < current DB size (VACUUM needs the room). Pass --confirm-no-backup to skip the backup confirmation prompt; --dry-run previews without mutating.",
+    options: ["step", "confirm-no-backup"],
   },
   {
     path: ["query"],
@@ -809,6 +834,8 @@ function normalizeCommandOptions(values: Record<string, string | string[] | bool
     only: readStringArray(values, "only"),
     preBundle: readString(values, "pre-bundle"),
     phase: readString(values, "phase"),
+    step: readString(values, "step"),
+    confirmNoBackup: readBoolean(values, "confirm-no-backup"),
   };
 }
 

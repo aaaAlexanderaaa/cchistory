@@ -3,7 +3,7 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "@cchistory/domain";
 
-export const STORAGE_SCHEMA_VERSION = "2026-06-22.1";
+export const STORAGE_SCHEMA_VERSION = "2026-06-24.1";
 
 export interface StorageSchemaMigration {
   id: string;
@@ -80,6 +80,12 @@ const STORAGE_SCHEMA_MIGRATIONS: ReadonlyArray<{
     summary:
       "B.5.0g: replace over-bounded lineage_refs_json with full-content lineage via content-addressed blob (lineage_blob_sha256) plus 5 INT count columns. The bounded 8 KiB subset truncates 46% of operator turns (worst-case 1.9 MiB loss, 381K atom_refs dropped). Counts drive list-view density; the blob is fetched lazily when refs are needed. Mirrors turn_context_refs_v2 pattern.",
   },
+  {
+    id: "2026-06-24.1/b6-drop-v1-turn-tables",
+    to_version: STORAGE_SCHEMA_VERSION,
+    summary:
+      "B.6: drop the V1 user_turns and turn_contexts tables. Both have full V2 replacements (user_turns_v2, turn_context_refs_v2) that became production read sources in B.5.2; capture/archive/replace paths no longer write to V1. Other V1 payload tables (raw_records, captured_blobs, source_fragments, conversation_atoms, atom_edges, derived_candidates, sessions, source_instances, stage_runs, loss_audits) are NOT migrated yet — bundle export and inventory reads still consume their payload_json. The drop is invoked explicitly via `cchistory migration compact --step drop-v1-tables`, not at schema-apply time; this record documents the resulting schema version after the operator runs compact.",
+  },
 ];
 
 const STORAGE_INDEXES: ReadonlyArray<{
@@ -115,14 +121,12 @@ const STORAGE_INDEXES: ReadonlyArray<{
   { name: "idx_atom_edges_from", sql: "CREATE INDEX IF NOT EXISTS idx_atom_edges_from ON atom_edges (from_atom_id)" },
   { name: "idx_atom_edges_to", sql: "CREATE INDEX IF NOT EXISTS idx_atom_edges_to ON atom_edges (to_atom_id)" },
 
-  // A.3: dropped idx_user_turns_session — idx_user_turns_source_session covers
-  // source-scoped AND session-scoped lookups (leftmost prefix on session_id
-  // works for session-only filters because the planner can scan the index).
-  { name: "idx_user_turns_source", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_source ON user_turns (source_id)" },
-  { name: "idx_user_turns_source_session", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_source_session ON user_turns (source_id, session_id)" },
-  { name: "idx_user_turns_submission", sql: "CREATE INDEX IF NOT EXISTS idx_user_turns_submission ON user_turns (submission_started_at)" },
+  // B.6: idx_user_turns_* and idx_turn_contexts_* referenced the V1 tables
+  // that are no longer created at schema-apply time. Removed to keep
+  // ensureStorageIndexes from failing on fresh installs. Legacy stores that
+  // still have these indexes are unaffected — the IF NOT EXISTS guard means
+  // they were already created once and won't be re-attempted.
   { name: "idx_sessions_source", sql: "CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions (source_id)" },
-  { name: "idx_turn_contexts_source", sql: "CREATE INDEX IF NOT EXISTS idx_turn_contexts_source ON turn_contexts (source_id)" },
   { name: "idx_project_link_revisions_project", sql: "CREATE INDEX IF NOT EXISTS idx_project_link_revisions_project ON project_link_revisions (project_id)" },
   { name: "idx_project_lineage_events_project", sql: "CREATE INDEX IF NOT EXISTS idx_project_lineage_events_project ON project_lineage_events (project_id)" },
   { name: "idx_artifact_coverage_artifact", sql: "CREATE INDEX IF NOT EXISTS idx_artifact_coverage_artifact ON artifact_coverage (artifact_id)" },
@@ -270,20 +274,12 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
       payload_json TEXT NOT NULL
     );
 
-    CREATE TABLE IF NOT EXISTS user_turns (
-      id TEXT PRIMARY KEY,
-      source_id TEXT NOT NULL,
-      session_id TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      submission_started_at TEXT NOT NULL,
-      payload_json TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS turn_contexts (
-      turn_id TEXT PRIMARY KEY,
-      source_id TEXT NOT NULL,
-      payload_json TEXT NOT NULL
-    );
+    -- B.6: user_turns and turn_contexts are no longer created at schema-apply
+    -- time. Both have full V2 replacements (user_turns_v2, turn_context_refs_v2)
+    -- that production reads and writes exclusively. Legacy stores that still
+    -- have these tables continue to work — CREATE TABLE IF NOT EXISTS was
+    -- idempotent and its removal doesn't drop existing tables. The operator
+    -- drops them explicitly via 'cchistory migration compact --step drop-v1-tables'.
 
     CREATE TABLE IF NOT EXISTS project_current (
       project_id TEXT PRIMARY KEY,

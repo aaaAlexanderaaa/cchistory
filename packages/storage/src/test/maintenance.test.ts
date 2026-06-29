@@ -368,44 +368,27 @@ test("B.5.2: rewriteStoredTurn keeps V2 sidecar in sync with V1 payload", async 
   }
 });
 
-test("B.5.2 + M4: rewriteStoredTurn throws if the V2 sidecar is missing (dual-write invariant)", async () => {
-  // Regression: if a future refactor drops the V2 UPDATE, or if B.3 backfill
-  // was skipped for a turn, rewriteStoredTurn would silently leave V1 and V2
-  // in drift. The M4 assertion makes this loud: changes !== 1 throws.
-  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-b52-missing-"));
+test("B.6: rewriteStoredTurn returns undefined when V2 sidecar is missing (no V1 to drift from)", async () => {
+  // Post-B.6: V1 user_turns is dropped. rewriteStoredTurn reads V2 first;
+  // missing V2 row → return undefined. Pre-B.6 this scenario threw (the M4
+  // dual-write invariant assertion caught V1/V2 drift); the assertion is
+  // retained for the case where the V2 row exists at read time but the
+  // UPDATE affects !=1 rows (concurrent delete or uniqueness corruption).
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-b6-missing-"));
   try {
     const storage = new CCHistoryStorage(dataDir);
     storage.replaceSourcePayload(createFixturePayload("src-1", "Missing sidecar test", "sr-1"));
     const turnId = "turn-1";
 
-    // Simulate a missing sidecar: delete the V2 row but leave V1 intact.
     const db = (storage as any).db as DatabaseSync;
     db.prepare("DELETE FROM user_turns_v2 WHERE turn_id = ?").run(turnId);
-    // Also delete the dependent lineage blob ref so the sidecar absence is
-    // the only drift — no FK violation muddies the assertion.
-    // (turn_context_refs_v2 may exist; clear it for the same reason.)
     db.prepare("DELETE FROM turn_context_refs_v2 WHERE turn_id = ?").run(turnId);
 
-    assert.throws(
-      () => {
-        (storage as any).rewriteStoredTurn(turnId, (turn: UserTurnProjection) => ({
-          ...turn,
-          value_axis: "archived",
-        }));
-      },
-      /dual-write invariant broken/i,
-      "rewriteStoredTurn must throw when the V2 sidecar is missing",
-    );
-
-    // V1 payload_json must still have been updated — the assertion fires
-    // after the V1 UPDATE, so V1 reflects the mutation even though V2 didn't.
-    // This is the correct ordering: we don't roll back V1 just because V2
-    // is broken. The operator runs `migration run` to backfill.
-    const v1After = db
-      .prepare("SELECT payload_json FROM user_turns WHERE id = ?")
-      .get(turnId) as { payload_json: string };
-    const v1Parsed = JSON.parse(v1After.payload_json) as { value_axis: string };
-    assert.equal(v1Parsed.value_axis, "archived", "V1 UPDATE must land even when V2 throws");
+    const result = (storage as any).rewriteStoredTurn(turnId, (turn: UserTurnProjection) => ({
+      ...turn,
+      value_axis: "archived",
+    }));
+    assert.equal(result, undefined, "rewriteStoredTurn returns undefined when V2 row is missing");
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -430,22 +413,16 @@ test("purgeTurn is idempotent - second purge returns existing tombstone", async 
   }
 });
 
-test("I13: purgeTurn throws if the V2 sidecar is missing (dual-write drift, transaction rolls back)", async () => {
-  // Regression: purgeTurnInTransaction sums V2 row deletes across the id and
-  // turn_id iterations. If the V2 sidecar is missing, the sum stays at 0 and
-  // the V1 row was already deleted in the same transaction — leaving a silent
-  // V1 orphan (read-path returns undefined for the turn but no tombstone,
-  // nothing to surface the drift). The I13 assertion makes this loud and the
-  // caller's ROLLBACK undoes the V1 delete so the operator can fix the sidecar
-  // without losing data.
+test("I13 (post-B.6): purgeTurn throws if the V2 sidecar is missing (transaction rolls back)", async () => {
+  // Post-B.6 the V1 DELETE is gone but the I13 assertion still fires when
+  // the V2 sidecar is missing: v2TurnDeletes === 0 → throw, ROLLBACK undoes
+  // the tombstone insert.
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-i13-missing-"));
   try {
     const storage = new CCHistoryStorage(dataDir);
     storage.replaceSourcePayload(createFixturePayload("src-1", "I13 missing sidecar test", "sr-1"));
     const turnId = "turn-1";
 
-    // Simulate the missing sidecar: delete V2 row + context ref so no FK
-    // violation muddies the assertion. V1 stays intact.
     const db = (storage as any).db as DatabaseSync;
     db.prepare("DELETE FROM user_turns_v2 WHERE turn_id = ?").run(turnId);
     db.prepare("DELETE FROM turn_context_refs_v2 WHERE turn_id = ?").run(turnId);
@@ -456,11 +433,7 @@ test("I13: purgeTurn throws if the V2 sidecar is missing (dual-write drift, tran
       "purgeTurn must throw when the V2 sidecar is missing",
     );
 
-    // Transaction rolled back: V1 row and any tombstone insert must be undone.
-    const v1Row = db
-      .prepare("SELECT id FROM user_turns WHERE id = ?")
-      .get(turnId);
-    assert.ok(v1Row, "V1 row must survive the rolled-back purge");
+    // Transaction rolled back: tombstone insert must be undone.
     const tombstone = db
       .prepare("SELECT logical_id FROM tombstones WHERE logical_id = ?")
       .get(turnId);

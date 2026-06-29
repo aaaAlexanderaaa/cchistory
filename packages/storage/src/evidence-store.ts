@@ -330,10 +330,17 @@ export function streamV2SidecarsFromV1(input: {
 }
 
 function tableCount(db: DatabaseSync, tableName: string, sourceId: string): number {
-  const row = db.prepare(`SELECT COUNT(*) AS n FROM ${tableName} WHERE source_id = ?`).get(sourceId) as
-    | { n: number }
-    | undefined;
-  return Number(row?.n ?? 0);
+  // B.6: V1 user_turns / turn_contexts may be absent (post-compact or fresh
+  // install). COUNT(*) on a missing table throws — return 0 so the backfill
+  // summary doesn't break the B.3 path on stores that are past B.6.
+  try {
+    const row = db.prepare(`SELECT COUNT(*) AS n FROM ${tableName} WHERE source_id = ?`).get(sourceId) as
+      | { n: number }
+      | undefined;
+    return Number(row?.n ?? 0);
+  } catch {
+    return 0;
+  }
 }
 
 function readRawRecordSummaryByBlob(

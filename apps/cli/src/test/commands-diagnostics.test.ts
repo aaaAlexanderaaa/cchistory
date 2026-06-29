@@ -148,11 +148,14 @@ test("inventory reports table footprint, largest payload rows, search index, and
     assert.equal(typeof payload.inventory.search_index.table_exists, "boolean");
     assert.ok(Array.isArray(payload.inventory.search_index.shadow_tables));
 
-    const turnsTable = payload.inventory.tables.find((table) => table.name === "user_turns");
-    assert.ok(turnsTable, "inventory should include user_turns");
+    const turnsTable = payload.inventory.tables.find((table) => table.name === "user_turns_v2");
+    assert.ok(turnsTable, "inventory should include user_turns_v2");
     assert.ok(turnsTable.row_count > 0);
-    assert.ok(turnsTable.payload_json_bytes > 0);
-    assert.ok((turnsTable.largest_payload_rows[0]?.payload_json_bytes ?? 0) > 0);
+    // V2 stores full-content in typed columns (canonical_text_full, etc.), not
+    // a payload_json blob — so payload_json_bytes is 0 by design. Sanity-check
+    // that some payload-bearing V1 table is still reporting bytes so the
+    // totals are non-trivial.
+    assert.ok(payload.inventory.totals.payload_json_bytes > 0);
 
     const codexRoot = payload.inventory.source_roots.find((source) => source.source_id.includes("codex"));
     assert.ok(codexRoot, "inventory should include Codex source root");
@@ -1131,9 +1134,12 @@ test("sync mixed Claude Code reuse and reparse preserves skipped shared-session 
 
     const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
     try {
-      const turns = db.prepare("SELECT payload_json FROM user_turns ORDER BY submission_started_at").all()
-        .map((row) => JSON.parse((row as { payload_json: string }).payload_json) as { canonical_text: string });
-      assert.deepEqual(turns.map((turn) => turn.canonical_text), ["Parent asks for review."]);
+      // B.6: V1 user_turns is gone. Read canonical_text_full directly from V2.
+      const turns = db
+        .prepare("SELECT canonical_text_full FROM user_turns_v2 ORDER BY submission_started_at")
+        .all()
+        .map((row) => (row as { canonical_text_full: string }).canonical_text_full);
+      assert.deepEqual(turns, ["Parent asks for review."]);
 
       const dangling = db.prepare(`
         SELECT COUNT(*) AS count
