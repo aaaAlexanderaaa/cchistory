@@ -1465,6 +1465,15 @@ async function buildCodexMetadataOnlyReusePayloadForStableOldBatch(
   fileBatch: readonly string[],
   changedSince: string | undefined,
 ): Promise<SourceSyncPayload | undefined> {
+  // Fast negative gate for the metadata-only batch path. This runs BEFORE
+  // captureBlob and avoids file I/O entirely; its purpose is to skip the
+  // streaming probe for batches of files that are obviously old and stable
+  // (mtime+ctime+size+identity all match the ledger). When external touches
+  // bump mtime forward (backup tools, `touch`, rsync), this gate fails and
+  // the batch falls through to streamCodexMergeBatch → streamSourceProbe,
+  // where captureBlob + canReuseCapturedBlob (the L2 size+checksum+watermark
+  // path in probe.ts) catches the reuse correctly. So an external touch
+  // costs one extra file read per file but does NOT force reparse.
   if (!previousMetadataPayload || fileBatch.length === 0 || !changedSince) {
     return undefined;
   }
