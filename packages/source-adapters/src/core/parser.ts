@@ -30,7 +30,7 @@ import {
 } from "../platforms/generic/runtime.js";
 import { parseOpenClawCronRunRecord as parseOpenClawCronRunRuntimeRecord } from "../platforms/openclaw/runtime.js";
 import { extractGeminiProjectKey, resolveGeminiRoot } from "../platforms/gemini.js";
-import { collectJsonlRecords } from "./jsonl-records.js";
+import { collectJsonlRecords, extractContentMaxTimestamp, isIncrementalJsonlPlatform } from "./jsonl-records.js";
 import {
   collectConversationSeedsFromValue as collectConversationSeedsFromValueRuntime,
   normalizeMessageCandidate as normalizeMessageCandidateRuntime,
@@ -550,6 +550,9 @@ export async function captureBlob(
     beforeStats.ctimeMs === afterStats.ctimeMs &&
     fileBuffer.byteLength === afterStats.size;
   const checksum = sha1(fileBuffer);
+  const content_max_timestamp = isIncrementalJsonlPlatform(source.platform)
+    ? extractContentMaxTimestamp(fileBuffer)
+    : undefined;
   return {
     blob: {
       id: stableId("blob", source.id, filePath, checksum),
@@ -563,6 +566,7 @@ export async function captureBlob(
       file_modified_at: afterStats.mtime.toISOString(),
       file_changed_at: fileIdentityStable ? afterStats.ctime.toISOString() : undefined,
       file_identity_stable: fileIdentityStable,
+      content_max_timestamp,
     },
     fileBuffer,
   };
