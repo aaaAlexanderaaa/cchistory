@@ -55,6 +55,7 @@ import {
   extractRichTextText,
   collectConversationSeedsFromValue,
 } from "./parser.js";
+import { isIncrementalJsonlPlatform } from "./jsonl-records.js";
 import { atomizeFragments, hydrateDraftFromAtoms } from "./atomizer.js";
 import {
   buildProjectObservationCandidates,
@@ -1097,10 +1098,6 @@ function previousPayloadMatchesProfile(payload: SourceSyncPayload, sourceFormatP
     stageRun.parser_version === sourceFormatProfile.parser_version &&
     stageRun.source_format_profile_ids?.includes(sourceFormatProfile.id),
   );
-}
-
-function isIncrementalJsonlPlatform(platform: SourcePlatform): boolean {
-  return platform === "codex" || platform === "claude_code" || platform === "factory_droid";
 }
 
 function canReuseCapturedBlob(previousEntry: PreviousFileEntry, capturedBlob: CapturedBlob): boolean {

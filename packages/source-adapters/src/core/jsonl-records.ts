@@ -1,4 +1,4 @@
-import type { RawRecord } from "@cchistory/domain";
+import type { RawRecord, SourcePlatform } from "@cchistory/domain";
 
 export interface JsonlRecordIdentity {
   sourceId: string;
@@ -93,6 +93,67 @@ export function firstNonEmptyTrimmedLineFromBuffer(fileBuffer: Buffer): string |
   }
 
   return undefined;
+}
+
+export function isIncrementalJsonlPlatform(platform: SourcePlatform): boolean {
+  return platform === "codex" || platform === "claude_code" || platform === "factory_droid";
+}
+
+export function extractContentMaxTimestamp(
+  fileBuffer: Buffer,
+  options?: { maxLookback?: number; tailBytes?: number },
+): string | undefined {
+  const maxLookback = options?.maxLookback ?? 5;
+  const tailBytes = options?.tailBytes ?? 65536;
+  if (fileBuffer.length === 0) {
+    return undefined;
+  }
+  const tailStart = Math.max(0, fileBuffer.length - tailBytes);
+  const tail = fileBuffer.subarray(tailStart);
+  let text = tail.toString("utf8");
+  if (tailStart > 0) {
+    const firstNewline = text.indexOf("\n");
+    if (firstNewline === -1) {
+      return undefined;
+    }
+    text = text.slice(firstNewline + 1);
+  }
+  const lines = text.split(/\r?\n/u);
+  let bestMs: number | undefined;
+  let bestIso: string | undefined;
+  let consumed = 0;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const trimmed = lines[index]!.trim();
+    if (!trimmed) {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (consumed < maxLookback) {
+      consumed += 1;
+    } else {
+      break;
+    }
+    const candidate = typeof parsed === "object" && parsed !== null
+      ? (parsed as { timestamp?: unknown }).timestamp
+      : undefined;
+    if (typeof candidate !== "string" || candidate.length === 0) {
+      continue;
+    }
+    const ms = Date.parse(candidate);
+    if (Number.isNaN(ms)) {
+      continue;
+    }
+    if (bestMs === undefined || ms > bestMs) {
+      bestMs = ms;
+      bestIso = candidate;
+    }
+  }
+  return bestIso;
 }
 
 function forEachNonEmptyTrimmedLine(

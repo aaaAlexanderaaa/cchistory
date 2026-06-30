@@ -8,6 +8,7 @@ import "./core/discovery.test.js";
 import "./core/projections.test.js";
 import "./core/tokens.test.js";
 import "./core/utils.test.js";
+import "./core/jsonl-records.test.js";
 import "./platforms/cursor.test.js";
 import "./platforms/antigravity.test.js";
 import "./platforms/openclaw.test.js";
