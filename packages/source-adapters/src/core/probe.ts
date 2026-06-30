@@ -1102,8 +1102,9 @@ function previousPayloadMatchesProfile(payload: SourceSyncPayload, sourceFormatP
 
 function canReuseCapturedBlob(previousEntry: PreviousFileEntry, capturedBlob: CapturedBlob): boolean {
   return previousEntry.tailBlob?.size_bytes === capturedBlob.size_bytes &&
-    previousEntry.tailBlob.file_modified_at === capturedBlob.file_modified_at &&
-    previousEntry.tailBlob.checksum === capturedBlob.checksum;
+    previousEntry.tailBlob.checksum === capturedBlob.checksum &&
+    (previousEntry.tailBlob?.content_max_timestamp === undefined ||
+      previousEntry.tailBlob.content_max_timestamp === capturedBlob.content_max_timestamp);
 }
 
 function canReuseBlobFromStats(previousEntry: PreviousFileEntry, stats: { size: number; mtime: Date; ctime: Date }): boolean {
@@ -1127,7 +1128,9 @@ function processAppendedJsonlBlob(
   const previousTail = previousEntry.tailBlob;
   if (
     capturedBlob.blob.size_bytes <= previousTail.size_bytes ||
-    capturedBlob.blob.file_modified_at === previousTail.file_modified_at
+    capturedBlob.blob.file_modified_at === previousTail.file_modified_at ||
+    (capturedBlob.blob.content_max_timestamp !== undefined &&
+      capturedBlob.blob.content_max_timestamp === previousTail.content_max_timestamp)
   ) {
     return undefined;
   }
