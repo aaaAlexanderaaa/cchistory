@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import type { CapturedBlob, SourceStatus, SourceSyncPayload } from "@cchistory/domain";
+import type { CapturedBlob, LossAuditRecord, SourceStatus, SourceSyncPayload } from "@cchistory/domain";
 import path from "node:path";
 import {
   hydrateSourceStatus,
@@ -13,6 +13,61 @@ export interface SourcePayloadWriteProgressEvent {
   stage: "write_store_done";
   source_id: string;
   projection_changed: boolean;
+}
+
+/**
+ * Loss audits with these diagnostic codes describe capture-stage failures
+ * where the audit's `blob_ref` is a synthetic ID (no row in `captured_blobs`).
+ * Without this exception, the standard "require a matching written row" filter
+ * would silently drop them — losing the record that a file was too big or
+ * failed to capture.
+ */
+const SYNTHETIC_BLOB_AUDIT_DIAGNOSTIC_CODES: ReadonlySet<string> = new Set([
+  "blob_too_large",
+  "blob_capture_failed",
+]);
+
+/**
+ * Shared filter for loss audits eligible for write. Drops duplicates by id,
+ * passes through audits with no scoping refs (free-floating) or with a
+ * synthetic-blob diagnostic code, and otherwise requires at least one ref to
+ * land on a row that's also being written this merge.
+ */
+export function filterLossAuditsForWrite(
+  lossAudits: readonly LossAuditRecord[],
+  context: {
+    blobIdsForWrite: ReadonlySet<string>;
+    recordIdsForWrite: ReadonlySet<string>;
+    fragmentIdsForWrite: ReadonlySet<string>;
+    atomIdsForWrite: ReadonlySet<string>;
+    candidateIdsForWrite: ReadonlySet<string>;
+    changedIncomingSessionRefs: ReadonlySet<string>;
+  },
+): LossAuditRecord[] {
+  return dedupeByKey(lossAudits, (entry) => entry.id).filter((lossAudit) => {
+    if (SYNTHETIC_BLOB_AUDIT_DIAGNOSTIC_CODES.has(lossAudit.diagnostic_code)) {
+      return true;
+    }
+    const refs = [
+      lossAudit.blob_ref,
+      lossAudit.record_ref,
+      lossAudit.fragment_ref,
+      lossAudit.atom_ref,
+      lossAudit.candidate_ref,
+      lossAudit.session_ref,
+    ];
+    if (refs.every((ref) => !ref)) {
+      return true;
+    }
+    return (
+      (lossAudit.blob_ref !== undefined && context.blobIdsForWrite.has(lossAudit.blob_ref)) ||
+      (lossAudit.record_ref !== undefined && context.recordIdsForWrite.has(lossAudit.record_ref)) ||
+      (lossAudit.fragment_ref !== undefined && context.fragmentIdsForWrite.has(lossAudit.fragment_ref)) ||
+      (lossAudit.atom_ref !== undefined && context.atomIdsForWrite.has(lossAudit.atom_ref)) ||
+      (lossAudit.candidate_ref !== undefined && context.candidateIdsForWrite.has(lossAudit.candidate_ref)) ||
+      (lossAudit.session_ref !== undefined && context.changedIncomingSessionRefs.has(lossAudit.session_ref))
+    );
+  });
 }
 
 export function replaceSourcePayload(db: DatabaseSync, payload: SourceSyncPayload): {
@@ -265,26 +320,13 @@ export function mergeSourcePayloadByOriginPath(
   const turnsForWrite = normalizedPayload.turns.filter((turn) => changedIncomingSessionRefs.has(turn.session_id));
   const turnIdsForWrite = new Set(turnsForWrite.map((turn) => turn.id));
   const contextsForWrite = normalizedPayload.contexts.filter((context) => turnIdsForWrite.has(context.turn_id));
-  const lossAuditsForWrite = dedupeByKey(normalizedPayload.loss_audits, (entry) => entry.id).filter((lossAudit) => {
-    const refs = [
-      lossAudit.blob_ref,
-      lossAudit.record_ref,
-      lossAudit.fragment_ref,
-      lossAudit.atom_ref,
-      lossAudit.candidate_ref,
-      lossAudit.session_ref,
-    ];
-    if (refs.every((ref) => !ref)) {
-      return true;
-    }
-    return (
-      (lossAudit.blob_ref !== undefined && blobIdsForWrite.has(lossAudit.blob_ref)) ||
-      (lossAudit.record_ref !== undefined && recordIdsForWrite.has(lossAudit.record_ref)) ||
-      (lossAudit.fragment_ref !== undefined && fragmentIdsForWrite.has(lossAudit.fragment_ref)) ||
-      (lossAudit.atom_ref !== undefined && atomIdsForWrite.has(lossAudit.atom_ref)) ||
-      (lossAudit.candidate_ref !== undefined && candidateIdsForWrite.has(lossAudit.candidate_ref)) ||
-      (lossAudit.session_ref !== undefined && changedIncomingSessionRefs.has(lossAudit.session_ref))
-    );
+  const lossAuditsForWrite = filterLossAuditsForWrite(normalizedPayload.loss_audits, {
+    blobIdsForWrite,
+    recordIdsForWrite,
+    fragmentIdsForWrite,
+    atomIdsForWrite,
+    candidateIdsForWrite,
+    changedIncomingSessionRefs,
   });
 
   const affectedSessionRefs = new Set<string>([
@@ -568,7 +610,7 @@ function resolveReplaceSourceIds(
   return [...new Set([normalizedIncoming.id, ...matchingIds])];
 }
 
-function selectBlobIdsByOriginPath(db: DatabaseSync, sourceId: string, originPaths: ReadonlySet<string>): string[] {
+export function selectBlobIdsByOriginPath(db: DatabaseSync, sourceId: string, originPaths: ReadonlySet<string>): string[] {
   if (originPaths.size === 0) {
     return [];
   }
@@ -582,7 +624,7 @@ function selectBlobIdsByOriginPath(db: DatabaseSync, sourceId: string, originPat
   return ids;
 }
 
-function selectSourceOriginPaths(db: DatabaseSync, sourceId: string): string[] {
+export function selectSourceOriginPaths(db: DatabaseSync, sourceId: string): string[] {
   const originPaths = new Set<string>();
   for (const row of db.prepare("SELECT origin_path FROM captured_blobs WHERE source_id = ?").iterate(sourceId)) {
     const originPath = (row as { origin_path: string }).origin_path;
@@ -593,7 +635,7 @@ function selectSourceOriginPaths(db: DatabaseSync, sourceId: string): string[] {
   return [...originPaths];
 }
 
-function selectSessionRefsByBlobIds(db: DatabaseSync, sourceId: string, blobIds: readonly string[]): string[] {
+export function selectSessionRefsByBlobIds(db: DatabaseSync, sourceId: string, blobIds: readonly string[]): string[] {
   const refs = new Set<string>();
   const select = db.prepare(
     "SELECT session_ref FROM raw_records WHERE source_id = ? AND blob_id = ?",
@@ -606,7 +648,7 @@ function selectSessionRefsByBlobIds(db: DatabaseSync, sourceId: string, blobIds:
   return [...refs];
 }
 
-function shouldBackfillPreservedBlobIdentity(db: DatabaseSync, sourceId: string, incomingBlob: CapturedBlob): boolean {
+export function shouldBackfillPreservedBlobIdentity(db: DatabaseSync, sourceId: string, incomingBlob: CapturedBlob): boolean {
   if (
     incomingBlob.file_identity_stable !== true ||
     incomingBlob.file_changed_at === undefined ||
@@ -630,7 +672,7 @@ function shouldBackfillPreservedBlobIdentity(db: DatabaseSync, sourceId: string,
   );
 }
 
-function deleteSessionScopedRows(db: DatabaseSync, sourceId: string, sessionRef: string): void {
+export function deleteSessionScopedRows(db: DatabaseSync, sourceId: string, sessionRef: string): void {
   // B.6: V1 user_turns / turn_contexts are dropped. V2 sidecar tables are
   // the source of truth. Delete V2 contexts first (the WHERE IN subquery
   // needs user_turns_v2 to still hold the turn_id→session_id mapping),
@@ -648,12 +690,12 @@ function deleteSessionScopedRows(db: DatabaseSync, sourceId: string, sessionRef:
   db.prepare("DELETE FROM loss_audits WHERE source_id = ? AND session_ref = ?").run(sourceId, sessionRef);
 }
 
-function deleteBlobScopedRows(db: DatabaseSync, sourceId: string, blobId: string): void {
+export function deleteBlobScopedRows(db: DatabaseSync, sourceId: string, blobId: string): void {
   db.prepare("DELETE FROM captured_blobs WHERE source_id = ? AND id = ?").run(sourceId, blobId);
   db.prepare("DELETE FROM loss_audits WHERE source_id = ? AND blob_ref = ?").run(sourceId, blobId);
 }
 
-function countStoredSourcePayload(
+export function countStoredSourcePayload(
   db: DatabaseSync,
   sourceId: string,
 ): {
@@ -707,6 +749,6 @@ function deleteBySource(db: DatabaseSync, sourceId: string): void {
   }
 }
 
-function normalizeOriginPath(originPath: string): string {
+export function normalizeOriginPath(originPath: string): string {
   return path.normalize(originPath);
 }

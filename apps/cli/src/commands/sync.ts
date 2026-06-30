@@ -9,19 +9,30 @@ import {
   discoverDefaultSourcesForHost,
   discoverHostToolsForHost,
   runSourceProbe,
+  streamSourceProbe,
+  projectFileSessionInputs,
   listSourceFiles,
   listPlatformAdapters,
+  buildStageRuns,
   type HostDiscoveryEntry,
   type SourceProbeProgressEvent,
+  type SourceProbeEvent,
 } from "@cchistory/source-adapters";
 import {
   type CapturedBlob,
+  type LossAuditRecord,
   type SourceDefinition,
   type SourceStatus,
   type SourceSyncPayload,
   type StageKind,
+  nowIso,
 } from "@cchistory/domain";
-import { STORAGE_SCHEMA_VERSION, isFutureStorageSchemaVersion, type CCHistoryStorage } from "@cchistory/storage";
+import {
+  STORAGE_SCHEMA_VERSION,
+  isFutureStorageSchemaVersion,
+  type CCHistoryStorage,
+  type SourcePayloadStreamingChunk,
+} from "@cchistory/storage";
 import {
   renderTable,
   renderKeyValue,
@@ -757,6 +768,284 @@ function refreshDerivedProjectionsForSyncedSources(
   }
 }
 
+interface StreamMergeBatchInput {
+  storage: CCHistoryStorage;
+  source: SourceDefinition;
+  hostId: string;
+  fileBatch: readonly string[];
+  observedOriginPaths: readonly string[];
+  outsideBatchOriginPaths: readonly string[];
+  previousPayload: SourceSyncPayload | undefined;
+  preSyncStageRuns: SourceSyncPayload["stage_runs"] | undefined;
+  changedSince: string | undefined;
+  safeMode: boolean | undefined;
+  onProgress: ((event: SyncProgressEvent) => void) | undefined;
+  timing: SourceTiming;
+  batchIndex: number;
+  batchCount: number;
+}
+
+async function streamCodexMergeBatch(
+  input: StreamMergeBatchInput,
+): Promise<{ counts: SyncedSourceSummary["counts"]; projectionChanged: boolean }> {
+  const { storage, source, hostId } = input;
+  const preservedOriginPaths = new Set<string>(input.outsideBatchOriginPaths);
+  const observedOriginPaths = new Set(input.observedOriginPaths);
+
+  const sourceStatus: SourceStatus = {
+    id: source.id,
+    slot_id: source.slot_id,
+    family: source.family,
+    platform: source.platform,
+    display_name: source.display_name,
+    base_dir: source.base_dir,
+    host_id: hostId,
+    last_sync: new Date().toISOString(),
+    sync_status: "healthy",
+    total_blobs: 0,
+    total_records: 0,
+    total_fragments: 0,
+    total_atoms: 0,
+    total_sessions: 0,
+    total_turns: 0,
+  };
+
+  const previousPayloads = input.previousPayload
+    ? { [source.id]: input.previousPayload }
+    : undefined;
+  const stageRunsForFirstChunk = input.preSyncStageRuns ?? [];
+  let stageRunsEmitted = stageRunsForFirstChunk.length === 0;
+
+  let projectionChanged = false;
+  // Track file-level outcomes so the sourceStatus mutation below produces a
+  // correct sync_status before the merge reads it. The merge only preserves
+  // error_message when source.sync_status === "error" — a hardcoded "healthy"
+  // would silently mask an all-files-failed batch.
+  let encounteredFileError = false;
+  let firstFileErrorMessage: string | undefined;
+  let filesObserved = 0;
+  let writeStartedAt = 0;
+
+  const onStorageProgress = (event: StorageProgressEvent) => {
+    const elapsedMs = Date.now() - writeStartedAt;
+    if (event.stage === "write_store_done") {
+      if (event.projection_changed !== false) {
+        projectionChanged = true;
+      }
+      input.timing.sqliteWriteMs += elapsedMs;
+      input.timing.sqliteMergeMs += elapsedMs;
+    }
+    input.onProgress?.({
+      stage: event.stage,
+      source_id: source.id,
+      slot_id: source.slot_id,
+      platform: source.platform,
+      display_name: source.display_name,
+      message: formatStorageProgressMessage(event.stage, source.display_name),
+      elapsed_ms: elapsedMs,
+    });
+  };
+
+  input.onProgress?.({
+    stage: "write_store_start",
+    source_id: source.id,
+    slot_id: source.slot_id,
+    platform: source.platform,
+    display_name: source.display_name,
+    message: `Writing ${source.display_name} batch ${input.batchIndex + 1}/${input.batchCount} to SQLite (streaming)`,
+    count: input.fileBatch.length,
+  });
+  writeStartedAt = Date.now();
+
+  // Pipe probe events directly into the merge as chunks. The merge does
+  // per-chunk replace pre-pass using chunk.preserved, so we don't need to
+  // know preserve_origin_paths up front — this avoids buffering all chunks
+  // and keeps peak memory bounded by ~one file's worth of derived structures.
+  const probeOptions: Parameters<typeof streamSourceProbe>[0] = {
+    source_ids: [source.id],
+    safe_mode: input.safeMode,
+    changed_since: input.changedSince,
+    source_file_paths: { [source.id]: [...input.fileBatch] },
+    previous_payloads: previousPayloads,
+    on_progress: (progressEvent: SourceProbeProgressEvent) => {
+      recordProbeTiming(input.timing, progressEvent);
+      input.onProgress?.(progressEvent);
+    },
+  };
+
+  const mergeResult = await storage.mergeSourcePayloadStreaming(sourceStatus, {
+    chunks: (async function* (): AsyncGenerator<SourcePayloadStreamingChunk> {
+      const accumulatedLossAudits: LossAuditRecord[] = [];
+      let accumulatedBlobs = 0;
+      let accumulatedRecords = 0;
+      let accumulatedFragments = 0;
+      let accumulatedAtoms = 0;
+      let accumulatedSessions = 0;
+      let accumulatedTurns = 0;
+      const streamStartedAt = nowIso();
+      const deriveStartedAt = Date.now();
+      input.onProgress?.({
+        stage: "derive_start",
+        source_id: source.id,
+        slot_id: source.slot_id,
+        platform: source.platform,
+        display_name: source.display_name,
+        message: `Deriving projections for ${source.display_name} (streaming)`,
+      });
+      for await (const event of streamSourceProbe(probeOptions, [source])) {
+        if (
+          event.kind === "source_done" ||
+          event.kind === "source_start" ||
+          event.kind === "source_missing"
+        ) {
+          continue;
+        }
+        const eventChunk = event.kind === "file_error" || event.kind === "file_skip" || event.kind === "file_chunk"
+          ? event.chunk
+          : undefined;
+        if (!eventChunk) {
+          continue;
+        }
+        filesObserved += 1;
+        if (event.kind === "file_error") {
+          encounteredFileError = true;
+          if (firstFileErrorMessage === undefined) {
+            firstFileErrorMessage = event.detail;
+          }
+        } else if (
+          event.kind === "file_skip" &&
+          (event.reason === "oversized" || event.reason === "capture_failed")
+        ) {
+          encounteredFileError = true;
+          if (firstFileErrorMessage === undefined) {
+            // Oversized/capture_failed carries the detail in the chunk's loss audit,
+            // not on the event itself.
+            const detailAudit = eventChunk.loss_audits.find(
+              (audit) =>
+                audit.diagnostic_code === "blob_too_large" ||
+                audit.diagnostic_code === "blob_capture_failed",
+            );
+            firstFileErrorMessage = detailAudit?.detail ?? `Skipped ${eventChunk.origin_path}: ${event.reason}`;
+          }
+        }
+        const projected = await projectFileSessionInputs(
+          source,
+          eventChunk.session_inputs,
+          eventChunk.orphan_blobs,
+          eventChunk.loss_audits,
+          { safeMode: input.safeMode ?? false },
+        );
+        accumulatedBlobs += projected.blobs.length;
+        accumulatedRecords += projected.records.length;
+        accumulatedFragments += projected.fragments.length;
+        accumulatedAtoms += projected.atoms.length;
+        accumulatedSessions += projected.sessions.length;
+        accumulatedTurns += projected.turns.length;
+        accumulatedLossAudits.push(...projected.lossAudits);
+        // "unchanged"/"metadata_only" skips preserve the file's existing data.
+        // "oversized"/"capture_failed" skips mean the file is broken — its
+        // existing data should be removed (treated as a normal replace with
+        // no incoming records, so the per-chunk pre-pass deletes old rows).
+        const isPreservingSkip =
+          event.kind === "file_skip" &&
+          (event.reason === "unchanged" || event.reason === "metadata_only");
+        yield {
+          origin_path: eventChunk.origin_path,
+          stage_runs: stageRunsEmitted ? [] : stageRunsForFirstChunk,
+          loss_audits: projected.lossAudits,
+          blobs: projected.blobs,
+          records: projected.records,
+          fragments: projected.fragments,
+          atoms: projected.atoms,
+          edges: projected.edges,
+          candidates: projected.candidates,
+          sessions: projected.sessions,
+          turns: projected.turns,
+          contexts: projected.contexts,
+          trusted_bytes_by_blob_id: eventChunk.trusted_bytes_by_blob_id,
+          preserved: isPreservingSkip,
+        };
+        stageRunsEmitted = true;
+      }
+      input.onProgress?.({
+        stage: "derive_done",
+        source_id: source.id,
+        slot_id: source.slot_id,
+        platform: source.platform,
+        display_name: source.display_name,
+        message: `Derived ${accumulatedSessions} session(s), ${accumulatedTurns} turn(s)`,
+        count: accumulatedTurns,
+        elapsed_ms: Date.now() - deriveStartedAt,
+      });
+      // Mutate sourceStatus in place so the merge (which reads source.sync_status
+      // after consuming the chunks iterator) sees the corrected status. Mirrors
+      // the monolithic finalizeSourcePayload logic: error if all files failed,
+      // stale if no projections were derived, otherwise healthy.
+      if (encounteredFileError && accumulatedSessions === 0 && accumulatedTurns === 0) {
+        sourceStatus.sync_status = "error";
+        sourceStatus.error_message = firstFileErrorMessage;
+      } else if (
+        accumulatedSessions === 0 &&
+        accumulatedTurns === 0 &&
+        filesObserved === 0
+      ) {
+        sourceStatus.sync_status = "stale";
+      }
+      // After the stream completes, emit a final chunk carrying freshly-built
+      // stage_runs for this sync. The streaming probe doesn't produce a
+      // source-level StageRun array (it's a per-source aggregate), so we
+      // build one here from accumulated counts. Without this, a fresh source
+      // would have no stage_runs, and the next sync's previousIndex check
+      // (previousPayloadMatchesProfile) would fail — breaking append
+      // detection and metadata-only reuse.
+      const finalStageRuns = buildStageRuns(
+        source.id,
+        source.platform,
+        streamStartedAt,
+        nowIso(),
+        {
+          blobs: accumulatedBlobs,
+          records: accumulatedRecords,
+          fragments: accumulatedFragments,
+          atoms: accumulatedAtoms,
+          sessions: accumulatedSessions,
+          turns: accumulatedTurns,
+        },
+        accumulatedLossAudits,
+      );
+      yield {
+        origin_path: "",
+        stage_runs: finalStageRuns,
+        loss_audits: [],
+        blobs: [],
+        records: [],
+        fragments: [],
+        atoms: [],
+        edges: [],
+        candidates: [],
+        sessions: [],
+        turns: [],
+        contexts: [],
+      };
+    })(),
+    preserve_origin_paths: preservedOriginPaths,
+    observed_origin_paths: observedOriginPaths,
+    onProgress: onStorageProgress,
+  });
+
+  return {
+    counts: {
+      sessions: mergeResult.sessions,
+      turns: mergeResult.turns,
+      records: mergeResult.records,
+      fragments: mergeResult.fragments,
+      atoms: mergeResult.atoms,
+      blobs: mergeResult.blobs,
+    },
+    projectionChanged,
+  };
+}
+
 async function syncCodexSourceInBatches(
   source: SourceDefinition,
   hostId: string,
@@ -769,6 +1058,19 @@ async function syncCodexSourceInBatches(
 ): Promise<TimedSyncedSourceSummary | undefined> {
   if (!(await pathExists(source.base_dir))) {
     return undefined;
+  }
+
+  // Defensive guard: the streaming merge path does not preserve cross-file
+  // session merging (see mergeSourcePayloadStreaming doc comment). Routing
+  // cursor/antigravity through here would silently regress their derived
+  // projections. shouldUseBatchedCodexSync already gates entry, but this
+  // assertion catches future routing changes that widen the gate without
+  // widening the streaming merge's session-merging support.
+  if (source.platform !== "codex") {
+    throw new Error(
+      `syncCodexSourceInBatches is codex-only (got platform ${source.platform}); ` +
+        `use syncSource for sources with cross-file sessions.`,
+    );
   }
 
   const timing = createSourceTiming();
@@ -924,6 +1226,52 @@ async function syncCodexSourceInBatches(
     const previousPayload = filePreviousPayload && preSyncStageRuns
       ? { ...filePreviousPayload, stage_runs: preSyncStageRuns }
       : filePreviousPayload;
+    const upfrontWriteKind: CodexBatchWriteKind = replaceFirstBatch && batchIndex === 0
+      ? "replace"
+      : metadataOnlyPreviousPayload !== undefined
+        ? "metadata"
+        : "merge";
+
+    // Route both "replace" (fresh source) and "merge" (subsequent batch)
+    // through the streaming path. For a fresh source, streaming merge is
+    // equivalent to replace (no existing data to preserve). This bounds
+    // memory at one file's worth of derived structures even for the first
+    // sync of a large source — the original OOM scenario.
+    if (upfrontWriteKind === "merge" || upfrontWriteKind === "replace") {
+      pendingMetadataWrite = undefined;
+      const streamResult = await streamCodexMergeBatch({
+        storage: input.storage,
+        source,
+        hostId,
+        fileBatch,
+        observedOriginPaths: files,
+        outsideBatchOriginPaths,
+        previousPayload,
+        preSyncStageRuns,
+        changedSince: input.changedSince,
+        safeMode: input.safeMode,
+        onProgress: input.onProgress,
+        timing,
+        batchIndex,
+        batchCount: batches.length,
+      });
+      counts = streamResult.counts;
+      if (streamResult.projectionChanged) {
+        projectionChanged = true;
+      }
+      input.onProgress?.({
+        stage: "source_prepare_done",
+        source_id: source.id,
+        slot_id: source.slot_id,
+        platform: source.platform,
+        display_name: source.display_name,
+        message: `Finished ${source.display_name} batch ${batchIndex + 1}/${batches.length}`,
+        count: fileBatch.length,
+        elapsed_ms: Date.now() - batchStartedAt,
+      });
+      continue;
+    }
+
     const result = await runSourceProbe(
       {
         source_ids: [source.id],
@@ -947,12 +1295,7 @@ async function syncCodexSourceInBatches(
     }
     lastPayload = payload;
 
-    const metadataOnlyWrite = metadataOnlyPreviousPayload !== undefined && isMetadataOnlySyncPayload(payload);
-    const writeKind = replaceFirstBatch && batchIndex === 0
-      ? "replace"
-      : metadataOnlyWrite
-        ? "metadata"
-        : "merge";
+    const writeKind = upfrontWriteKind;
 
     if (writeKind === "metadata") {
       pendingMetadataWrite = { payload, batchIndex, fileCount: fileBatch.length };

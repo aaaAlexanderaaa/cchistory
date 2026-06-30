@@ -70,6 +70,45 @@ export interface ProbeOptions {
   on_progress?: (event: SourceProbeProgressEvent) => void;
 }
 
+/**
+ * Per-file slice of probe output, emitted by streamSourceProbe. Carries
+ * pre-projection SessionBuildInputs so consumers can either re-merge across
+ * files (runSourceProbe collector path) or project per-file (streaming merge
+ * path). trusted_bytes_by_blob_id lets the storage evidence path reuse the
+ * already-captured fileBuffer instead of readFileSync'ing the file again.
+ */
+export interface SourceProbeFileChunk {
+  source_id: string;
+  origin_path: string;
+  session_inputs: readonly SessionBuildInput[];
+  orphan_blobs: readonly CapturedBlob[];
+  loss_audits: readonly LossAuditRecord[];
+  trusted_bytes_by_blob_id: ReadonlyMap<string, Buffer>;
+}
+
+export type SourceProbeFileSkipReason = "unchanged" | "metadata_only" | "oversized" | "capture_failed";
+
+export type SourceProbeEvent =
+  | { kind: "source_start"; source_id: string; source: SourceStatus }
+  | { kind: "source_missing"; source_id: string; source: SourceStatus }
+  | { kind: "file_chunk"; chunk: SourceProbeFileChunk }
+  | {
+      kind: "file_skip";
+      source_id: string;
+      origin_path: string;
+      reason: SourceProbeFileSkipReason;
+      size_bytes?: number;
+      chunk?: SourceProbeFileChunk;
+    }
+  | {
+      kind: "file_error";
+      source_id: string;
+      origin_path: string;
+      detail: string;
+      chunk?: SourceProbeFileChunk;
+    }
+  | { kind: "source_done"; source_id: string; file_processing_errors: readonly string[] };
+
 export type SourceProbeProgressStage =
   | "source_start"
   | "source_missing"

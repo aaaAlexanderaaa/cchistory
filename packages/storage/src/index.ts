@@ -1,4 +1,5 @@
 export { CCHistoryStorage } from "./internal/storage.js";
+export type { SourcePayloadStreamingChunk } from "./evidence-store.js";
 export type {
   StorageBoundaryContextRef,
   StorageBoundaryDerivedCacheRef,

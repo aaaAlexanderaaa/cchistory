@@ -56,6 +56,8 @@ import {
   retireStorageBoundaryV2Sources,
   streamV2SidecarsFromV1,
   writeStorageBoundaryV2Sidecars,
+  mergeSourcePayloadStreaming,
+  type SourcePayloadStreamingChunk,
 } from "../evidence-store.js";
 import { buildFallbackProjectObservationCandidates } from "../linking/fallback.js";
 import { assignProjectRevisions } from "../linking/revisions.js";
@@ -396,6 +398,46 @@ export class CCHistoryStorage {
     this.refreshDerivedState();
     options.onProgress?.({ stage: "reindex_done", source_id: payload.source.id });
     return recounted;
+  }
+
+  /**
+   * Streaming variant of `mergeSourcePayloadByOriginPath` for the sync hot
+   * path. Consumes pre-projected per-file chunks (V1 + V2 writes per chunk)
+   * so peak memory stays bounded by ~one file's worth of derived structures
+   * regardless of source size. See `mergeSourcePayloadStreaming` in
+   * evidence-store.ts for behavior parity and the cross-file-session
+   * limitation.
+   *
+   * Caller supplies chunks via an async iterable. The CLI is the expected
+   * caller — it owns the probe → project → storage orchestration.
+   */
+  async mergeSourcePayloadStreaming(
+    source: SourceStatus,
+    input: {
+      chunks: AsyncIterable<SourcePayloadStreamingChunk>;
+      preserve_origin_paths: ReadonlySet<string>;
+      observed_origin_paths: ReadonlySet<string>;
+      onProgress?: (event: StorageProgressEvent) => void;
+    },
+  ): Promise<{
+    sessions: number;
+    turns: number;
+    records: number;
+    fragments: number;
+    atoms: number;
+    blobs: number;
+    pruned_evidence_shas: string[];
+  }> {
+    const result = await mergeSourcePayloadStreaming(this.db, source, {
+      chunks: input.chunks,
+      preserve_origin_paths: input.preserve_origin_paths,
+      observed_origin_paths: input.observed_origin_paths,
+      asset_dir: this.assetDir,
+      on_progress: input.onProgress,
+    });
+    this.unlinkEvidenceBlobFiles(result.pruned_evidence_shas);
+    this.invalidateProjectLinkSnapshot();
+    return result;
   }
 
   refreshGlobalDerivedCacheRefs(

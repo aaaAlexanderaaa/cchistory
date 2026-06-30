@@ -3,15 +3,35 @@ import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "no
 import path from "node:path";
 import process from "node:process";
 import type {
+  AtomEdge,
   CapturedBlob,
+  ConversationAtom,
+  DerivedCandidate,
+  LossAuditRecord,
   RawRecord,
+  SessionProjection,
+  SourceFragment,
+  SourceStatus,
   SourceSyncPayload,
+  StageRun,
   TurnContextProjection,
   UserTurnProjection,
 } from "@cchistory/domain";
 import type { DatabaseSync } from "node:sqlite";
-import { normalizeSourcePayload } from "./internal/source-identity.js";
-import { compositeKey, fromJson, nowIso } from "./internal/utils.js";
+import { normalizeSourcePayload, normalizeSourceStatus } from "./internal/source-identity.js";
+import { compositeKey, dedupeByKey, fromJson, nowIso, toJson } from "./internal/utils.js";
+import {
+  countStoredSourcePayload,
+  deleteBlobScopedRows,
+  deleteSessionScopedRows,
+  filterLossAuditsForWrite,
+  normalizeOriginPath,
+  selectBlobIdsByOriginPath,
+  selectSessionRefsByBlobIds,
+  selectSourceOriginPaths,
+  shouldBackfillPreservedBlobIdentity,
+} from "./ingest/source-payload.js";
+import type { SourcePayloadWriteProgressEvent } from "./ingest/source-payload.js";
 import { pruneUnreferencedEvidenceBlobsInTransaction } from "./internal/gc.js";
 
 export const TURN_CONTEXT_INLINE_BUDGET_BYTES = 16 * 1024;
@@ -375,6 +395,473 @@ export function streamV2SidecarsFromV1(input: {
   });
 
   return counts;
+}
+
+/**
+ * Per-file slice of a source payload, emitted by the streaming probe. Carries
+ * pre-projected arrays (the CLI calls `projectFileSessionInputs` between the
+ * probe and this function) plus an optional `trusted_bytes_by_blob_id` map so
+ * the V2 evidence path can reuse the captured fileBuffer instead of re-reading
+ * the file from disk.
+ */
+export interface SourcePayloadStreamingChunk {
+  origin_path: string;
+  stage_runs: readonly StageRun[];
+  loss_audits: readonly LossAuditRecord[];
+  blobs: readonly CapturedBlob[];
+  records: readonly RawRecord[];
+  fragments: readonly SourceFragment[];
+  atoms: readonly ConversationAtom[];
+  edges: readonly AtomEdge[];
+  candidates: readonly DerivedCandidate[];
+  sessions: readonly SessionProjection[];
+  turns: readonly UserTurnProjection[];
+  contexts: readonly TurnContextProjection[];
+  trusted_bytes_by_blob_id?: ReadonlyMap<string, Buffer>;
+  /**
+   * When true, this chunk's origin_path is being preserved (the source file
+   * was skipped as unchanged/metadata-only). The merge uses this to skip the
+   * replace pre-pass for this path — without it, the CLI would have to
+   * pre-compute preserve_origin_paths before the stream starts, forcing it
+   * to buffer all chunks. Setting this flag lets the CLI pipe probe events
+   * directly into the merge without buffering.
+   */
+  preserved?: boolean;
+}
+
+/**
+ * Streaming source-payload merge. Replaces the two-step
+ * `mergeSourcePayloadByOriginPath` + `writeStorageBoundaryV2Sidecars` pair for
+ * the sync hot path. Per-chunk writes (V1 row tables + V2 sidecars) keep peak
+ * memory bounded by ~one file's worth of records/fragments/atoms instead of
+ * the whole source payload.
+ *
+ * Behavior parity with `mergeSourcePayloadByOriginPath` +
+ * `writeStorageBoundaryV2Sidecars(writeMode: "merge")`:
+ *  - Filter logic (preserve_origin_paths, changedIncomingSessionRefs) mirrors
+ *    source-payload.ts:224-288 scoped per chunk. Same INSERT OR REPLACE
+ *    statements and column orderings.
+ *  - V2 sidecars (evidence_blob, evidence_capture, source_file_ledger,
+ *    parsed_record_spans, user_turns_v2, turn_context_refs_v2) written per
+ *    chunk using the same helpers as writeStorageBoundaryV2Sidecars.
+ *  - derived_cache_refs source/parser_profile/session/origin_path scopes
+ *    refreshed once at end via SQL aggregation (upsertDerivedCacheRefsStreaming).
+ *  - pruned_evidence_shas returned for the caller to unlink content-addressed
+ *    files (mirrors writeStorageBoundaryV2Sidecars).
+ *
+ * Documented limitation: cross-file session merging (sessions whose records
+ * span multiple files, e.g. cursor state.vscdb + state.vscdb.backup) is not
+ * preserved byte-identically. Per-chunk filtering sees only the current
+ * chunk's records when deciding changedIncomingSessionRefs. The streaming
+ * path is currently routed only for codex (1 file = 1 session — the OOM
+ * case); see `shouldUseBatchedCodexSync` in apps/cli/src/commands/sync.ts.
+ * Routing cursor/antigravity through this function would silently degrade
+ * their cross-file session merging.
+ */
+export async function mergeSourcePayloadStreaming(
+  db: DatabaseSync,
+  source: SourceStatus,
+  input: {
+    chunks: AsyncIterable<SourcePayloadStreamingChunk>;
+    preserve_origin_paths: ReadonlySet<string>;
+    observed_origin_paths: ReadonlySet<string>;
+    asset_dir?: string;
+    on_progress?: (event: SourcePayloadWriteProgressEvent) => void;
+  },
+): Promise<{
+  sessions: number;
+  turns: number;
+  records: number;
+  fragments: number;
+  atoms: number;
+  blobs: number;
+  pruned_evidence_shas: string[];
+}> {
+  const sourceId = normalizeSourceStatus(source).id;
+  const preserveOriginPaths = new Set([...input.preserve_origin_paths].map(normalizeOriginPath));
+  const observedOriginPaths = new Set([...input.observed_origin_paths].map(normalizeOriginPath));
+
+  // Source-wide pre-pass: paths stored in DB but not observed in this sync
+  // (deleted files). These get removed entirely. Observed-but-skipped paths
+  // are handled per-chunk via the `preserved` flag so the CLI can pipe probe
+  // events directly into the merge without buffering.
+  const deletedOriginPaths = new Set<string>();
+  for (const originPath of selectSourceOriginPaths(db, sourceId)) {
+    const normalized = normalizeOriginPath(originPath);
+    if (!observedOriginPaths.has(normalized) && !preserveOriginPaths.has(normalized)) {
+      deletedOriginPaths.add(normalized);
+    }
+  }
+
+  const deletedBlobIds = selectBlobIdsByOriginPath(db, sourceId, deletedOriginPaths);
+  const deletedSessionRefs = selectSessionRefsByBlobIds(db, sourceId, deletedBlobIds);
+  const changedIncomingSessionRefs = new Set<string>(deletedSessionRefs);
+  const incomingSessionRefs = new Set<string>();
+  const affectedSessionRefs = new Set<string>(deletedSessionRefs);
+  let projectionChanged = deletedSessionRefs.length > 0;
+
+  const now = nowIso();
+  let prunedShas: string[] = [];
+
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    // NOTE: stage_runs are not deleted here. The streaming CLI orchestrates
+    // one mergeSourcePayloadStreaming call per recency batch within a sync;
+    // each batch's final chunk carries that batch's freshly-built stage_runs
+    // (see streamCodexMergeBatch in apps/cli/src/commands/sync.ts). If this
+    // merge deleted stage_runs at start, batch N would wipe batch N-1's
+    // contribution. Because stage_run IDs are deterministic per
+    // (source_id, stage_kind) (see buildStageRunId), INSERT OR REPLACE
+    // upserts rather than accumulates — so the per-batch semantic is
+    // "last batch wins per stage," and across syncs the row reflects the
+    // most recent sync rather than accumulating history.
+    db.prepare("DELETE FROM derived_cache_refs WHERE source_id = ?").run(sourceId);
+
+    const deleteParsedSpanForSession = db.prepare(
+      "DELETE FROM parsed_record_spans WHERE source_id = ? AND session_ref = ?",
+    );
+    const deleteLedgerForBlob = db.prepare(
+      "DELETE FROM source_file_ledger WHERE source_id = ? AND current_blob_id = ?",
+    );
+    const deleteEvidenceCaptureForBlob = db.prepare(
+      "DELETE FROM evidence_captures WHERE source_id = ? AND blob_id = ?",
+    );
+
+    for (const sessionRef of deletedSessionRefs) {
+      deleteSessionScopedRows(db, sourceId, sessionRef);
+      deleteParsedSpanForSession.run(sourceId, sessionRef);
+    }
+    for (const blobId of deletedBlobIds) {
+      deleteBlobScopedRows(db, sourceId, blobId);
+      deleteLedgerForBlob.run(sourceId, blobId);
+      deleteEvidenceCaptureForBlob.run(sourceId, blobId);
+    }
+
+    if (observedOriginPaths.size > 0) {
+      markUnobservedLedgersSourceAbsent(db, sourceId, [...observedOriginPaths], now);
+    }
+
+    const insertStageRun = db.prepare(
+      "INSERT OR REPLACE INTO stage_runs (id, source_id, payload_json) VALUES (?, ?, ?)",
+    );
+    const insertLossAudit = db.prepare(`
+      INSERT OR REPLACE INTO loss_audits (
+        id, source_id, stage_kind, diagnostic_code, severity,
+        session_ref, blob_ref, record_ref, fragment_ref, atom_ref, candidate_ref,
+        payload_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const insertBlob = db.prepare(
+      "INSERT OR REPLACE INTO captured_blobs (id, source_id, origin_path, payload_json) VALUES (?, ?, ?, ?)",
+    );
+    const insertRecord = db.prepare(
+      "INSERT OR REPLACE INTO raw_records (id, source_id, session_ref, blob_id, ordinal, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+    );
+    const insertFragment = db.prepare(
+      "INSERT OR REPLACE INTO source_fragments (id, source_id, session_ref, payload_json) VALUES (?, ?, ?, ?)",
+    );
+    const insertAtom = db.prepare(
+      "INSERT OR REPLACE INTO conversation_atoms (id, source_id, session_ref, time_key, seq_no, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+    );
+    const insertEdge = db.prepare(
+      "INSERT OR REPLACE INTO atom_edges (id, source_id, session_ref, from_atom_id, to_atom_id, payload_json) VALUES (?, ?, ?, ?, ?, ?)",
+    );
+    const insertCandidate = db.prepare(
+      "INSERT OR REPLACE INTO derived_candidates (id, source_id, session_ref, candidate_kind, payload_json) VALUES (?, ?, ?, ?, ?)",
+    );
+    const insertSession = db.prepare(
+      "INSERT OR REPLACE INTO sessions (id, source_id, created_at, updated_at, payload_json) VALUES (?, ?, ?, ?, ?)",
+    );
+
+    const stageRunsSeen = new Set<string>();
+    const lossAuditsSeen = new Set<string>();
+    let parserProfileId = "";
+
+    for await (const chunk of input.chunks) {
+      const chunkBlobs = dedupeByKey(chunk.blobs, (entry) => entry.id);
+      const chunkBlobOriginById = new Map<string, string>();
+      for (const blob of chunkBlobs) {
+        chunkBlobOriginById.set(blob.id, normalizeOriginPath(blob.origin_path));
+      }
+
+      // Per-chunk replace pre-pass: if this chunk's origin_path is marked
+      // preserved (via the chunk.preserved flag or the initial preserve set),
+      // skip the replace deletion for it — its existing data stays. Otherwise
+      // look up its existing blobs/sessions and delete them before writing.
+      // This is what lets the CLI avoid buffering all chunks before calling
+      // merge — preserve status is decided per chunk as it flows through.
+      if (chunk.preserved) {
+        preserveOriginPaths.add(normalizeOriginPath(chunk.origin_path));
+      }
+      const chunkOriginPathsToReplace = new Set<string>();
+      const chunkOriginPath = normalizeOriginPath(chunk.origin_path);
+      if (!preserveOriginPaths.has(chunkOriginPath)) {
+        chunkOriginPathsToReplace.add(chunkOriginPath);
+      }
+      for (const blob of chunkBlobs) {
+        const originPath = normalizeOriginPath(blob.origin_path);
+        if (!preserveOriginPaths.has(originPath)) {
+          chunkOriginPathsToReplace.add(originPath);
+        }
+      }
+      if (chunkOriginPathsToReplace.size > 0) {
+        const existingBlobIds = selectBlobIdsByOriginPath(db, sourceId, chunkOriginPathsToReplace);
+        if (existingBlobIds.length > 0) {
+          const existingSessionRefs = selectSessionRefsByBlobIds(db, sourceId, existingBlobIds);
+          for (const sessionRef of existingSessionRefs) {
+            if (!changedIncomingSessionRefs.has(sessionRef)) {
+              changedIncomingSessionRefs.add(sessionRef);
+              affectedSessionRefs.add(sessionRef);
+              deleteSessionScopedRows(db, sourceId, sessionRef);
+              deleteParsedSpanForSession.run(sourceId, sessionRef);
+            }
+          }
+          for (const blobId of existingBlobIds) {
+            deleteBlobScopedRows(db, sourceId, blobId);
+            deleteLedgerForBlob.run(sourceId, blobId);
+            deleteEvidenceCaptureForBlob.run(sourceId, blobId);
+          }
+        }
+      }
+
+      for (const record of chunk.records) {
+        const originPath = chunkBlobOriginById.get(record.blob_id);
+        if (!originPath || !preserveOriginPaths.has(originPath)) {
+          changedIncomingSessionRefs.add(record.session_ref);
+        }
+      }
+
+      const includeRecord = (record: RawRecord): boolean => {
+        const originPath = chunkBlobOriginById.get(record.blob_id);
+        return !originPath || !preserveOriginPaths.has(originPath) || changedIncomingSessionRefs.has(record.session_ref);
+      };
+      const recordsForWrite = chunk.records.filter(includeRecord);
+      const recordIdsForWrite = new Set(recordsForWrite.map((record) => record.id));
+      const blobIdsForWrite = new Set(recordsForWrite.map((record) => record.blob_id));
+      const blobsForWrite = chunkBlobs.filter((blob) => {
+        const originPath = normalizeOriginPath(blob.origin_path);
+        return !preserveOriginPaths.has(originPath) || blobIdsForWrite.has(blob.id);
+      });
+      for (const blob of blobsForWrite) {
+        blobIdsForWrite.add(blob.id);
+      }
+      const blobIdsAlreadyForWrite = new Set(blobsForWrite.map((blob) => blob.id));
+      for (const blob of chunkBlobs) {
+        const originPath = normalizeOriginPath(blob.origin_path);
+        if (
+          preserveOriginPaths.has(originPath) &&
+          !blobIdsAlreadyForWrite.has(blob.id) &&
+          shouldBackfillPreservedBlobIdentity(db, sourceId, blob)
+        ) {
+          blobsForWrite.push(blob);
+          blobIdsAlreadyForWrite.add(blob.id);
+        }
+      }
+      const fragmentsForWrite = chunk.fragments.filter(
+        (fragment) =>
+          recordIdsForWrite.has(fragment.record_id) || changedIncomingSessionRefs.has(fragment.session_ref),
+      );
+      const fragmentIdsForWrite = new Set(fragmentsForWrite.map((fragment) => fragment.id));
+      const atomsForWrite = chunk.atoms.filter((atom) => changedIncomingSessionRefs.has(atom.session_ref));
+      const atomIdsForWrite = new Set(atomsForWrite.map((atom) => atom.id));
+      const edgesForWrite = dedupeByKey(
+        chunk.edges.filter((edge) => changedIncomingSessionRefs.has(edge.session_ref)),
+        (entry) => entry.id,
+      );
+      const candidatesForWrite = chunk.candidates.filter((candidate) =>
+        changedIncomingSessionRefs.has(candidate.session_ref),
+      );
+      const candidateIdsForWrite = new Set(candidatesForWrite.map((candidate) => candidate.id));
+      const sessionsForWrite = chunk.sessions.filter((session) => changedIncomingSessionRefs.has(session.id));
+      const turnsForWrite = chunk.turns.filter((turn) => changedIncomingSessionRefs.has(turn.session_id));
+      const turnIdsForWrite = new Set(turnsForWrite.map((turn) => turn.id));
+      const contextsForWrite = chunk.contexts.filter((context) => turnIdsForWrite.has(context.turn_id));
+      const lossAuditsForWrite = filterLossAuditsForWrite(chunk.loss_audits, {
+        blobIdsForWrite,
+        recordIdsForWrite,
+        fragmentIdsForWrite,
+        atomIdsForWrite,
+        candidateIdsForWrite,
+        changedIncomingSessionRefs,
+      });
+
+      for (const record of recordsForWrite) {
+        affectedSessionRefs.add(record.session_ref);
+        incomingSessionRefs.add(record.session_ref);
+      }
+      for (const session of sessionsForWrite) {
+        affectedSessionRefs.add(session.id);
+      }
+      for (const turn of turnsForWrite) {
+        affectedSessionRefs.add(turn.session_id);
+      }
+      if (
+        recordsForWrite.length > 0 ||
+        sessionsForWrite.length > 0 ||
+        turnsForWrite.length > 0 ||
+        blobsForWrite.length > 0
+      ) {
+        projectionChanged = true;
+      }
+
+      for (const stageRun of chunk.stage_runs) {
+        if (!parserProfileId) {
+          const profileId = stageRun.source_format_profile_ids?.find((entry) => entry.trim().length > 0);
+          if (profileId) {
+            parserProfileId = profileId;
+          } else if (stageRun.parser_version) {
+            parserProfileId = stageRun.parser_version;
+          }
+        }
+        if (stageRunsSeen.has(stageRun.id)) continue;
+        stageRunsSeen.add(stageRun.id);
+        insertStageRun.run(stageRun.id, sourceId, toJson(stageRun));
+      }
+
+      for (const lossAudit of lossAuditsForWrite) {
+        if (lossAuditsSeen.has(lossAudit.id)) continue;
+        lossAuditsSeen.add(lossAudit.id);
+        insertLossAudit.run(
+          lossAudit.id,
+          sourceId,
+          lossAudit.stage_kind,
+          lossAudit.diagnostic_code,
+          lossAudit.severity,
+          lossAudit.session_ref ?? "",
+          lossAudit.blob_ref ?? "",
+          lossAudit.record_ref ?? "",
+          lossAudit.fragment_ref ?? "",
+          lossAudit.atom_ref ?? "",
+          lossAudit.candidate_ref ?? "",
+          toJson(lossAudit),
+        );
+      }
+
+      for (const blob of blobsForWrite) {
+        insertBlob.run(blob.id, sourceId, normalizeOriginPath(blob.origin_path), toJson(blob));
+      }
+      for (const record of recordsForWrite) {
+        insertRecord.run(record.id, sourceId, record.session_ref, record.blob_id, record.ordinal, toJson(record));
+      }
+      for (const fragment of fragmentsForWrite) {
+        insertFragment.run(fragment.id, sourceId, fragment.session_ref, toJson(fragment));
+      }
+      for (const atom of atomsForWrite) {
+        insertAtom.run(atom.id, sourceId, atom.session_ref, atom.time_key, atom.seq_no, toJson(atom));
+      }
+      for (const edge of edgesForWrite) {
+        insertEdge.run(edge.id, sourceId, edge.session_ref, edge.from_atom_id, edge.to_atom_id, toJson(edge));
+      }
+      for (const candidate of candidatesForWrite) {
+        insertCandidate.run(
+          candidate.id,
+          sourceId,
+          candidate.session_ref,
+          candidate.candidate_kind,
+          toJson(candidate),
+        );
+      }
+      for (const session of sessionsForWrite) {
+        insertSession.run(session.id, sourceId, session.created_at, session.updated_at, toJson(session));
+      }
+
+      const recordsByBlobId = new Map<string, RawRecord[]>();
+      for (const record of recordsForWrite) {
+        const list = recordsByBlobId.get(record.blob_id);
+        if (list) {
+          list.push(record);
+        } else {
+          recordsByBlobId.set(record.blob_id, [record]);
+        }
+      }
+      const lineSpansByBlobId = new Map<string, Map<number, JsonlLineSpan>>();
+      const materializedByBlobId = new Map<string, EvidenceMaterialization>();
+      for (const blob of blobsForWrite) {
+        const records = recordsByBlobId.get(blob.id) ?? [];
+        const trustedBytes = chunk.trusted_bytes_by_blob_id?.get(blob.id);
+        const materialized = materializeBlobEvidence({
+          assetDir: input.asset_dir,
+          blob,
+          records,
+          createdAt: now,
+          ...(trustedBytes ? { bytes: trustedBytes } : {}),
+        });
+        materializedByBlobId.set(blob.id, materialized);
+        if (materialized.captureKind === "source_blob") {
+          lineSpansByBlobId.set(blob.id, indexJsonlLineSpans(materialized.bytes));
+        }
+        upsertEvidenceBlob(db, materialized);
+        upsertEvidenceCapture(db, sourceId, blob, materialized, now);
+        upsertSourceFileLedger(db, {
+          sourceId,
+          blob,
+          materialized,
+          records,
+          parserProfileId,
+          observedAt: now,
+        });
+      }
+      for (const record of recordsForWrite) {
+        const materialized = materializedByBlobId.get(record.blob_id);
+        const normalizedRecord = record.source_id === sourceId ? record : { ...record, source_id: sourceId };
+        upsertParsedRecordSpan(db, {
+          record: normalizedRecord,
+          materialized,
+          lineSpan: lineSpansByBlobId.get(record.blob_id)?.get(record.ordinal),
+          parserProfileId,
+          createdAt: now,
+        });
+      }
+      for (const turn of turnsForWrite) {
+        const normalizedTurn = turn.source_id === sourceId ? turn : { ...turn, source_id: sourceId };
+        upsertBoundedUserTurn({ db, turn: normalizedTurn, boundedAt: now, assetDir: input.asset_dir });
+      }
+      for (const context of contextsForWrite) {
+        const materialized = materializeContextCache({
+          assetDir: input.asset_dir,
+          context,
+          createdAt: now,
+        });
+        upsertEvidenceBlob(db, materialized);
+        upsertTurnContextRef(db, context, sourceId, materialized, now);
+      }
+    }
+
+    if (!parserProfileId) {
+      parserProfileId = deriveParserProfileIdFromStageRuns(db, sourceId);
+    }
+    upsertDerivedCacheRefsStreaming(db, sourceId, parserProfileId, now);
+    prunedShas = pruneUnreferencedEvidenceBlobsInTransaction(db);
+
+    const counts = countStoredSourcePayload(db, sourceId);
+    const mergedSource: SourceStatus = {
+      ...source,
+      total_blobs: counts.blobs,
+      total_records: counts.records,
+      total_fragments: counts.fragments,
+      total_atoms: counts.atoms,
+      total_sessions: counts.sessions,
+      total_turns: counts.turns,
+      sync_status:
+        source.sync_status === "error"
+          ? "error"
+          : counts.sessions > 0 || counts.turns > 0 || incomingSessionRefs.size > 0
+            ? "healthy"
+            : source.sync_status,
+      error_message: source.sync_status === "error" ? source.error_message : undefined,
+    };
+    db.prepare("INSERT OR REPLACE INTO source_instances (id, payload_json) VALUES (?, ?)").run(
+      sourceId,
+      toJson(mergedSource),
+    );
+
+    db.exec("COMMIT;");
+    input.on_progress?.({ stage: "write_store_done", source_id: sourceId, projection_changed: projectionChanged });
+    return { ...counts, pruned_evidence_shas: prunedShas };
+  } catch (error) {
+    db.exec("ROLLBACK;");
+    throw error;
+  }
 }
 
 function tableCount(db: DatabaseSync, tableName: string, sourceId: string): number {
@@ -1007,8 +1494,25 @@ function materializeBlobEvidence(input: {
   blob: CapturedBlob;
   records: readonly RawRecord[];
   createdAt: string;
+  /**
+   * Caller-supplied blob bytes (e.g. the fileBuffer captured during sync).
+   * When present, skips the second readFileSync in readTrustedBlobBytes —
+   * the bytes are already SHA1-validated by captureBlob. When absent, falls
+   * back to disk read + checksum validation.
+   *
+   * Integrity invariant: callers MUST supply bytes that already satisfy
+   * `blob.checksum`. We assert this here so a future caller that passes
+   * untrusted bytes fails loudly instead of silently writing a mismatched
+   * evidence_blob under the blob's content-addressed ID.
+   */
+  bytes?: Buffer;
 }): EvidenceMaterialization {
-  const trustedBytes = readTrustedBlobBytes(input.blob);
+  if (input.bytes && !sourceChecksumMatches(input.bytes, input.blob.checksum)) {
+    throw new Error(
+      `trusted_bytes checksum mismatch for blob ${input.blob.id}: supplied bytes do not match blob.checksum`,
+    );
+  }
+  const trustedBytes = input.bytes ?? readTrustedBlobBytes(input.blob);
   if (trustedBytes) {
     return materializeBytes({
       assetDir: input.assetDir,
@@ -1962,24 +2466,6 @@ function groupBy<T>(items: readonly T[], getKey: (item: T) => string): Map<strin
     }
   }
   return groups;
-}
-
-function dedupeByKey<T>(items: readonly T[], getKey: (item: T) => string): T[] {
-  const seen = new Set<string>();
-  const result: T[] = [];
-  for (const item of items) {
-    const key = getKey(item);
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    result.push(item);
-  }
-  return result;
-}
-
-function normalizeOriginPath(value: string): string {
-  return path.normalize(value);
 }
 
 function sourceFileLedgerId(sourceId: string, originPath: string): string {

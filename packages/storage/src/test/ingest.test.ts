@@ -6,6 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { SourceSyncPayload } from "@cchistory/domain";
 import { CCHistoryStorage } from "../index.js";
+import { mergeSourcePayloadStreaming, type SourcePayloadStreamingChunk } from "../evidence-store.js";
 import { createFixturePayload } from "./helpers.js";
 
 test("replaceSourcePayload persists pipeline layers and lineage drill-down", async () => {
@@ -778,3 +779,332 @@ function assertPlanUsesAnyIndex(
     `Expected query plan to use one of ${indexNames.join(", ")}; got ${rows.map((row) => row.detail).join(" | ")}`,
   );
 }
+
+function payloadToChunk(payload: SourceSyncPayload, originPath: string): SourcePayloadStreamingChunk {
+  return {
+    origin_path: originPath,
+    stage_runs: payload.stage_runs,
+    loss_audits: payload.loss_audits,
+    blobs: payload.blobs,
+    records: payload.records,
+    fragments: payload.fragments,
+    atoms: payload.atoms,
+    edges: payload.edges,
+    candidates: payload.candidates,
+    sessions: payload.sessions,
+    turns: payload.turns,
+    contexts: payload.contexts,
+  };
+}
+
+async function* chunksFromPayloads(
+  payloads: readonly { payload: SourceSyncPayload; origin_path: string }[],
+): AsyncGenerator<SourcePayloadStreamingChunk, void, void> {
+  for (const entry of payloads) {
+    yield payloadToChunk(entry.payload, entry.origin_path);
+  }
+}
+
+test("mergeSourcePayloadStreaming matches mergeSourcePayloadByOriginPath for single-file merge (parity)", async () => {
+  const controlDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-stream-parity-control-"));
+  const treatmentDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-stream-parity-treat-"));
+  try {
+    const control = new CCHistoryStorage(controlDir);
+    const treatment = new CCHistoryStorage(treatmentDir);
+    const sourceId = "src-stream-parity";
+    const baseDir = "/tmp/stream-parity";
+    const keepPath = path.join(baseDir, "keep.jsonl");
+    const stalePath = path.join(baseDir, "stale.jsonl");
+    const newPath = path.join(baseDir, "new.jsonl");
+
+    const keep = createFixturePayload(sourceId, "Keep old turn", "sr-keep", {
+      baseDir,
+      sessionId: "session-keep",
+      turnId: "turn-keep",
+    });
+    keep.blobs[0]!.origin_path = keepPath;
+    const stale = createFixturePayload(sourceId, "Drop stale turn", "sr-stale", {
+      baseDir,
+      sessionId: "session-stale",
+      turnId: "turn-stale",
+    });
+    stale.blobs[0]!.origin_path = stalePath;
+
+    control.replaceSourcePayload(combineSourcePayloads(keep, stale));
+    treatment.replaceSourcePayload(combineSourcePayloads(keep, stale));
+    assert.equal(control.listTurns().length, 2);
+    assert.equal(treatment.listTurns().length, 2);
+
+    const incoming = createFixturePayload(sourceId, "Add new turn", "sr-new", {
+      baseDir,
+      sessionId: "session-new",
+      turnId: "turn-new",
+    });
+    incoming.blobs[0]!.origin_path = newPath;
+
+    const controlCounts = control.mergeSourcePayloadByOriginPath(incoming, {
+      preserve_origin_paths: [keepPath],
+      observed_origin_paths: [keepPath, newPath],
+    });
+
+    const treatmentCounts = await mergeSourcePayloadStreaming(
+      (treatment as unknown as { db: DatabaseSync }).db,
+      incoming.source,
+      {
+        chunks: chunksFromPayloads([{ payload: incoming, origin_path: newPath }]),
+        preserve_origin_paths: new Set([keepPath]),
+        observed_origin_paths: new Set([keepPath, newPath]),
+        asset_dir: treatmentDir,
+      },
+    );
+
+    assert.deepEqual(
+      treatment.listTurns().map((turn) => turn.canonical_text).sort(),
+      control.listTurns().map((turn) => turn.canonical_text).sort(),
+    );
+    assert.deepEqual(
+      treatment.listBlobs().map((blob) => blob.origin_path).sort(),
+      control.listBlobs().map((blob) => blob.origin_path).sort(),
+    );
+    assert.equal(treatmentCounts.turns, controlCounts.turns);
+    assert.equal(treatmentCounts.blobs, controlCounts.blobs);
+    assert.equal(treatment.listSources()[0]?.total_turns, control.listSources()[0]?.total_turns);
+  } finally {
+    await rm(controlDir, { recursive: true, force: true });
+    await rm(treatmentDir, { recursive: true, force: true });
+  }
+});
+
+test("mergeSourcePayloadStreaming handles multi-chunk stream (each file = one chunk)", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-stream-multi-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const sourceId = "src-stream-multi";
+    const baseDir = "/tmp/stream-multi";
+    const pathA = path.join(baseDir, "a.jsonl");
+    const pathB = path.join(baseDir, "b.jsonl");
+    const pathC = path.join(baseDir, "c.jsonl");
+
+    const initial = createFixturePayload(sourceId, "Initial turn", "sr-init", {
+      baseDir,
+      sessionId: "session-init",
+      turnId: "turn-init",
+    });
+    initial.blobs[0]!.origin_path = pathA;
+    storage.replaceSourcePayload(initial);
+
+    const chunkA = createFixturePayload(sourceId, "Refreshed A turn", "sr-a", {
+      baseDir,
+      sessionId: "session-a",
+      turnId: "turn-a",
+    });
+    chunkA.blobs[0]!.origin_path = pathA;
+    const chunkB = createFixturePayload(sourceId, "Fresh B turn", "sr-b", {
+      baseDir,
+      sessionId: "session-b",
+      turnId: "turn-b",
+    });
+    chunkB.blobs[0]!.origin_path = pathB;
+    const chunkC = createFixturePayload(sourceId, "Fresh C turn", "sr-c", {
+      baseDir,
+      sessionId: "session-c",
+      turnId: "turn-c",
+    });
+    chunkC.blobs[0]!.origin_path = pathC;
+
+    const counts = await mergeSourcePayloadStreaming(
+      (storage as unknown as { db: DatabaseSync }).db,
+      chunkA.source,
+      {
+        chunks: chunksFromPayloads([
+          { payload: chunkA, origin_path: pathA },
+          { payload: chunkB, origin_path: pathB },
+          { payload: chunkC, origin_path: pathC },
+        ]),
+        preserve_origin_paths: new Set(),
+        observed_origin_paths: new Set([pathA, pathB, pathC]),
+        asset_dir: dataDir,
+      },
+    );
+
+    assert.equal(counts.turns, 3);
+    assert.equal(counts.blobs, 3);
+    assert.deepEqual(
+      storage.listTurns().map((turn) => turn.canonical_text).sort(),
+      ["Fresh B turn", "Fresh C turn", "Refreshed A turn"],
+    );
+    assert.equal(storage.listSources()[0]?.total_turns, 3);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("mergeSourcePayloadStreaming preserves skipped files via preserve_origin_paths", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-stream-preserve-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const sourceId = "src-stream-preserve";
+    const baseDir = "/tmp/stream-preserve";
+    const keepPath = path.join(baseDir, "keep.jsonl");
+    const newPath = path.join(baseDir, "new.jsonl");
+
+    const keep = createFixturePayload(sourceId, "Keep old turn", "sr-keep", {
+      baseDir,
+      sessionId: "session-keep",
+      turnId: "turn-keep",
+    });
+    keep.blobs[0]!.origin_path = keepPath;
+    storage.replaceSourcePayload(keep);
+
+    const incomingKeep = createFixturePayload(sourceId, "Keep old turn", "sr-keep", {
+      baseDir,
+      sessionId: "session-keep",
+      turnId: "turn-keep",
+    });
+    incomingKeep.blobs[0]!.origin_path = keepPath;
+    incomingKeep.blobs[0]!.captured_at = "2026-02-01T00:00:00.000Z";
+    const incomingNew = createFixturePayload(sourceId, "Add new turn", "sr-new", {
+      baseDir,
+      sessionId: "session-new",
+      turnId: "turn-new",
+    });
+    incomingNew.blobs[0]!.origin_path = newPath;
+
+    const originalCapturedAt = keep.blobs[0]!.captured_at;
+    await mergeSourcePayloadStreaming(
+      (storage as unknown as { db: DatabaseSync }).db,
+      incomingKeep.source,
+      {
+        chunks: chunksFromPayloads([
+          { payload: incomingKeep, origin_path: keepPath },
+          { payload: incomingNew, origin_path: newPath },
+        ]),
+        preserve_origin_paths: new Set([keepPath]),
+        observed_origin_paths: new Set([keepPath, newPath]),
+        asset_dir: dataDir,
+      },
+    );
+
+    assert.deepEqual(
+      storage.listTurns().map((turn) => turn.canonical_text).sort(),
+      ["Add new turn", "Keep old turn"],
+    );
+    const keptBlob = storage.listBlobs().find((blob) => blob.id === keep.blobs[0]!.id);
+    assert.equal(keptBlob?.captured_at, originalCapturedAt);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("mergeSourcePayloadStreaming upserts stage_runs by id across syncs (no unbounded accumulation)", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-stream-stage-runs-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const sourceId = "src-stream-stage-runs";
+    const baseDir = "/tmp/stream-stage-runs";
+    const filePath = path.join(baseDir, "session.jsonl");
+
+    const buildSync = (stageRunId: string, turnText: string, turnId: string): SourcePayloadStreamingChunk => {
+      const payload = createFixturePayload(sourceId, turnText, stageRunId, {
+        baseDir,
+        sessionId: "session-stage-runs",
+        turnId,
+      });
+      payload.blobs[0]!.origin_path = filePath;
+      return payloadToChunk(payload, filePath);
+    };
+
+    const runOnce = async (chunk: SourcePayloadStreamingChunk): Promise<void> => {
+      await mergeSourcePayloadStreaming(
+        (storage as unknown as { db: DatabaseSync }).db,
+        createFixturePayload(sourceId, "", chunk.stage_runs[0]!.id, {
+          baseDir,
+          sessionId: "session-stage-runs",
+          turnId: "turn-stage-runs",
+        }).source,
+        {
+          chunks: (async function* (): AsyncGenerator<SourcePayloadStreamingChunk> {
+            yield chunk;
+          })(),
+          preserve_origin_paths: new Set(),
+          observed_origin_paths: new Set([filePath]),
+          asset_dir: dataDir,
+        },
+      );
+    };
+
+    // First sync: stage_run id "sr-stage-A".
+    await runOnce(buildSync("sr-stage-A", "Sync 1 turn", "turn-sync-1"));
+    // Second sync: SAME stage_run id, different content. Should upsert, not append.
+    await runOnce(buildSync("sr-stage-A", "Sync 2 turn", "turn-sync-2"));
+
+    const stageRuns = storage.listStageRuns().filter((run) => run.source_id === sourceId);
+    const matching = stageRuns.filter((run) => run.id === "sr-stage-A");
+    assert.equal(matching.length, 1, `expected exactly one sr-stage-A row, got ${matching.length}`);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("mergeSourcePayloadStreaming preserves oversized-file loss audits despite synthetic blob_ref", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-stream-loss-audit-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const sourceId = "src-stream-loss-audit";
+    const baseDir = "/tmp/stream-loss-audit";
+    const oversizedPath = path.join(baseDir, "huge.jsonl");
+
+    const basePayload = createFixturePayload(sourceId, "Baseline turn", "sr-loss-baseline", {
+      baseDir,
+      sessionId: "session-loss-baseline",
+      turnId: "turn-baseline",
+    });
+    basePayload.blobs[0]!.origin_path = oversizedPath;
+
+    // Simulate the probe's oversized-file audit: a synthetic blob_ref that
+    // never becomes a captured_blobs row, plus diagnostic_code in the
+    // SYNTHETIC_BLOB_AUDIT_DIAGNOSTIC_CODES set. The filter must keep this.
+    const oversizedAudit: SourceSyncPayload["loss_audits"][number] = {
+      id: "audit-oversized",
+      source_id: sourceId,
+      stage_run_id: "sr-loss-baseline",
+      stage_kind: "capture",
+      diagnostic_code: "blob_too_large",
+      severity: "warning",
+      scope_ref: "blob-oversized",
+      session_ref: undefined,
+      blob_ref: "blob-src-stream-loss-audit-oversized",
+      record_ref: undefined,
+      fragment_ref: undefined,
+      atom_ref: undefined,
+      candidate_ref: undefined,
+      source_format_profile_id: "codex:jsonl:v1",
+      loss_kind: "unknown_fragment",
+      detail: "Skipped oversized source file: 999 bytes exceeds 64 MiB limit",
+      created_at: "2026-03-09T09:00:00.000Z",
+    };
+
+    const chunk = payloadToChunk(basePayload, oversizedPath);
+    chunk.loss_audits = [...chunk.loss_audits, oversizedAudit];
+
+    await mergeSourcePayloadStreaming(
+      (storage as unknown as { db: DatabaseSync }).db,
+      basePayload.source,
+      {
+        chunks: (async function* (): AsyncGenerator<SourcePayloadStreamingChunk> {
+          yield chunk;
+        })(),
+        preserve_origin_paths: new Set(),
+        observed_origin_paths: new Set([oversizedPath]),
+        asset_dir: dataDir,
+      },
+    );
+
+    const audits = storage.listLossAudits();
+    const oversized = audits.find((audit) => audit.id === "audit-oversized");
+    assert.ok(oversized, "oversized-file loss audit was dropped by the filter");
+    assert.equal(oversized?.diagnostic_code, "blob_too_large");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});

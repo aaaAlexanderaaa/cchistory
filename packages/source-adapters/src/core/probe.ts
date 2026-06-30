@@ -5,6 +5,7 @@ import type {
   Host,
   SourceDefinition,
   SourceSyncPayload,
+  SourceStatus,
   CapturedBlob,
   RawRecord,
   SourceFragment,
@@ -65,16 +66,29 @@ import type {
   ProbeOptions,
   SessionDraft,
   AdapterBlobResult,
-  CollectionCoreResult,
   ProcessingCoreResult,
   CapturedBlobInput,
   SessionBuildInput,
   ExtractedSessionSeed,
   SourceProbeProgressEvent,
+  SourceProbeEvent,
+  SourceProbeFileChunk,
+  SourceProbeFileSkipReason,
 } from "./types.js";
 import { asArray, asNumber, asString, coerceIso, epochMillisToIso, isObject, normalizeStopReason, safeJsonParse, extractTokenUsage, firstDefinedNumber, truncate, normalizeWorkspacePath } from "./utils.js";
 
 const DEFAULT_MAX_FILE_BYTES = 64 * 1024 * 1024;
+
+function buildHost(): Host {
+  const now = nowIso();
+  return {
+    id: deriveHostId(os.hostname()),
+    hostname: os.hostname(),
+    os: `${os.platform()} ${os.release()}`,
+    first_seen: now,
+    last_seen: now,
+  };
+}
 
 export async function runSourceProbe(
   options: ProbeOptions = {},
@@ -83,74 +97,109 @@ export async function runSourceProbe(
   host: Host;
   sources: SourceSyncPayload[];
 }> {
+  const host = buildHost();
   const sourceList = sources.map((source) => ({ ...source }));
   const selectedSourceIds = new Set(options.source_ids ?? sourceList.map((source) => source.id));
-  const now = nowIso();
-  const host: Host = {
-    id: deriveHostId(os.hostname()),
-    hostname: os.hostname(),
-    os: `${os.platform()} ${os.release()}`,
-    first_seen: now,
-    last_seen: now,
-  };
 
   const payloads: SourceSyncPayload[] = [];
+  const collectorState = new Map<string, {
+    source: SourceDefinition;
+    sourceFormatProfile: SourceFormatProfile;
+    startedAt: string;
+    monotonicStartedAt: number;
+    sessionsById: Map<string, SessionBuildInput>;
+    orphanBlobs: CapturedBlob[];
+    lossAudits: LossAuditRecord[];
+    fileProcessingErrors: string[];
+    filesObserved: number;
+    missingSource: SourceStatus | undefined;
+  }>();
+
   for (const source of sourceList) {
     if (!selectedSourceIds.has(source.id) && !selectedSourceIds.has(source.slot_id)) {
       continue;
     }
-    payloads.push(await processSource(source, host, options));
+    collectorState.set(source.id, {
+      source,
+      sourceFormatProfile: resolveSourceFormatProfile(source),
+      startedAt: nowIso(),
+      monotonicStartedAt: Date.now(),
+      sessionsById: new Map(),
+      orphanBlobs: [],
+      lossAudits: [],
+      fileProcessingErrors: [],
+      filesObserved: 0,
+      missingSource: undefined,
+    });
+  }
+
+  for await (const event of streamSourceProbe(options, sourceList, host)) {
+    const sourceId = event.kind === "file_chunk" ? event.chunk.source_id : event.source_id;
+    const state = collectorState.get(sourceId);
+    if (!state) {
+      continue;
+    }
+    if (event.kind === "source_missing") {
+      state.missingSource = event.source;
+    } else if (event.kind === "file_chunk") {
+      absorbChunk(state, event.chunk);
+      state.filesObserved += 1;
+    } else if (event.kind === "file_skip") {
+      if (event.chunk) {
+        absorbChunk(state, event.chunk);
+      }
+      state.filesObserved += 1;
+    } else if (event.kind === "file_error") {
+      state.fileProcessingErrors.push(event.detail);
+      if (event.chunk) {
+        absorbChunk(state, event.chunk);
+      }
+      state.filesObserved += 1;
+    } else if (event.kind === "source_done") {
+      payloads.push(await finalizeSourcePayload(state, host, options));
+    }
   }
 
   return { host, sources: payloads };
 }
 
-async function processSource(
-  source: SourceDefinition,
+function absorbChunk(
+  state: {
+    sessionsById: Map<string, SessionBuildInput>;
+    orphanBlobs: CapturedBlob[];
+    lossAudits: LossAuditRecord[];
+  },
+  chunk: SourceProbeFileChunk,
+): void {
+  for (const sessionInput of chunk.session_inputs) {
+    mergeSessionBuildInput(state.sessionsById, sessionInput);
+  }
+  state.orphanBlobs.push(...chunk.orphan_blobs);
+  state.lossAudits.push(...chunk.loss_audits);
+}
+
+async function finalizeSourcePayload(
+  state: {
+    source: SourceDefinition;
+    sourceFormatProfile: SourceFormatProfile;
+    startedAt: string;
+    monotonicStartedAt: number;
+    sessionsById: Map<string, SessionBuildInput>;
+    orphanBlobs: CapturedBlob[];
+    lossAudits: LossAuditRecord[];
+    fileProcessingErrors: string[];
+    filesObserved: number;
+    missingSource: SourceStatus | undefined;
+  },
   host: Host,
   options: ProbeOptions,
 ): Promise<SourceSyncPayload> {
-  const startedAt = nowIso();
-  const monotonicStartedAt = Date.now();
-  const sourceFormatProfile = resolveSourceFormatProfile(source);
-  emitProbeProgress(options, source, {
-    stage: "source_start",
-    message: `Scanning ${source.display_name} (${source.slot_id})`,
-  });
-  const baseDirExists = await pathExists(source.base_dir);
-  if (!baseDirExists) {
-    emitProbeProgress(options, source, {
-      stage: "source_missing",
-      message: `Source path not found: ${source.base_dir}`,
-      elapsed_ms: Date.now() - monotonicStartedAt,
-    });
-    const stageRuns = buildStageRuns(source.id, source.platform, startedAt, nowIso(), {
-      blobs: 0,
-      records: 0,
-      fragments: 0,
-      atoms: 0,
-      sessions: 0,
-      turns: 0,
+  if (state.missingSource) {
+    const stageRuns = buildStageRuns(state.source.id, state.source.platform, state.startedAt, nowIso(), {
+      blobs: 0, records: 0, fragments: 0, atoms: 0, sessions: 0, turns: 0,
     }, []);
     return {
-      source: {
-        id: source.id,
-        slot_id: source.slot_id,
-        family: source.family,
-        platform: source.platform,
-        display_name: source.display_name,
-        base_dir: source.base_dir,
-        host_id: host.id,
-        last_sync: nowIso(),
-        sync_status: "error",
-        error_message: `Source path not found: ${source.base_dir}`,
-        total_blobs: 0,
-        total_records: 0,
-        total_fragments: 0,
-        total_atoms: 0,
-        total_sessions: 0,
-        total_turns: 0,
-      },
+      source: { ...state.missingSource, host_id: host.id },
       stage_runs: stageRuns,
       loss_audits: [],
       blobs: [],
@@ -165,19 +214,18 @@ async function processSource(
     };
   }
 
-  const collectionCore = await collectSourceInputs(source, host, sourceFormatProfile, options, startedAt);
-  emitProbeProgress(options, source, {
+  emitProbeProgress(options, state.source, {
     stage: "derive_start",
-    message: `Deriving projections from ${collectionCore.sessionsById.size} session candidate(s)`,
+    message: `Deriving projections from ${state.sessionsById.size} session candidate(s)`,
   });
   const deriveStartedAt = Date.now();
   const processingCore = await processCollectedSessions(
-    collectionCore.sessionsById,
-    collectionCore.orphanBlobs,
-    collectionCore.sourceLossAudits,
+    state.sessionsById,
+    state.orphanBlobs,
+    state.lossAudits,
     { safeMode: options.safe_mode ?? false },
   );
-  emitProbeProgress(options, source, {
+  emitProbeProgress(options, state.source, {
     stage: "derive_done",
     message: `Derived ${processingCore.sessions.length} session(s), ${processingCore.turns.length} turn(s)`,
     count: processingCore.turns.length,
@@ -186,7 +234,7 @@ async function processSource(
   const uniqueBlobs = dedupeById(processingCore.blobs);
 
   const finishedAt = nowIso();
-  const stageRuns = buildStageRuns(source.id, source.platform, startedAt, finishedAt, {
+  const stageRuns = buildStageRuns(state.source.id, state.source.platform, state.startedAt, finishedAt, {
     blobs: uniqueBlobs.length,
     records: processingCore.records.length,
     fragments: processingCore.fragments.length,
@@ -197,25 +245,25 @@ async function processSource(
 
   const payload: SourceSyncPayload = {
     source: {
-      id: source.id,
-      slot_id: source.slot_id,
-      family: source.family,
-      platform: source.platform,
-      display_name: source.display_name,
-      base_dir: source.base_dir,
+      id: state.source.id,
+      slot_id: state.source.slot_id,
+      family: state.source.family,
+      platform: state.source.platform,
+      display_name: state.source.display_name,
+      base_dir: state.source.base_dir,
       host_id: host.id,
       last_sync: finishedAt,
       sync_status:
-        collectionCore.files.length === 0
+        state.filesObserved === 0
           ? "stale"
           : processingCore.sessions.length > 0 || processingCore.turns.length > 0
             ? "healthy"
-            : collectionCore.fileProcessingErrors.length > 0
+            : state.fileProcessingErrors.length > 0
               ? "error"
               : "stale",
       error_message:
-        collectionCore.fileProcessingErrors.length > 0
-          ? `${collectionCore.fileProcessingErrors[0]}${collectionCore.fileProcessingErrors.length > 1 ? ` (+${collectionCore.fileProcessingErrors.length - 1} more)` : ""}`
+        state.fileProcessingErrors.length > 0
+          ? `${state.fileProcessingErrors[0]}${state.fileProcessingErrors.length > 1 ? ` (+${state.fileProcessingErrors.length - 1} more)` : ""}`
           : undefined,
       total_blobs: uniqueBlobs.length,
       total_records: processingCore.records.length,
@@ -236,33 +284,162 @@ async function processSource(
     turns: processingCore.turns,
     contexts: processingCore.contexts,
   };
-  emitProbeProgress(options, source, {
+  emitProbeProgress(options, state.source, {
     stage: "source_done",
-    message: `Finished ${source.display_name}`,
+    message: `Finished ${state.source.display_name}`,
     count: processingCore.turns.length,
-    elapsed_ms: Date.now() - monotonicStartedAt,
+    elapsed_ms: Date.now() - state.monotonicStartedAt,
   });
   return payload;
 }
 
-async function collectSourceInputs(
+/**
+ * Streaming variant of runSourceProbe. Yields one event per file/per source,
+ * letting consumers (CLI sync) bound memory by processing each chunk and
+ * releasing it before the next. Host is constructed internally and passed
+ * back via the runSourceProbe collector; for direct consumers the host is
+ * also returned via the generator's final value.
+ */
+export async function* streamSourceProbe(
+  options: ProbeOptions = {},
+  sources: readonly SourceDefinition[] = getDefaultSources(),
+  host?: Host,
+): AsyncGenerator<SourceProbeEvent, Host, void> {
+  const resolvedHost = host ?? buildHost();
+  const sourceList = sources.map((source) => ({ ...source }));
+  const selectedSourceIds = new Set(options.source_ids ?? sourceList.map((source) => source.id));
+
+  for (const source of sourceList) {
+    if (!selectedSourceIds.has(source.id) && !selectedSourceIds.has(source.slot_id)) {
+      continue;
+    }
+    yield* streamSingleSource(options, source, resolvedHost);
+  }
+
+  return resolvedHost;
+}
+
+async function* streamSingleSource(
+  options: ProbeOptions,
+  source: SourceDefinition,
+  host: Host,
+): AsyncGenerator<SourceProbeEvent, void, void> {
+  const startedAt = nowIso();
+  const monotonicStartedAt = Date.now();
+  const sourceFormatProfile = resolveSourceFormatProfile(source);
+  emitProbeProgress(options, source, {
+    stage: "source_start",
+    message: `Scanning ${source.display_name} (${source.slot_id})`,
+  });
+  const baseDirExists = await pathExists(source.base_dir);
+  if (!baseDirExists) {
+    emitProbeProgress(options, source, {
+      stage: "source_missing",
+      message: `Source path not found: ${source.base_dir}`,
+      elapsed_ms: Date.now() - monotonicStartedAt,
+    });
+    const missingSource: SourceStatus = {
+      id: source.id,
+      slot_id: source.slot_id,
+      family: source.family,
+      platform: source.platform,
+      display_name: source.display_name,
+      base_dir: source.base_dir,
+      host_id: host.id,
+      last_sync: nowIso(),
+      sync_status: "error",
+      error_message: `Source path not found: ${source.base_dir}`,
+      total_blobs: 0,
+      total_records: 0,
+      total_fragments: 0,
+      total_atoms: 0,
+      total_sessions: 0,
+      total_turns: 0,
+    };
+    yield { kind: "source_missing", source_id: source.id, source: missingSource };
+    yield { kind: "source_done", source_id: source.id, file_processing_errors: [] };
+    return;
+  }
+
+  const fileProcessingErrors: string[] = [];
+  for await (const collected of streamCollectedFileInputs(source, host, sourceFormatProfile, options, startedAt)) {
+    const chunk: SourceProbeFileChunk = {
+      source_id: source.id,
+      origin_path: collected.originPath,
+      session_inputs: collected.sessionInputs,
+      orphan_blobs: collected.orphanBlobs,
+      loss_audits: collected.lossAudits,
+      trusted_bytes_by_blob_id: collected.trustedBytesByBlobId,
+    };
+    if (collected.errorDetail) {
+      fileProcessingErrors.push(collected.errorDetail);
+      yield {
+        kind: "file_error",
+        source_id: source.id,
+        origin_path: collected.originPath,
+        detail: collected.errorDetail,
+        chunk,
+      };
+    } else if (collected.skipReason) {
+      yield {
+        kind: "file_skip",
+        source_id: source.id,
+        origin_path: collected.originPath,
+        reason: collected.skipReason,
+        size_bytes: collected.sizeBytes,
+        chunk,
+      };
+    } else {
+      yield { kind: "file_chunk", chunk };
+    }
+  }
+
+  yield { kind: "source_done", source_id: source.id, file_processing_errors: fileProcessingErrors };
+}
+
+/**
+ * Project one file's worth of SessionBuildInputs into the flat arrays that
+ * the storage layer consumes. Used by streaming merge consumers that don't
+ * re-merge across files (CLI sync). operatePerFile: each session is projected
+ * independently; cross-file session merging is the caller's responsibility.
+ */
+export async function projectFileSessionInputs(
+  source: SourceDefinition,
+  sessionInputs: readonly SessionBuildInput[],
+  orphanBlobs: readonly CapturedBlob[],
+  lossAudits: readonly LossAuditRecord[],
+  options: { safeMode: boolean },
+): Promise<ProcessingCoreResult> {
+  const sessionsById = new Map<string, SessionBuildInput>();
+  for (const sessionInput of sessionInputs) {
+    mergeSessionBuildInput(sessionsById, sessionInput);
+  }
+  return processCollectedSessions(sessionsById, [...orphanBlobs], [...lossAudits], options);
+}
+
+interface CollectedFile {
+  originPath: string;
+  sessionInputs: SessionBuildInput[];
+  orphanBlobs: CapturedBlob[];
+  lossAudits: LossAuditRecord[];
+  trustedBytesByBlobId: Map<string, Buffer>;
+  skipReason?: SourceProbeFileSkipReason;
+  sizeBytes?: number;
+  errorDetail?: string;
+}
+
+async function* streamCollectedFileInputs(
   source: SourceDefinition,
   host: Host,
   sourceFormatProfile: SourceFormatProfile,
   options: ProbeOptions,
   startedAt: string,
-): Promise<CollectionCoreResult> {
+): AsyncGenerator<CollectedFile, void, void> {
   const captureRunId = stableId("capture-run", source.id, startedAt);
   const adapter = getPlatformAdapter(source.platform);
   const previousIndex = buildPreviousSourceIndex(options.previous_payloads?.[source.id], sourceFormatProfile);
   const changedSinceMs = parseChangedSinceMs(options.changed_since);
-  const sessionsById = new Map<string, SessionBuildInput>();
-  const orphanBlobs: CapturedBlob[] = [];
-  const companionFiles: string[] = [];
   const capturedCompanionPaths = new Set<string>();
-  const sourceLossAudits: LossAuditRecord[] = [];
-  const fileProcessingErrors: string[] = [];
-  const liveFiles: string[] = [];
   let remainingFileLimit = options.limit_files_per_source;
 
   if (source.platform === "antigravity" && !options.safe_mode) {
@@ -275,19 +452,25 @@ async function collectSourceInputs(
     });
     if (liveCollection) {
       for (const [index, seed] of liveCollection.seeds.entries()) {
-        mergeAdapterBlobResult(
-          sessionsById,
-          buildSyntheticSeedAdapterResult(
-            source,
-            sourceFormatProfile,
-            host.id,
-            captureRunId,
-            liveCollection.virtualPaths[index] ?? `antigravity-live://${seed.sessionId}`,
-            seed,
-          ),
+        const virtualPath = liveCollection.virtualPaths[index] ?? `antigravity-live://${seed.sessionId}`;
+        const adapterResult = buildSyntheticSeedAdapterResult(
+          source,
+          sourceFormatProfile,
+          host.id,
+          captureRunId,
+          virtualPath,
+          seed,
         );
+        const sessionsById = new Map<string, SessionBuildInput>();
+        mergeAdapterBlobResult(sessionsById, adapterResult);
+        yield {
+          originPath: virtualPath,
+          sessionInputs: [...sessionsById.values()],
+          orphanBlobs: [],
+          lossAudits: [],
+          trustedBytesByBlobId: new Map(),
+        };
       }
-      liveFiles.push(...liveCollection.virtualPaths);
       if (typeof remainingFileLimit === "number") {
         remainingFileLimit = Math.max(remainingFileLimit - liveCollection.virtualPaths.length, 0);
       }
@@ -317,54 +500,101 @@ async function collectSourceInputs(
   });
 
   for (const [fileIndex, filePath] of files.entries()) {
-    let capturedBlob: CapturedBlobInput | undefined;
-    const fileStartedAt = Date.now();
-    emitProbeProgress(options, source, {
-      stage: "file_start",
-      message: `Processing ${filePath}`,
-      file_path: filePath,
-      file_index: fileIndex + 1,
-      file_count: files.length,
-    });
-    try {
-      const fileStats = await stat(filePath);
-      const sizeBytes = fileStats.size;
-      const maxFileBytes = options.max_file_bytes ?? DEFAULT_MAX_FILE_BYTES;
-      if (sizeBytes > maxFileBytes) {
-        const detail = `Skipped oversized source file ${filePath}: ${sizeBytes} bytes exceeds ${maxFileBytes} byte limit`;
-        const blobRef = stableId("blob", source.id, filePath, "oversized");
-        sourceLossAudits.push(
-          createLossAudit(source.id, blobRef, "unknown_fragment", detail, {
-            stageKind: "capture",
-            diagnosticCode: "blob_too_large",
-            severity: "warning",
-            blobRef,
-            sourceFormatProfileId: sourceFormatProfile.id,
-          }),
-        );
-        fileProcessingErrors.push(detail);
-        emitProbeProgress(options, source, {
-          stage: "file_error",
-          message: detail,
-          file_path: filePath,
-          file_index: fileIndex + 1,
-          file_count: files.length,
-          elapsed_ms: Date.now() - fileStartedAt,
-        });
-        continue;
-      }
+    yield* streamSingleFileInputs(
+      source,
+      host,
+      sourceFormatProfile,
+      options,
+      captureRunId,
+      adapter,
+      previousIndex,
+      changedSinceMs,
+      capturedCompanionPaths,
+      filePath,
+      fileIndex,
+      files.length,
+    );
+  }
+}
+
+async function* streamSingleFileInputs(
+  source: SourceDefinition,
+  host: Host,
+  sourceFormatProfile: SourceFormatProfile,
+  options: ProbeOptions,
+  captureRunId: string,
+  adapter: ReturnType<typeof getPlatformAdapter>,
+  previousIndex: PreviousSourceIndex | undefined,
+  changedSinceMs: number | undefined,
+  capturedCompanionPaths: Set<string>,
+  filePath: string,
+  fileIndex: number,
+  fileCount: number,
+): AsyncGenerator<CollectedFile, void, void> {
+  let capturedBlob: CapturedBlobInput | undefined;
+  const fileStartedAt = Date.now();
+  emitProbeProgress(options, source, {
+    stage: "file_start",
+    message: `Processing ${filePath}`,
+    file_path: filePath,
+    file_index: fileIndex + 1,
+    file_count: fileCount,
+  });
+
+  const fileLossAudits: LossAuditRecord[] = [];
+  const fileOrphanBlobs: CapturedBlob[] = [];
+  const fileTrustedBytesByBlobId = new Map<string, Buffer>();
+  const fileSessionInputs: SessionBuildInput[] = [];
+  let fileSkipReason: SourceProbeFileSkipReason | undefined;
+  let fileSizeBytes: number | undefined;
+  let fileErrorDetail: string | undefined;
+  let earlyYield = false;
+
+  try {
+    const fileStats = await stat(filePath);
+    const sizeBytes = fileStats.size;
+    const maxFileBytes = options.max_file_bytes ?? DEFAULT_MAX_FILE_BYTES;
+    if (sizeBytes > maxFileBytes) {
+      const detail = `Skipped oversized source file ${filePath}: ${sizeBytes} bytes exceeds ${maxFileBytes} byte limit`;
+      const blobRef = stableId("blob", source.id, filePath, "oversized");
+      fileLossAudits.push(
+        createLossAudit(source.id, blobRef, "unknown_fragment", detail, {
+          stageKind: "capture",
+          diagnosticCode: "blob_too_large",
+          severity: "warning",
+          blobRef,
+          sourceFormatProfileId: sourceFormatProfile.id,
+        }),
+      );
+      fileErrorDetail = detail;
+      fileSkipReason = "oversized";
+      fileSizeBytes = sizeBytes;
+      emitProbeProgress(options, source, {
+        stage: "file_error",
+        message: detail,
+        file_path: filePath,
+        file_index: fileIndex + 1,
+        file_count: fileCount,
+        elapsed_ms: Date.now() - fileStartedAt,
+      });
+      earlyYield = true;
+    } else {
       const previousEntry = previousIndex?.byOriginPath.get(path.normalize(filePath));
       const isOlderThanSince = changedSinceMs !== undefined && fileStats.mtime.getTime() < changedSinceMs;
       if (previousEntry && canReuseBlobFromStats(previousEntry, fileStats)) {
         if (!previousIndex?.metadataOnly) {
-          mergePreviousFileEntry(sessionsById, orphanBlobs, sourceLossAudits, previousEntry);
+          const sessionsById = new Map<string, SessionBuildInput>();
+          mergePreviousFileEntry(sessionsById, fileOrphanBlobs, fileLossAudits, previousEntry);
+          fileSessionInputs.push(...sessionsById.values());
         }
+        fileSkipReason = "metadata_only";
+        fileSizeBytes = fileStats.size;
         emitProbeProgress(options, source, {
           stage: "file_skip",
           message: `Reused unchanged file without reading content: ${filePath}`,
           file_path: filePath,
           file_index: fileIndex + 1,
-          file_count: files.length,
+          file_count: fileCount,
           size_bytes: fileStats.size,
           elapsed_ms: Date.now() - fileStartedAt,
         });
@@ -373,194 +603,236 @@ async function collectSourceInputs(
           message: `Processed ${filePath}`,
           file_path: filePath,
           file_index: fileIndex + 1,
-          file_count: files.length,
+          file_count: fileCount,
           size_bytes: fileStats.size,
           elapsed_ms: Date.now() - fileStartedAt,
         });
-        continue;
+        earlyYield = true;
+      } else {
+        const captureStartedAt = Date.now();
+        capturedBlob = await captureBlob(source, host.id, filePath, captureRunId);
+        emitProbeProgress(options, source, {
+          stage: "file_capture_done",
+          message: `Captured ${filePath}`,
+          file_path: filePath,
+          file_index: fileIndex + 1,
+          file_count: fileCount,
+          size_bytes: capturedBlob.blob.size_bytes,
+          elapsed_ms: Date.now() - captureStartedAt,
+        });
+
+        if (previousEntry && canReuseCapturedBlob(previousEntry, capturedBlob.blob)) {
+          if (previousIndex?.metadataOnly) {
+            fileOrphanBlobs.push(capturedBlob.blob);
+            fileTrustedBytesByBlobId.set(capturedBlob.blob.id, capturedBlob.fileBuffer);
+            fileSkipReason = "metadata_only";
+            fileSizeBytes = capturedBlob.blob.size_bytes;
+            emitProbeProgress(options, source, {
+              stage: "file_skip",
+              message: `Reused unchanged file: ${filePath}`,
+              file_path: filePath,
+              file_index: fileIndex + 1,
+              file_count: fileCount,
+              size_bytes: capturedBlob.blob.size_bytes,
+              elapsed_ms: Date.now() - fileStartedAt,
+            });
+            emitProbeProgress(options, source, {
+              stage: "file_done",
+              message: `Processed ${filePath}`,
+              file_path: filePath,
+              file_index: fileIndex + 1,
+              file_count: fileCount,
+              size_bytes: capturedBlob.blob.size_bytes,
+              elapsed_ms: Date.now() - fileStartedAt,
+            });
+            earlyYield = true;
+          } else {
+            const sessionsById = new Map<string, SessionBuildInput>();
+            mergePreviousFileEntry(sessionsById, fileOrphanBlobs, fileLossAudits, previousEntry, capturedBlob.blob);
+            fileSessionInputs.push(...sessionsById.values());
+            fileTrustedBytesByBlobId.set(capturedBlob.blob.id, capturedBlob.fileBuffer);
+            fileSkipReason = "unchanged";
+            fileSizeBytes = capturedBlob.blob.size_bytes;
+            emitProbeProgress(options, source, {
+              stage: isOlderThanSince ? "file_skip" : "file_reuse",
+              message: isOlderThanSince
+                ? `Reused unchanged file: ${filePath}`
+                : `Reused unchanged projection for ${filePath}`,
+              file_path: filePath,
+              file_index: fileIndex + 1,
+              file_count: fileCount,
+              size_bytes: capturedBlob.blob.size_bytes,
+              elapsed_ms: Date.now() - fileStartedAt,
+            });
+            emitProbeProgress(options, source, {
+              stage: "file_done",
+              message: `Processed ${filePath}`,
+              file_path: filePath,
+              file_index: fileIndex + 1,
+              file_count: fileCount,
+              size_bytes: capturedBlob.blob.size_bytes,
+              elapsed_ms: Date.now() - fileStartedAt,
+            });
+            earlyYield = true;
+          }
+        }
       }
-      const captureStartedAt = Date.now();
-      capturedBlob = await captureBlob(source, host.id, filePath, captureRunId);
+    }
+  } catch (error) {
+    const detail = `Failed to capture source file ${filePath}: ${formatErrorMessage(error)}`;
+    const blobRef = stableId("blob", source.id, filePath, "capture-failed");
+    fileLossAudits.push(
+      createLossAudit(source.id, blobRef, "unknown_fragment", detail, {
+        stageKind: "capture",
+        diagnosticCode: "blob_capture_failed",
+        severity: "error",
+        blobRef,
+        sourceFormatProfileId: sourceFormatProfile.id,
+      }),
+    );
+    fileErrorDetail = detail;
+    fileSkipReason = "capture_failed";
+    emitProbeProgress(options, source, {
+      stage: "file_error",
+      message: detail,
+      file_path: filePath,
+      file_index: fileIndex + 1,
+      file_count: fileCount,
+      elapsed_ms: Date.now() - fileStartedAt,
+    });
+    earlyYield = true;
+  }
+
+  if (earlyYield) {
+    yield {
+      originPath: filePath,
+      sessionInputs: fileSessionInputs,
+      orphanBlobs: fileOrphanBlobs,
+      lossAudits: fileLossAudits,
+      trustedBytesByBlobId: fileTrustedBytesByBlobId,
+      skipReason: fileSkipReason,
+      sizeBytes: fileSizeBytes,
+      errorDetail: fileErrorDetail,
+    };
+    return;
+  }
+
+  try {
+    const parseStartedAt = Date.now();
+    const previousEntry = previousIndex?.byOriginPath.get(path.normalize(filePath));
+    const appendedResults = previousEntry && capturedBlob
+      ? processAppendedJsonlBlob(source, sourceFormatProfile, filePath, capturedBlob, previousEntry)
+      : undefined;
+    if (appendedResults) {
       emitProbeProgress(options, source, {
-        stage: "file_capture_done",
-        message: `Captured ${filePath}`,
+        stage: "file_append_start",
+        message: `Parsing appended records for ${filePath}`,
         file_path: filePath,
         file_index: fileIndex + 1,
-        file_count: files.length,
-        size_bytes: capturedBlob.blob.size_bytes,
-        elapsed_ms: Date.now() - captureStartedAt,
+        file_count: fileCount,
       });
-
-      if (previousEntry && canReuseCapturedBlob(previousEntry, capturedBlob.blob)) {
-        if (previousIndex?.metadataOnly) {
-          orphanBlobs.push(capturedBlob.blob);
-          emitProbeProgress(options, source, {
-            stage: "file_skip",
-            message: `Reused unchanged file: ${filePath}`,
-            file_path: filePath,
-            file_index: fileIndex + 1,
-            file_count: files.length,
-            size_bytes: capturedBlob.blob.size_bytes,
-            elapsed_ms: Date.now() - fileStartedAt,
-          });
-          emitProbeProgress(options, source, {
-            stage: "file_done",
-            message: `Processed ${filePath}`,
-            file_path: filePath,
-            file_index: fileIndex + 1,
-            file_count: files.length,
-            size_bytes: capturedBlob.blob.size_bytes,
-            elapsed_ms: Date.now() - fileStartedAt,
-          });
+    }
+    const adapterResults = appendedResults ?? (capturedBlob ? await processBlob(source, sourceFormatProfile, filePath, capturedBlob) : []);
+    const sessionsById = new Map<string, SessionBuildInput>();
+    for (const adapterResult of adapterResults) {
+      mergeAdapterBlobResult(sessionsById, adapterResult);
+    }
+    if (capturedBlob) {
+      fileTrustedBytesByBlobId.set(capturedBlob.blob.id, capturedBlob.fileBuffer);
+    }
+    emitProbeProgress(options, source, {
+      stage: appendedResults ? "file_append_done" : "file_parse_done",
+      message: appendedResults ? `Parsed appended records for ${filePath}` : `Parsed ${filePath}`,
+      file_path: filePath,
+      file_index: fileIndex + 1,
+      file_count: fileCount,
+      size_bytes: capturedBlob?.blob.size_bytes,
+      elapsed_ms: Date.now() - parseStartedAt,
+    });
+    if (adapter?.getCompanionEvidencePaths && !options.safe_mode) {
+      for (const companionPath of await adapter.getCompanionEvidencePaths(source.base_dir, filePath)) {
+        const normalizedCompanionPath = path.normalize(companionPath);
+        if (capturedCompanionPaths.has(normalizedCompanionPath) || !(await pathExists(normalizedCompanionPath))) {
           continue;
         }
-        mergePreviousFileEntry(sessionsById, orphanBlobs, sourceLossAudits, previousEntry, capturedBlob.blob);
-        emitProbeProgress(options, source, {
-          stage: isOlderThanSince ? "file_skip" : "file_reuse",
-          message: isOlderThanSince
-            ? `Reused unchanged file: ${filePath}`
-            : `Reused unchanged projection for ${filePath}`,
-          file_path: filePath,
-          file_index: fileIndex + 1,
-          file_count: files.length,
-          size_bytes: capturedBlob.blob.size_bytes,
-          elapsed_ms: Date.now() - fileStartedAt,
-        });
-        emitProbeProgress(options, source, {
-          stage: "file_done",
-          message: `Processed ${filePath}`,
-          file_path: filePath,
-          file_index: fileIndex + 1,
-          file_count: files.length,
-          size_bytes: capturedBlob.blob.size_bytes,
-          elapsed_ms: Date.now() - fileStartedAt,
-        });
-        continue;
-      }
-    } catch (error) {
-      const detail = `Failed to capture source file ${filePath}: ${formatErrorMessage(error)}`;
-      const blobRef = stableId("blob", source.id, filePath, "capture-failed");
-      sourceLossAudits.push(
-        createLossAudit(source.id, blobRef, "unknown_fragment", detail, {
-          stageKind: "capture",
-          diagnosticCode: "blob_capture_failed",
-          severity: "error",
-          blobRef,
-          sourceFormatProfileId: sourceFormatProfile.id,
-        }),
-      );
-      fileProcessingErrors.push(detail);
-      emitProbeProgress(options, source, {
-        stage: "file_error",
-        message: detail,
-        file_path: filePath,
-        file_index: fileIndex + 1,
-        file_count: files.length,
-        elapsed_ms: Date.now() - fileStartedAt,
-      });
-      continue;
-    }
 
-    try {
-      const parseStartedAt = Date.now();
-      const previousEntry = previousIndex?.byOriginPath.get(path.normalize(filePath));
-      const appendedResults = previousEntry
-        ? processAppendedJsonlBlob(source, sourceFormatProfile, filePath, capturedBlob, previousEntry)
-        : undefined;
-      if (appendedResults) {
-        emitProbeProgress(options, source, {
-          stage: "file_append_start",
-          message: `Parsing appended records for ${filePath}`,
-          file_path: filePath,
-          file_index: fileIndex + 1,
-          file_count: files.length,
-        });
-      }
-      const adapterResults = appendedResults ?? await processBlob(source, sourceFormatProfile, filePath, capturedBlob);
-      for (const adapterResult of adapterResults) {
-        mergeAdapterBlobResult(sessionsById, adapterResult);
-      }
-      emitProbeProgress(options, source, {
-        stage: appendedResults ? "file_append_done" : "file_parse_done",
-        message: appendedResults ? `Parsed appended records for ${filePath}` : `Parsed ${filePath}`,
-        file_path: filePath,
-        file_index: fileIndex + 1,
-        file_count: files.length,
-        size_bytes: capturedBlob.blob.size_bytes,
-        elapsed_ms: Date.now() - parseStartedAt,
-      });
-      if (adapter?.getCompanionEvidencePaths && !options.safe_mode) {
-        for (const companionPath of await adapter.getCompanionEvidencePaths(source.base_dir, filePath)) {
-          const normalizedCompanionPath = path.normalize(companionPath);
-          if (capturedCompanionPaths.has(normalizedCompanionPath) || !(await pathExists(normalizedCompanionPath))) {
-            continue;
-          }
-
-          capturedCompanionPaths.add(normalizedCompanionPath);
-          try {
-            orphanBlobs.push((await captureBlob(source, host.id, normalizedCompanionPath, captureRunId)).blob);
-            companionFiles.push(normalizedCompanionPath);
-          } catch (error) {
-            const blobRef = stableId("blob", source.id, normalizedCompanionPath, "capture-failed");
-            sourceLossAudits.push(
-              createLossAudit(
-                source.id,
+        capturedCompanionPaths.add(normalizedCompanionPath);
+        try {
+          const companionCaptured = await captureBlob(source, host.id, normalizedCompanionPath, captureRunId);
+          fileOrphanBlobs.push(companionCaptured.blob);
+          fileTrustedBytesByBlobId.set(companionCaptured.blob.id, companionCaptured.fileBuffer);
+        } catch (error) {
+          const blobRef = stableId("blob", source.id, normalizedCompanionPath, "capture-failed");
+          fileLossAudits.push(
+            createLossAudit(
+              source.id,
+              blobRef,
+              "unknown_fragment",
+              `Failed to capture companion evidence file ${normalizedCompanionPath}: ${formatErrorMessage(error)}`,
+              {
+                stageKind: "capture",
+                diagnosticCode: "blob_capture_failed",
+                severity: "warning",
                 blobRef,
-                "unknown_fragment",
-                `Failed to capture companion evidence file ${normalizedCompanionPath}: ${formatErrorMessage(error)}`,
-                {
-                  stageKind: "capture",
-                  diagnosticCode: "blob_capture_failed",
-                  severity: "warning",
-                  blobRef,
-                  sourceFormatProfileId: sourceFormatProfile.id,
-                },
-              ),
-            );
-          }
+                sourceFormatProfileId: sourceFormatProfile.id,
+              },
+            ),
+          );
         }
       }
-      emitProbeProgress(options, source, {
-        stage: "file_done",
-        message: `Processed ${filePath}`,
-        file_path: filePath,
-        file_index: fileIndex + 1,
-        file_count: files.length,
-        size_bytes: capturedBlob.blob.size_bytes,
-        elapsed_ms: Date.now() - fileStartedAt,
-      });
-    } catch (error) {
-      orphanBlobs.push(capturedBlob.blob);
-      const detail = `Failed to process captured source file ${filePath}: ${formatErrorMessage(error)}`;
-      sourceLossAudits.push(
-        createLossAudit(source.id, capturedBlob.blob.id, "unknown_fragment", detail, {
+    }
+    emitProbeProgress(options, source, {
+      stage: "file_done",
+      message: `Processed ${filePath}`,
+      file_path: filePath,
+      file_index: fileIndex + 1,
+      file_count: fileCount,
+      size_bytes: capturedBlob?.blob.size_bytes,
+      elapsed_ms: Date.now() - fileStartedAt,
+    });
+    yield {
+      originPath: filePath,
+      sessionInputs: [...sessionsById.values()],
+      orphanBlobs: fileOrphanBlobs,
+      lossAudits: fileLossAudits,
+      trustedBytesByBlobId: fileTrustedBytesByBlobId,
+    };
+  } catch (error) {
+    const orphanBlob = capturedBlob?.blob;
+    if (orphanBlob) {
+      fileOrphanBlobs.push(orphanBlob);
+    }
+    const detail = `Failed to process captured source file ${filePath}: ${formatErrorMessage(error)}`;
+    if (orphanBlob) {
+      fileLossAudits.push(
+        createLossAudit(source.id, orphanBlob.id, "unknown_fragment", detail, {
           stageKind: "extract_records",
           diagnosticCode: "blob_processing_failed",
           severity: "error",
-          blobRef: capturedBlob.blob.id,
-          sessionRef: deriveSessionId(source.platform, filePath, capturedBlob.fileBuffer),
+          blobRef: orphanBlob.id,
+          sessionRef: capturedBlob ? deriveSessionId(source.platform, filePath, capturedBlob.fileBuffer) : undefined,
           sourceFormatProfileId: sourceFormatProfile.id,
         }),
       );
-      fileProcessingErrors.push(detail);
-      emitProbeProgress(options, source, {
-        stage: "file_error",
-        message: detail,
-        file_path: filePath,
-        file_index: fileIndex + 1,
-        file_count: files.length,
-        elapsed_ms: Date.now() - fileStartedAt,
-      });
     }
+    fileErrorDetail = detail;
+    emitProbeProgress(options, source, {
+      stage: "file_error",
+      message: detail,
+      file_path: filePath,
+      file_index: fileIndex + 1,
+      file_count: fileCount,
+      elapsed_ms: Date.now() - fileStartedAt,
+    });
+    yield {
+      originPath: filePath,
+      sessionInputs: [],
+      orphanBlobs: fileOrphanBlobs,
+      lossAudits: fileLossAudits,
+      trustedBytesByBlobId: fileTrustedBytesByBlobId,
+      errorDetail: fileErrorDetail,
+    };
   }
-
-  return {
-    files: [...liveFiles, ...files, ...companionFiles],
-    sessionsById,
-    orphanBlobs,
-    sourceLossAudits,
-    fileProcessingErrors,
-  };
 }
 
 function mergeAdapterBlobResult(
