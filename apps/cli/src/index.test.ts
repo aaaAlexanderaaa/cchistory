@@ -7,6 +7,7 @@ import "./test/commands-agent.test.js";
 import "./test/commands-maintenance.test.js";
 import "./test/commands-migration.test.js";
 import "./test/commands-sync-marker.test.js";
+import "./test/commands-sync-touch.test.js";
 import "./test/sync-recency-batching.test.js";
 import "./test/sync-heap-regression.test.js";
 import "./test/bundle.test.js";
