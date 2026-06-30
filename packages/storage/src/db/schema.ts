@@ -3,7 +3,7 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "@cchistory/domain";
 
-export const STORAGE_SCHEMA_VERSION = "2026-06-24.1";
+export const STORAGE_SCHEMA_VERSION = "2026-06-30.1";
 
 export interface StorageSchemaMigration {
   id: string;
@@ -85,6 +85,12 @@ const STORAGE_SCHEMA_MIGRATIONS: ReadonlyArray<{
     to_version: STORAGE_SCHEMA_VERSION,
     summary:
       "B.6: drop the V1 user_turns and turn_contexts tables. Both have full V2 replacements (user_turns_v2, turn_context_refs_v2) that became production read sources in B.5.2; capture/archive/replace paths no longer write to V1. Other V1 payload tables (raw_records, captured_blobs, source_fragments, conversation_atoms, atom_edges, derived_candidates, sessions, source_instances, stage_runs, loss_audits) are NOT migrated yet — bundle export and inventory reads still consume their payload_json. The drop is invoked explicitly via `cchistory migration compact --step drop-v1-tables`, not at schema-apply time; this record documents the resulting schema version after the operator runs compact.",
+  },
+  {
+    id: "2026-06-30.1/source-file-ledger-content-watermark",
+    to_version: STORAGE_SCHEMA_VERSION,
+    summary:
+      "Add source_file_ledger.content_max_timestamp (nullable TEXT). Authoritative content watermark from the last JSONL record's .timestamp on codex/claude_code/factory_droid; lets the skip path ignore bulk-external mtime bumps. NULL on legacy rows falls back to L0 mtime gate; lazy backfill on next re-encounter. Pure metadata column — adds no evidence blob ref, so prune sites in gc.ts and retireStorageBoundaryV2Sources are unaffected.",
   },
 ];
 
@@ -385,6 +391,7 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
       parsed_byte_offset INTEGER,
       last_valid_jsonl_boundary INTEGER,
       last_record_ordinal INTEGER,
+      content_max_timestamp TEXT,
       last_derived_session_refs TEXT NOT NULL DEFAULT '[]',
       sync_axis TEXT NOT NULL DEFAULT 'current',
       observed_at TEXT NOT NULL,
@@ -503,6 +510,8 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[8]!);
   ensureUserTurnsV2LineageBlob(db);
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[9]!);
+  ensureSourceFileLedgerContentMaxTimestamp(db);
+  recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[11]!);
   setSchemaMeta(db, "schema_version", STORAGE_SCHEMA_VERSION);
 
   ensureStorageIndexes(db);
@@ -867,6 +876,12 @@ function ensureUserTurnsV2LineageBlob(db: DatabaseSync): void {
     "lineage_record_count INTEGER NOT NULL DEFAULT 0",
     "lineage_blob_count INTEGER NOT NULL DEFAULT 0",
     "lineage_candidate_count INTEGER NOT NULL DEFAULT 0",
+  ]);
+}
+
+function ensureSourceFileLedgerContentMaxTimestamp(db: DatabaseSync): void {
+  ensureTableColumns(db, "source_file_ledger", [
+    "content_max_timestamp TEXT",
   ]);
 }
 

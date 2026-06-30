@@ -1747,11 +1747,12 @@ function upsertSourceFileLedger(
       parsed_byte_offset,
       last_valid_jsonl_boundary,
       last_record_ordinal,
+      content_max_timestamp,
       last_derived_session_refs,
       sync_axis,
       observed_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     sourceFileLedgerId(input.sourceId, normalizeOriginPath(input.blob.origin_path)),
     input.sourceId,
@@ -1767,6 +1768,7 @@ function upsertSourceFileLedger(
     input.materialized.captureKind === "source_blob" ? input.materialized.sizeBytes : null,
     input.materialized.captureKind === "source_blob" ? findLastJsonlBoundary(input.materialized.bytes) : null,
     lastRecordOrdinal,
+    input.blob.content_max_timestamp ?? null,
     JSON.stringify(sessionRefs),
     "current",
     input.observedAt,

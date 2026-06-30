@@ -241,6 +241,7 @@ export interface CapturedBlob {
   file_modified_at?: string;
   file_changed_at?: string;
   file_identity_stable?: boolean;
+  content_max_timestamp?: string;
 }
 
 export interface RawRecord {

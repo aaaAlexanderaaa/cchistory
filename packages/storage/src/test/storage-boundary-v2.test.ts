@@ -86,6 +86,7 @@ test("storage boundary v2 writes evidence, ledger, spans, and bounded context si
                parsed_byte_offset,
                last_valid_jsonl_boundary,
                last_record_ordinal,
+               content_max_timestamp,
                sync_axis
           FROM source_file_ledger
          WHERE source_id = ?
@@ -98,6 +99,7 @@ test("storage boundary v2 writes evidence, ledger, spans, and bounded context si
             parsed_byte_offset: number;
             last_valid_jsonl_boundary: number;
             last_record_ordinal: number;
+            content_max_timestamp: string | null;
             sync_axis: string;
           }
         | undefined;
@@ -108,6 +110,7 @@ test("storage boundary v2 writes evidence, ledger, spans, and bounded context si
       assert.equal(ledger.parsed_byte_offset, Buffer.byteLength(firstLine, "utf8"));
       assert.equal(ledger.last_valid_jsonl_boundary, Buffer.byteLength(firstLine, "utf8"));
       assert.equal(ledger.last_record_ordinal, 0);
+      assert.equal(ledger.content_max_timestamp, null);
       assert.equal(ledger.sync_axis, "current");
 
       const span = db.prepare(`
