@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -1106,5 +1106,67 @@ test("mergeSourcePayloadStreaming preserves oversized-file loss audits despite s
     assert.equal(oversized?.diagnostic_code, "blob_too_large");
   } finally {
     await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("mergeSourcePayloadStreaming materializes oversized blobs via the streaming path when no trusted bytes are supplied", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-stream-oversized-materialize-"));
+  const sourceDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-stream-oversized-src-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const sourceId = "src-stream-oversized";
+    // Write a real 65 MiB JSONL file so the storage threshold (64 MiB) trips
+    // and the captured_path exists for createReadStream.
+    const line = '{"type":"message","timestamp":"2026-03-12T10:00:01.000Z"}\n';
+    const targetBytes = 65 * 1024 * 1024;
+    const repeats = Math.ceil(targetBytes / line.length);
+    const filePath = path.join(sourceDir, "huge.jsonl");
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(filePath, line.repeat(repeats), "utf8");
+    const fileStats = await stat(filePath);
+
+    const basePayload = createFixturePayload(sourceId, "Baseline turn", "sr-oversized-baseline", {
+      baseDir: sourceDir,
+      sessionId: "session-oversized-baseline",
+      turnId: "turn-oversized-baseline",
+    });
+    basePayload.blobs[0]!.origin_path = filePath;
+    basePayload.blobs[0]!.captured_path = filePath;
+    basePayload.blobs[0]!.size_bytes = fileStats.size;
+    // Recompute checksum to match the file on disk so the storage layer's
+    // streaming materialization produces a sha256 that lines up.
+    const { createHash } = await import("node:crypto");
+    const { readFileSync } = await import("node:fs");
+    const fileBytes = readFileSync(filePath);
+    basePayload.blobs[0]!.checksum = createHash("sha1").update(fileBytes).digest("hex");
+
+    const chunk = payloadToChunk(basePayload, filePath);
+    // No trusted_bytes_by_blob_id — forces the storage layer to stream-read
+    // the file from captured_path.
+
+    await mergeSourcePayloadStreaming(
+      (storage as unknown as { db: DatabaseSync }).db,
+      basePayload.source,
+      {
+        chunks: (async function* (): AsyncGenerator<SourcePayloadStreamingChunk> {
+          yield chunk;
+        })(),
+        preserve_origin_paths: new Set(),
+        observed_origin_paths: new Set([filePath]),
+        asset_dir: dataDir,
+      },
+    );
+
+    // The blob must be present in evidence_blobs with the correct sha256.
+    const expectedSha = createHash("sha256").update(fileBytes).digest("hex");
+    const evidencePath = path.join(dataDir, "evidence", "blobs", expectedSha.slice(0, 2), expectedSha);
+    const { existsSync } = await import("node:fs");
+    assert.ok(existsSync(evidencePath), "streaming-materialized blob must exist on disk");
+    const written = readFileSync(evidencePath);
+    assert.equal(written.byteLength, fileStats.size);
+    assert.equal(createHash("sha256").update(written).digest("hex"), expectedSha);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+    await rm(sourceDir, { recursive: true, force: true });
   }
 });

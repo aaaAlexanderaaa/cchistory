@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { stat } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import type {
   Host,
   SourceDefinition,
@@ -47,6 +47,7 @@ import {
   extractMultiSessionSeeds,
   buildAdapterBlobResult,
   captureBlob,
+  captureBlobStreaming,
   parseRecord,
   isOrdinaryResumeEligibleSourceFile,
   extractGenericSessionMetadata,
@@ -55,7 +56,7 @@ import {
   extractRichTextText,
   collectConversationSeedsFromValue,
 } from "./parser.js";
-import { isIncrementalJsonlPlatform } from "./jsonl-records.js";
+import { collectJsonlRecordsStreaming, isIncrementalJsonlPlatform } from "./jsonl-records.js";
 import { atomizeFragments, hydrateDraftFromAtoms } from "./atomizer.js";
 import {
   buildProjectObservationCandidates,
@@ -70,6 +71,7 @@ import type {
   ProcessingCoreResult,
   CapturedBlobInput,
   AnyCapturedBlobInput,
+  StreamingCapturedBlobInput,
   SessionBuildInput,
   ExtractedSessionSeed,
   SourceProbeProgressEvent,
@@ -533,7 +535,7 @@ async function* streamSingleFileInputs(
   fileIndex: number,
   fileCount: number,
 ): AsyncGenerator<CollectedFile, void, void> {
-  let capturedBlob: CapturedBlobInput | undefined;
+  let capturedBlob: AnyCapturedBlobInput | undefined;
   const fileStartedAt = Date.now();
   emitProbeProgress(options, source, {
     stage: "file_start",
@@ -556,7 +558,13 @@ async function* streamSingleFileInputs(
     const fileStats = await stat(filePath);
     const sizeBytes = fileStats.size;
     const maxFileBytes = options.max_file_bytes ?? DEFAULT_MAX_FILE_BYTES;
-    if (sizeBytes > maxFileBytes) {
+    const isOversized = sizeBytes > maxFileBytes;
+    // Stage 3: incremental JSONL platforms (codex/claude_code/factory_droid)
+    // route oversized files through captureBlobStreaming instead of skipping.
+    // Non-JSONL platforms keep the loss-audit skip — they need full-file
+    // materialization for parsing.
+    const canStreamOversized = isOversized && isIncrementalJsonlPlatform(source.platform);
+    if (isOversized && !canStreamOversized) {
       const detail = `Skipped oversized source file ${filePath}: ${sizeBytes} bytes exceeds ${maxFileBytes} byte limit`;
       const blobRef = stableId("blob", source.id, filePath, "oversized");
       fileLossAudits.push(
@@ -612,7 +620,9 @@ async function* streamSingleFileInputs(
         earlyYield = true;
       } else {
         const captureStartedAt = Date.now();
-        capturedBlob = await captureBlob(source, host.id, filePath, captureRunId);
+        capturedBlob = canStreamOversized
+          ? await captureBlobStreaming(source, host.id, filePath, captureRunId)
+          : await captureBlob(source, host.id, filePath, captureRunId);
         emitProbeProgress(options, source, {
           stage: "file_capture_done",
           message: `Captured ${filePath}`,
@@ -626,7 +636,11 @@ async function* streamSingleFileInputs(
         if (previousEntry && canReuseCapturedBlob(previousEntry, capturedBlob.blob)) {
           if (previousIndex?.metadataOnly) {
             fileOrphanBlobs.push(capturedBlob.blob);
-            fileTrustedBytesByBlobId.set(capturedBlob.blob.id, capturedBlob.fileBuffer);
+            // Stage 3: streaming variant has no fileBuffer — storage will
+            // stream-read the bytes from captured_path if needed.
+            if ("fileBuffer" in capturedBlob) {
+              fileTrustedBytesByBlobId.set(capturedBlob.blob.id, capturedBlob.fileBuffer);
+            }
             fileSkipReason = "metadata_only";
             fileSizeBytes = capturedBlob.blob.size_bytes;
             emitProbeProgress(options, source, {
@@ -652,7 +666,9 @@ async function* streamSingleFileInputs(
             const sessionsById = new Map<string, SessionBuildInput>();
             mergePreviousFileEntry(sessionsById, fileOrphanBlobs, fileLossAudits, previousEntry, capturedBlob.blob);
             fileSessionInputs.push(...sessionsById.values());
-            fileTrustedBytesByBlobId.set(capturedBlob.blob.id, capturedBlob.fileBuffer);
+            if ("fileBuffer" in capturedBlob) {
+              fileTrustedBytesByBlobId.set(capturedBlob.blob.id, capturedBlob.fileBuffer);
+            }
             fileSkipReason = "unchanged";
             fileSizeBytes = capturedBlob.blob.size_bytes;
             emitProbeProgress(options, source, {
@@ -734,12 +750,16 @@ async function* streamSingleFileInputs(
         file_count: fileCount,
       });
     }
-    const adapterResults = appendedResults ?? (capturedBlob ? await processBlob(source, sourceFormatProfile, filePath, capturedBlob) : []);
+    const adapterResults = appendedResults ?? (capturedBlob
+      ? ("fileBuffer" in capturedBlob
+        ? await processBlob(source, sourceFormatProfile, filePath, capturedBlob)
+        : await processStreamingJsonlBlob(source, sourceFormatProfile, filePath, capturedBlob))
+      : []);
     const sessionsById = new Map<string, SessionBuildInput>();
     for (const adapterResult of adapterResults) {
       mergeAdapterBlobResult(sessionsById, adapterResult);
     }
-    if (capturedBlob) {
+    if (capturedBlob && "fileBuffer" in capturedBlob) {
       fileTrustedBytesByBlobId.set(capturedBlob.blob.id, capturedBlob.fileBuffer);
     }
     emitProbeProgress(options, source, {
@@ -812,7 +832,9 @@ async function* streamSingleFileInputs(
           diagnosticCode: "blob_processing_failed",
           severity: "error",
           blobRef: orphanBlob.id,
-          sessionRef: capturedBlob ? deriveSessionId(source.platform, filePath, capturedBlob.fileBuffer) : undefined,
+          sessionRef: capturedBlob && "fileBuffer" in capturedBlob
+            ? deriveSessionId(source.platform, filePath, capturedBlob.fileBuffer)
+            : undefined,
           sourceFormatProfileId: sourceFormatProfile.id,
         }),
       );
@@ -1580,6 +1602,112 @@ async function processBlob(
     );
   }
 
+  for (const record of records) {
+    if (record.parseable) {
+      continue;
+    }
+    extractionLossAudits.push(
+      createLossAudit(source.id, record.id, "unknown_fragment", "Raw record could not be extracted into a parseable object", {
+        stageKind: "extract_records",
+        diagnosticCode: "record_unparseable",
+        severity: "warning",
+        sessionRef: sessionId,
+        blobRef: blobId,
+        recordRef: record.id,
+        sourceFormatProfileId: profileId,
+      }),
+    );
+  }
+
+  return [
+    buildAdapterBlobResult(
+      source,
+      sourceFormatProfile,
+      blob.host_id,
+      filePath,
+      blob.capture_run_id,
+      blob,
+      sessionId,
+      records,
+      {},
+      extractionLossAudits,
+    ),
+  ];
+}
+
+// Stage 3: streaming counterpart of processBlob for oversized incremental-JSONL
+// files (codex/claude_code/factory_droid). Uses prefixReader to derive the
+// session id from the head of the file, and streamingLineReader to parse
+// records without materializing the whole file in memory.
+//
+// Only supports the incremental-JSONL branch of processBlob. Multi-session
+// seeds (cursor state.vscdb), AMP root-JSON, Gemini, and other non-JSONL
+// shapes are not reachable here — the routing in streamSingleFileInputs
+// gates on isIncrementalJsonlPlatform before calling this.
+const STREAMING_SESSION_ID_PREFIX_BYTES = 64 * 1024;
+
+async function processStreamingJsonlBlob(
+  source: SourceDefinition,
+  sourceFormatProfile: SourceFormatProfile,
+  filePath: string,
+  capturedBlob: StreamingCapturedBlobInput,
+): Promise<AdapterBlobResult[]> {
+  const { blob } = capturedBlob;
+  const blobId = blob.id;
+  const profileId = sourceFormatProfile.id;
+
+  const head = await capturedBlob.prefixReader(STREAMING_SESSION_ID_PREFIX_BYTES);
+  const sessionId = deriveSessionId(source.platform, filePath, head);
+  const context = {
+    source,
+    hostId: blob.host_id,
+    filePath,
+    profileId,
+    sessionId,
+    captureRunId: blob.capture_run_id,
+  };
+
+  const records = await collectJsonlRecordsStreaming(
+    capturedBlob.streamingLineReader(),
+    {
+      sourceId: source.id,
+      blobId,
+      sessionId,
+    },
+    {
+      observedAt: nowIso(),
+      sidecars:
+        source.platform === "factory_droid"
+          ? [
+              {
+                filePath: filePath.replace(/\.jsonl?$/u, ".settings.json"),
+                pointer: "settings",
+              },
+            ]
+          : undefined,
+    },
+    {
+      createRecordId: (ordinal, pointer) =>
+        stableId("record", source.id, sessionId, blobId, String(ordinal), pointer),
+      pathExists,
+      readTextFile: (targetPath) => readFile(targetPath, "utf8"),
+      nowIso,
+    },
+  );
+
+  const extractionLossAudits: LossAuditRecord[] = [];
+  if (records.length === 0) {
+    extractionLossAudits.push(
+      createLossAudit(source.id, blobId, "dropped_for_projection", "Blob was captured but produced no raw records", {
+        stageKind: "extract_records",
+        diagnosticCode: "records_missing",
+        severity: "error",
+        sessionRef: sessionId,
+        blobRef: blobId,
+        sourceFormatProfileId: profileId,
+      }),
+    );
+  }
   for (const record of records) {
     if (record.parseable) {
       continue;

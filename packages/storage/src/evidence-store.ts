@@ -8,7 +8,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { createWriteStream, type ReadStream } from "node:fs";
+import { createReadStream, createWriteStream, type ReadStream } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import type {
@@ -798,13 +798,28 @@ export async function mergeSourcePayloadStreaming(
       for (const blob of blobsForWrite) {
         const records = recordsByBlobId.get(blob.id) ?? [];
         const trustedBytes = chunk.trusted_bytes_by_blob_id?.get(blob.id);
-        const materialized = materializeBlobEvidence({
-          assetDir: input.asset_dir,
-          blob,
-          records,
-          createdAt: now,
-          ...(trustedBytes ? { bytes: trustedBytes } : {}),
-        });
+        // Stage 3: oversized blobs without supplied trusted bytes are
+        // materialized via the streaming path. This avoids reading the
+        // whole file into the caller's heap just to hash + write it back
+        // out. sourceBlobIsStreamable guards the path: only files we can
+        // actually open via captured_path are eligible; everything else
+        // (virtual paths, missing files) falls back to the snapshot path.
+        const useStreamingMaterialization = !trustedBytes && sourceBlobIsStreamable(blob);
+        const materialized = useStreamingMaterialization
+          ? await materializeBytesStream({
+              assetDir: input.asset_dir,
+              chunks: createReadStream(blob.captured_path!),
+              mediaType: "application/octet-stream",
+              captureKind: "source_blob",
+              createdAt: now,
+            })
+          : materializeBlobEvidence({
+              assetDir: input.asset_dir,
+              blob,
+              records,
+              createdAt: now,
+              ...(trustedBytes ? { bytes: trustedBytes } : {}),
+            });
         materializedByBlobId.set(blob.id, materialized);
         if (materialized.captureKind === "source_blob" && materialized.bytes) {
           lineSpansByBlobId.set(blob.id, indexJsonlLineSpans(materialized.bytes));
@@ -2603,6 +2618,20 @@ function sourceFileLedgerId(sourceId: string, originPath: string): string {
 
 function isVirtualBlobPath(value: string): boolean {
   return /^[a-z][a-z0-9+.-]*:\/\//iu.test(value);
+}
+
+// Stage 3: blobs above this byte threshold skip the in-memory trustedBytes
+// path on the way to evidence-storage and stream through materializeBytesStream
+// instead. Matches DEFAULT_MAX_FILE_BYTES in source-adapters/probe.ts so the
+// storage layer's streaming cutoff aligns with the capture layer's routing.
+const STORAGE_STREAMING_THRESHOLD_BYTES = 64 * 1024 * 1024;
+
+function sourceBlobIsStreamable(blob: CapturedBlob): boolean {
+  const candidate = blob.captured_path;
+  if (!candidate || isVirtualBlobPath(candidate) || (blob.size_bytes ?? 0) <= STORAGE_STREAMING_THRESHOLD_BYTES) {
+    return false;
+  }
+  return existsSync(candidate);
 }
 
 function isPathWithinDirectory(candidatePath: string, directory: string): boolean {

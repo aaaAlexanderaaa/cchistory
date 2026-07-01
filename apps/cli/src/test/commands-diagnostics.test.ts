@@ -1,4 +1,4 @@
-import { appendFile, mkdir, mkdtemp, rm, stat, truncate, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -350,13 +350,17 @@ test("sync removes stale Codex rows for observed batch files that produce no blo
     const firstPayload = JSON.parse(firstSync.stdout);
     assert.equal(firstPayload.sources[0].counts.turns, 2);
 
-    await truncate(failedPath, 64 * 1024 * 1024 + 1);
+    // Stage 3: oversized JSONL files now stream through captureBlobStreaming
+    // instead of being skipped, so truncating to >64 MiB no longer produces
+    // a blobless batch for codex. Deleting the file is the remaining way to
+    // make the second batch "produce no blob" for the stale-row cleanup
+    // assertion below.
+    await rm(failedPath);
 
     const secondSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--json", "--detail"], tempRoot);
     assert.equal(secondSync.exitCode, 0, secondSync.stderr);
     const secondPayload = JSON.parse(secondSync.stdout);
     assert.equal(secondPayload.sources[0].counts.turns, 1);
-    assert.match(secondSync.stderr, /Skipped oversized source file/);
 
     const keepSearch = await runCliJson<{ results: Array<{ turn: { canonical_text: string } }> }>(
       ["search", "Batch keep prompt", "--store", storeDir],
@@ -376,6 +380,56 @@ test("sync removes stale Codex rows for observed batch files that produce no blo
     } else {
       process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES = originalBatchTarget;
     }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("sync streams oversized Codex JSONL files instead of skipping them (Stage 3 streaming cap)", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-codex-oversized-stream-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    process.env.HOME = tempRoot;
+    await mkdir(path.join(tempRoot, ".codex", "sessions"), { recursive: true });
+    // Stage 3 routes incremental-JSONL platforms through captureBlobStreaming,
+    // so this file should be ingested (not loss-audited as oversized).
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-oversized.jsonl", {
+      sessionId: "codex-oversized-stream",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Oversized stream prompt should remain searchable.",
+      reply: "Oversized stream reply.",
+      startAt: "2026-03-09T00:00:00.000Z",
+    });
+    // Pad the file beyond the 64 MiB streaming threshold with blank lines.
+    // forEachNonEmptyTrimmedLineStreaming filters them out, so the parser
+    // still only sees the three real records from the fixture — but the
+    // file on disk is oversized, exercising the captureBlobStreaming path.
+    const filePath = path.join(tempRoot, ".codex", "sessions", "rollout-codex-oversized.jsonl");
+    const targetBytes = 65 * 1024 * 1024;
+    const blankLine = "   \n";
+    const padRepeats = Math.ceil(targetBytes / blankLine.length);
+    await appendFile(filePath, blankLine.repeat(padRepeats), "utf8");
+
+    const storeDir = path.join(tempRoot, "store");
+    const result = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--json", "--detail"], tempRoot);
+    assert.equal(result.exitCode, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.sources[0].counts.turns, 1, "oversized codex JSONL must produce a turn via streaming");
+    // The file must NOT be reported as skipped oversized — that's the
+    // whole point of Stage 3 commit 5.
+    assert.doesNotMatch(result.stderr, /Skipped oversized source file/);
+
+    const search = await runCliJson<{ results: Array<{ turn: { canonical_text: string } }> }>(
+      ["search", "Oversized stream prompt", "--store", storeDir],
+      tempRoot,
+    );
+    assert.ok(
+      search.results.some((entry) => entry.turn.canonical_text.includes("Oversized stream prompt")),
+      "oversized streamed codex turn must be searchable",
+    );
+  } finally {
+    process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
