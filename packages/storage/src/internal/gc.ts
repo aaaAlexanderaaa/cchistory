@@ -181,8 +181,22 @@ export function cascadeEvidenceCleanupForOrphanedBlobsInTransaction(
  *     no evidence_captures row, so omitting this ref source pruned live blobs)
  *
  * Returns the deleted shas. Must be called inside the caller's transaction.
+ *
+ * `force: false` (default `true`) is a no-op used by per-batch merge loops in
+ * the streaming sync hot path — the prune's end-to-end LEFT JOIN against six
+ * tables is too expensive to run once per batch (149 batches × full-scan was
+ * observed at ~266s on the operator store even for 0-record batches). The
+ * sync orchestrator must call once with `force: true` (the default) at the
+ * end of the run via `CCHistoryStorage.pruneEvidenceBlobsNow()`; failing to
+ * do so leaves orphaned blobs accumulating silently.
  */
-export function pruneUnreferencedEvidenceBlobsInTransaction(db: DatabaseSync): string[] {
+export function pruneUnreferencedEvidenceBlobsInTransaction(
+  db: DatabaseSync,
+  options?: { force?: boolean },
+): string[] {
+  if (options?.force === false) {
+    return [];
+  }
   const orphaned = db
     .prepare(
       `SELECT eb.sha256 AS sha
