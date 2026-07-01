@@ -718,13 +718,26 @@ export async function syncSelectedSources(input: {
             preserve_origin_paths: [...preservedOriginPaths],
             observed_origin_paths: [...observedOriginPaths],
             refreshDerived: false,
+            skipGlobalScopes: true,
+            skipPrune: true,
             onProgress: onStorageProgress,
           })
         : input.storage.replaceSourcePayload(payload, {
             allow_host_rekey: true,
             refreshDerived: false,
+            skipGlobalScopes: true,
+            skipPrune: true,
             onProgress: onStorageProgress,
           });
+    // The merge/replace calls above pass skipGlobalScopes=true to avoid
+    // re-running the expensive COUNT+SUM(LENGTH) aggregation on operator-scale
+    // sources (claude_code: ~1300 files, 100k+ rows per cache table — observed
+    // at 178s for a single merge). Refresh the source- and parser_profile-
+    // scoped cache refs once here instead. Skipped for metadata-only writes
+    // (they don't touch the underlying tables).
+    if (!metadataOnlyPayload) {
+      input.storage.refreshGlobalDerivedCacheRefs(payload.source.id);
+    }
     const storedSource = useMergeByOriginPath
       ? input.storage.listSources().find((entry) => entry.id === payload.source.id) ?? payload.source
       : payload.source;
