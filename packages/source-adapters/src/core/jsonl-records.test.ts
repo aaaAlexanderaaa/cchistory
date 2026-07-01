@@ -322,6 +322,85 @@ test("captureBlobStreaming: prefixReader returns the leading N bytes for append 
   }
 });
 
+test("captureBlobStreaming: hashPrefix returns incremental sha1 and the last byte of the prefix without allocating the whole prefix", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-capturestream-hashprefix-"));
+  try {
+    const filePath = path.join(tempDir, "session.jsonl");
+    const line = '{"type":"message","timestamp":"2026-03-12T10:00:01.000Z"}\n';
+    const repeats = Math.ceil((12 * 1024 * 1024) / line.length);
+    const content = line.repeat(repeats);
+    await writeFile(filePath, content, "utf8");
+    const source: SourceDefinition = {
+      id: "src-test-stream-hashprefix",
+      slot_id: "test",
+      family: "local_coding_agent",
+      platform: "codex",
+      display_name: "test stream hashprefix",
+      base_dir: tempDir,
+    };
+    const result = await captureBlobStreaming(source, "host-test", filePath, "run-stream-hash");
+    // Pick a prefix size that spans multiple 4 MiB backing blocks (5 MiB).
+    const prefixBytes = 5 * 1024 * 1024;
+    const { sha1: hashed, lastByte } = await result.hashPrefix(prefixBytes);
+    const expectedPrefix = Buffer.from(content.slice(0, prefixBytes), "utf8");
+    assert.equal(hashed, createHash("sha1").update(expectedPrefix).digest("hex"));
+    assert.equal(lastByte, expectedPrefix[expectedPrefix.length - 1]);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("captureBlobStreaming: hashPrefix returns null lastByte and the empty-buffer sha1 when bytes=0", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-capturestream-hashprefix-zero-"));
+  try {
+    const filePath = path.join(tempDir, "session.jsonl");
+    const content = '{"type":"message","timestamp":"2026-03-12T10:00:01.000Z"}\n';
+    await writeFile(filePath, content, "utf8");
+    const source: SourceDefinition = {
+      id: "src-test-stream-hashprefix-zero",
+      slot_id: "test",
+      family: "local_coding_agent",
+      platform: "codex",
+      display_name: "test stream hashprefix zero",
+      base_dir: tempDir,
+    };
+    const result = await captureBlobStreaming(source, "host-test", filePath, "run-stream-hash-zero");
+    const { sha1: hashed, lastByte } = await result.hashPrefix(0);
+    assert.equal(hashed, createHash("sha1").update(Buffer.alloc(0)).digest("hex"));
+    assert.equal(lastByte, null);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("captureBlobStreaming: readSuffix returns the bytes from offset to end-of-file", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-capturestream-suffix-"));
+  try {
+    const filePath = path.join(tempDir, "session.jsonl");
+    const line = '{"type":"message","timestamp":"2026-03-12T10:00:01.000Z"}\n';
+    const repeats = Math.ceil((8 * 1024 * 1024) / line.length);
+    const content = line.repeat(repeats);
+    await writeFile(filePath, content, "utf8");
+    const source: SourceDefinition = {
+      id: "src-test-stream-suffix",
+      slot_id: "test",
+      family: "local_coding_agent",
+      platform: "codex",
+      display_name: "test stream suffix",
+      base_dir: tempDir,
+    };
+    const result = await captureBlobStreaming(source, "host-test", filePath, "run-stream-suffix");
+    const offset = Math.floor(content.length / 2);
+    const suffix = await result.readSuffix(offset);
+    assert.equal(suffix.toString("utf8"), content.slice(offset));
+    // Offset at end-of-file yields empty Buffer.
+    const empty = await result.readSuffix(content.length);
+    assert.equal(empty.length, 0);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
 async function collectAllChunks(chunks: AsyncGenerator<Buffer>): Promise<Buffer[]> {
   const out: Buffer[] = [];
   for await (const chunk of chunks) {

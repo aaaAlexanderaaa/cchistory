@@ -69,6 +69,7 @@ import type {
   AdapterBlobResult,
   ProcessingCoreResult,
   CapturedBlobInput,
+  AnyCapturedBlobInput,
   SessionBuildInput,
   ExtractedSessionSeed,
   SourceProbeProgressEvent,
@@ -722,7 +723,7 @@ async function* streamSingleFileInputs(
     const parseStartedAt = Date.now();
     const previousEntry = previousIndex?.byOriginPath.get(path.normalize(filePath));
     const appendedResults = previousEntry && capturedBlob
-      ? processAppendedJsonlBlob(source, sourceFormatProfile, filePath, capturedBlob, previousEntry)
+      ? await processAppendedJsonlBlob(source, sourceFormatProfile, filePath, capturedBlob, previousEntry)
       : undefined;
     if (appendedResults) {
       emitProbeProgress(options, source, {
@@ -1112,13 +1113,13 @@ function canReuseBlobFromStats(previousEntry: PreviousFileEntry, stats: { size: 
     previousEntry.tailBlob.file_changed_at === stats.ctime.toISOString();
 }
 
-function processAppendedJsonlBlob(
+async function processAppendedJsonlBlob(
   source: SourceDefinition,
   sourceFormatProfile: SourceFormatProfile,
   filePath: string,
-  capturedBlob: CapturedBlobInput,
+  capturedBlob: AnyCapturedBlobInput,
   previousEntry: PreviousFileEntry,
-): AdapterBlobResult[] | undefined {
+): Promise<AdapterBlobResult[] | undefined> {
   if (!isIncrementalJsonlPlatform(source.platform) || previousEntry.sessionInputs.length !== 1 || !previousEntry.tailBlob) {
     return undefined;
   }
@@ -1131,12 +1132,28 @@ function processAppendedJsonlBlob(
   ) {
     return undefined;
   }
-  const previousPrefix = capturedBlob.fileBuffer.subarray(0, previousTail.size_bytes);
-  if (sha1(previousPrefix) !== previousTail.checksum) {
+  // Stage 3: streaming variant uses hashPrefix (incremental, no allocation)
+  // + readSuffix instead of materializing the whole file. The CapturedBlobInput
+  // path keeps the existing fileBuffer.subarray behavior.
+  const isStreaming = !("fileBuffer" in capturedBlob);
+  let prefixSha1: string;
+  let prefixLastByte: number | null;
+  let appendedBuffer: Buffer;
+  if (isStreaming) {
+    const { sha1: hashed, lastByte } = await capturedBlob.hashPrefix(previousTail.size_bytes);
+    prefixSha1 = hashed;
+    prefixLastByte = lastByte;
+    appendedBuffer = await capturedBlob.readSuffix(previousTail.size_bytes);
+  } else {
+    const previousPrefix = capturedBlob.fileBuffer.subarray(0, previousTail.size_bytes);
+    prefixSha1 = sha1(previousPrefix);
+    prefixLastByte = previousPrefix.length > 0 ? previousPrefix[previousPrefix.length - 1]! : null;
+    appendedBuffer = capturedBlob.fileBuffer.subarray(previousTail.size_bytes);
+  }
+  if (prefixSha1 !== previousTail.checksum) {
     return undefined;
   }
-  const appendedBuffer = capturedBlob.fileBuffer.subarray(previousTail.size_bytes);
-  if (!isJsonlAppendBoundary(previousPrefix, appendedBuffer)) {
+  if (!isJsonlAppendBoundaryStreaming(prefixLastByte, appendedBuffer)) {
     return undefined;
   }
 
@@ -1204,6 +1221,17 @@ function isJsonlAppendBoundary(previousPrefix: Buffer, appendedBuffer: Buffer): 
   const previousLast = previousPrefix[previousPrefix.length - 1];
   const appendedFirst = appendedBuffer[0];
   return previousLast === 10 || previousLast === 13 || appendedFirst === 10 || appendedFirst === 13;
+}
+
+// Stage 3: streaming variant of isJsonlAppendBoundary. Takes the last byte of
+// the prefix (returned by hashPrefix) plus the appended buffer; same newline
+// semantics. null prefixLastByte covers the (theoretical) empty-prefix case.
+function isJsonlAppendBoundaryStreaming(prefixLastByte: number | null, appendedBuffer: Buffer): boolean {
+  if (prefixLastByte === null || appendedBuffer.length === 0) {
+    return true;
+  }
+  const appendedFirst = appendedBuffer[0];
+  return prefixLastByte === 10 || prefixLastByte === 13 || appendedFirst === 10 || appendedFirst === 13;
 }
 
 function collectJsonlRecordsFromText(input: {

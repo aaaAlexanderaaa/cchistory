@@ -682,6 +682,46 @@ export async function captureBlobStreaming(
         await fh.close();
       }
     },
+    hashPrefix: async function hashPrefix(bytes: number): Promise<{ sha1: string; lastByte: number | null }> {
+      if (bytes <= 0) {
+        return { sha1: createHash("sha1").digest("hex"), lastByte: null };
+      }
+      const fh = await fs.open(filePath, "r");
+      try {
+        const hasher = createHash("sha1");
+        let remaining = bytes;
+        let lastByte: number | null = null;
+        const block = Buffer.alloc(STREAMING_BACKING_BLOCK_BYTES);
+        while (remaining > 0) {
+          const toRead = Math.min(remaining, STREAMING_BACKING_BLOCK_BYTES);
+          const { bytesRead } = await fh.read(block, 0, toRead, null);
+          if (bytesRead === 0) {
+            break;
+          }
+          hasher.update(block.subarray(0, bytesRead));
+          lastByte = block[bytesRead - 1]!;
+          remaining -= bytesRead;
+        }
+        return { sha1: hasher.digest("hex"), lastByte };
+      } finally {
+        await fh.close();
+      }
+    },
+    readSuffix: async function readSuffix(offset: number): Promise<Buffer> {
+      const fh = await fs.open(filePath, "r");
+      try {
+        const stats = await fh.stat();
+        const length = Math.max(0, stats.size - offset);
+        if (length === 0) {
+          return Buffer.alloc(0);
+        }
+        const buf = Buffer.alloc(length);
+        const { bytesRead } = await fh.read(buf, 0, length, offset);
+        return bytesRead === length ? buf : buf.subarray(0, bytesRead);
+      } finally {
+        await fh.close();
+      }
+    },
   };
 }
 

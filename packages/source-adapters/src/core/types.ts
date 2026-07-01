@@ -282,12 +282,22 @@ export interface CapturedBlobInput {
 // Bypasses fileBuffer to avoid materializing the whole file in memory.
 // Downstream consumers must branch on the streaming case: parsing goes
 // through streamingLineReader (-> collectJsonlRecordsStreaming), and append
-// detection uses prefixReader (-> processAppendedJsonlBlob's prefix-sha1
-// check) instead of fileBuffer.subarray.
+// detection uses hashPrefix + readSuffix (-> processAppendedJsonlBlob's
+// prefix-sha1 check) instead of fileBuffer.subarray.
 export interface StreamingCapturedBlobInput {
   blob: CapturedBlob;
   streamingLineReader: () => AsyncGenerator<Buffer>;
+  // Reads the first `bytes` bytes into a Buffer. Kept for tests and small
+  // reads; not suitable for very large prefixes (allocates the whole buffer).
   prefixReader: (bytes: number) => Promise<Buffer>;
+  // Incrementally hashes the first `bytes` bytes without materializing them
+  // in memory. Also returns the last byte of the prefix (or null if the
+  // prefix is empty) so the caller can run the JSONL append-boundary check
+  // without an extra file read.
+  hashPrefix: (bytes: number) => Promise<{ sha1: string; lastByte: number | null }>;
+  // Reads bytes from `offset` to end of file. Used to extract the appended
+  // tail when the prefix-sha1 check passes.
+  readSuffix: (offset: number) => Promise<Buffer>;
 }
 
 export type AnyCapturedBlobInput = CapturedBlobInput | StreamingCapturedBlobInput;
