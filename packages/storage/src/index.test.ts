@@ -1,6 +1,7 @@
 import "./test/ingest.test.js";
 import "./test/inventory.test.js";
 import "./test/linking.test.js";
+import "./test/materialize-stream.test.js";
 import "./test/maintenance.test.js";
 import "./test/migration-state.test.js";
 import "./test/prune-defer.test.js";

@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { createWriteStream, type ReadStream } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import type {
@@ -41,7 +50,10 @@ interface EvidenceMaterialization {
   sha256: string;
   storagePath: string;
   sizeBytes: number;
-  bytes: Buffer;
+  // Stage 3: bytes is undefined for the streaming materialization path
+  // (materializeBytesStream), where the whole point is to avoid holding the
+  // blob in the caller's heap. Existing materializeBytes callers always set it.
+  bytes: Buffer | undefined;
   mediaType: string;
   captureKind: "source_blob" | "record_snapshot" | "context_cache" | "turn_lineage";
   createdAt: string;
@@ -95,7 +107,7 @@ export function writeStorageBoundaryV2Sidecars(input: {
         createdAt: now,
       });
       materializedByBlobId.set(blob.id, materialized);
-      if (materialized.captureKind === "source_blob") {
+      if (materialized.captureKind === "source_blob" && materialized.bytes) {
         lineSpansByBlobId.set(blob.id, indexJsonlLineSpans(materialized.bytes));
       }
       upsertEvidenceBlob(input.db, materialized);
@@ -316,6 +328,11 @@ export function streamV2SidecarsFromV1(input: {
           parserProfileId,
           observedAt: now,
         });
+        if (!materialized.bytes) {
+          // Stage 3: streaming-materialized blobs skip the line-span index
+          // (the streaming wire-up reads bytes back from disk if needed).
+          continue;
+        }
         const lineSpanIterator = iterateJsonlLineSpans(materialized.bytes)[Symbol.iterator]();
         let nextLineSpan = lineSpanIterator.next();
         for (const r of recordsByBlobStmt.iterate(sourceId, blob.id) as Iterable<{ payload_json: string }>) {
@@ -348,7 +365,9 @@ export function streamV2SidecarsFromV1(input: {
         createdAt: now,
       });
       const lineSpans =
-        materialized.captureKind === "source_blob" ? indexJsonlLineSpans(materialized.bytes) : undefined;
+        materialized.captureKind === "source_blob" && materialized.bytes
+          ? indexJsonlLineSpans(materialized.bytes)
+          : undefined;
       upsertEvidenceBlob(db, materialized);
       upsertEvidenceCapture(db, sourceId, blob, materialized, now);
       upsertSourceFileLedger(db, {
@@ -787,7 +806,7 @@ export async function mergeSourcePayloadStreaming(
           ...(trustedBytes ? { bytes: trustedBytes } : {}),
         });
         materializedByBlobId.set(blob.id, materialized);
-        if (materialized.captureKind === "source_blob") {
+        if (materialized.captureKind === "source_blob" && materialized.bytes) {
           lineSpansByBlobId.set(blob.id, indexJsonlLineSpans(materialized.bytes));
         }
         upsertEvidenceBlob(db, materialized);
@@ -1611,6 +1630,105 @@ function materializeBytes(input: {
   };
 }
 
+// Stage 3: streaming counterpart of materializeBytes. Reads Buffer chunks
+// from a single-pass async iterable, hashes incrementally, and writes to a
+// `.partial` file via createWriteStream. After the stream drains we know the
+// sha256 and rename `.partial` to its content-addressed final path. Cleanup
+// on error. The bytes field is undefined on return — callers that need the
+// bytes must read them back via storagePath, since the whole point is to
+// avoid materializing them in the caller's heap.
+//
+// Single-pass: the caller's chunks iterable is consumed exactly once.
+// Re-opening the source for a second hash pass would defeat the purpose
+// (captureBlobStreaming's streamingLineReader already re-opens the file, so
+// a second pass would double the I/O).
+//
+// AGENTS.md's 2x-disk-headroom rule applies: the partial file lives in
+// assetDir alongside the final blob, so the rule bounds total assetDir size
+// during a streaming capture, not peak process heap.
+export async function materializeBytesStream(input: {
+  assetDir?: string;
+  chunks: AsyncIterable<Buffer> | ReadStream;
+  mediaType: string;
+  captureKind: EvidenceMaterialization["captureKind"];
+  createdAt: string;
+}): Promise<EvidenceMaterialization> {
+  const hasher = createHash("sha256");
+  let sizeBytes = 0;
+
+  let writeStream: ReturnType<typeof createWriteStream> | undefined;
+  let partialPath: string | undefined;
+  if (input.assetDir) {
+    // Stage 3: write to a stable .partial under evidence/blobs/.partial-<pid>-<rand>
+    // so concurrent captures don't collide; rename to the content-addressed
+    // path once the sha256 is known.
+    partialPath = path.join(input.assetDir, "evidence", "blobs", `.partial-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(path.dirname(partialPath), { recursive: true });
+    rmSync(partialPath, { force: true });
+    writeStream = createWriteStream(partialPath, { flags: "wx" });
+  }
+
+  try {
+    for await (const chunk of input.chunks) {
+      hasher.update(chunk);
+      sizeBytes += chunk.byteLength;
+      if (writeStream) {
+        if (!writeStream.write(chunk)) {
+          await new Promise<void>((resolve) => writeStream!.once("drain", () => resolve()));
+        }
+      }
+    }
+    if (writeStream) {
+      await new Promise<void>((resolve, reject) => {
+        writeStream!.end((error?: Error | null) => {
+          if (error) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        });
+      });
+    }
+  } catch (error) {
+    if (writeStream) {
+      writeStream.destroy();
+    }
+    if (partialPath) {
+      rmSync(partialPath, { force: true });
+    }
+    throw error;
+  }
+
+  const sha256 = hasher.digest("hex");
+  const storagePath = path.join("evidence", "blobs", sha256.slice(0, 2), sha256);
+
+  if (partialPath && input.assetDir) {
+    const absolutePath = path.join(input.assetDir, storagePath);
+    mkdirSync(path.dirname(absolutePath), { recursive: true });
+    if (existsSync(absolutePath)) {
+      // Already materialized — discard our .partial.
+      rmSync(partialPath, { force: true });
+    } else {
+      try {
+        renameSync(partialPath, absolutePath);
+      } catch (error) {
+        rmSync(partialPath, { force: true });
+        throw error;
+      }
+    }
+  }
+
+  return {
+    sha256,
+    storagePath,
+    sizeBytes,
+    bytes: undefined,
+    mediaType: input.mediaType,
+    captureKind: input.captureKind,
+    createdAt: input.createdAt,
+  };
+}
+
 function readTrustedBlobBytes(blob: CapturedBlob): Buffer | undefined {
   for (const candidatePath of [blob.captured_path, blob.origin_path]) {
     if (!candidatePath || isVirtualBlobPath(candidatePath) || !existsSync(candidatePath)) {
@@ -1772,7 +1890,9 @@ function upsertSourceFileLedger(
     input.blob.file_identity_stable === true ? 1 : 0,
     input.parserProfileId,
     input.materialized.captureKind === "source_blob" ? input.materialized.sizeBytes : null,
-    input.materialized.captureKind === "source_blob" ? findLastJsonlBoundary(input.materialized.bytes) : null,
+    input.materialized.captureKind === "source_blob" && input.materialized.bytes
+      ? findLastJsonlBoundary(input.materialized.bytes)
+      : null,
     lastRecordOrdinal,
     input.blob.content_max_timestamp ?? null,
     JSON.stringify(sessionRefs),
