@@ -712,6 +712,14 @@ export async function syncSelectedSources(input: {
   }
 
   refreshDerivedProjectionsForSyncedSources(input.storage, syncedSources, input.onProgress);
+  // Stage 1: prune deferred-orphan evidence blobs once at end-of-sync. The
+  // per-batch merge path passes force:false to keep the end-to-end LEFT JOIN
+  // out of the batch loop; this single call catches every orphan produced
+  // during the run. Skipped when no source produced a payload — nothing was
+  // written, so no new orphans exist.
+  if (syncedSources.length > 0) {
+    input.storage.pruneEvidenceBlobsNow();
+  }
   return { host: hostProbe.host, syncedSources };
 }
 
@@ -843,6 +851,10 @@ async function streamCodexMergeBatch(
       display_name: source.display_name,
       message: formatStorageProgressMessage(event.stage, source.display_name),
       elapsed_ms: elapsedMs,
+      // Surface the cumulative per-source merge cost on every batch so the
+      // operator can spot slow batches without instrumenting the binary —
+      // this is the metric that surfaced the original 266s/0-record hang.
+      sqlite_merge_ms: input.timing.sqliteMergeMs,
     });
   };
 
@@ -1182,6 +1194,9 @@ async function syncCodexSourceInBatches(
         display_name: payload.source.display_name,
         message: formatStorageProgressMessage(event.stage, payload.source.display_name),
         elapsed_ms: elapsedMs,
+        // Cumulative per-source merge cost — see streamCodexMergeBatch for
+        // rationale (surfaces slow batches in operator logs).
+        sqlite_merge_ms: timing.sqliteMergeMs,
       });
     };
     return writeKind === "replace"
@@ -1800,6 +1815,7 @@ type SyncProgressEvent = (SourceProbeProgressEvent | {
   size_bytes?: number;
   count?: number;
   elapsed_ms?: number;
+  sqlite_merge_ms?: number;
 });
 
 type StorageProgressEvent = {

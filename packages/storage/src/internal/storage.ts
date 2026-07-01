@@ -1279,6 +1279,31 @@ export class CCHistoryStorage {
   }
 
   /**
+   * End-of-sync hook for the streaming hot path's deferred prune. The per-batch
+   * merge inside `mergeSourcePayloadStreaming` passes `force: false` to
+   * `pruneUnreferencedEvidenceBlobsInTransaction` so the expensive end-to-end
+   * LEFT JOIN against six ref tables does not run inside every batch's
+   * transaction. The sync orchestrator (CLI) must call this method exactly
+   * once after the per-source batch loop completes; failing to do so leaves
+   * orphaned evidence_blobs rows accumulating silently across syncs.
+   *
+   * Returns the dropped shas (best-effort file unlink already performed).
+   */
+  pruneEvidenceBlobsNow(): { pruned_shas: string[]; pruned_count: number } {
+    this.db.exec("BEGIN IMMEDIATE;");
+    let shas: string[];
+    try {
+      shas = Gc.pruneUnreferencedEvidenceBlobsInTransaction(this.db, { force: true });
+      this.db.exec("COMMIT;");
+    } catch (error) {
+      this.db.exec("ROLLBACK;");
+      throw error;
+    }
+    this.unlinkEvidenceBlobFiles(shas);
+    return { pruned_shas: shas, pruned_count: shas.length };
+  }
+
+  /**
    * B1: union of `lineage.blob_refs` across every V2 turn in the source. Used
    * by the GC orphan check (`selectOrphanedBlobIds`) to determine which
    * candidate blob ids are still referenced by some live turn.

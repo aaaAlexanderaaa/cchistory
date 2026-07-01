@@ -831,7 +831,13 @@ export async function mergeSourcePayloadStreaming(
       parserProfileId = deriveParserProfileIdFromStageRuns(db, sourceId);
     }
     upsertDerivedCacheRefsStreaming(db, sourceId, parserProfileId, now);
-    prunedShas = pruneUnreferencedEvidenceBlobsInTransaction(db);
+    // B.5.0h+: per-batch prune is deferred to the end of the sync run. The
+    // prune is an end-to-end LEFT JOIN against six ref tables and was the
+    // dominant cost on the streaming hot path (149 batches × full-scan
+    // accounted for ~266s on the operator store, even for 0-record batches).
+    // See CCHistoryStorage.pruneEvidenceBlobsNow — the sync orchestrator is
+    // obligated to call it once after the batch loop.
+    prunedShas = pruneUnreferencedEvidenceBlobsInTransaction(db, { force: false });
 
     const counts = countStoredSourcePayload(db, sourceId);
     const mergedSource: SourceStatus = {

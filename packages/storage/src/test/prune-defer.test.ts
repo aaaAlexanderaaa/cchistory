@@ -127,3 +127,75 @@ test("pruneUnreferencedEvidenceBlobsInTransaction with force:false is a no-op an
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+// End-to-end coverage for the sync orchestrator's deferral contract: per-batch
+// merge calls with force:false leave orphans in place, then a single
+// pruneEvidenceBlobsNow() at end-of-sync reclaims them. Regression guard for
+// "if a later refactor removes the end-of-sync call, this test fails."
+test("CCHistoryStorage.pruneEvidenceBlobsNow reclaims orphans that per-batch force:false merges left behind", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-prune-defer-e2e-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+
+    const sourceId = "srcinst-codex-prune-defer-e2e";
+    const originPath = path.join(sourceRoot, "session.jsonl");
+    const text = "{\"fixture\":true}\n";
+    await writeFile(originPath, text, "utf8");
+
+    const storage = new CCHistoryStorage({ dbPath });
+    const payload = createFixturePayload(sourceId, "prune defer e2e", "stage-prune-defer-e2e", {
+      baseDir: sourceRoot,
+    });
+    payload.blobs[0]!.origin_path = originPath;
+    payload.blobs[0]!.captured_path = undefined;
+    payload.blobs[0]!.checksum = "prune-defer-checksum";
+    payload.blobs[0]!.size_bytes = Buffer.byteLength(text, "utf8");
+    payload.blobs[0]!.file_identity_stable = true;
+    storage.replaceSourcePayload(payload);
+    storage.close();
+
+    // Simulate the streaming hot path producing two orphan blobs across two
+    // batches. Each "batch" is one force:false prune call (the no-op the
+    // streaming merge would do) plus one direct INSERT into evidence_blobs
+    // (the orphans the batch supposedly left behind).
+    const orphanShas = [`${"a".repeat(63)}1`, `${"a".repeat(63)}2`];
+    const rawDb = new DatabaseSync(dbPath);
+    try {
+      for (const sha of orphanShas) {
+        rawDb.exec("BEGIN IMMEDIATE;");
+        pruneUnreferencedEvidenceBlobsInTransaction(rawDb, { force: false });
+        rawDb
+          .prepare(
+            "INSERT INTO evidence_blobs (sha256, storage_path, size_bytes, media_type, encoding, compression, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          )
+          .run(sha, `evidence/blobs/aa/${sha}`, 16, "application/octet-stream", "identity", "none", "2026-07-01T00:00:00.000Z");
+        rawDb.exec("COMMIT;");
+      }
+      const beforePrune = rawDb
+        .prepare("SELECT COUNT(*) AS count FROM evidence_blobs WHERE sha256 IN (?, ?)")
+        .get(orphanShas[0]!, orphanShas[1]!) as { count: number };
+      assert.equal(beforePrune.count, 2, "force:false per-batch prunes must leave orphans intact");
+    } finally {
+      rawDb.close();
+    }
+
+    // End-of-sync hook — this is what the sync orchestrator must call.
+    const pruner = new CCHistoryStorage({ dbPath });
+    const result = pruner.pruneEvidenceBlobsNow();
+    pruner.close();
+
+    assert.equal(
+      result.pruned_count,
+      2,
+      "pruneEvidenceBlobsNow must reclaim both deferred orphans in one pass",
+    );
+    for (const sha of orphanShas) {
+      assert.ok(result.pruned_shas.includes(sha), `pruneEvidenceBlobsNow must drop ${sha}`);
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
