@@ -73,6 +73,7 @@ export function writeStorageBoundaryV2Sidecars(input: {
   preserveOriginPaths?: readonly string[];
   observedOriginPaths?: readonly string[];
   skipGlobalScopes?: boolean;
+  deferPrune?: boolean;
 }): { pruned_evidence_shas: string[] } {
   const normalizedPayload = normalizeSourcePayload(input.payload);
   const now = nowIso();
@@ -155,7 +156,16 @@ export function writeStorageBoundaryV2Sidecars(input: {
     // context-cache blobs). Without this call the same blob-leak shape as
     // B.5.0g accumulates on every merge/replace. Done inside the same
     // transaction so DB rows and file unlinks stay consistent.
-    prunedShas = pruneUnreferencedEvidenceBlobsInTransaction(input.db);
+    //
+    // `deferPrune: true` skips the prune on the sync hot path — the
+    // end-to-end LEFT JOIN against six ref tables is too expensive to run
+    // once per source (211s observed on claude_code's 1319-file merge on
+    // the operator store). The sync orchestrator must call
+    // CCHistoryStorage.pruneEvidenceBlobsNow once after all sources finish;
+    // failing to do so leaves orphaned blobs accumulating silently.
+    prunedShas = pruneUnreferencedEvidenceBlobsInTransaction(input.db, {
+      force: !input.deferPrune,
+    });
   });
   return { pruned_evidence_shas: prunedShas };
 }

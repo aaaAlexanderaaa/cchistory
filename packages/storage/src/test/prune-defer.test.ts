@@ -199,3 +199,161 @@ test("CCHistoryStorage.pruneEvidenceBlobsNow reclaims orphans that per-batch for
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+// Stage 1 follow-up: the sync hot path also runs through
+// mergeSourcePayloadByOriginPath → writeStorageBoundaryV2Sidecars, which used
+// to prune inline. skipPrune:true must thread the same force:false flag through
+// that path so a non-batched source (e.g. claude_code on the operator store,
+// observed at 211s for a single merge) doesn't pay the end-to-end LEFT JOIN
+// per sync.
+test("CCHistoryStorage.mergeSourcePayloadByOriginPath with skipPrune:true leaves orphans for pruneEvidenceBlobsNow", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-prune-defer-merge-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+
+    const sourceId = "srcinst-codex-prune-defer-merge";
+    const originPath = path.join(sourceRoot, "session.jsonl");
+    const text = "{\"fixture\":true}\n";
+    await writeFile(originPath, text, "utf8");
+
+    const seed = new CCHistoryStorage({ dbPath });
+    const seedPayload = createFixturePayload(sourceId, "prune defer merge", "stage-prune-defer-merge", {
+      baseDir: sourceRoot,
+    });
+    seedPayload.blobs[0]!.origin_path = originPath;
+    seedPayload.blobs[0]!.captured_path = undefined;
+    seedPayload.blobs[0]!.checksum = "prune-defer-merge-checksum";
+    seedPayload.blobs[0]!.size_bytes = Buffer.byteLength(text, "utf8");
+    seedPayload.blobs[0]!.file_identity_stable = true;
+    seed.replaceSourcePayload(seedPayload);
+    seed.close();
+
+    // Inject an orphan row, then re-open and call mergeSourcePayloadByOriginPath
+    // with skipPrune:true. The orphan must survive — the merge call must not
+    // run the end-to-end LEFT JOIN prune inline.
+    const orphanSha = `${"b".repeat(63)}1`;
+    const rawDb = new DatabaseSync(dbPath);
+    try {
+      rawDb.exec("BEGIN IMMEDIATE;");
+      rawDb
+        .prepare(
+          "INSERT INTO evidence_blobs (sha256, storage_path, size_bytes, media_type, encoding, compression, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(orphanSha, `evidence/blobs/bb/${orphanSha}`, 16, "application/octet-stream", "identity", "none", "2026-07-01T00:00:00.000Z");
+      rawDb.exec("COMMIT;");
+    } finally {
+      rawDb.close();
+    }
+
+    const storage = new CCHistoryStorage({ dbPath });
+    const mergePayload = createFixturePayload(sourceId, "prune defer merge", "stage-prune-defer-merge", {
+      baseDir: sourceRoot,
+    });
+    mergePayload.blobs[0]!.origin_path = originPath;
+    mergePayload.blobs[0]!.captured_path = undefined;
+    mergePayload.blobs[0]!.checksum = "prune-defer-merge-checksum";
+    mergePayload.blobs[0]!.size_bytes = Buffer.byteLength(text, "utf8");
+    mergePayload.blobs[0]!.file_identity_stable = true;
+    storage.mergeSourcePayloadByOriginPath(mergePayload, {
+      observed_origin_paths: [originPath],
+      refreshDerived: false,
+      skipPrune: true,
+    });
+    storage.close();
+
+    const probeBefore = new DatabaseSync(dbPath);
+    try {
+      const beforePrune = probeBefore
+        .prepare("SELECT COUNT(*) AS count FROM evidence_blobs WHERE sha256 = ?")
+        .get(orphanSha) as { count: number };
+      assert.equal(beforePrune.count, 1, "skipPrune:true must leave the orphan intact through writeStorageBoundaryV2Sidecars");
+    } finally {
+      probeBefore.close();
+    }
+
+    const pruner = new CCHistoryStorage({ dbPath });
+    const result = pruner.pruneEvidenceBlobsNow();
+    pruner.close();
+    assert.equal(result.pruned_count, 1, "pruneEvidenceBlobsNow must reclaim the deferred orphan");
+    assert.ok(result.pruned_shas.includes(orphanSha), "pruneEvidenceBlobsNow must drop the merge-deferred orphan");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("CCHistoryStorage.replaceSourcePayload with skipPrune:true leaves orphans for pruneEvidenceBlobsNow", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-prune-defer-replace-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+
+    const sourceId = "srcinst-codex-prune-defer-replace";
+    const originPath = path.join(sourceRoot, "session.jsonl");
+    const text = "{\"fixture\":true}\n";
+    await writeFile(originPath, text, "utf8");
+
+    const seed = new CCHistoryStorage({ dbPath });
+    const seedPayload = createFixturePayload(sourceId, "prune defer replace", "stage-prune-defer-replace", {
+      baseDir: sourceRoot,
+    });
+    seedPayload.blobs[0]!.origin_path = originPath;
+    seedPayload.blobs[0]!.captured_path = undefined;
+    seedPayload.blobs[0]!.checksum = "prune-defer-replace-checksum";
+    seedPayload.blobs[0]!.size_bytes = Buffer.byteLength(text, "utf8");
+    seedPayload.blobs[0]!.file_identity_stable = true;
+    seed.replaceSourcePayload(seedPayload);
+    seed.close();
+
+    const orphanSha = `${"c".repeat(63)}1`;
+    const rawDb = new DatabaseSync(dbPath);
+    try {
+      rawDb.exec("BEGIN IMMEDIATE;");
+      rawDb
+        .prepare(
+          "INSERT INTO evidence_blobs (sha256, storage_path, size_bytes, media_type, encoding, compression, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .run(orphanSha, `evidence/blobs/cc/${orphanSha}`, 16, "application/octet-stream", "identity", "none", "2026-07-01T00:00:00.000Z");
+      rawDb.exec("COMMIT;");
+    } finally {
+      rawDb.close();
+    }
+
+    const storage = new CCHistoryStorage({ dbPath });
+    const replacePayload = createFixturePayload(sourceId, "prune defer replace", "stage-prune-defer-replace", {
+      baseDir: sourceRoot,
+    });
+    replacePayload.blobs[0]!.origin_path = originPath;
+    replacePayload.blobs[0]!.captured_path = undefined;
+    replacePayload.blobs[0]!.checksum = "prune-defer-replace-checksum";
+    replacePayload.blobs[0]!.size_bytes = Buffer.byteLength(text, "utf8");
+    replacePayload.blobs[0]!.file_identity_stable = true;
+    storage.replaceSourcePayload(replacePayload, {
+      refreshDerived: false,
+      skipPrune: true,
+    });
+    storage.close();
+
+    const probeBefore = new DatabaseSync(dbPath);
+    try {
+      const beforePrune = probeBefore
+        .prepare("SELECT COUNT(*) AS count FROM evidence_blobs WHERE sha256 = ?")
+        .get(orphanSha) as { count: number };
+      assert.equal(beforePrune.count, 1, "skipPrune:true must leave the orphan intact through writeStorageBoundaryV2Sidecars on replace");
+    } finally {
+      probeBefore.close();
+    }
+
+    const pruner = new CCHistoryStorage({ dbPath });
+    const result = pruner.pruneEvidenceBlobsNow();
+    pruner.close();
+    assert.equal(result.pruned_count, 1, "pruneEvidenceBlobsNow must reclaim the replace-deferred orphan");
+    assert.ok(result.pruned_shas.includes(orphanSha), "pruneEvidenceBlobsNow must drop the replace-deferred orphan");
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

@@ -233,6 +233,7 @@ export class CCHistoryStorage {
       preserveOriginPaths?: readonly string[];
       observedOriginPaths?: readonly string[];
       skipGlobalScopes?: boolean;
+      deferPrune?: boolean;
     },
   ): { pruned_evidence_shas: string[] } {
     const result = writeStorageBoundaryV2Sidecars({
@@ -243,6 +244,7 @@ export class CCHistoryStorage {
       preserveOriginPaths: options.preserveOriginPaths,
       observedOriginPaths: options.observedOriginPaths,
       skipGlobalScopes: options.skipGlobalScopes,
+      deferPrune: options.deferPrune,
     });
     // Unlink content-addressed files for blobs whose refs were dropped by
     // prepareReplace/Merge (mutated lineage, dropped session-scoped turns).
@@ -291,6 +293,8 @@ export class CCHistoryStorage {
       allow_host_rekey?: boolean;
       onProgress?: (event: StorageProgressEvent) => void;
       refreshDerived?: boolean;
+      skipPrune?: boolean;
+      skipGlobalScopes?: boolean;
     } = {},
   ): {
     sessions: number;
@@ -327,7 +331,11 @@ export class CCHistoryStorage {
     });
     // A.2: unlink content-addressed evidence files whose rows were dropped.
     this.unlinkEvidenceBlobFiles(retirement.pruned_evidence_shas);
-    this.writeStorageBoundaryV2Sidecars(payload, { writeMode: "replace" });
+    this.writeStorageBoundaryV2Sidecars(payload, {
+      writeMode: "replace",
+      deferPrune: options.skipPrune,
+      skipGlobalScopes: options.skipGlobalScopes,
+    });
 
     // B4: countStoredSourcePayload (inside replacePersistedSourcePayloadWithOptions)
     // counts turns from user_turns_v2, but writeStorageBoundaryV2Sidecars runs
@@ -363,6 +371,7 @@ export class CCHistoryStorage {
       onProgress?: (event: StorageProgressEvent) => void;
       refreshDerived?: boolean;
       skipGlobalScopes?: boolean;
+      skipPrune?: boolean;
     } = {},
   ): {
     sessions: number;
@@ -382,6 +391,7 @@ export class CCHistoryStorage {
       preserveOriginPaths: options.preserve_origin_paths,
       observedOriginPaths: options.observed_origin_paths,
       skipGlobalScopes: options.skipGlobalScopes,
+      deferPrune: options.skipPrune,
     });
 
     // B4: same ordering gap as replaceSourcePayload above — countStoredSourcePayload
