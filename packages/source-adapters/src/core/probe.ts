@@ -62,6 +62,7 @@ import {
   buildSubmissionGroups,
   buildTurnsAndContext,
   buildStageRuns,
+  selectTailBlob,
 } from "./projections.js";
 import type {
   ProbeOptions,
@@ -1072,10 +1073,7 @@ function buildPreviousSourceIndex(
     byOriginPath.set(originPath, {
       originPath,
       blobs,
-      tailBlob: blobs.reduce<CapturedBlob | undefined>(
-        (current, blob) => !current || blob.size_bytes > current.size_bytes ? blob : current,
-        undefined,
-      ),
+      tailBlob: selectTailBlob(blobs),
       sessionInputs,
       orphanBlobs: blobs.filter((blob) => !recordBlobIds.has(blob.id)),
       lossAudits: dedupeById(fileLossAudits.filter((audit) => !sessionLossAuditIds.has(audit.id))),

@@ -14,6 +14,7 @@ import {
   listSourceFiles,
   listPlatformAdapters,
   buildStageRuns,
+  selectTailBlob,
   type HostDiscoveryEntry,
   type SourceProbeProgressEvent,
   type SourceProbeEvent,
@@ -1542,13 +1543,6 @@ async function buildCodexMetadataOnlyReusePayloadForStableOldBatch(
     turns: [],
     contexts: [],
   };
-}
-
-function selectTailBlob(blobs: readonly CapturedBlob[]): CapturedBlob | undefined {
-  return blobs.reduce<CapturedBlob | undefined>(
-    (current, blob) => !current || blob.size_bytes > current.size_bytes ? blob : current,
-    undefined,
-  );
 }
 
 function canReuseBlobFromStats(
