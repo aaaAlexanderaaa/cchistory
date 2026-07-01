@@ -67,6 +67,57 @@ export async function collectJsonlRecords(
   return records;
 }
 
+// Stage 3: streaming variant of collectJsonlRecords. Reads the file as
+// Buffer chunks (line-boundary aware) instead of one big string, so the
+// oversized JSONL capture path can collect records without materializing
+// the whole file. \n and \r never appear inside a multi-byte UTF-8 sequence,
+// so byte-level splitting is safe and we only decode at line granularity.
+// Sidecars are not supported here — they are small enough to read in full
+// after streaming the primary file, and the oversized capture path doesn't
+// use them.
+export async function collectJsonlRecordsStreaming(
+  chunks: AsyncIterable<Buffer>,
+  identity: JsonlRecordIdentity,
+  options: JsonlRecordCollectionOptions,
+  helpers: JsonlRecordHelpers,
+): Promise<RawRecord[]> {
+  const records: RawRecord[] = [];
+  const observedAt = options.observedAt ?? helpers.nowIso();
+
+  await forEachNonEmptyTrimmedLineStreaming(chunks, (line, ordinal) => {
+    records.push({
+      id: helpers.createRecordId(ordinal, `${ordinal}`),
+      source_id: identity.sourceId,
+      blob_id: identity.blobId,
+      session_ref: identity.sessionId,
+      ordinal,
+      record_path_or_offset: `${ordinal}`,
+      observed_at: observedAt,
+      parseable: true,
+      raw_json: line,
+    });
+  });
+
+  for (const sidecar of options.sidecars ?? []) {
+    if (!(await helpers.pathExists(sidecar.filePath))) {
+      continue;
+    }
+    records.push({
+      id: helpers.createRecordId(records.length, sidecar.pointer),
+      source_id: identity.sourceId,
+      blob_id: identity.blobId,
+      session_ref: identity.sessionId,
+      ordinal: records.length,
+      record_path_or_offset: sidecar.pointer,
+      observed_at: sidecar.observedAt ?? helpers.nowIso(),
+      parseable: true,
+      raw_json: await helpers.readTextFile(sidecar.filePath),
+    });
+  }
+
+  return records;
+}
+
 export function firstNonEmptyTrimmedLineFromBuffer(fileBuffer: Buffer): string | undefined {
   let start = 0;
 
@@ -180,5 +231,51 @@ function forEachNonEmptyTrimmedLine(
       index += 1;
     }
     start = index + 1;
+  }
+}
+
+// Stage 3: streaming counterpart of forEachNonEmptyTrimmedLine. Iterates
+// Buffer chunks, accumulates partial lines across chunk boundaries, and
+// invokes the visitor once per non-empty trimmed line. \n and \r are
+// single-byte ASCII separators that never appear inside multi-byte UTF-8
+// sequences, so byte-level scanning is safe; UTF-8 decoding happens only on
+// complete line buffers via .toString("utf8").
+export async function forEachNonEmptyTrimmedLineStreaming(
+  chunks: AsyncIterable<Buffer>,
+  visitor: (line: string, ordinal: number) => void,
+): Promise<void> {
+  let pending: Uint8Array = new Uint8Array(0);
+  let ordinal = 0;
+
+  for await (const chunk of chunks) {
+    pending = pending.length === 0 ? chunk : Buffer.concat([pending, chunk]);
+
+    let lineStart = 0;
+    for (let index = 0; index < pending.length; index += 1) {
+      const byte = pending[index]!;
+      if (byte !== 10 && byte !== 13) {
+        continue;
+      }
+      const lineBuffer = Buffer.from(pending.subarray(lineStart, index));
+      const line = lineBuffer.toString("utf8").trim();
+      if (line) {
+        visitor(line, ordinal);
+        ordinal += 1;
+      }
+      // Treat \r\n as a single separator by skipping the trailing \n.
+      if (byte === 13 && index + 1 < pending.length && pending[index + 1] === 10) {
+        index += 1;
+      }
+      lineStart = index + 1;
+    }
+
+    pending = pending.subarray(lineStart);
+  }
+
+  if (pending.length > 0) {
+    const line = Buffer.from(pending).toString("utf8").trim();
+    if (line) {
+      visitor(line, ordinal);
+    }
   }
 }
