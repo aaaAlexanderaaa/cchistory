@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import type { RawRecord, SourceDefinition } from "@cchistory/domain";
-import { captureBlob } from "./parser.js";
+import { captureBlob, captureBlobStreaming } from "./parser.js";
 import {
   collectJsonlRecordsStreaming,
   extractContentMaxTimestamp,
@@ -237,3 +238,94 @@ test("collectJsonlRecordsStreaming mirrors collectJsonlRecords for a simple JSON
   assert.equal(records[2]!.ordinal, 2);
   assert.equal(records[0]!.session_ref, "session-1");
 });
+
+test("captureBlobStreaming computes checksum, size_bytes, and content_max_timestamp without materializing the file", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-capturestream-basic-"));
+  try {
+    const filePath = path.join(tempDir, "session.jsonl");
+    const content = [
+      '{"type":"message","timestamp":"2026-03-12T10:00:01.000Z"}',
+      '{"type":"message","timestamp":"2026-03-12T10:00:02.000Z"}',
+      '{"type":"message","timestamp":"2026-03-12T10:00:03.000Z"}',
+    ].join("\n") + "\n";
+    await writeFile(filePath, content, "utf8");
+    const source: SourceDefinition = {
+      id: "src-test-stream",
+      slot_id: "test",
+      family: "local_coding_agent",
+      platform: "codex",
+      display_name: "test stream",
+      base_dir: tempDir,
+    };
+    const result = await captureBlobStreaming(source, "host-test", filePath, "run-stream-1");
+    assert.equal(result.blob.checksum, createHash("sha1").update(content, "utf8").digest("hex"));
+    assert.equal(result.blob.size_bytes, Buffer.byteLength(content, "utf8"));
+    assert.equal(result.blob.content_max_timestamp, "2026-03-12T10:00:03.000Z");
+    assert.ok(!("fileBuffer" in result), "streaming variant must not materialize fileBuffer");
+    assert.ok(result.streamingLineReader, "streamingLineReader factory must be present");
+    assert.ok(result.prefixReader, "prefixReader factory must be present");
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("captureBlobStreaming: streamingLineReader yields the full file content across chunks", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-capturestream-yield-"));
+  try {
+    const filePath = path.join(tempDir, "session.jsonl");
+    // ~12 MiB so the 4 MiB backing block forces multi-chunk iteration.
+    const line = '{"type":"message","timestamp":"2026-03-12T10:00:01.000Z"}\n';
+    const repeats = Math.ceil((12 * 1024 * 1024) / line.length);
+    const content = line.repeat(repeats);
+    await writeFile(filePath, content, "utf8");
+    const source: SourceDefinition = {
+      id: "src-test-stream-yield",
+      slot_id: "test",
+      family: "local_coding_agent",
+      platform: "codex",
+      display_name: "test stream yield",
+      base_dir: tempDir,
+    };
+    const result = await captureBlobStreaming(source, "host-test", filePath, "run-stream-2");
+    assert.equal(result.blob.size_bytes, Buffer.byteLength(content, "utf8"));
+
+    const collected = Buffer.concat(await collectAllChunks(result.streamingLineReader!()));
+    assert.equal(collected.toString("utf8"), content);
+    assert.equal(createHash("sha1").update(collected).digest("hex"), result.blob.checksum);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("captureBlobStreaming: prefixReader returns the leading N bytes for append detection", async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-capturestream-prefix-"));
+  try {
+    const filePath = path.join(tempDir, "session.jsonl");
+    const line = '{"type":"message","timestamp":"2026-03-12T10:00:01.000Z"}\n';
+    const repeats = Math.ceil((8 * 1024 * 1024) / line.length);
+    const content = line.repeat(repeats);
+    await writeFile(filePath, content, "utf8");
+    const source: SourceDefinition = {
+      id: "src-test-stream-prefix",
+      slot_id: "test",
+      family: "local_coding_agent",
+      platform: "codex",
+      display_name: "test stream prefix",
+      base_dir: tempDir,
+    };
+    const result = await captureBlobStreaming(source, "host-test", filePath, "run-stream-3");
+    const prefix = await result.prefixReader!(1024);
+    assert.equal(prefix.toString("utf8"), content.slice(0, 1024));
+    assert.equal(createHash("sha1").update(prefix).digest("hex"), createHash("sha1").update(content.slice(0, 1024)).digest("hex"));
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+async function collectAllChunks(chunks: AsyncGenerator<Buffer>): Promise<Buffer[]> {
+  const out: Buffer[] = [];
+  for await (const chunk of chunks) {
+    out.push(chunk);
+  }
+  return out;
+}

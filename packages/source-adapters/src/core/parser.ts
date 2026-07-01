@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import type {
   ActorKind,
@@ -77,6 +78,7 @@ import type {
   AssistantStopReason,
   CapturedBlob,
   CapturedBlobInput,
+  StreamingCapturedBlobInput,
   FragmentBuildContext,
   GenericSessionMetadata,
   LossAuditOptions,
@@ -571,6 +573,118 @@ export async function captureBlob(
     fileBuffer,
   };
 }
+
+// Stage 3: backing block size for streaming reads. 4 MiB balances syscall
+// overhead against heap pressure — at this size a 100 MiB file costs ~25
+// read syscalls and the in-flight chunk is bounded.
+const STREAMING_BACKING_BLOCK_BYTES = 4 * 1024 * 1024;
+
+// Stage 3: tail window retained during streaming capture so we can compute
+// content_max_timestamp without re-reading the file. Matches the tailBytes
+// default in extractContentMaxTimestamp.
+const STREAMING_TAIL_RETENTION_BYTES = 64 * 1024;
+
+// Stage 3: streaming variant of captureBlob for oversized JSONL files.
+// Reads the file in STREAMING_BACKING_BLOCK_BYTES chunks, hashes incrementally,
+// and retains only the last STREAMING_TAIL_RETENTION_BYTES for the watermark
+// extraction. Returns a CapturedBlobInput without fileBuffer — downstream
+// consumers must use streamingLineReader (for parsing) and prefixReader (for
+// append detection) instead. The two helpers re-open the file on demand so
+// the captured blob's memory cost stays bounded by the chunk size, not the
+// file size.
+export async function captureBlobStreaming(
+  source: SourceDefinition,
+  hostId: string,
+  filePath: string,
+  captureRunId: string,
+): Promise<StreamingCapturedBlobInput> {
+  const beforeStats = await fs.stat(filePath);
+  const fileIdentityStableBefore = {
+    size: beforeStats.size,
+    mtimeMs: beforeStats.mtimeMs,
+    ctimeMs: beforeStats.ctimeMs,
+  };
+
+  const handle = await fs.open(filePath, "r");
+  let totalBytes = 0;
+  let tail = Buffer.alloc(0);
+  const hasher = createHash("sha1");
+  try {
+    while (true) {
+      const block = Buffer.alloc(STREAMING_BACKING_BLOCK_BYTES);
+      const { bytesRead } = await handle.read(block, 0, STREAMING_BACKING_BLOCK_BYTES, null);
+      if (bytesRead === 0) {
+        break;
+      }
+      const slice = bytesRead === STREAMING_BACKING_BLOCK_BYTES ? block : block.subarray(0, bytesRead);
+      hasher.update(slice);
+      totalBytes += bytesRead;
+      const retained = Buffer.concat([tail, slice]);
+      tail = retained.length > STREAMING_TAIL_RETENTION_BYTES
+        ? retained.subarray(retained.length - STREAMING_TAIL_RETENTION_BYTES)
+        : retained;
+    }
+  } finally {
+    await handle.close();
+  }
+
+  const afterStats = await fs.stat(filePath);
+  const fileIdentityStable =
+    fileIdentityStableBefore.size === afterStats.size &&
+    fileIdentityStableBefore.mtimeMs === afterStats.mtimeMs &&
+    fileIdentityStableBefore.ctimeMs === afterStats.ctimeMs &&
+    totalBytes === afterStats.size;
+  const checksum = hasher.digest("hex");
+  const content_max_timestamp = isIncrementalJsonlPlatform(source.platform)
+    ? extractContentMaxTimestamp(tail)
+    : undefined;
+
+  return {
+    blob: {
+      id: stableId("blob", source.id, filePath, checksum),
+      source_id: source.id,
+      host_id: hostId,
+      origin_path: filePath,
+      checksum,
+      size_bytes: totalBytes,
+      captured_at: nowIso(),
+      capture_run_id: captureRunId,
+      file_modified_at: afterStats.mtime.toISOString(),
+      file_changed_at: fileIdentityStable ? afterStats.ctime.toISOString() : undefined,
+      file_identity_stable: fileIdentityStable,
+      content_max_timestamp,
+    },
+    streamingLineReader: async function* streamChunks(): AsyncGenerator<Buffer> {
+      const fh = await fs.open(filePath, "r");
+      try {
+        while (true) {
+          const block = Buffer.alloc(STREAMING_BACKING_BLOCK_BYTES);
+          const { bytesRead } = await fh.read(block, 0, STREAMING_BACKING_BLOCK_BYTES, null);
+          if (bytesRead === 0) {
+            break;
+          }
+          yield bytesRead === STREAMING_BACKING_BLOCK_BYTES ? block : block.subarray(0, bytesRead);
+        }
+      } finally {
+        await fh.close();
+      }
+    },
+    prefixReader: async function readPrefix(bytes: number): Promise<Buffer> {
+      if (bytes <= 0) {
+        return Buffer.alloc(0);
+      }
+      const fh = await fs.open(filePath, "r");
+      try {
+        const block = Buffer.alloc(bytes);
+        const { bytesRead } = await fh.read(block, 0, bytes, 0);
+        return bytesRead === bytes ? block : block.subarray(0, bytesRead);
+      } finally {
+        await fh.close();
+      }
+    },
+  };
+}
+
 
 function createRecordLossAudit(
   context: FragmentBuildContext,

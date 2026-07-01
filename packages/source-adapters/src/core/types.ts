@@ -278,6 +278,20 @@ export interface CapturedBlobInput {
   fileBuffer: Buffer;
 }
 
+// Stage 3: streaming variant of CapturedBlobInput for oversized JSONL files.
+// Bypasses fileBuffer to avoid materializing the whole file in memory.
+// Downstream consumers must branch on the streaming case: parsing goes
+// through streamingLineReader (-> collectJsonlRecordsStreaming), and append
+// detection uses prefixReader (-> processAppendedJsonlBlob's prefix-sha1
+// check) instead of fileBuffer.subarray.
+export interface StreamingCapturedBlobInput {
+  blob: CapturedBlob;
+  streamingLineReader: () => AsyncGenerator<Buffer>;
+  prefixReader: (bytes: number) => Promise<Buffer>;
+}
+
+export type AnyCapturedBlobInput = CapturedBlobInput | StreamingCapturedBlobInput;
+
 export interface LossAuditOptions {
   stageKind?: StageKind;
   diagnosticCode?: string;
