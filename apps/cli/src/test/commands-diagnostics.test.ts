@@ -1055,7 +1055,7 @@ test("sync reuses unchanged Claude Code files that share one session without dup
     assert.equal(secondSync.exitCode, 0, secondSync.stderr);
     const secondPayload = JSON.parse(secondSync.stdout);
     assert.equal(secondPayload.sources[0].counts.turns, 2);
-    assert.match(secondSync.stderr, /Loaded previous Claude Code reuse inputs \(2 blob\(s\),/);
+    assert.match(secondSync.stderr, /Loaded previous Claude Code reuse inputs \(2 blob\(s\)\)/);
     assert.match(secondSync.stderr, /\[sync:claude_code:file_skip\]/);
   } finally {
     process.env.HOME = originalHome;

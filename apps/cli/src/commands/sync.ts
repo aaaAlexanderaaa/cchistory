@@ -61,6 +61,22 @@ import { createStatsOverviewOutput } from "./stats.js";
 
 const DEFAULT_CODEX_SYNC_BATCH_TARGET_BYTES = 24 * 1024 * 1024;
 
+// Stage 2: above this blob count, the non-batch reuse preload drops to a
+// metadata-only payload (no records/fragments/atoms) to avoid OOM on operator-
+// scale stores. Tuned for a 4 GB host where ~1000 blobs * ~600 KiB parsed
+// records each (~600 MiB) is the practical ceiling before the preload
+// competes with the streaming probe for heap. Override via env for tuning.
+const DEFAULT_MINIMAL_PRELOAD_BLOB_THRESHOLD = 1000;
+function resolveMinimalPreloadBlobThreshold(): number {
+  const override = process.env.CCHISTORY_MINIMAL_PRELOAD_BLOB_THRESHOLD;
+  if (!override) {
+    return DEFAULT_MINIMAL_PRELOAD_BLOB_THRESHOLD;
+  }
+  const parsed = Number(override);
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_MINIMAL_PRELOAD_BLOB_THRESHOLD;
+}
+const MINIMAL_PRELOAD_BLOB_THRESHOLD = resolveMinimalPreloadBlobThreshold();
+
 export async function handleSync(context: CommandContext): Promise<CommandOutput> {
   if (context.globals.dryRun) {
     return handleSyncDryRun(context);
@@ -575,11 +591,25 @@ export async function syncSelectedSources(input: {
         const listStartedAt = Date.now();
         selectedFilePaths = await listSourceFiles(source.platform, source.base_dir, input.limitFiles);
         timing.scanMs += Date.now() - listStartedAt;
-        previousPayload = selectedFilePaths.length > 0
-          ? input.storage.getSourceIncrementalPayloadForOriginPaths(source.id, selectedFilePaths)
-          : undefined;
-        if (!previousPayload && !input.storage.listSources().some((entry) => entry.id === source.id)) {
+        // Stage 2: adaptive reuse preload. The heavy preload
+        // (getSourceIncrementalPayloadForOriginPaths) materializes every
+        // record/fragment/atom/edge/session for the requested files into a
+        // single SourceSyncPayload — needed for processAppendedJsonlBlob's
+        // sessionInputs.length === 1 check, but it blows the heap on
+        // operator-scale stores (~800 MiB / 1319 files for claude_code on a
+        // 4 GB host). For sources above the blob threshold we drop down to a
+        // metadata-only preload (source + stage_runs + per-originPath tail
+        // blobs). That preserves L0 stats-reuse and L2 checksum-reuse but
+        // loses append detection — append-sized re-parses become full parses.
+        // Below the threshold, keep the heavy preload so append detection
+        // still kicks in for typical dev syncs.
+        const metadataPayload = input.storage.getSourceIncrementalMetadataPayload(source.id);
+        if (!metadataPayload) {
           useMergeByOriginPath = false;
+        } else if (selectedFilePaths.length > 0) {
+          previousPayload = metadataPayload.source.total_blobs > MINIMAL_PRELOAD_BLOB_THRESHOLD
+            ? buildTailBlobPayloadFromMetadata(metadataPayload, selectedFilePaths)
+            : input.storage.getSourceIncrementalPayloadForOriginPaths(source.id, selectedFilePaths);
         }
         const reuseLoadElapsedMs = Date.now() - reuseLoadStartedAt;
         timing.reuseLoadMs += reuseLoadElapsedMs;
@@ -590,10 +620,7 @@ export async function syncSelectedSources(input: {
           platform: source.platform,
           display_name: source.display_name,
           message: previousPayload
-            ? [
-                `Loaded previous ${source.display_name} reuse inputs`,
-                `(${previousPayload.blobs.length} blob(s), ${previousPayload.records.length} record(s), ${previousPayload.atoms.length} atom(s))`,
-              ].join(" ")
+            ? `Loaded previous ${source.display_name} reuse inputs (${previousPayload.blobs.length} blob(s))`
             : `No previous ${source.display_name} reuse inputs found for listed source files`,
           count: previousPayload?.blobs.length ?? 0,
           elapsed_ms: reuseLoadElapsedMs,
@@ -1474,6 +1501,47 @@ async function statOrNull(filePath: string): Promise<{ size: number; mtimeMs: nu
   } catch {
     return undefined;
   }
+}
+
+// Stage 2: reduce a metadata-only payload (source + stage_runs + blobs) to a
+// minimal reuse payload whose blobs are the per-originPath tail blobs for the
+// requested file paths. The metadata payload already excludes the heavy
+// records/fragments/atoms/edges/sessions tables; this filter drops blobs the
+// caller doesn't need (e.g. batches that touch a subset of source files).
+function buildTailBlobPayloadFromMetadata(
+  metadataPayload: SourceSyncPayload,
+  filePaths: readonly string[],
+): SourceSyncPayload {
+  const grouped = new Map<string, CapturedBlob[]>();
+  for (const blob of metadataPayload.blobs) {
+    const key = path.normalize(blob.origin_path);
+    const list = grouped.get(key) ?? [];
+    list.push(blob);
+    grouped.set(key, list);
+  }
+  const tailBlobs: CapturedBlob[] = [];
+  const seen = new Set<string>();
+  for (const filePath of filePaths) {
+    const tail = selectTailBlob(grouped.get(path.normalize(filePath)) ?? []);
+    if (tail && !seen.has(tail.id)) {
+      seen.add(tail.id);
+      tailBlobs.push(tail);
+    }
+  }
+  return {
+    source: metadataPayload.source,
+    stage_runs: metadataPayload.stage_runs,
+    loss_audits: [],
+    blobs: tailBlobs,
+    records: [],
+    fragments: [],
+    atoms: [],
+    edges: [],
+    candidates: [],
+    sessions: [],
+    turns: [],
+    contexts: [],
+  };
 }
 
 async function buildCodexMetadataOnlyReusePayloadForStableOldBatch(
