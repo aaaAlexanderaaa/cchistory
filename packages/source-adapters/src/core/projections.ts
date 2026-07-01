@@ -982,25 +982,3 @@ export function extractCanonicalFallback(segments: readonly DisplaySegment[]): s
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
-
-/**
- * Pick the "tail" blob from a list — the one with the largest `size_bytes`.
- * For incremental JSONL platforms (codex, claude_code, factory_droid) the
- * largest blob is the most recent capture of an append-only file, so its
- * size_bytes doubles as the prefix length for append-detection sha1 checks
- * (see `processAppendedJsonlBlob` in probe.ts and
- * `buildCodexMetadataOnlyReusePayloadForStableOldBatch` in apps/cli sync.ts).
- *
- * Returns `undefined` for an empty list. Ties resolve to the first-encountered
- * maximum (stable for any given input ordering).
- *
- * Centralized here so probe, CLI, and storage all use the same reducer —
- * divergent tail-blob logic between sites was the Stage 2 root cause of
- * silent re-parses when the wrong blob was selected.
- */
-export function selectTailBlob(blobs: readonly CapturedBlob[]): CapturedBlob | undefined {
-  return blobs.reduce<CapturedBlob | undefined>(
-    (current, blob) => !current || blob.size_bytes > current.size_bytes ? blob : current,
-    undefined,
-  );
-}

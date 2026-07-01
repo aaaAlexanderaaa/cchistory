@@ -8,3 +8,4 @@ import "./test/search.test.js";
 import "./test/stats.test.js";
 import "./test/storage-boundary-v2.test.js";
 import "./test/store-layout.test.js";
+import "./test/tail-blob-map.test.js";

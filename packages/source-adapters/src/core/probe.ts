@@ -19,7 +19,7 @@ import type {
   SourceFormatProfile,
   SourcePlatform,
 } from "@cchistory/domain";
-import { deriveHostId, deriveSourceInstanceId } from "@cchistory/domain";
+import { deriveHostId, deriveSourceInstanceId, selectTailBlob } from "@cchistory/domain";
 import {
   nowIso,
   stableId,
@@ -62,7 +62,6 @@ import {
   buildSubmissionGroups,
   buildTurnsAndContext,
   buildStageRuns,
-  selectTailBlob,
 } from "./projections.js";
 import type {
   ProbeOptions,

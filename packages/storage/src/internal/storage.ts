@@ -84,6 +84,7 @@ import {
   toJson,
   uniqueStrings,
 } from "./utils.js";
+import { selectTailBlob } from "@cchistory/domain";
 import * as Queries from "./queries.js";
 import * as Stats from "./stats.js";
 import * as Gc from "./gc.js";
@@ -622,6 +623,53 @@ export class CCHistoryStorage {
   ): SourceSyncPayload | undefined {
     const source = this.listSources().find((entry) => entry.id === sourceId);
     return source ? this.buildSourceIncrementalPayloadForOriginPaths(source.id, originPaths) : undefined;
+  }
+
+  /**
+   * Stage 2: minimal-shape reuse preload. Returns only the tail blob for each
+   * requested origin path, keyed by normalized originPath. The streaming sync
+   * hot path consumed the prior `getSourceIncrementalPayloadForOriginPaths`
+   * call only for its `selectTailBlob(...)` reduction downstream — every
+   * record / fragment / atom / edge / session row loaded by the older method
+   * was unused and materialized into a single SourceSyncPayload, blowing the
+   * heap on operator-scale stores (~800 MiB / 1319 files for claude_code).
+   *
+   * Returns `undefined` if the source does not exist (matches the prior API).
+   * Keys in the returned Map use the same path.normalize() form the caller
+   * supplied (the caller is responsible for matching the normalization form
+   * used by `previousIndex.byOriginPath` on the probe side).
+   */
+  getTailBlobsByOriginPaths(
+    sourceId: string,
+    originPaths: readonly string[],
+  ): Map<string, CapturedBlob> | undefined {
+    const source = this.listSources().find((entry) => entry.id === sourceId);
+    if (!source) {
+      return undefined;
+    }
+    if (originPaths.length === 0) {
+      return new Map();
+    }
+    const normalized = originPaths.map((entry) => path.normalize(entry));
+    const blobs = Queries.selectBlobsByOriginPaths(this.db, sourceId, normalized);
+    const byNormalizedPath = new Map<string, CapturedBlob[]>();
+    for (const blob of blobs) {
+      const key = path.normalize(blob.origin_path);
+      const list = byNormalizedPath.get(key);
+      if (list) {
+        list.push(blob);
+      } else {
+        byNormalizedPath.set(key, [blob]);
+      }
+    }
+    const result = new Map<string, CapturedBlob>();
+    for (const [originPath, group] of byNormalizedPath) {
+      const tail = selectTailBlob(group);
+      if (tail) {
+        result.set(originPath, tail);
+      }
+    }
+    return result;
   }
 
   getSourceIncrementalMetadataPayload(sourceId: string): SourceSyncPayload | undefined {
