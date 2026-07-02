@@ -26,7 +26,7 @@ audit remain internal work-management slices, not user approval gates.
 
 R42 completed in-place on 2026-06-24: V1 turn storage dropped from the
 operator store, V2 sidecars are the only turn-storage layer. C.2 post-migration
-rebaseline skipped; see `docs/design/STORAGE_BOUNDARY_MIGRATION_PLAN.md`
+rebaseline skipped; see `docs/design/archive/STORAGE_BOUNDARY/MIGRATION_PLAN.md`
 § Phase C.2. Follow-on OOM/rate work landed after R42 closure and is tracked
 independently.
 
@@ -58,7 +58,7 @@ on 2026-05-17.
 Status: done
 Priority: P0
 Source: user direction on 2026-06-08
-Design: `docs/design/STORAGE_BOUNDARY_AUDIT.md`
+Design: `docs/design/archive/STORAGE_BOUNDARY/AUDIT.md`
 
 Optimize the storage system according to the storage boundary audit. This is a
 storage boundary redesign, not a local sync loop optimization. The work must
@@ -93,7 +93,7 @@ Completion evidence:
   `inventory`, including missing-store, SQLite, payload table, search index,
   source-root, and V2 evidence-store reporting.
 - Phase 2 contract is recorded in
-  `docs/design/STORAGE_BOUNDARY_V2_CONTRACT.md`.
+  `docs/design/archive/STORAGE_BOUNDARY/V2_CONTRACT.md`.
 - Phase 3 adds side-by-side content-addressed evidence files plus
   `evidence_blobs`, `evidence_captures`, `source_file_ledger`, and
   `parsed_record_spans` while keeping V1 rows populated.
@@ -117,7 +117,7 @@ Completion evidence:
 ## Objective: R42 - Storage Boundary Migration (Phase 6/7)
 Status: done
 Priority: P0
-Design: `docs/design/STORAGE_BOUNDARY_MIGRATION_PLAN.md`
+Design: `docs/design/archive/STORAGE_BOUNDARY/MIGRATION_PLAN.md`
 
 Drop V1 turn storage (`user_turns`, `turn_contexts`) and cut all read paths to
 the V2 sidecar layer shipped under R41. R41 added the V2 schema; R42 removed
@@ -133,7 +133,7 @@ Status on the operator store (`/root/.cchistory/cchistory.sqlite`):
 
 Phase C.2 post-migration rebaseline was skipped; see migration plan § Phase
 C.2. Operator-store post-compact observation in
-`docs/design/STORAGE_BOUNDARY_SCALE_BASELINE.md` is the closing evidence.
+`docs/design/archive/STORAGE_BOUNDARY/SCALE_BASELINE.md` is the closing evidence.
 
 Post-migration OOM / rate work (streaming sync hot path, deferred prune,
 materialize-bytes-stream, etc.) is not part of R42; those commits landed

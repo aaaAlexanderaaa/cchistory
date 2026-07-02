@@ -280,7 +280,7 @@ Today those roles are heavily co-located in JSON-over-SQLite.
    > prompts — the entire reason cchistory exists), 33% lost `raw_text` past
    > 4 KiB, 4.3% lost `canonical_text` past 16 KiB. B.5.0 added full-content
    > columns for all three plus five small-metadata fields. See
-   > `STORAGE_BOUNDARY_V2_CONTRACT.md` "Bounded UserTurn Read Model" for the
+   > `V2_CONTRACT.md` "Bounded UserTurn Read Model" for the
    > corrected value hierarchy: product-core content is inviolable; only
    > derived/index material (scan hints, UI rendering hints, ref arrays) is
    > bounded going forward.

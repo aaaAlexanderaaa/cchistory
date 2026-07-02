@@ -76,3 +76,13 @@ Source 产品价值分层属于设计语义，定义在
 | 文档 | 内容 |
 |------|------|
 | [R31 — Managed API Read Diary Contract](R31_MANAGED_API_READ_DIARY_CONTRACT.md) | Web/API 服务启动后的手动验证合约 |
+
+## 已关闭的倡议（archived/）
+
+`archive/` 下是已关闭、不再活跃的设计倡议。仅供历史追溯——任何从中得出的
+现行规则都已迁移到 `AGENTS.md`、`HIGH_LEVEL_DESIGN_FREEZE.md` 或对应的
+代码模块。
+
+| 文档 | 内容 | 关闭于 |
+|------|------|--------|
+| [STORAGE_BOUNDARY/](archive/STORAGE_BOUNDARY/) | R41/R42 storage-boundary migration：audit、V2 contract、migration plan、scale baseline | 2026-06-24 (R42) |

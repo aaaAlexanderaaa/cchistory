@@ -7,7 +7,8 @@ import assert from "node:assert/strict";
 import { runCliCapture, runCliJson, seedCliFixtures } from "./helpers.js";
 
 // Phase A acceptance: maintenance commands and pragma tuning behave as the
-// STORAGE_BOUNDARY_MIGRATION_PLAN documents.
+// archived storage-boundary migration plan documents
+// (docs/design/archive/STORAGE_BOUNDARY/MIGRATION_PLAN.md).
 //
 // Every test must point HOME at the seeded temp root — otherwise the sync
 // command walks the operator's real home and pulls in gigabytes of unrelated

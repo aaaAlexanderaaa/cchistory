@@ -38,6 +38,7 @@ Thumbs.db
 
 # Repo-local non-code content
 archive/
+!docs/design/archive/
 frontend_demo/
 tasks.csv
 task.CSV

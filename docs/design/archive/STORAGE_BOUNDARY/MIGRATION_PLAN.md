@@ -24,7 +24,7 @@ sidecar layer:
 
 The V1 layer remains the default read path everywhere except `getTurnContext`
 (`storage.ts:653-662`). No feature flag or env var gates this. See
-`STORAGE_BOUNDARY_V2_CONTRACT.md` lines 105-106, 124-125 for the additive
+`V2_CONTRACT.md` lines 105-106, 124-125 for the additive
 rollout rule that produced this state.
 
 The conclusion from that audit: **migration and optimization are the same work**.
@@ -197,7 +197,7 @@ B.4  validation
 
      **Status: landed.** All four validators report `completed` on the
      operator store. Operator-store evidence in
-     `STORAGE_BOUNDARY_SCALE_BASELINE.md` § "Operator Store Post-Compact
+     `SCALE_BASELINE.md` § "Operator Store Post-Compact
      Observation".
 
 B.5  read cutover
@@ -309,7 +309,7 @@ B.5.0  V2 schema extension (prerequisite for B.5.1-5)
        100% of turns lost `user_messages`, 33% lost `raw_text` past 4 KiB,
        4.3% lost `canonical_text` past 16 KiB. The tool's purpose is archiving
        user input; bounding it to serve architectural elegance was wrong.
-       See `STORAGE_BOUNDARY_V2_CONTRACT.md` "Bounded UserTurn Read Model" for
+       See `V2_CONTRACT.md` "Bounded UserTurn Read Model" for
        the corrected value hierarchy.
 
        B.5.0a (schema `2026-06-18.1`) added seven full-content columns to
@@ -440,7 +440,7 @@ B.6  compact
      **Status: landed.** Operator store at `/root/.cchistory/cchistory.sqlite`:
      `v1TurnTablesExist()` returns `false`; `schema_migrations` contains
      `2026-06-24.1/b6-drop-v1-turn-tables`. See
-     `STORAGE_BOUNDARY_SCALE_BASELINE.md` § "Operator Store Post-Compact
+     `SCALE_BASELINE.md` § "Operator Store Post-Compact
      Observation" for compact/VACUUM timing and post-migration footprint.
 
 B.7  rollback path
@@ -515,7 +515,7 @@ design is implemented enough to measure honestly"). Split into two passes.
 
 Run the existing `scripts/verify-scale-recall.mjs` verifier (currently 2400
 turns / 24 sessions per R41 line 414) against a V1+V2 store and commit the
-numbers to `docs/design/STORAGE_BOUNDARY_SCALE_BASELINE.md` as the reference
+numbers to `docs/design/archive/STORAGE_BOUNDARY/SCALE_BASELINE.md` as the reference
 baseline. Axes to record:
 
 - per-table row counts (V1 and V2)
@@ -533,7 +533,7 @@ Acceptance: baseline file committed with all axes populated. **Landed
 ### C.2 Post-migration rebaseline
 
 **Decision: skipped.** Closing evidence is the direct operator-store
-observation in `STORAGE_BOUNDARY_SCALE_BASELINE.md` § "Operator Store
+observation in `SCALE_BASELINE.md` § "Operator Store
 Post-Compact Observation" (post-compact footprint, schema_migrations row,
 `v1TurnTablesExist()` returning false). The C.1 fixture baseline and the
 operator store differ in scale, so direct numeric comparison on the original
@@ -574,13 +574,13 @@ The following are intentionally not part of this plan:
 
 ## References
 
-- `docs/design/STORAGE_BOUNDARY_AUDIT.md` lines 469-522 — Phase 6 and Phase 7
+- `docs/design/archive/STORAGE_BOUNDARY/AUDIT.md` lines 469-522 — Phase 6 and Phase 7
   definitions this plan implemented.
-- `docs/design/STORAGE_BOUNDARY_V2_CONTRACT.md` lines 170-178 — rollout and
+- `docs/design/archive/STORAGE_BOUNDARY/V2_CONTRACT.md` lines 170-178 — rollout and
   purge rules this plan obeyed.
 - `HIGH_LEVEL_DESIGN_FREEZE.md#11-lifecycle-model` — retention semantics that
   governed when V1 evidence could be released.
 - `BACKLOG.md` R41 (Phase 1-5) and R42 (Phase 6/7) closure records.
-- `docs/design/STORAGE_BOUNDARY_SCALE_BASELINE.md` — C.1 baseline plus the
+- `docs/design/archive/STORAGE_BOUNDARY/SCALE_BASELINE.md` — C.1 baseline plus the
   operator-store post-compact observation that substitutes for the formal
   C.2 rebaseline.

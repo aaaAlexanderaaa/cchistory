@@ -1,7 +1,7 @@
 # Storage Boundary Scale Baseline (C.1)
 
 Reference baseline for the storage-boundary migration defined in
-[STORAGE_BOUNDARY_MIGRATION_PLAN.md](./STORAGE_BOUNDARY_MIGRATION_PLAN.md) § C.1.
+[MIGRATION_PLAN.md](./MIGRATION_PLAN.md) § C.1.
 
 Captured with `scripts/collect-scale-baseline.mjs` against the same fixture
 used by `scripts/verify-scale-recall.mjs` (12 sessions × 100 turns × 2 sources
@@ -80,7 +80,7 @@ treat as "not available" rather than "0 bytes."
 
 ## Acceptance
 
-Phase C.2 was skipped; see `STORAGE_BOUNDARY_MIGRATION_PLAN.md` § Phase C.2.
+Phase C.2 was skipped; see `MIGRATION_PLAN.md` § Phase C.2.
 The operator-store observation below is the closing evidence.
 
 ## Operator Store Post-Compact Observation

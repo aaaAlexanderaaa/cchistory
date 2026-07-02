@@ -2,7 +2,7 @@
 
 Status: binding. V2 sidecars are the only turn-storage layer on the operator
 store (V1 turn tables dropped under R42; see `BACKLOG.md` and
-`docs/design/STORAGE_BOUNDARY_MIGRATION_PLAN.md`). This contract governs any
+`docs/design/archive/STORAGE_BOUNDARY/MIGRATION_PLAN.md`). This contract governs any
 future store-layer transition.
 
 `HIGH_LEVEL_DESIGN_FREEZE.md` is the product source of truth.
