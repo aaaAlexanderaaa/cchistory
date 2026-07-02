@@ -276,7 +276,7 @@ function SidebarContent({
           </div>
           <div className="min-w-0">
             <div className="text-sm font-bold font-display text-ink">CCHistory</div>
-            <div className="mono-text text-[10px] text-muted">v0.2.0</div>
+            <div className="mono-text text-[10px] text-muted">v0.3.0</div>
           </div>
         </div>
 

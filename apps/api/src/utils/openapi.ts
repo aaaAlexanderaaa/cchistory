@@ -3,7 +3,7 @@ export function buildOpenApiDocument() {
     openapi: "3.1.0",
     info: {
       title: "CCHistory Local API",
-      version: "0.2.0",
+      version: "0.3.0",
     },
     paths: {
       "/health": { get: { summary: "Health check" } },
