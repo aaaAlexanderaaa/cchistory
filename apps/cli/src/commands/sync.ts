@@ -58,6 +58,21 @@ import {
 } from "../main.js";
 import { formatSourceHandle, resolveSourceRef } from "../resolvers.js";
 import { createStatsOverviewOutput } from "./stats.js";
+import {
+  type SourceTiming,
+  createSourceTiming,
+  recordProbeTiming,
+  buildSourceTimingStageStats,
+  buildSourceAggregateStageStats,
+} from "./sync-timing.js";
+import {
+  type SyncProgressEvent,
+  type StorageProgressEvent,
+  createProgressReporter,
+  createFailedSourcePayload,
+  formatStorageProgressMessage,
+  formatBytes,
+} from "./sync-progress.js";
 
 const DEFAULT_CODEX_SYNC_BATCH_TARGET_BYTES = 24 * 1024 * 1024;
 
@@ -1672,310 +1687,6 @@ interface TimedSyncedSourceSummary extends SyncedSourceSummary {
 
 type CodexBatchWriteKind = "replace" | "merge" | "metadata";
 
-interface SourceTiming {
-  startedAtMs: number;
-  scanMs: number;
-  parseMs: number;
-  deriveMs: number;
-  sqliteWriteMs: number;
-  sqliteReplaceMs: number;
-  sqliteMergeMs: number;
-  sqliteMetadataMs: number;
-  sqlitePruneMs: number;
-  projectionRefreshMs: number;
-  projectionRefreshSkipped: boolean;
-  reuseLoadMs: number;
-  totalMs: number;
-  fileCount: number;
-  batchCount: number;
-  metadataOnlyReuseBatchCount: number;
-  metadataOnlyWriteBatchCount: number;
-}
-
-function createSourceTiming(): SourceTiming {
-  return {
-    startedAtMs: Date.now(),
-    scanMs: 0,
-    parseMs: 0,
-    deriveMs: 0,
-    sqliteWriteMs: 0,
-    sqliteReplaceMs: 0,
-    sqliteMergeMs: 0,
-    sqliteMetadataMs: 0,
-    sqlitePruneMs: 0,
-    projectionRefreshMs: 0,
-    projectionRefreshSkipped: false,
-    reuseLoadMs: 0,
-    totalMs: 0,
-    fileCount: 0,
-    batchCount: 0,
-    metadataOnlyReuseBatchCount: 0,
-    metadataOnlyWriteBatchCount: 0,
-  };
-}
-
-function recordProbeTiming(timing: SourceTiming, event: SourceProbeProgressEvent): void {
-  const elapsedMs = typeof event.elapsed_ms === "number" ? event.elapsed_ms : undefined;
-  if (event.stage === "list_files_done" && typeof event.count === "number") {
-    timing.fileCount += event.count;
-  }
-  if (elapsedMs === undefined) {
-    return;
-  }
-
-  switch (event.stage) {
-    case "live_probe_done":
-    case "list_files_done":
-    case "file_capture_done":
-    case "file_reuse":
-    case "file_skip":
-      timing.scanMs += elapsedMs;
-      break;
-    case "file_parse_done":
-    case "file_append_done":
-      timing.parseMs += elapsedMs;
-      break;
-    case "derive_done":
-      timing.deriveMs += elapsedMs;
-      break;
-  }
-}
-
-function buildSourceTimingStageStats(
-  timing: SourceTiming,
-): Partial<Record<StageKind, Record<string, number>>> {
-  return {
-    capture: {
-      sync_scan_ms: timing.scanMs,
-      sync_file_count: timing.fileCount,
-      sync_batch_count: timing.batchCount,
-      sync_metadata_only_reuse_batch_count: timing.metadataOnlyReuseBatchCount,
-      sync_reuse_load_ms: timing.reuseLoadMs,
-    },
-    parse_source_fragments: {
-      sync_parse_ms: timing.parseMs,
-    },
-    derive_candidates: {
-      sync_derive_ms: timing.deriveMs,
-    },
-    finalize_projections: {
-      sqlite_write_ms: timing.sqliteWriteMs,
-      sqlite_replace_ms: timing.sqliteReplaceMs,
-      sqlite_merge_ms: timing.sqliteMergeMs,
-      sqlite_metadata_ms: timing.sqliteMetadataMs,
-      sqlite_metadata_write_count: timing.metadataOnlyWriteBatchCount,
-      sqlite_prune_ms: timing.sqlitePruneMs,
-    },
-    index_projections: {
-      projection_refresh_ms: timing.projectionRefreshMs,
-      projection_refresh_skipped: timing.projectionRefreshSkipped ? 1 : 0,
-      sync_reindex_ms: timing.projectionRefreshMs,
-      sync_total_ms: timing.totalMs,
-    },
-  };
-}
-
-function buildSourceAggregateStageStats(
-  source: SourceStatus,
-  timing: SourceTiming,
-  failureCounts: Partial<Record<StageKind, number>>,
-): Partial<Record<StageKind, Record<string, number>>> {
-  const stageCounts: Partial<Record<StageKind, Record<string, number>>> = {
-    capture: {
-      input_count: timing.fileCount || source.total_blobs,
-      output_count: source.total_blobs,
-      success_count: source.total_blobs,
-      failure_count: failureCounts.capture ?? 0,
-      skipped_count: 0,
-      unparseable_count: 0,
-    },
-    extract_records: {
-      input_count: source.total_blobs,
-      output_count: source.total_records,
-      success_count: source.total_records,
-      failure_count: failureCounts.extract_records ?? 0,
-      skipped_count: 0,
-      unparseable_count: failureCounts.extract_records ?? 0,
-    },
-    parse_source_fragments: {
-      input_count: source.total_records,
-      output_count: source.total_fragments,
-      success_count: source.total_fragments,
-      failure_count: failureCounts.parse_source_fragments ?? 0,
-      skipped_count: 0,
-      unparseable_count: failureCounts.parse_source_fragments ?? 0,
-    },
-    atomize: {
-      input_count: source.total_fragments,
-      output_count: source.total_atoms,
-      success_count: source.total_atoms,
-      failure_count: failureCounts.atomize ?? 0,
-      skipped_count: 0,
-      unparseable_count: 0,
-    },
-    derive_candidates: {
-      input_count: source.total_atoms,
-      output_count: source.total_sessions + source.total_turns,
-      success_count: source.total_sessions + source.total_turns,
-      failure_count: failureCounts.derive_candidates ?? 0,
-      skipped_count: 0,
-      unparseable_count: 0,
-    },
-    finalize_projections: {
-      input_count: source.total_sessions + source.total_turns,
-      output_count: source.total_sessions + source.total_turns,
-      success_count: source.total_sessions + source.total_turns,
-      failure_count: failureCounts.finalize_projections ?? 0,
-      skipped_count: 0,
-      unparseable_count: 0,
-      sessions: source.total_sessions,
-      turns: source.total_turns,
-    },
-    apply_masks: {
-      input_count: source.total_turns,
-      output_count: source.total_turns,
-      success_count: source.total_turns,
-      failure_count: failureCounts.apply_masks ?? 0,
-      skipped_count: 0,
-      unparseable_count: 0,
-      turns: source.total_turns,
-    },
-    index_projections: {
-      input_count: source.total_turns,
-      output_count: source.total_turns,
-      success_count: source.total_turns,
-      failure_count: failureCounts.index_projections ?? 0,
-      skipped_count: 0,
-      unparseable_count: 0,
-      turns: source.total_turns,
-    },
-  };
-  const timingStats = buildSourceTimingStageStats(timing);
-  const mergedStats: Partial<Record<StageKind, Record<string, number>>> = {};
-  for (const stage of Object.keys(stageCounts) as StageKind[]) {
-    mergedStats[stage] = {
-      ...stageCounts[stage],
-      ...timingStats[stage],
-    };
-  }
-  return mergedStats;
-}
-
-type SyncProgressEvent = (SourceProbeProgressEvent | {
-  stage:
-    | "store_open_start"
-    | "store_open_done"
-    | "source_resolution_start"
-    | "source_resolution_done"
-    | "host_probe_start"
-    | "host_probe_done"
-    | "source_prepare_start"
-    | "source_prepare_done"
-    | "incremental_reuse_load_start"
-    | "incremental_reuse_load_done"
-    | "write_store_start"
-    | "write_store_done"
-    | "reindex_start"
-    | "reindex_done"
-    | "reindex_skip"
-    | "source_error";
-  source_id?: string;
-  slot_id?: string;
-  platform?: SourceStatus["platform"];
-  display_name?: string;
-  message?: string;
-  file_path?: string;
-  file_index?: number;
-  file_count?: number;
-  size_bytes?: number;
-  count?: number;
-  elapsed_ms?: number;
-  sqlite_merge_ms?: number;
-});
-
-type StorageProgressEvent = {
-  stage: "write_store_done";
-  source_id: string;
-  projection_changed: boolean;
-} | {
-  stage: "reindex_start" | "reindex_done";
-  source_id: string;
-};
-
-function createProgressReporter(context: CommandContext): ((event: SyncProgressEvent) => void) | undefined {
-  const mode = context.options.progress ?? (context.options.detail || context.globals.verbose ? "text" : "none");
-  if (mode === "none") {
-    return undefined;
-  }
-  const command = context.commandPath[0] ?? "sync";
-
-  return (event) => {
-    if (mode === "jsonl") {
-      context.io.stderr(`${JSON.stringify({ kind: `${command}-progress`, at: new Date().toISOString(), ...event })}\n`);
-      return;
-    }
-
-    const prefix = `[${command}:${event.slot_id ?? "cli"}:${event.stage}]`;
-    const fileProgress =
-      typeof event.file_index === "number" && typeof event.file_count === "number"
-        ? ` ${event.file_index}/${event.file_count}`
-        : "";
-    const elapsed = typeof event.elapsed_ms === "number" ? ` (${event.elapsed_ms}ms)` : "";
-    const size = typeof event.size_bytes === "number" ? ` ${formatBytes(event.size_bytes)}` : "";
-    context.io.stderr(`${prefix}${fileProgress}${size} ${event.message ?? event.file_path ?? ""}${elapsed}\n`);
-  };
-}
-
-function createFailedSourcePayload(source: SourceDefinition, hostId: string, errorMessage: string): SourceSyncPayload {
-  const now = new Date().toISOString();
-  return {
-    source: {
-      id: source.id,
-      slot_id: source.slot_id,
-      family: source.family,
-      platform: source.platform,
-      display_name: source.display_name,
-      base_dir: source.base_dir,
-      host_id: hostId,
-      last_sync: now,
-      sync_status: "error",
-      error_message: errorMessage,
-      total_blobs: 0,
-      total_records: 0,
-      total_fragments: 0,
-      total_atoms: 0,
-      total_sessions: 0,
-      total_turns: 0,
-    },
-    stage_runs: [],
-    loss_audits: [],
-    blobs: [],
-    records: [],
-    fragments: [],
-    atoms: [],
-    edges: [],
-    candidates: [],
-    sessions: [],
-    turns: [],
-    contexts: [],
-  };
-}
-
-function formatStorageProgressMessage(stage: SyncProgressEvent["stage"], sourceName: string): string {
-  switch (stage) {
-    case "write_store_done":
-      return `Wrote ${sourceName} payload to SQLite`;
-    case "reindex_start":
-      return "Rebuilding project links and search index";
-    case "reindex_done":
-      return "Rebuilt project links and search index";
-    case "reindex_skip":
-      return "Skipped project links and search index rebuild; canonical projections were unchanged";
-    default:
-      return sourceName;
-  }
-}
-
 function normalizeChangedSince(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
@@ -2327,12 +2038,6 @@ function asDoctorString(value: unknown): string {
 
 function asDoctorOptionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes}B`;
-  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KiB`;
-  return `${Math.round(bytes / (1024 * 1024))}MiB`;
 }
 
 export function applySourceDiscoverySelection(entries: HostDiscoveryEntry[], selectedRefs: string[]): HostDiscoveryEntry[] {
