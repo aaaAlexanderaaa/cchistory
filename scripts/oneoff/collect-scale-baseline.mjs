@@ -1,4 +1,11 @@
-// Collects the C.1 pre-migration baseline for the storage-boundary migration.
+// One-off: collects the C.1 pre-migration baseline for the storage-boundary
+// migration. The migration closed under R42 on 2026-06-24
+// (see docs/design/archive/STORAGE_BOUNDARY/MIGRATION_PLAN.md § Phase C.1).
+//
+// This script lives under scripts/oneoff/ because the measurement is complete.
+// Keep it for as long as it's useful to re-run the same baseline on the
+// post-migration store; delete once that's no longer interesting.
+//
 // Reuses the same scale fixture as scripts/verify-scale-recall.mjs (12 sessions
 // per source × 100 turns per session × 2 sources = 2400 turns / 24 sessions)
 // and records the seven axes the migration plan calls for:
@@ -10,7 +17,8 @@
 //   - context-detail reconstruction time
 //   - search time
 //
-// Output is a markdown table written to docs/design/STORAGE_BOUNDARY_SCALE_BASELINE.md.
+// Output is a markdown table written to
+// docs/design/archive/STORAGE_BOUNDARY/SCALE_BASELINE.md.
 
 import "./install-node-sqlite-warning-filter.mjs";
 import { execFile } from "node:child_process";
@@ -136,7 +144,7 @@ async function main() {
     };
 
     const md = renderMarkdown(baseline);
-    const outPath = path.join(projectRoot, "docs", "design", "STORAGE_BOUNDARY_SCALE_BASELINE.md");
+    const outPath = path.join(projectRoot, "docs", "design", "archive", "STORAGE_BOUNDARY", "SCALE_BASELINE.md");
     await writeFile(outPath, md, "utf8");
     console.log(`[baseline] wrote ${outPath}`);
   } finally {
@@ -499,9 +507,9 @@ function renderMarkdown(baseline) {
   lines.push("# Storage Boundary Scale Baseline (C.1)");
   lines.push("");
   lines.push("Reference baseline for the storage-boundary migration defined in");
-  lines.push("[STORAGE_BOUNDARY_MIGRATION_PLAN.md](./STORAGE_BOUNDARY_MIGRATION_PLAN.md) § C.1.");
+  lines.push("[MIGRATION_PLAN.md](./MIGRATION_PLAN.md) § C.1.");
   lines.push("");
-  lines.push("Captured with `scripts/collect-scale-baseline.mjs` against the same fixture");
+  lines.push("Captured with `scripts/oneoff/collect-scale-baseline.mjs` against the same fixture");
   lines.push("used by `scripts/verify-scale-recall.mjs` (12 sessions × 100 turns × 2 sources");
   lines.push(`= ${baseline.fixture.total_turns} turns across ${baseline.fixture.total_sessions} sessions).`);
   lines.push("");
