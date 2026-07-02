@@ -7,7 +7,7 @@
   <img src="https://img.shields.io/badge/Node.js-%3E%3D22-brightgreen" alt="Node.js >=22" />
   <img src="https://img.shields.io/badge/pnpm-10.x-orange" alt="pnpm 10.x" />
   <img src="https://img.shields.io/badge/TypeScript-5.9-blue" alt="TypeScript 5.9" />
-  <img src="https://img.shields.io/badge/Version-0.2.0-blue" alt="Version 0.2.0" />
+  <img src="https://img.shields.io/badge/Version-0.3.0-blue" alt="Version 0.3.0" />
   <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT License" />
 </p>
 
@@ -17,7 +17,7 @@
 
 ---
 
-CCHistory `0.2.0` is a local-first, evidence-preserving memory layer for AI coding assistant history. It collects local session data from **12 AI coding assistant platforms including Claude Code, Cursor, Codex, AMP, Gemini CLI, Accio Work, and more** (see [Supported Platforms](#supported-platforms)), then organizes it by project identity so you can search, review, and analyze what you asked across tools.
+CCHistory `0.3.0` is a local-first, evidence-preserving memory layer for AI coding assistant history. It collects local session data from **12 AI coding assistant platforms including Claude Code, Cursor, Codex, AMP, Gemini CLI, Accio Work, and more** (see [Supported Platforms](#supported-platforms)), then organizes it by project identity so you can search, review, and analyze what you asked across tools.
 
 The primary recall object is the project-scoped `UserTurn`: a user-authored ask,
 linked to its project, session context, source evidence, and derived lifecycle
@@ -53,7 +53,7 @@ store rather than separate interpretations.
 
 ## Release Scope
 
-`0.2.0` is the current repository package, API, and Web UI release marker. The
+`0.3.0` is the current repository package, API, and Web UI release marker. The
 `self-host v1` wording in design documents describes the supported deployment
 scope: a single-user, local-first, localhost-or-trusted-LAN installation backed
 by SQLite. It is not a package version.
