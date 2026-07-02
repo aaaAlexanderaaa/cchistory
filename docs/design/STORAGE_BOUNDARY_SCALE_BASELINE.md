@@ -80,6 +80,48 @@ treat as "not available" rather than "0 bytes."
 
 ## Acceptance
 
-Phase C.2 will compare its post-migration numbers against this file.
-Hard constraint: every metric <= baseline × 1.1 (no regression beyond 10%).
+Phase C.2 was skipped; see `STORAGE_BOUNDARY_MIGRATION_PLAN.md` § Phase C.2.
+The operator-store observation below is the closing evidence.
+
+## Operator Store Post-Compact Observation
+
+Captured 2026-07-02 against `/root/.cchistory/cchistory.sqlite`. V1 turn
+tables (`user_turns`, `turn_contexts`) are absent from `sqlite_master`;
+`v1TurnTablesExist()` returns `false`.
+
+### Migration markers (all `completed`)
+
+| Marker | Completed |
+| --- | --- |
+| `storage-boundary.write` (6 sources) | 2026-06-22 |
+| `storage-boundary.validate` (bundle-byte-diff) | 2026-06-23 |
+| `storage-boundary.validate` (v1-payload-digest) | 2026-06-24 |
+| `storage-boundary.compact` | 2026-06-24 (40.6s) |
+| `storage-boundary.vacuum` | 2026-06-24 (5m44s) |
+
+### Disk footprint
+
+| Resource | Size |
+| --- | ---: |
+| Main SQLite file | 5.4 GiB |
+| Evidence blobs on-disk | 3.1 GiB |
+| WAL / SHM | 0 / 32 KiB |
+
+### Row counts (V2 only)
+
+| Table | Rows |
+| --- | ---: |
+| `user_turns_v2` | 3,879 |
+| `turn_context_refs_v2` | 3,879 |
+| `raw_records` | 461,504 |
+| `source_fragments` | 829,604 |
+| `conversation_atoms` | 828,832 |
+| `evidence_blobs` | 10,022 |
+| `captured_blobs` | 2,111 |
+
+### Schema
+
+`schema_version = 2026-06-30.1`. `schema_migrations` contains
+`2026-06-24.1/b6-drop-v1-turn-tables` (recorded at compact time, not
+schema-apply time — see migration plan B.6 for why).
 

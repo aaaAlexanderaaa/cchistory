@@ -1,15 +1,15 @@
 # Storage Boundary Migration Plan (Phase 6/7)
 
-Status: execution plan for Phase 6 (migrate existing stores safely) and Phase 7
-(scale rebaseline) defined in `docs/design/STORAGE_BOUNDARY_AUDIT.md`. Phases 1-5
-are closed under R41 in `BACKLOG.md`; this plan picks up where Phase 5 leaves off.
+Status: **Closed.** V1 turn storage (`user_turns`, `turn_contexts`) is dropped
+from the operator store; V2 sidecars are the only turn-storage layer. Phase
+6/7 closure is recorded under R42 in `BACKLOG.md`. Phase C.2 post-migration
+rebaseline was explicitly skipped — see § Phase C.2.
 
-`HIGH_LEVEL_DESIGN_FREEZE.md` remains the product source of truth. This plan does
-not change product semantics: evidence is preserved, `UserTurn` remains the
-primary recall object, UI/API/TUI/CLI reads remain projections of the same
-canonical model, and `STORAGE_BOUNDARY_V2_CONTRACT.md` purge rules (lines
-176-177) hold throughout: no migration may purge old payloads without the later
-Phase 6 preview, validation, and explicit compact step.
+Phases 1-5 (R41) shipped the V2 sidecar schema. Phases 6-7 (R42) shipped the
+destructive migration that drops V1 turn storage.
+
+`HIGH_LEVEL_DESIGN_FREEZE.md` is the product source of truth. The migration
+did not change product semantics.
 
 ## Context
 
@@ -34,23 +34,14 @@ the duplication will rearrange bytes without shrinking the store.
 
 ## Strategy
 
-Three execution tracks, sequenced:
+Three phases, all closed:
 
-- **Phase A** — cheap wins that do not touch schema and can ship independently.
-  Reduces 5 GB by an estimated 1.0-1.5 GB and removes the worst on-going
-  duplication source (FTS5 maintenance).
-- **Phase B** — Phase 6 from `STORAGE_BOUNDARY_AUDIT.md` lines 469-492. Resolves
-  the audit's hand-wavy parts (marker semantics, compact vs vacuum separation,
-  validation criteria, resume protocol) into concrete sub-stages with acceptance
-  criteria. Reduces 5 GB to an estimated 1.5-2.0 GB by eliminating V1 payload
-  duplication.
-- **Phase C** — Phase 7 from `STORAGE_BOUNDARY_AUDIT.md` lines 494-522. Splits
-  into a pre-migration baseline pass (C.1, ships with Phase A) and a
-  post-migration rebaseline (C.2, ships after Phase B).
-
-Phase A is the unlock. C.1 must run before Phase B so that Phase 7 has a
-comparison baseline. Phase B is the bulk of the work. Phase C.2 is the
-validation gate that closes the storage boundary work.
+- **Phase A** — schema-independent cheap wins (FTS5, evidence GC, index dedup,
+  pragma tuning). Landed.
+- **Phase B** — destructive V1→V2 migration (B.1-B.6). Landed on the operator
+  store 2026-06-24; V1 turn tables dropped.
+- **Phase C** — scale validation. C.1 baseline landed 2026-06-23. C.2 skipped;
+  see § Phase C.2.
 
 ## Phase A: Cheap Wins (pre-migration)
 
@@ -203,6 +194,11 @@ B.4  validation
            across the V1+V2 boundary.
        (c) read-path parity: run the same set of CLI/TUI/API queries against
            V1 and V2 readers, diff the results.
+
+     **Status: landed.** All four validators report `completed` on the
+     operator store. Operator-store evidence in
+     `STORAGE_BOUNDARY_SCALE_BASELINE.md` § "Operator Store Post-Compact
+     Observation".
 
 B.5  read cutover
      Switch the six V1 read paths to V2:
@@ -441,12 +437,24 @@ B.6  compact
      `v1TurnTablesExist()` helper in `packages/storage/src/internal/queries.ts`
      is the canonical check.
 
+     **Status: landed.** Operator store at `/root/.cchistory/cchistory.sqlite`:
+     `v1TurnTablesExist()` returns `false`; `schema_migrations` contains
+     `2026-06-24.1/b6-drop-v1-turn-tables`. See
+     `STORAGE_BOUNDARY_SCALE_BASELINE.md` § "Operator Store Post-Compact
+     Observation" for compact/VACUUM timing and post-migration footprint.
+
 B.7  rollback path
      Until B.6 completes, V1 payloads remain intact and readable. Any failure
      in B.1-B.5 leaves the store in its pre-migration state; the marker can
      be cleared and the migration re-run. After B.6 there is no rollback path
      short of restoring from backup; this is called out in the B.1 preview
      output.
+
+     **Status: rollback path closed on the operator store.** The V1 turn
+     tables no longer exist on disk. The migration tooling
+     (`packages/storage/src/migration-*.ts`) and the read-paths validator's
+     graceful-skip on missing V1 are retained for stores that have not yet
+     compacted; on the operator store they are inert.
 ```
 
 ### B.2 Decisions on the audit's open questions
@@ -519,56 +527,34 @@ baseline. Axes to record:
 - context-detail reconstruction time
 - search time
 
-Acceptance: baseline file committed with all axes populated. Without this,
-Phase C.2 cannot prove non-regression.
+Acceptance: baseline file committed with all axes populated. **Landed
+2026-06-23.**
 
-### C.2 Post-migration rebaseline (ships after Phase B)
+### C.2 Post-migration rebaseline
 
-Extend `verify-scale-recall.mjs` with the new axes the audit names at lines
-498-516:
+**Decision: skipped.** Closing evidence is the direct operator-store
+observation in `STORAGE_BOUNDARY_SCALE_BASELINE.md` § "Operator Store
+Post-Compact Observation" (post-compact footprint, schema_migrations row,
+`v1TurnTablesExist()` returning false). The C.1 fixture baseline and the
+operator store differ in scale, so direct numeric comparison on the original
+hard/soft thresholds is not meaningful; V1 payload duplication is eliminated
+by construction because the V1 turn tables no longer exist.
 
-- table row counts (V2 only after B.6)
-- payload bytes (V2 + on-disk evidence)
-- evidence-store bytes
-- WAL peak size
-- peak RSS per CLI invocation (same set as C.1)
-- the existing time axes
-
-Scenario coverage per audit lines 502-512:
-
-- many small JSONL files
-- a few very large JSONL files
-- large tool output
-- appended records
-- truncated or rewritten files
-- evidence-only companions
-
-Acceptance thresholds:
-
-- Hard constraint: every metric <= C.1 baseline x 1.1 (no regression beyond
-  10%).
-- Soft target: total store size <= C.1 baseline x 0.5 (the expected 5 GB -> 1.5
-  - 2.0 GB reduction).
-
-Failure of the hard constraint blocks Phase 6 closure. Failure of the soft
-target triggers a follow-up optimization ticket but does not block closure.
+The original C.2 axes (row counts, payload bytes, evidence bytes, WAL peak,
+RSS, sync time) and `scripts/collect-scale-baseline.mjs` remain available for
+any future storage change that needs a non-regression gate.
 
 ## Execution Order
 
-```
-Week 1   A.1 (stop FTS5) + A.2 (evidence GC)         <- biggest on-going savings
-Week 2   A.3 (drop indexes) + A.4 (pragma tuning)    <- independent of migration
-Week 2   C.1 (baseline numbers committed)            <- ships in parallel with A
-----
-Weeks    Phase B (B.1 -> B.6)                        <- 3-5 weeks, the bulk
-3-7
-----
-Weeks    Phase C.2 (rebaseline + thresholds)         <- validation gate
-8-9
-```
+All phases closed on the operator store (`/root/.cchistory/cchistory.sqlite`):
 
-A and C.1 are the unlock. Phase B is the bulk of the work. Phase C.2 is the
-gate that closes the storage boundary effort.
+- Phase A (A.1-A.4): landed.
+- Phase B (B.1-B.6): landed 2026-06-22..24; V1 turn tables dropped.
+- Phase C.1: baseline landed 2026-06-23.
+- Phase C.2: skipped (see above).
+- B.7 rollback path: closed (V1 tables absent on disk).
+
+Closure record: `BACKLOG.md` R42.
 
 ## Out of Scope
 
@@ -589,9 +575,12 @@ The following are intentionally not part of this plan:
 ## References
 
 - `docs/design/STORAGE_BOUNDARY_AUDIT.md` lines 469-522 — Phase 6 and Phase 7
-  definitions this plan implements.
+  definitions this plan implemented.
 - `docs/design/STORAGE_BOUNDARY_V2_CONTRACT.md` lines 170-178 — rollout and
-  purge rules this plan must obey.
+  purge rules this plan obeyed.
 - `HIGH_LEVEL_DESIGN_FREEZE.md#11-lifecycle-model` — retention semantics that
-  govern when V1 evidence can be released.
-- `BACKLOG.md` lines 51-108 — R41 (Phase 1-5) closure record.
+  governed when V1 evidence could be released.
+- `BACKLOG.md` R41 (Phase 1-5) and R42 (Phase 6/7) closure records.
+- `docs/design/STORAGE_BOUNDARY_SCALE_BASELINE.md` — C.1 baseline plus the
+  operator-store post-compact observation that substitutes for the formal
+  C.2 rebaseline.

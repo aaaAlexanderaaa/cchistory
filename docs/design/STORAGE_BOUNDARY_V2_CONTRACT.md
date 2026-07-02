@@ -1,12 +1,11 @@
 # Storage Boundary V2 Contract
 
-Status: side-by-side implementation contract for the Phase 1-5 storage boundary
-work described in `docs/design/STORAGE_BOUNDARY_AUDIT.md`.
+Status: binding. V2 sidecars are the only turn-storage layer on the operator
+store (V1 turn tables dropped under R42; see `BACKLOG.md` and
+`docs/design/STORAGE_BOUNDARY_MIGRATION_PLAN.md`). This contract governs any
+future store-layer transition.
 
-`HIGH_LEVEL_DESIGN_FREEZE.md` remains the product source of truth. This contract
-does not change product semantics: evidence is preserved, `UserTurn` remains the
-primary recall object, and UI/API/TUI/CLI reads remain projections of the same
-canonical model.
+`HIGH_LEVEL_DESIGN_FREEZE.md` is the product source of truth.
 
 ## Boundary Goals
 

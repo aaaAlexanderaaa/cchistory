@@ -1,11 +1,12 @@
 # Storage Boundary Audit
 
-Status: audit and improvement plan, not a redesign approval.
+Status: frozen audit-of-record. Phase 1-5 plan executed under R41; Phase 6-7
+plan executed under R42 (see `BACKLOG.md`). Subsequent storage work references
+this document rather than amending it.
 
 This document indexes the repository-visible definitions, implementation points,
 and tests that currently define CCHistory storage boundaries and sync persistence.
-It then records an architecture assessment and a staged improvement plan.
-`HIGH_LEVEL_DESIGN_FREEZE.md` remains the source of truth for product semantics.
+`HIGH_LEVEL_DESIGN_FREEZE.md` is the source of truth for product semantics.
 
 ## Scope
 

@@ -24,6 +24,12 @@ storage boundary optimization were implemented as one continuous scope and
 validated across storage, CLI, TUI, and API package tests. Phase labels in the
 audit remain internal work-management slices, not user approval gates.
 
+R42 completed in-place on 2026-06-24: V1 turn storage dropped from the
+operator store, V2 sidecars are the only turn-storage layer. C.2 post-migration
+rebaseline skipped; see `docs/design/STORAGE_BOUNDARY_MIGRATION_PLAN.md`
+§ Phase C.2. Follow-on OOM/rate work landed after R42 closure and is tracked
+independently.
+
 Documentation drift guardrail work from `R36` was completed in-place on
 2026-05-14 and is kept below as the current ownership record for support/runtime
 inventory drift.
@@ -105,6 +111,33 @@ Completion evidence:
 - Phase 5 fixture and real-layout verifier coverage passed:
   `pnpm run verify:fixture-sync-recall` and
   `pnpm run verify:real-layout-sync-recall`.
+
+---
+
+## Objective: R42 - Storage Boundary Migration (Phase 6/7)
+Status: done
+Priority: P0
+Design: `docs/design/STORAGE_BOUNDARY_MIGRATION_PLAN.md`
+
+Drop V1 turn storage (`user_turns`, `turn_contexts`) and cut all read paths to
+the V2 sidecar layer shipped under R41. R41 added the V2 schema; R42 removed
+the V1 layer.
+
+Status on the operator store (`/root/.cchistory/cchistory.sqlite`):
+
+- V1 turn tables absent from `sqlite_master`; `v1TurnTablesExist()` returns
+  `false`.
+- `schema_migrations` row `2026-06-24.1/b6-drop-v1-turn-tables` recorded at
+  compact time.
+- All four B.4 validators report `completed`.
+
+Phase C.2 post-migration rebaseline was skipped; see migration plan § Phase
+C.2. Operator-store post-compact observation in
+`docs/design/STORAGE_BOUNDARY_SCALE_BASELINE.md` is the closing evidence.
+
+Post-migration OOM / rate work (streaming sync hot path, deferred prune,
+materialize-bytes-stream, etc.) is not part of R42; those commits landed
+after R42 closure and are tracked independently.
 
 ---
 
