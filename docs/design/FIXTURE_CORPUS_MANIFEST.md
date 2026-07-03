@@ -14,7 +14,7 @@ Each fixture corresponds to one representative source shape or one explicit pars
 - Real sampled sessions may inform fixture design, but repository fixtures must stay synthetic and redactable.
 
 # Source Families
-The current fixture set covers all 12 registered adapters across `local_coding_agent`, `conversational_export`, and `local_runtime_sessions` families.
+The current fixture set covers all 13 registered adapters across `local_coding_agent`, `conversational_export`, and `local_runtime_sessions` families.
 
 | Source family | Happy-path structural coverage | Malformed / edge coverage | Current repository location |
 | --- | --- | --- | --- |
@@ -30,6 +30,7 @@ The current fixture set covers all 12 registered adapters across `local_coding_a
 | `LobeChat` | exported JSON bundle with messages, single and multi-conversation array | non-JSON files excluded by matchesSourceFile; malformed JSON captured as raw evidence plus parse warning; weak workspace/project hints remain non-committed parser evidence and may only become candidate-linked after storage linking or manual review | `platforms/lobechat.test.ts`, `core/discovery.test.ts` |
 | `CodeBuddy` | JSONL transcript with `type:user`/`assistant`, skipRun echoes, empty siblings | empty user messages excluded, skipRun audit emitted | `platforms/codebuddy.test.ts` |
 | `Accio Work` | agent session JSONL plus subagent sessions and conversation metadata sidecars | JSONC metadata and parent-child linkage preserved without promoting companion files into standalone turns | `platforms/accio.test.ts`, `mock_data/fixtures/accio-multi-agent/` |
+| `ZCode` | CLI SQLite `session` / `message` / `part` rows under `~/.zcode/cli/db/db.sqlite` | transcript JSONL/debug artifacts are not treated as the primary source; session_task_link parent/agent hints become relation evidence | `platforms/zcode.test.ts` |
 
 # Sampled Shape Rules
 Real local samples should be mined only for structure and parser invariants, not for content.

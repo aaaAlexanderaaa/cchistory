@@ -14,7 +14,8 @@ export type SupportedSourcePlatform =
   | "opencode"
   | "lobechat"
   | "codebuddy"
-  | "accio";
+  | "accio"
+  | "zcode";
 
 export interface DefaultSourceResolutionOptions {
   homeDir?: string;
@@ -49,6 +50,7 @@ export function isSupportedSourcePlatform(platform: SourcePlatform): platform is
     platform === "opencode" ||
     platform === "lobechat" ||
     platform === "codebuddy" ||
-    platform === "accio"
+    platform === "accio" ||
+    platform === "zcode"
   );
 }

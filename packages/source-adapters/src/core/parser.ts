@@ -31,6 +31,7 @@ import {
 } from "../platforms/generic/runtime.js";
 import { parseOpenClawCronRunRecord as parseOpenClawCronRunRuntimeRecord } from "../platforms/openclaw/runtime.js";
 import { extractGeminiProjectKey, resolveGeminiRoot } from "../platforms/gemini.js";
+import { extractZcodeSqliteSeeds } from "../platforms/zcode/runtime.js";
 import { collectJsonlRecords, extractContentMaxTimestamp, isIncrementalJsonlPlatform } from "./jsonl-records.js";
 import {
   collectConversationSeedsFromValue as collectConversationSeedsFromValueRuntime,
@@ -338,7 +339,8 @@ export function parseRecord(
     context.source.platform === "antigravity" ||
     context.source.platform === "gemini" ||
     context.source.platform === "opencode" ||
-    context.source.platform === "lobechat"
+    context.source.platform === "lobechat" ||
+    context.source.platform === "zcode"
   ) {
     return parseGenericConversationRuntimeRecord(context, record, parsed, draft, {
       ...buildCommonParseRuntimeHelpers(),
@@ -431,6 +433,17 @@ export async function extractMultiSessionSeeds(
   }
   if (source.platform === "lobechat") {
     return extractConversationExportSeeds(source, filePath, fileBuffer, blobId);
+  }
+  if (source.platform === "zcode" && path.basename(filePath) === "db.sqlite") {
+    return extractZcodeSqliteSeeds(source.platform, filePath, {
+      asString,
+      asNumber,
+      isObject,
+      safeJsonParse,
+      epochMillisToIso,
+      nowIso,
+      normalizeWorkspacePath,
+    });
   }
   if (source.platform === "opencode" || source.platform === "gemini") {
     const exportSeeds = await extractConversationExportSeeds(source, filePath, fileBuffer, blobId);

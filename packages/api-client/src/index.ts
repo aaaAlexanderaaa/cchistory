@@ -18,6 +18,7 @@ export type SourcePlatformDto =
   | "lobechat"
   | "codebuddy"
   | "accio"
+  | "zcode"
   | "other";
 
 export type SourceFamilyDto =

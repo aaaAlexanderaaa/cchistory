@@ -16,6 +16,7 @@ export type SourcePlatform =
   | "lobechat"
   | "codebuddy"
   | "accio"
+  | "zcode"
   | "other";
 
 export type LinkState = "committed" | "candidate" | "unlinked";

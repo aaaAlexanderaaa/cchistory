@@ -17,7 +17,7 @@
 
 ---
 
-CCHistory `0.3.0` 是面向 AI 编程助手历史记录的本地优先、证据保全记忆层。它从 **12 个 AI 编程助手平台（包括 Claude Code、Cursor、Codex、AMP、Gemini CLI、Accio Work 等）** 的本地会话数据中收集信息（详见[支持平台](#支持平台)），然后按照项目身份进行组织，让你能够跨工具搜索、回顾和分析自己提出过的问题。
+CCHistory `0.3.0` 是面向 AI 编程助手历史记录的本地优先、证据保全记忆层。它从 **13 个 AI 编程助手平台（包括 Claude Code、Cursor、Codex、AMP、Gemini CLI、Accio Work、ZCode 等）** 的本地会话数据中收集信息（详见[支持平台](#支持平台)），然后按照项目身份进行组织，让你能够跨工具搜索、回顾和分析自己提出过的问题。
 
 它的核心召回对象是项目范围内的 `UserTurn`：一个用户真实提出的问题，
 并且保留项目关联、会话上下文、源证据和派生生命周期状态。CLI、TUI、Web
@@ -65,10 +65,12 @@ localhost 或可信 LAN 部署。它不是 package semver。
 | LobeChat | Experimental | `~/.config/lobehub-storage/` |
 | CodeBuddy | **Stable** | `~/.codebuddy/` |
 | Accio Work | Experimental | `~/.accio/accounts/` |
+| ZCode | Experimental | `~/.zcode/` |
 
 > `Stable` 表示已经达到 self-host v1 的真实世界验证门槛。`Experimental` 表示 adapter 已经注册到代码里，但还没有足够的真实样本验证，不能作为 self-host v1 的正式支持承诺。
 > 对 `lobechat` 来说，表里列出的 `~/.config/lobehub-storage/` 仍只是当前 experimental slice 使用的 root candidate，不应视为已经由真实样本验证过的 canonical location；这项评审仍阻塞在 `R17`。
 > `accio` 目前是已注册的 experimental local-runtime session source，真实世界支持边界仍在验证中。
+> `zcode` 目前读取 `~/.zcode/cli/db/db.sqlite` 中的本地 CLI SQLite store；在补齐脱敏 fixture 与真实世界验证覆盖前仍保持 `experimental`。
 > 可运行 `pnpm run verify:support-status`，把这些文档声明与 adapter registry 做一致性校验。
 
 > Antigravity 说明：CCHistory 对 Antigravity 采用两条互补的采集链路。运行中的桌面应用通过本地 language server trajectory API 提供实际对话内容（用户输入、助手回复、工具调用）。离线文件（`workspaceStorage`、`History`、`brain`）始终会被扫描，用于获取项目路径和 workspace 信号。如果桌面应用未运行，则只有离线链路会执行，此时不会恢复原始对话内容，只能获取项目元数据和证据工件。

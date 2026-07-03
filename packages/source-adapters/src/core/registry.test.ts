@@ -23,6 +23,7 @@ test("platform adapter registry provides exactly one adapter per supported platf
     "lobechat",
     "openclaw",
     "opencode",
+    "zcode",
   ]);
   assert.equal(new Set(platforms).size, adapters.length);
 });
@@ -47,7 +48,7 @@ test("platform adapter registry distinguishes stable and experimental support ti
     "openclaw",
     "opencode",
   ]);
-  assert.deepEqual(experimentalPlatforms, ["accio", "lobechat"]);
+  assert.deepEqual(experimentalPlatforms, ["accio", "lobechat", "zcode"]);
 });
 
 test("stable support tier is backed by documented real-world validation assets", async () => {

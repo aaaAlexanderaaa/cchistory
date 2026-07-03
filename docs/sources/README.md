@@ -1,6 +1,6 @@
 # Sources
 
-截至 2026-05-17，CCHistory registry 中有 12 个 source adapter。其中 10 个达到 `stable` 自托管支持分级，本目录覆盖的就是这 10 个已通过真实数据验证的 source reference；其余 2 个仍为 `experimental`。
+截至 2026-05-17，CCHistory registry 中有 13 个 source adapter。其中 10 个达到 `stable` 自托管支持分级，本目录覆盖的就是这 10 个已通过真实数据验证的 source reference；其余 3 个仍为 `experimental`。
 
 > 产品语义、`UserTurn` 定义、以及 project-first 约束，仍然以 `HIGH_LEVEL_DESIGN_FREEZE.md` 为准。
 >
@@ -91,12 +91,13 @@ CCHistory 的本地存储由一个 SQLite 数据库、可选的一组按 blob id
 | `lobechat` | 需手动确认/覆盖 | 仍属 `experimental`，不要把 Windows 自动发现当成稳定能力。 |
 | `codebuddy` | 需手动确认/覆盖 | 已达到 `stable`，但当前仍不要把 Windows 自动发现当成稳定能力；请显式配置 source root。 |
 | `accio` | 需手动确认/覆盖 | 仍属 `experimental`，不要把 Windows 自动发现当成稳定能力。 |
+| `zcode` | 需手动确认/覆盖 | 仍属 `experimental`，不要把 Windows 自动发现当成稳定能力。 |
 
 需要手动配置时，请在 Web 的 `Sources` 页面新增/覆盖 `base_dir`，或调用 `/api/admin/source-config`。
 
 # 当前 source 一览
 
-本目录列出已通过真实数据验证、达到 `stable` 分级的 10 个源；`lobechat` 和 `accio` 暂不在此展开。
+本目录列出已通过真实数据验证、达到 `stable` 分级的 10 个源；`lobechat`、`accio` 和 `zcode` 暂不在此展开。
 
 | Source | Family | 主要入口 | 文档 |
 | --- | --- | --- | --- |
@@ -124,6 +125,7 @@ CCHistory 的本地存储由一个 SQLite 数据库、可选的一组按 blob id
 
 - `lobechat`
 - `accio`
+- `zcode`
 
 原因：
 

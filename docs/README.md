@@ -49,7 +49,7 @@ Current stable source references cover:
 - OpenCode
 - CodeBuddy
 
-`lobechat` and `accio` remain registered `experimental` adapters until their
+`lobechat`, `accio`, and `zcode` remain registered `experimental` adapters until their
 support boundary is validated enough for a stable source reference.
 
 ## Design And Validation

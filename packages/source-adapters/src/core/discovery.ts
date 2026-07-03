@@ -160,6 +160,14 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     description: "Accio Work agent session JSONL transcripts with subagent session evidence and companion conversation metadata.",
     capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
+  zcode: {
+    id: "zcode:sqlite:v1",
+    family: DEFAULT_SOURCE_FAMILY,
+    platform: "zcode",
+    parser_version: "zcode-parser@2026-07-02.1",
+    description: "ZCode local CLI SQLite session store under ~/.zcode/cli/db, with message/part rows normalized into generic conversation records.",
+    capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
+  },
 };
 
 const DEFAULT_SOURCE_SPECS: ReadonlyArray<
@@ -236,6 +244,12 @@ const DEFAULT_SOURCE_SPECS: ReadonlyArray<
     family: DEFAULT_SOURCE_FAMILY,
     platform: "accio",
     display_name: "Accio Work",
+  },
+  {
+    slot_id: "zcode",
+    family: DEFAULT_SOURCE_FAMILY,
+    platform: "zcode",
+    display_name: "ZCode",
   },
 ];
 

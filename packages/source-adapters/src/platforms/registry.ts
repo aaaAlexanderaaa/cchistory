@@ -11,6 +11,7 @@ import { factoryDroidAdapter } from "./factory-droid.js";
 import { lobechatAdapter } from "./lobechat.js";
 import { openclawAdapter } from "./openclaw.js";
 import { opencodeAdapter } from "./opencode.js";
+import { zcodeAdapter } from "./zcode.js";
 import type { AdapterSupportTier, PlatformAdapter, SupportedSourcePlatform } from "./types.js";
 import { isSupportedSourcePlatform } from "./types.js";
 
@@ -27,6 +28,7 @@ const adapters = [
   lobechatAdapter,
   codebuddyAdapter,
   accioAdapter,
+  zcodeAdapter,
 ] as const satisfies readonly PlatformAdapter[];
 
 const adapterRegistry = Object.fromEntries(

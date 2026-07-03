@@ -17,7 +17,7 @@
 
 ---
 
-CCHistory `0.3.0` is a local-first, evidence-preserving memory layer for AI coding assistant history. It collects local session data from **12 AI coding assistant platforms including Claude Code, Cursor, Codex, AMP, Gemini CLI, Accio Work, and more** (see [Supported Platforms](#supported-platforms)), then organizes it by project identity so you can search, review, and analyze what you asked across tools.
+CCHistory `0.3.0` is a local-first, evidence-preserving memory layer for AI coding assistant history. It collects local session data from **13 AI coding assistant platforms including Claude Code, Cursor, Codex, AMP, Gemini CLI, Accio Work, ZCode, and more** (see [Supported Platforms](#supported-platforms)), then organizes it by project identity so you can search, review, and analyze what you asked across tools.
 
 The primary recall object is the project-scoped `UserTurn`: a user-authored ask,
 linked to its project, session context, source evidence, and derived lifecycle
@@ -78,10 +78,12 @@ and checked by `pnpm run verify:support-status`.
 | LobeChat | Experimental | `~/.config/lobehub-storage/` |
 | CodeBuddy | **Stable** | `~/.codebuddy/` |
 | Accio Work | Experimental | `~/.accio/accounts/` |
+| ZCode | Experimental | `~/.zcode/` |
 
 > `Stable` means real-world validated for the self-host v1 support bar. `Experimental` means the adapter is registered in code but is not yet validated enough for self-host v1 support claims.
 > For `lobechat`, the listed `~/.config/lobehub-storage/` path is still the current root candidate from the experimental slice, not a real-sample-verified canonical location; that review remains blocked under `R17`.
 > For `accio`, the adapter is registered as an experimental local-runtime session source while its real-world support boundary is still being validated.
+> For `zcode`, the adapter reads the local CLI SQLite store under `~/.zcode/cli/db/db.sqlite`; it remains experimental until sanitized fixture and real-world validation coverage catch up.
 > Run `pnpm run verify:support-status` to verify these documentation claims against the adapter registry.
 
 > Antigravity note: CCHistory uses two complementary paths for Antigravity. The running desktop app's local language-server trajectory API provides actual conversation content (user inputs, assistant replies, tool calls). Offline files (`workspaceStorage`, `History`, `brain`) are always scanned for project paths and workspace signals. If the desktop app is not running, only the offline path executes, which means no raw conversation content will be recovered — only project metadata and evidence artifacts.
