@@ -1156,6 +1156,65 @@ test("long text wrapping in detail pane", async () => {
   });
 });
 
+test("detail pane scroll reaches the end of multi-message canonical text", async () => {
+  await withTempStorage((storage) => {
+    const firstMessage = "FIRST_MESSAGE_ONLY";
+    const middleMessage = Array.from({ length: 24 }, (_, index) => `middle canonical line ${index + 1} ${"x".repeat(48)}`).join("\n");
+    const finalMessage = "FINAL_CANONICAL_SENTINEL";
+    const fullText = [firstMessage, middleMessage, finalMessage].join("\n\n");
+    const payload = createFixturePayload("src-detail-multi", firstMessage, "stage-detail-multi", {
+      sessionId: "session-detail-multi",
+      turnId: "turn-detail-multi",
+      workingDirectory: "/workspace/detail-multi",
+      includeProjectObservation: true,
+    });
+    const turn = payload.turns[0]!;
+    const firstUserMessage = turn.user_messages[0]!;
+    turn.user_messages = [
+      { ...firstUserMessage, raw_text: firstMessage, canonical_text: firstMessage },
+      {
+        id: "turn-detail-multi-user-message-2",
+        raw_text: middleMessage,
+        canonical_text: middleMessage,
+        sequence: 1,
+        is_injected: false,
+        created_at: "2026-03-09T09:00:01.000Z",
+        atom_refs: [],
+      },
+      {
+        id: "turn-detail-multi-user-message-3",
+        raw_text: finalMessage,
+        canonical_text: finalMessage,
+        sequence: 2,
+        is_injected: false,
+        created_at: "2026-03-09T09:00:02.000Z",
+        atom_refs: [],
+      },
+    ];
+    turn.raw_text = fullText;
+    turn.canonical_text = fullText;
+    turn.display_segments = [{ type: "text", content: fullText }];
+
+    storage.replaceSourcePayload(payload);
+    storage.upsertProjectOverride({
+      target_kind: "turn",
+      target_ref: "turn-detail-multi",
+      project_id: "project-detail-multi",
+      display_name: "Detail Multi Message",
+    });
+
+    const browser = buildLocalTuiBrowser(storage);
+    let state = createBrowserState(browser);
+    state = reduceBrowserState(browser, state, { type: "drill" });
+    state = reduceBrowserState(browser, state, { type: "drill" });
+    state = { ...state, detailScrollOffset: 9999 };
+
+    const snapshot = renderBrowserSnapshot(browser, state, { width: 120, height: 32 });
+    const stripped = stripAnsi(snapshot);
+    assert.match(stripped, /FINAL_CANONICAL_SENTINEL/, "Detail pane should render the end of canonical_text when scrolled to bottom");
+  });
+});
+
 test("long resume commands in detail pane stay within viewport bounds", async () => {
   await withTempStorage((storage) => {
     const workspacePath = "/Users/mock_user/workspace/very/deep/path/with/a/project/name/that/keeps/going/chat-ui-kit";

@@ -806,8 +806,8 @@ function buildSessionConversationLines(
     const turnLabel = isSelected ? bold(cyan(`── Ask ${ti + 1}/${sessionTurns.length} ──`)) : dim(`── Ask ${ti + 1}/${sessionTurns.length} ──`);
     lines.push(turnLabel);
 
-    // User prompt — full content, no truncation (viewport handles scrolling)
-    const userText = pickUserMessageText(turn);
+    // User prompt — full canonical turn text, no truncation (viewport handles scrolling)
+    const userText = pickFullUserTurnText(turn.turn);
     lines.push(bold(cyan("👤 User")));
     for (const wl of wrapText(userText, contentWidth)) {
       lines.push(`  ${wl}`);
@@ -901,7 +901,7 @@ function formatDetailRows(browser: LocalTuiBrowser, input: DetailInput): string[
 
   // Full prompt content — no truncation, scrollable pane handles viewport
   rows.push("");
-  const promptText = pickUserPromptText(t);
+  const promptText = pickFullUserTurnText(t.turn);
   const wrappedPrompt = wrapText(promptText, contentWidth);
   rows.push(bold("Prompt:"));
   rows.push(...wrappedPrompt.map(l => `  ${l}`));
@@ -911,20 +911,6 @@ function formatDetailRows(browser: LocalTuiBrowser, input: DetailInput): string[
     rows.push(dim("↑↓ scroll │ Enter → full session conversation"));
   }
   return rows;
-}
-
-function pickUserPromptText(turn: LocalTuiBrowserTurn): string {
-  const msg = turn.turn.user_messages?.find(m => !m.is_injected);
-  if (msg) {
-    const text = msg.canonical_text ?? msg.raw_text;
-    const idx = text.lastIndexOf("## My request");
-    if (idx >= 0) {
-      const after = text.slice(idx).replace(/^##\s*My request[^\n]*\n?/, "").trim();
-      if (after.length > 0) return tameDetailMarkup(after);
-    }
-    return tameDetailMarkup(text);
-  }
-  return tameDetailMarkup(turn.turn.canonical_text);
 }
 
 /** Strip injected XML tags but preserve newlines for detail pane display. */
@@ -1499,23 +1485,17 @@ function compactByDisplayWidth(text: string, maxCols: number): string {
   return cleaned.slice(0, i) + "…";
 }
 
-function pickUserMessageText(turn: { turn: { canonical_text: string; user_messages?: Array<{ raw_text: string; is_injected: boolean; canonical_text?: string }> } }): string {
-  const msg = turn.turn.user_messages?.find(m => !m.is_injected);
-  if (msg) {
-    const text = msg.canonical_text ?? msg.raw_text;
-    const idx = text.lastIndexOf("## My request");
-    if (idx >= 0) {
-      const after = text.slice(idx).replace(/^##\s*My request[^\n]*\n?/, "").trim();
-      if (after.length > 0) return tameDetailMarkup(after);
-    }
-    return tameDetailMarkup(text);
+function pickFullUserTurnText(turn: { canonical_text: string; user_messages?: Array<{ raw_text: string; is_injected: boolean; canonical_text?: string }> }): string {
+  const canonicalText = turn.canonical_text?.trim();
+  if (canonicalText) {
+    return tameDetailMarkup(canonicalText);
   }
-  const requestIdx = turn.turn.canonical_text.lastIndexOf("## My request");
-  if (requestIdx >= 0) {
-    const after = turn.turn.canonical_text.slice(requestIdx).replace(/^##\s*My request[^\n]*\n?/, "").trim();
-    if (after.length > 0) return tameDetailMarkup(after);
-  }
-  return tameDetailMarkup(turn.turn.canonical_text);
+  const fallbackText = (turn.user_messages ?? [])
+    .filter((message) => !message.is_injected)
+    .map((message) => (message.canonical_text ?? message.raw_text).trim())
+    .filter((value) => value.length > 0)
+    .join("\n\n");
+  return tameDetailMarkup(fallbackText);
 }
 
 function formatTokenCount(count: number | undefined): string {
