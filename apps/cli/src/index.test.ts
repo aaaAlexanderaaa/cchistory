@@ -17,3 +17,4 @@ import "./test/commands-sync-touch.test.js";
 import "./test/sync-recency-batching.test.js";
 import "./test/sync-heap-regression.test.js";
 import "./test/bundle.test.js";
+import "./test/commands-path-surface.test.js";

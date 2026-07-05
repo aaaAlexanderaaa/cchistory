@@ -48,6 +48,7 @@ Source 产品价值分层属于设计语义，定义在
 | [R22 — Operator Experience E2E](R22_OPERATOR_EXPERIENCE_E2E.md) | 操作者体验验证合约：摩擦分类、严重度定义、日记规则 |
 | [R37 — CLI/TUI Quality Audit](R37_CLI_TUI_QUALITY_AUDIT.md) | CLI/TUI 质量审查记录 |
 | [R38 — CLI/TUI Product UX Audit](R38_CLI_TUI_PRODUCT_UX_AUDIT.md) | CLI/TUI 产品体验审查记录 |
+| [CLI_PATH_FIRST_SURFACE.md](CLI_PATH_FIRST_SURFACE.md) | CLI path-first surface：path 作默认 positional、子项目包含关系、JSON 双轨 |
 | [UX_IMPROVEMENT_PLAN.md](UX_IMPROVEMENT_PLAN.md) | 用户体验改进计划 |
 
 ## 子 Agent、自动化与关联关系

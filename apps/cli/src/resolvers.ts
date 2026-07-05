@@ -1,3 +1,5 @@
+import { homedir } from "node:os";
+import path from "node:path";
 import {
   getLocalPathBasename,
   normalizeLocalPathIdentity,
@@ -8,6 +10,269 @@ import {
 } from "@cchistory/domain";
 import type { CCHistoryStorage } from "@cchistory/storage";
 import { truncateText } from "./renderers.js";
+
+/**
+ * Token classification shared across all path-aware commands.
+ *
+ * `keyword` — the positional matches one of the command's reserved keywords
+ *   (e.g. `projects` / `sessions` / `sources` for `ls`). Keyword form keeps
+ *   the legacy "list everything" semantics.
+ *
+ * `path` — the positional looks like a filesystem path. Path-form inputs
+ *   bypass keyword resolution entirely so a directory literally named
+ *   `projects` can still be addressed via `./projects`.
+ *
+ * `ref` — anything else; falls through to the existing ref resolver
+ *   (id / slug / display name / workspace path).
+ *
+ * Path-form detection: starts with `/`, `./`, `../`, `~/`, OR is exactly
+ * `.` or `..`. A bare `foo` is NOT path-form — it's a ref. Users must write
+ * `./foo` to force path interpretation. This matches git/POSIX convention.
+ */
+export type ProjectTokenKind = "keyword" | "path" | "ref";
+
+export function classifyProjectToken(
+  input: string,
+  keywords: ReadonlySet<string>,
+): ProjectTokenKind {
+  if (keywords.has(input.toLowerCase())) return "keyword";
+  if (isPathForm(input)) return "path";
+  return "ref";
+}
+
+export function isPathForm(input: string): boolean {
+  if (input === "." || input === "..") return true;
+  return /^(?:\/|\.\.?\/|~\/)/.test(input);
+}
+
+/**
+ * Expand a leading `~` or `~user` to the user's home directory. The shell
+ * usually does this before exec, but we handle it as a courtesy for quoted
+ * args and direct API invocation.
+ */
+export function expandTilde(input: string): string {
+  if (input === "~") return homedir();
+  if (input.startsWith("~/")) return path.join(homedir(), input.slice(2));
+  return input;
+}
+
+/**
+ * Resolve a path-like input to an absolute, normalized identity suitable for
+ * comparison against `primary_workspace_path`. Returns the *display* form
+ * (absolute, no file:// prefix, no trailing slash) so it can be echoed back
+ * to the operator as `resolved_path`.
+ */
+export function resolvePathInput(input: string, cwd: string): { resolvedPath: string; normalizedIdentity: string } {
+  const expanded = expandTilde(input);
+  const absolute = path.isAbsolute(expanded) ? expanded : path.resolve(cwd, expanded);
+  const identity = normalizeLocalPathIdentity(absolute);
+  if (!identity) {
+    throw new Error(`Cannot resolve path: ${input}`);
+  }
+  return { resolvedPath: absolute, normalizedIdentity: identity };
+}
+
+/**
+ * Result of resolving a project by ref OR by path.
+ *
+ * `mains` lists every project whose workspace EXACTLY matches the resolved
+ * path (or, in ancestor-match mode, every project at the closest ancestor
+ * workspace). Multiple mains happen when different sources / imports create
+ * separate project rows at the same cwd — common in practice, so we surface
+ * all of them rather than forcing the operator to disambiguate.
+ *
+ * `sub_projects` lists projects whose workspace is strictly below the
+ * shared main workspace (descendants). Computed once across the union.
+ *
+ * `ancestor_note` is set only when the input path was inside (deeper than)
+ * the main workspace — surfaced so the operator sees the implicit upward
+ * resolution.
+ */
+export interface ProjectScope {
+  mains: ProjectIdentity[];
+  sub_projects: ProjectIdentity[];
+  ancestor_note?: string;
+  resolved_path: string;
+  path_input: string;
+}
+
+/**
+ * Convenience accessor: the first main when present, else undefined. Useful
+ * for callers (show/tree) that render detail for a single project — they
+ * pick the first main deterministically.
+ */
+export function scopeMain(scope: ProjectScope): ProjectIdentity | undefined {
+  return scope.mains[0];
+}
+
+/**
+ * Resolve a project by ref OR by filesystem path, returning the full scope
+ * (main + descendant sub_projects). Used by `ls` / `tree` / `show` / `stats`
+ * to render the path-first view.
+ *
+ * Resolution order:
+ *   1. Ref-style resolution via {@link resolveProjectRef} (id / slug / name /
+ *      workspace exact). On hit, that's `main`.
+ *   2. Ancestor match — input path is *inside* a project's workspace. Pick
+ *      the closest ancestor (longest matching prefix) as `main`, set
+ *      `ancestor_note`.
+ *   3. Descendant-only mode — input path is a parent of one or more project
+ *      workspaces but no exact match exists. `main` is undefined; sub_projects
+ *      lists every descendant.
+ *
+ * Sub_projects (when `main` is set) are computed from `main`'s workspace, not
+ * the input path — so `cd`-deep paths still scope to the resolved project.
+ */
+export function resolveProjectScope(
+  storage: CCHistoryStorage,
+  input: string,
+  cwd: string,
+): ProjectScope {
+  const projects = storage.listProjects();
+  const { resolvedPath, normalizedIdentity } = resolvePathInput(input, cwd);
+
+  let mains: ProjectIdentity[] = [];
+  let mainWorkspaceIdentity: string | undefined;
+  let ancestorNote: string | undefined;
+
+  // 1. Ref-style resolution (id / slug / display name / source-native /
+  //    prefix). SKIP for path-form inputs because normalizeLocalPathIdentity
+  //    collapses "./foo" to "foo" which would false-positive on basename
+  //    matches across unrelated absolute paths.
+  if (!isPathForm(input)) {
+    try {
+      const ref = resolveProjectRef(storage, input);
+      mains = [ref];
+      mainWorkspaceIdentity = normalizeLocalPathIdentity(ref.primary_workspace_path);
+    } catch {
+      // Fall through to path-scope logic below.
+    }
+  } else {
+    // Path-form: collect EVERY exact-workspace match. Multiple projects at
+    // the same cwd are common (different sources, repeated imports) — list
+    // them all as mains instead of forcing disambiguation.
+    const exact = projects.filter(
+      (project) => normalizeLocalPathIdentity(project.primary_workspace_path) === normalizedIdentity,
+    );
+    if (exact.length > 0) {
+      mains = sortMainsStable(exact);
+      mainWorkspaceIdentity = normalizedIdentity;
+    }
+  }
+
+  // 2. If no mains yet, try ancestor match (input is inside a project's
+  //    workspace). Pick the closest ancestor workspace by depth; collect
+  //    every project at that workspace as mains.
+  if (mains.length === 0) {
+    const ancestors = projects
+      .filter((project) => isAncestorOf(project.primary_workspace_path, normalizedIdentity))
+      .sort((a, b) => workspaceDepth(b) - workspaceDepth(a));
+    if (ancestors.length > 0) {
+      const closestDepth = workspaceDepth(ancestors[0]!);
+      const closestWorkspace = normalizeLocalPathIdentity(ancestors[0]!.primary_workspace_path);
+      // All projects at the closest ancestor workspace are peers.
+      const closest = ancestors.filter(
+        (project) => normalizeLocalPathIdentity(project.primary_workspace_path) === closestWorkspace,
+      );
+      // `ancestors` is depth-sorted; closest are at the front, but the
+      // filter above is on the closest workspace only. Equal-depth but
+      // different workspace would be a tie that shouldn't happen for paths.
+      mains = sortMainsStable(closest);
+      mainWorkspaceIdentity = closestWorkspace;
+      ancestorNote = `Resolved upward to ${ancestors[0]!.primary_workspace_path ?? "(unknown workspace)"}`;
+      // Sanity: closestDepth only used to assert we picked the max-depth
+      // workspace; keep the reference so future lint doesn't flag it.
+      void closestDepth;
+    }
+  }
+
+  // 3. Compute sub_projects from the shared main workspace (if mains exist)
+  //    or fall back to descendant-only mode against the input path.
+  if (mains.length > 0 && mainWorkspaceIdentity) {
+    const mainIds = new Set(mains.map((project) => project.project_id));
+    const sub_projects = projects.filter(
+      (project) =>
+        !mainIds.has(project.project_id) &&
+        isStrictDescendant(project.primary_workspace_path, mainWorkspaceIdentity),
+    );
+    return {
+      mains,
+      sub_projects,
+      ...(ancestorNote ? { ancestor_note: ancestorNote } : {}),
+      resolved_path: resolvedPath,
+      path_input: input,
+    };
+  }
+
+  // No main found — try descendant-only mode against the input path.
+  const descendants = projects.filter((project) =>
+    isStrictDescendant(project.primary_workspace_path, normalizedIdentity),
+  );
+  if (descendants.length === 0) {
+    throw new Error(formatNoProjectAtPathError(input, resolvedPath, projects));
+  }
+  return {
+    mains: [],
+    sub_projects: descendants,
+    resolved_path: resolvedPath,
+    path_input: input,
+  };
+}
+
+/**
+ * Stable sort for the mains list so the rendering is deterministic across
+ * runs. Primary key: display name (so the operator sees a familiar order).
+ * Tiebreaker: project_id (stable hash-derived identifier).
+ */
+function sortMainsStable(mains: ProjectIdentity[]): ProjectIdentity[] {
+  return [...mains].sort((a, b) => {
+    const nameCompare = (a.display_name ?? "").localeCompare(b.display_name ?? "");
+    if (nameCompare !== 0) return nameCompare;
+    return a.project_id.localeCompare(b.project_id);
+  });
+}
+
+function isAncestorOf(workspacePath: string | undefined, descendantIdentity: string): boolean {
+  const normalizedWorkspace = normalizeLocalPathIdentity(workspacePath);
+  if (!normalizedWorkspace) return false;
+  if (normalizedWorkspace === descendantIdentity) return false;
+  return descendantIdentity.startsWith(`${normalizedWorkspace}/`);
+}
+
+function isStrictDescendant(workspacePath: string | undefined, ancestorIdentity: string): boolean {
+  const normalizedWorkspace = normalizeLocalPathIdentity(workspacePath);
+  if (!normalizedWorkspace) return false;
+  if (normalizedWorkspace === ancestorIdentity) return false;
+  return normalizedWorkspace.startsWith(`${ancestorIdentity}/`);
+}
+
+function workspaceDepth(project: ProjectIdentity): number {
+  const normalized = normalizeLocalPathIdentity(project.primary_workspace_path);
+  if (!normalized) return 0;
+  return normalized.split("/").filter(Boolean).length;
+}
+
+function formatNoProjectAtPathError(input: string, resolvedPath: string, projects: ProjectIdentity[]): string {
+  if (projects.length === 0) {
+    return `No project at ${resolvedPath}. No projects are indexed yet. Run \`cchistory sync\` to ingest from local AI tools.`;
+  }
+  const known = projects
+    .slice(0, 5)
+    .map((project) => {
+      const ws = project.primary_workspace_path ?? "(no workspace)";
+      return `${project.display_name} → ${ws}`;
+    })
+    .join("\n  ");
+  const more = projects.length > 5 ? `\n  (+${projects.length - 5} more)` : "";
+  return [
+    `No project at ${resolvedPath}.`,
+    "",
+    "Known project workspaces:",
+    `  ${known}${more}`,
+    "",
+    "Pass a project ref, or `cd` into a project workspace and run `cchistory ls`.",
+  ].join("\n");
+}
 
 export function resolveProjectRef(storage: CCHistoryStorage, ref: string): ProjectIdentity {
   const projects = storage.listProjects();

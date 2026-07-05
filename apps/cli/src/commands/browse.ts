@@ -1,4 +1,5 @@
 import {
+  normalizeLocalPathIdentity,
   type ProjectIdentity,
   type SessionProjection,
   type SourceStatus,
@@ -47,20 +48,33 @@ import {
 } from "../main.js";
 import { usageError } from "../errors.js";
 import {
+  classifyProjectToken,
   resolveProjectRef,
+  resolveProjectScope,
   resolveSessionRef,
   resolveSourceRef,
   resolveTurnRef,
+  scopeMain,
+  type ProjectScope,
 } from "../resolvers.js";
 import { createSourcesListOutput } from "./sync.js";
 import { bold, dim, cyan, magenta, muted } from "../colors.js";
 
-export async function handleLs(context: CommandContext): Promise<CommandOutput> {
-  const target = context.commandPath[1] ?? context.positionals[0];
-  if (!target || !["projects", "sessions", "sources"].includes(target)) {
-    throw usageError("Use `ls projects`, `ls sessions`, or `ls sources`.");
-  }
+const LS_KEYWORDS = new Set(["projects", "sessions", "sources"]);
 
+export async function handleLs(context: CommandContext): Promise<CommandOutput> {
+  // Resolve the positional: prefer `ls <child>` form, fall back to the first
+  // positional, then default to `.` (cwd) for bare `cchistory ls`.
+  const positional = context.commandPath[1] ?? context.positionals[0] ?? ".";
+  const tokenKind = classifyProjectToken(positional, LS_KEYWORDS);
+
+  if (tokenKind === "keyword") {
+    return handleLsKeyword(context, positional);
+  }
+  return handleLsPath(context, positional);
+}
+
+async function handleLsKeyword(context: CommandContext, target: string): Promise<CommandOutput> {
   const readStore = await openReadStore(context);
   try {
     const { layout, storage } = readStore;
@@ -165,9 +179,162 @@ export async function handleLs(context: CommandContext): Promise<CommandOutput> 
   }
 }
 
+/**
+ * Path-form `ls <path>` (or bare `ls`, which defaults to `.`).
+ *
+ * Renders main(s) + sub_projects. JSON uses the "option C" shape:
+ * `projects[]` flat array (backward compatible) + `hierarchy` view +
+ * `path_scope` / `resolved_path` so consumers can route on path scope.
+ *
+ * Multiple mains: when two or more projects share the same workspace path
+ * (different sources, repeated imports), every main is rendered as a top
+ * row and disambiguated with `(id=...)` so the operator can pick one for
+ * follow-up `show project <id>` etc.
+ */
+async function handleLsPath(context: CommandContext, input: string): Promise<CommandOutput> {
+  const readStore = await openReadStore(context);
+  try {
+    const { layout, storage } = readStore;
+    const longListing = wantsLongListing(context);
+    const scope = resolveProjectScope(storage, input, context.io.cwd);
+    const sessions = storage.listResolvedSessions();
+    const sourcesById = new Map(storage.listSources().map((source) => [source.id, source]));
+
+    const allProjects = [...scope.mains, ...scope.sub_projects];
+    const subIds = new Set(scope.sub_projects.map((project) => project.project_id));
+    const ambiguous = scope.mains.length > 1;
+
+    const mainRows = scope.mains.map((project) =>
+      formatProjectLsRow(project, sessions, sourcesById, {
+        long: longListing,
+        isMain: true,
+        ambiguous,
+        scope,
+      }),
+    );
+    const subRows = scope.sub_projects
+      .slice()
+      .sort((a, b) => relativeDepth(scope, a) - relativeDepth(scope, b))
+      .map((project) =>
+        formatProjectLsRow(project, sessions, sourcesById, { long: false, isMain: false, scope }),
+      );
+
+    const headerLines: string[] = [];
+    if (scope.ancestor_note) {
+      headerLines.push(muted(scope.ancestor_note));
+    }
+    if (ambiguous) {
+      headerLines.push(
+        muted(`${scope.mains.length} projects share workspace ${scope.resolved_path}; pass an id to disambiguate.`),
+      );
+    }
+    if (scope.mains.length === 0 && scope.sub_projects.length > 0) {
+      headerLines.push(
+        muted(`No project at ${scope.resolved_path}; showing ${scope.sub_projects.length} descendant project${scope.sub_projects.length === 1 ? "" : "s"}.`),
+      );
+    }
+
+    const bodyLines: string[] = [...mainRows, ...subRows];
+    if (bodyLines.length === 0) {
+      bodyLines.push(muted(`(no projects at or under ${scope.resolved_path})`));
+    }
+
+    const firstMain = scopeMain(scope);
+    const hierarchy = {
+      ...(firstMain ? { main: { project_id: firstMain.project_id, relative_path: "." } } : {}),
+      ...(ambiguous
+        ? { mains: scope.mains.map((project) => ({ project_id: project.project_id, relative_path: "." })) }
+        : {}),
+      sub_projects: scope.sub_projects.map((project) => ({
+        project_id: project.project_id,
+        relative_path: formatRelativePath(scope, project),
+        depth: relativeDepth(scope, project),
+      })),
+    };
+
+    return {
+      text: [...headerLines, ...bodyLines].filter(Boolean).join("\n"),
+      json: {
+        kind: "projects",
+        db_path: layout.dbPath,
+        path_scope: scope.path_input,
+        resolved_path: scope.resolved_path,
+        ...(scope.ancestor_note ? { ancestor_note: scope.ancestor_note } : {}),
+        projects: allProjects,
+        hierarchy,
+        ...(subIds.size > 0 ? { sub_project_ids: [...subIds] } : {}),
+      },
+    };
+  } finally {
+    await readStore.close();
+  }
+}
+
+function formatProjectLsRow(
+  project: ProjectIdentity,
+  sessions: SessionProjection[],
+  sourcesById: Map<string, SourceStatus>,
+  options: {
+    long: boolean;
+    isMain: boolean;
+    ambiguous?: boolean;
+    scope?: ProjectScope;
+  },
+): string {
+  const projectSessions = sessions.filter((session) => session.primary_project_id === project.project_id);
+  const totalTurns = project.committed_turn_count + project.candidate_turn_count;
+  const lastActive = formatCompactDateRelative(project.project_last_activity_at ?? project.updated_at);
+
+  if (options.isMain) {
+    const ref = projectCommandRef(project);
+    const nameCol = cyan(project.display_name);
+    const refCol = dim(`[${ref}]`);
+    // When multiple mains share the workspace, append `(id=...)` so the
+    // operator can copy-paste to disambiguate follow-up commands.
+    const disambig = options.ambiguous ? ` ${dim(`(id=${shortId(project.project_id)})`)}` : "";
+    const sourceMix = summarizeLabelCounts(
+      projectSessions.map((session) => sourcesById.get(session.source_id)?.slot_id ?? session.source_platform),
+    );
+    if (options.long) {
+      return `${nameCol}${disambig} ${refCol}  ${sourceMix}  ${project.session_count} sessions  ${totalTurns} turns  ${lastActive}`;
+    }
+    return `${nameCol}${disambig} ${refCol}  ${project.session_count} sessions  ${totalTurns} turns  ${lastActive}`;
+  }
+
+  const relativePath = options.scope ? formatRelativePath(options.scope, project) : project.display_name;
+  return `  ${dim("↳")} ${cyan(relativePath)}  ${project.session_count} sessions  ${totalTurns} turns  ${lastActive}`;
+}
+
+function formatRelativePath(scope: ProjectScope, project: ProjectIdentity): string {
+  const mainWorkspace = scopeMain(scope)?.primary_workspace_path ?? scope.resolved_path;
+  const mainIdentity = normalizeLocalPathIdentity(mainWorkspace);
+  const projectWorkspace = normalizeLocalPathIdentity(project.primary_workspace_path);
+  if (!mainIdentity || !projectWorkspace) return project.display_name;
+  if (!projectWorkspace.startsWith(`${mainIdentity}/`)) return project.display_name;
+  const relative = projectWorkspace.slice(mainIdentity.length + 1);
+  return `./${relative}`;
+}
+
+function relativeDepth(scope: ProjectScope, project: ProjectIdentity): number {
+  const mainWorkspace = scopeMain(scope)?.primary_workspace_path ?? scope.resolved_path;
+  const baseIdentity = normalizeLocalPathIdentity(mainWorkspace);
+  const projectWorkspace = normalizeLocalPathIdentity(project.primary_workspace_path);
+  if (!baseIdentity || !projectWorkspace) return 0;
+  if (!projectWorkspace.startsWith(`${baseIdentity}/`)) return 0;
+  return projectWorkspace.slice(baseIdentity.length + 1).split("/").filter(Boolean).length;
+}
+
+const TREE_KEYWORDS = new Set(["projects", "project", "session"]);
+
 export async function handleTree(context: CommandContext): Promise<CommandOutput> {
-  const target = context.commandPath[1] ?? context.positionals[0];
+  // Default to `.` (cwd) for bare `cchistory tree`. Keyword form keeps the
+  // legacy `tree projects|project|session <ref>` dispatch.
+  const target = context.commandPath[1] ?? context.positionals[0] ?? ".";
   const ref = context.commandPath[1] ? context.positionals[0] : context.positionals[1];
+  const tokenKind = classifyProjectToken(target, TREE_KEYWORDS);
+  if (tokenKind !== "keyword") {
+    return handleTreePath(context, target);
+  }
   validateTreeArity(context, target);
 
   const readStore = await openReadStore(context);
@@ -312,6 +479,109 @@ export async function handleTree(context: CommandContext): Promise<CommandOutput
   }
 }
 
+/**
+ * Path-form `tree <path>` (or bare `tree`). Resolves the project scope and
+ * renders the main project's session threads (like `tree project <ref>`)
+ * followed by a compact sub-project summary. Falls back to descendant-only
+ * listing when no main project matches the path.
+ */
+async function handleTreePath(context: CommandContext, input: string): Promise<CommandOutput> {
+  const readStore = await openReadStore(context);
+  try {
+    const { layout, storage } = readStore;
+    const longListing = wantsLongListing(context);
+    const scope = resolveProjectScope(storage, input, context.io.cwd);
+    const sessions = storage.listResolvedSessions();
+    const turns = storage.listResolvedTurns();
+    const sourcesById = new Map(storage.listSources().map((source) => [source.id, source]));
+
+    const headerLines: string[] = [];
+    if (scope.ancestor_note) headerLines.push(muted(scope.ancestor_note));
+    if (scope.mains.length > 1) {
+      headerLines.push(
+        muted(`${scope.mains.length} projects share workspace ${scope.resolved_path}; rendering each as a top block.`),
+      );
+    }
+
+    const bodyLines: string[] = [];
+    const mainPayload: ProjectIdentity[] = [];
+    const subPayload: ProjectIdentity[] = [];
+
+    for (const project of scope.mains) {
+      mainPayload.push(project);
+      const projectSessions = sessions.filter((session) => session.primary_project_id === project.project_id);
+      const projectTurns = storage.listProjectTurns(project.project_id, "all");
+      const relatedWorkBySession = new Map(
+        projectSessions.map((session) => [session.id, rollupRelatedWork(storage.getSessionRelatedWork(session.id))] as const),
+      );
+      const relatedWork = [...relatedWorkBySession.values()].reduce<RelatedWorkRollup>(
+        (totals, rollup) => mergeRelatedWorkRollups(totals, rollup),
+        { delegated_sessions: 0, automation_runs: 0 },
+      );
+      const titleSuffix = scope.mains.length > 1 ? ` ${dim(`(id=${shortId(project.project_id)})`)}` : "";
+      const overviewRows: Array<[string, string]> = [
+        ["Ref", projectCommandRef(project)],
+        ["Sessions", String(project.session_count)],
+        ["Asks", String(project.committed_turn_count + project.candidate_turn_count)],
+        ["Last Activity", formatCompactDate(project.project_last_activity_at ?? project.updated_at)],
+      ];
+      if (longListing) {
+        const sourceMix = summarizeLabelCounts(
+          projectSessions.map((session) => sourcesById.get(session.source_id)?.slot_id ?? session.source_platform),
+        );
+        overviewRows.push(
+          ["Project ID", project.project_id],
+          ["Slug", project.slug],
+          ["Source Mix", sourceMix],
+          ["Related Work", formatRelatedWorkRollup(relatedWork)],
+        );
+      }
+      bodyLines.push(
+        renderSection(`${project.display_name}${titleSuffix}`, renderKeyValue(overviewRows)),
+        "",
+        renderSection(
+          "Session Threads",
+          renderProjectSessionThreads(projectSessions, projectTurns, sourcesById, relatedWorkBySession, longListing),
+        ),
+      );
+    }
+
+    if (scope.sub_projects.length > 0) {
+      bodyLines.push("");
+      bodyLines.push(renderSection("Sub-Projects", ""));
+      for (const sub of scope.sub_projects) {
+        subPayload.push(sub);
+        const totalTurns = sub.committed_turn_count + sub.candidate_turn_count;
+        const lastActive = formatCompactDateRelative(sub.project_last_activity_at ?? sub.updated_at);
+        const rel = formatRelativePath(scope, sub);
+        bodyLines.push(`  ${dim("↳")} ${cyan(rel)} ${dim(`[${projectCommandRef(sub)}]`)} sessions=${sub.session_count} turns=${totalTurns} ${dim(lastActive)}`);
+      }
+      bodyLines.push(muted("Drill into a sub-project via `tree <sub-path>`."));
+    }
+
+    if (bodyLines.length === 0) {
+      bodyLines.push(muted(`(no projects at or under ${scope.resolved_path})`));
+    }
+
+    return {
+      text: [...headerLines, ...bodyLines].filter(Boolean).join("\n"),
+      json: {
+        kind: "tree-scope",
+        db_path: layout.dbPath,
+        path_scope: scope.path_input,
+        resolved_path: scope.resolved_path,
+        ...(scope.ancestor_note ? { ancestor_note: scope.ancestor_note } : {}),
+        ...(mainPayload.length > 0 ? { mains: mainPayload, main: mainPayload[0] } : {}),
+        sub_projects: subPayload,
+        sessions,
+        turns_count: turns.length,
+      },
+    };
+  } finally {
+    await readStore.close();
+  }
+}
+
 function validateTreeArity(context: CommandContext, target: string | undefined): void {
   const expectedPositionals =
     target === "projects" ? (context.commandPath[1] ? 0 : 1) :
@@ -322,19 +592,38 @@ function validateTreeArity(context: CommandContext, target: string | undefined):
   }
 }
 
+const SHOW_KEYWORDS = new Set(["project", "session", "turn", "source"]);
+
 export async function handleShow(context: CommandContext): Promise<CommandOutput> {
-  const target = context.commandPath[1] ?? context.positionals[0];
-  const ref = context.commandPath[1] ? context.positionals[0] : context.positionals[1];
-  if (!target || !ref) {
-    throw usageError("Use `show project|session|turn|source <ref>`.");
+  // `show <path>` is shorthand for `show project <path>` — the project kind
+  // is implied whenever the first positional looks like a filesystem path.
+  const rawTarget = context.commandPath[1] ?? context.positionals[0];
+  const tokenKind = rawTarget ? classifyProjectToken(rawTarget, SHOW_KEYWORDS) : "ref";
+  let target: string;
+  let ref: string | undefined;
+  if (tokenKind === "keyword") {
+    target = rawTarget!;
+    ref = context.commandPath[1] ? context.positionals[0] : context.positionals[1];
+  } else {
+    // Path-form or ref-form positional → treat as project ref.
+    target = "project";
+    ref = rawTarget;
   }
-  validateShowArity(context, target);
+  if (!target || !ref) {
+    throw usageError("Use `show project|session|turn|source <ref>` or `show <path>`.");
+  }
+  validateShowArityForTarget(context, target, tokenKind);
 
   const readStore = await openReadStore(context);
   try {
     const { layout, storage } = readStore;
     if (target === "project") {
-      const project = resolveProjectRef(storage, ref);
+      // Path-form input: resolve via scope so we can surface sub_projects in
+      // the JSON. Ref-form input: keep using the legacy single-project resolver.
+      const scope = (tokenKind === "path")
+        ? resolveProjectScope(storage, ref, context.io.cwd)
+        : undefined;
+      const project = scope ? scopeMain(scope) ?? resolveProjectRef(storage, ref) : resolveProjectRef(storage, ref);
       const turns = storage.listProjectTurns(project.project_id);
       const usage = storage.getUsageOverview({ project_id: project.project_id });
       const longListing = wantsLongListing(context);
@@ -374,7 +663,19 @@ export async function handleShow(context: CommandContext): Promise<CommandOutput
                   .join("\n"),
           ),
         ].join("\n"),
-        json: { kind: "project", db_path: layout.dbPath, project, turns, usage },
+        json: {
+          kind: "project",
+          db_path: layout.dbPath,
+          project,
+          turns,
+          usage,
+          ...(scope ? {
+            path_scope: scope.path_input,
+            resolved_path: scope.resolved_path,
+            ...(scope.ancestor_note ? { ancestor_note: scope.ancestor_note } : {}),
+            sub_projects: scope.sub_projects,
+          } : {}),
+        },
       };
     }
 
@@ -518,13 +819,22 @@ export async function handleShow(context: CommandContext): Promise<CommandOutput
   }
 }
 
-function validateShowArity(context: CommandContext, target: string): void {
+function validateShowArityForTarget(
+  context: CommandContext,
+  target: string,
+  tokenKind: "keyword" | "path" | "ref",
+): void {
   const validTarget = target === "project" || target === "session" || target === "turn" || target === "source";
-  const expectedPositionals = context.commandPath[1] ? 1 : 2;
-  if (validTarget && context.positionals.length === expectedPositionals) {
-    return;
+  if (!validTarget) {
+    throw usageError("Use `show project|session|turn|source <ref>` or `show <path>`.");
   }
-  throw usageError("Use `show project|session|turn|source <ref>`.");
+  // Keyword form: 1 positional when invoked as `show project <ref>` (commandPath
+  // has the kind), 2 positionals when invoked as `show <kind> <ref>`.
+  // Path/ref form: 1 positional (just the path/ref; kind defaults to project).
+  const expectedPositionals = tokenKind === "keyword" ? (context.commandPath[1] ? 1 : 2) : 1;
+  if (context.positionals.length !== expectedPositionals) {
+    throw usageError("Use `show project|session|turn|source <ref>` or `show <path>`.");
+  }
 }
 
 export async function handleSearch(context: CommandContext): Promise<CommandOutput> {

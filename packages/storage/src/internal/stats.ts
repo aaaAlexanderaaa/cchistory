@@ -14,6 +14,7 @@ import { nowIso } from "./utils.js";
 
 export interface UsageFilters {
   project_id?: string;
+  project_ids?: string[];
   source_ids?: string[];
   host_ids?: string[];
   after_date?: string; // YYYY-MM-DD — only include turns on or after this date
@@ -131,6 +132,13 @@ export function buildUsageRows(params: {
 
   return turns
     .filter((turn) => (filters.project_id ? turn.project_id === filters.project_id : true))
+    .filter((turn) =>
+      filters.project_ids && filters.project_ids.length > 0
+        ? turn.project_id
+          ? filters.project_ids.includes(turn.project_id)
+          : false
+        : true,
+    )
     .filter((turn) =>
       filters.source_ids && filters.source_ids.length > 0 ? filters.source_ids.includes(turn.source_id) : true,
     )

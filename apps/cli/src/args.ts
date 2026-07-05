@@ -178,6 +178,7 @@ export interface CommandOptions {
   today: boolean;
   week: boolean;
   month: boolean;
+  merge: boolean;
 }
 
 export interface ParsedCommand {
@@ -496,6 +497,10 @@ const commandOptions: Record<string, OptionSpec> = {
     kind: "boolean",
     description: "Bypass the per-source auto-resume marker and rescan all source files. The marker is still rewritten on success.",
   },
+  merge: {
+    kind: "boolean",
+    description: "stats <path>: aggregate token usage across all matched projects into a single block (default: per-project blocks).",
+  },
 };
 
 const readOptions = ["source", "limit-files"];
@@ -557,12 +562,19 @@ const commandSpecs: CommandSpec[] = [
   {
     path: ["ls"],
     category: "Browse & Inspect",
-    usage: "cchistory ls projects|sessions|sources [--long] [--all] [--limit <n>]",
-    summary: "List entities; projects include copyable Ref",
-    description: "Browse projects, sessions, or sources.",
+    usage: "cchistory ls [path] | projects|sessions|sources [--long] [--all] [--limit <n>]",
+    summary: "List projects at a path (default: cwd) or list entities by keyword",
+    description:
+      "Default form (`ls` or `ls <path>`) treats the directory as a project: shows the project whose workspace matches the path plus any nested sub-projects. Keyword form (`ls projects|sessions|sources`) lists across the whole store.",
     children: ["projects", "sessions", "sources"],
     options: ["all", "limit", ...readOptions],
-    examples: ["cchistory ls projects", "cchistory ls sessions --long", "cchistory ls sources"],
+    examples: [
+      "cchistory ls",
+      "cchistory ls ./apps/cli",
+      "cchistory ls projects",
+      "cchistory ls sessions --long",
+      "cchistory ls sources",
+    ],
   },
   {
     path: ["ls", "projects"],
@@ -589,12 +601,19 @@ const commandSpecs: CommandSpec[] = [
   {
     path: ["tree"],
     category: "Browse & Inspect",
-    usage: "cchistory tree projects|project|session <ref> [--long]",
-    summary: "Hierarchical view",
-    description: "Show project or session hierarchy.",
+    usage: "cchistory tree [path] | projects|project <ref>|session <ref> [--long]",
+    summary: "Hierarchical view from a path or by keyword",
+    description:
+      "Default form (`tree` or `tree <path>`) resolves the project at the path and renders its session threads plus a compact sub-project summary. Keyword form keeps the legacy `tree projects|project|session <ref>` dispatch.",
     children: ["projects", "project", "session"],
     options: readOptions,
-    examples: ["cchistory tree projects", "cchistory tree project chat-ui-kit", "cchistory tree session <session-ref> --long"],
+    examples: [
+      "cchistory tree",
+      "cchistory tree ./apps/cli",
+      "cchistory tree projects",
+      "cchistory tree project chat-ui-kit",
+      "cchistory tree session <session-ref> --long",
+    ],
   },
   { path: ["tree", "projects"], usage: "cchistory tree projects [--long]", description: "Show all projects as a hierarchy.", options: readOptions, examples: ["cchistory tree projects", "cchistory tree projects --long"] },
   { path: ["tree", "project"], usage: "cchistory tree project <project-ref> [--long]", description: "Show one project with session threads.", options: readOptions, examples: ["cchistory tree project chat-ui-kit"] },
@@ -602,12 +621,17 @@ const commandSpecs: CommandSpec[] = [
   {
     path: ["show"],
     category: "Browse & Inspect",
-    usage: "cchistory show project|session|turn|source <ref> [--long]",
-    summary: "Detail view of a single entity",
-    description: "Show a project, session, turn, or source.",
+    usage: "cchistory show <path> | project|session|turn|source <ref> [--long]",
+    summary: "Detail view of a single entity (path defaults to project)",
+    description:
+      "Show a project, session, turn, or source. Path-form (`show <path>`) is shorthand for `show project <path>` and resolves via the project workspace.",
     children: ["project", "session", "turn", "source"],
     options: readOptions,
-    examples: ["cchistory show project chat-ui-kit", "cchistory show turn <turn-id-or-prefix> --long"],
+    examples: [
+      "cchistory show ./apps/cli",
+      "cchistory show project chat-ui-kit",
+      "cchistory show turn <turn-id-or-prefix> --long",
+    ],
   },
   { path: ["show", "project"], usage: "cchistory show project <project-ref> [--long]", description: "Show project detail.", options: readOptions, examples: ["cchistory show project chat-ui-kit", "cchistory show project chat-ui-kit --long"] },
   { path: ["show", "session"], usage: "cchistory show session <session-ref> [--long]", description: "Show session detail.", options: readOptions, examples: ["cchistory show session <session-ref>", "cchistory show session <session-ref> --long"] },
@@ -638,17 +662,20 @@ const commandSpecs: CommandSpec[] = [
   {
     path: ["stats"],
     category: "Data Management",
-    usage: "cchistory stats [--by model|project|source|host|day|month] [--since <time>|--today|--week|--month]",
-    summary: "Token usage statistics",
-    description: "Show the store overview; add --by to roll up token usage. Pass --since (ISO or relative like 7d/12h), --today, --week, or --month to filter to a recent window.",
+    usage: "cchistory stats [<path>] [--by model|project|source|host|day|month] [--merge] [--since <time>|--today|--week|--month]",
+    summary: "Token usage statistics, optionally scoped to a path",
+    description:
+      "Show the store overview; add --by to roll up token usage. Pass a path positional to scope to a project (and its sub-projects): default renders one block per matched project; pass --merge to aggregate. Keyword `usage` keeps the legacy subcommand form. Pass --since (ISO or relative like 7d/12h), --today, --week, or --month to filter to a recent window.",
     children: ["usage"],
-    options: ["by", "since", "today", "week", "month", ...readOptions],
+    options: ["by", "since", "today", "week", "month", "merge", ...readOptions],
     examples: [
       "cchistory stats",
       "cchistory stats --by model",
       "cchistory stats --today",
       "cchistory stats --week --by model",
       "cchistory stats usage --by day --since 7d",
+      "cchistory stats ./apps/cli",
+      "cchistory stats . --by model --merge",
     ],
   },
   {
@@ -1145,6 +1172,7 @@ function normalizeCommandOptions(values: Record<string, string | string[] | bool
     today: readBoolean(values, "today"),
     week: readBoolean(values, "week"),
     month: readBoolean(values, "month"),
+    merge: readBoolean(values, "merge"),
   };
 }
 

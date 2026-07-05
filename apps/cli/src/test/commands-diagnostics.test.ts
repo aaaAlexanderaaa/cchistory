@@ -1616,7 +1616,7 @@ test("command help renders from the registry without opening a store", async () 
 
     const statsHelp = await runCliCapture(["help", "stats"], tempRoot);
     assert.equal(statsHelp.exitCode, 0, statsHelp.stderr);
-    assert.match(statsHelp.stdout, /Usage: cchistory stats \[--by model\|project\|source\|host\|day\|month\]/);
+    assert.match(statsHelp.stdout, /Usage: cchistory stats \[<path>\] \[--by model\|project\|source\|host\|day\|month\]/);
     assert.match(statsHelp.stdout, /--by <dimension>\s+Group token usage by this dimension\. One of: model, project, source, host, day, month\./);
     assert.match(statsHelp.stdout, /cchistory stats --by model/);
 
@@ -1730,8 +1730,8 @@ test("usage errors for incomplete commands happen before store or remote access"
     const cases: Array<{ argv: string[]; pattern: RegExp }> = [
       { argv: ["tree", "project"], pattern: /Use `tree projects`, `tree project <project-id-or-slug>`, or `tree session <session-ref>`\./ },
       { argv: ["tree", "projects", "extra"], pattern: /Use `tree projects`, `tree project <project-id-or-slug>`, or `tree session <session-ref>`\./ },
-      { argv: ["show", "banana", "x"], pattern: /Use `show project\|session\|turn\|source <ref>`\./ },
-      { argv: ["show", "project", "cchistory", "extra"], pattern: /Use `show project\|session\|turn\|source <ref>`\./ },
+      { argv: ["show", "banana", "x"], pattern: /Use `show project\|session\|turn\|source <ref>` or `show <path>`\./ },
+      { argv: ["show", "project", "cchistory", "extra"], pattern: /Use `show project\|session\|turn\|source <ref>` or `show <path>`\./ },
       { argv: ["query"], pattern: /Use `query turns\|turn\|sessions\|session\|projects\|project \.\.\.`\./ },
       { argv: ["query", "turns", "extra"], pattern: /Use `query turns\|turn\|sessions\|session\|projects\|project \.\.\.`\./ },
       { argv: ["query", "turn"], pattern: /Missing required --id flag\./ },

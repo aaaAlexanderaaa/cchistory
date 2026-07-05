@@ -1,4 +1,5 @@
 import {
+  type ProjectIdentity,
   type UsageStatsDimension,
 } from "@cchistory/domain";
 import type { CCHistoryStorage } from "@cchistory/storage";
@@ -7,6 +8,7 @@ import {
   formatRatio,
   renderBarChart,
   renderKeyValue,
+  renderSection,
   renderTable,
   colorizeValue,
 } from "../renderers.js";
@@ -17,10 +19,18 @@ import {
   openReadStore,
 } from "../main.js";
 import { usageError } from "../errors.js";
-import { resolveSourceRef } from "../resolvers.js";
+import {
+  classifyProjectToken,
+  resolveProjectScope,
+  resolveSourceRef,
+  scopeMain,
+  type ProjectScope,
+} from "../resolvers.js";
+import { dim, muted } from "../colors.js";
 import { parseSinceWindow, startOfMonth, startOfToday, startOfWeek } from "../time-window.js";
 
 const USAGE_STATS_DIMENSIONS = ["model", "project", "source", "host", "day", "month"] as const satisfies readonly UsageStatsDimension[];
+const STATS_KEYWORDS = new Set(["usage"]);
 
 interface ResolvedTimeWindow {
   afterDate?: string;
@@ -72,6 +82,13 @@ export async function handleStats(context: CommandContext): Promise<CommandOutpu
   const usageDimension = isUsageStatsDimension(dimension) ? dimension : undefined;
   const window = resolveStatsTimeWindow(context);
 
+  // Path-form positional → resolve scope and render per-project blocks
+  // (or a merged block when --merge is passed).
+  const pathInput = context.positionals[0];
+  if (pathInput && classifyProjectToken(pathInput, STATS_KEYWORDS) !== "keyword") {
+    return handleStatsPath(context, pathInput, usageDimension, showAll, window);
+  }
+
   const readStore = await openReadStore(context);
   try {
     const selectedSourceIds = context.options.source.length > 0
@@ -84,6 +101,105 @@ export async function handleStats(context: CommandContext): Promise<CommandOutpu
   } finally {
     await readStore.close();
   }
+}
+
+/**
+ * `stats <path>` — path-scoped stats. Default renders one block per matched
+ * project (main + sub_projects, or all sub_projects in descendant-only mode).
+ * Pass `--merge` to aggregate across all matched projects into a single block.
+ */
+async function handleStatsPath(
+  context: CommandContext,
+  input: string,
+  usageDimension: UsageStatsDimension | undefined,
+  showAll: boolean,
+  window: ResolvedTimeWindow,
+): Promise<CommandOutput> {
+  const merge = Boolean(context.options.merge);
+  const readStore = await openReadStore(context);
+  try {
+    const { layout, storage } = readStore;
+    const scope = resolveProjectScope(storage, input, context.io.cwd);
+    const selectedSourceIds = context.options.source.length > 0
+      ? context.options.source.map((ref) => resolveSourceRef(storage, ref).id)
+      : undefined;
+    const projectIds = scope.mains.length > 0
+      ? [...scope.mains, ...scope.sub_projects]
+      : scope.sub_projects;
+
+    if (projectIds.length === 0) {
+      throw usageError(`No projects at ${scope.resolved_path}.`);
+    }
+
+    const mainId = scopeMain(scope)?.project_id;
+
+    if (merge || projectIds.length === 1) {
+      // Single aggregated block — use project_ids filter on the merged set.
+      const mergedIds = projectIds.map((project) => project.project_id);
+      const output = usageDimension
+        ? createStatsUsageOutput(layout, storage, usageDimension, showAll, selectedSourceIds, window, mergedIds)
+        : createStatsOverviewOutput(layout, storage, showAll, selectedSourceIds, window, mergedIds);
+      return withPathScope(output, scope, projectIds);
+    }
+
+    // Per-project blocks: loop and concatenate.
+    const blocks: string[] = [];
+    const headerLines: string[] = [];
+    if (scope.ancestor_note) headerLines.push(muted(scope.ancestor_note));
+    if (scope.mains.length > 1) {
+      headerLines.push(
+        muted(`${scope.mains.length} projects share workspace ${scope.resolved_path}.`),
+      );
+    }
+    headerLines.push(muted(`Scope: ${scope.resolved_path} (${projectIds.length} projects)`));
+
+    const perProjectJson: Array<{ project: ProjectIdentity; output: CommandOutput["json"] }> = [];
+    for (const project of projectIds) {
+      const output = usageDimension
+        ? createStatsUsageOutput(layout, storage, usageDimension, showAll, selectedSourceIds, window, [project.project_id])
+        : createStatsOverviewOutput(layout, storage, showAll, selectedSourceIds, window, [project.project_id]);
+      const label = mainId === project.project_id
+        ? (scope.mains.length > 1
+          ? `${project.display_name} ${dim(`(main, id=${project.project_id.slice(-12)})`)}`
+          : project.display_name)
+        : `${project.display_name} ${dim("(sub)")}`;
+      blocks.push(renderSection(label, output.text));
+      perProjectJson.push({ project, output: output.json });
+    }
+
+    return {
+      text: [...headerLines, ...blocks].join("\n\n"),
+      json: {
+        kind: usageDimension ? "stats-usage-scoped" : "stats-overview-scoped",
+        db_path: layout.dbPath,
+        path_scope: scope.path_input,
+        resolved_path: scope.resolved_path,
+        ...(scope.ancestor_note ? { ancestor_note: scope.ancestor_note } : {}),
+        projects: projectIds,
+        per_project: perProjectJson,
+      },
+    };
+  } finally {
+    await readStore.close();
+  }
+}
+
+function withPathScope(
+  output: CommandOutput,
+  scope: ProjectScope,
+  projectIds: ProjectIdentity[],
+): CommandOutput {
+  const payload = (output.json ?? {}) as Record<string, unknown>;
+  return {
+    text: output.text,
+    json: {
+      ...payload,
+      path_scope: scope.path_input,
+      resolved_path: scope.resolved_path,
+      ...(scope.ancestor_note ? { ancestor_note: scope.ancestor_note } : {}),
+      scoped_project_ids: projectIds.map((project) => project.project_id),
+    },
+  };
 }
 
 /**
@@ -110,11 +226,13 @@ export function createStatsOverviewOutput(
   showAll: boolean,
   selectedSourceIds?: string[],
   window: ResolvedTimeWindow = {},
+  projectIds?: string[],
 ): CommandOutput {
   const usageFilters = {
     include_known_zero_token: showAll,
     source_ids: selectedSourceIds,
     ...(window.afterDate ? { after_date: window.afterDate } : {}),
+    ...(projectIds && projectIds.length > 0 ? { project_ids: projectIds } : {}),
   };
   const overview = storage.getUsageOverview(usageFilters);
   const schema = storage.getSchemaInfo();
@@ -141,10 +259,10 @@ export function createStatsOverviewOutput(
     if (!turnSessionIds.has(session.id)) return false;
     return true;
   });
-  const projectIds = new Set(
+  const turnProjectIds = new Set(
     turns.map((turn) => turn.project_id).filter((value): value is string => Boolean(value)),
   );
-  const projects = storage.listProjects().filter((project) => projectIds.has(project.project_id));
+  const projects = storage.listProjects().filter((project) => turnProjectIds.has(project.project_id));
   const sourceScope = renderSourceScopeFromIds(storage, selectedSourceIds);
   const excludedNote = overview.excluded_zero_token_turns
     ? `${overview.excluded_zero_token_turns} non-API turns excluded (slash commands, cancellations). Use --showall to include.`
@@ -201,6 +319,7 @@ export function createStatsUsageOutput(
   showAll: boolean,
   selectedSourceIds?: string[],
   window: ResolvedTimeWindow = {},
+  projectIds?: string[],
 ): CommandOutput {
   if (!isUsageStatsDimension(dimension)) {
     throw new Error("`stats usage --by` must be one of model, project, source, host, day, or month.");
@@ -210,6 +329,7 @@ export function createStatsUsageOutput(
     include_known_zero_token: showAll,
     source_ids: selectedSourceIds,
     ...(window.afterDate ? { after_date: window.afterDate } : {}),
+    ...(projectIds && projectIds.length > 0 ? { project_ids: projectIds } : {}),
   };
   const rollup = storage.listUsageRollup(dimension, usageFilters);
   const sourceScope = renderSourceScopeFromIds(storage, selectedSourceIds);
