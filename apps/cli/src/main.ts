@@ -14,8 +14,10 @@ import {
   commandName,
   parseCliArgs,
   renderHelp,
+  renderNoArgsHelp,
   type ParsedCommand,
 } from "./args.js";
+import { CliError, storeNotFoundError, usageError } from "./errors.js";
 import { configureColorPolicy, dim, red, yellow } from "./colors.js";
 
 const errorStyle = red;
@@ -28,12 +30,15 @@ import {
 } from "./store.js";
 import { handleAgent } from "./commands/agent.js";
 import { handleLs, handleSearch, handleShow, handleTree } from "./commands/browse.js";
+import { handleCompletions } from "./commands/completions.js";
 import { handleContext } from "./commands/context.js";
 import { handleInventory } from "./commands/inventory.js";
 import { handleMaintenance, handleBackup, handleExport, handleGc, handleImport, handleMergeAlias, handleRestoreCheck } from "./commands/maintenance.js";
 import { handleMigration } from "./commands/migration.js";
 import { handleQueryAlias, handleTemplates } from "./commands/query.js";
-import { handleStats } from "./commands/stats.js";
+import { handleLast, handleResume } from "./commands/resume.js";
+import { handleStats, handleToday } from "./commands/stats.js";
+import { handleStatus } from "./commands/status.js";
 import { handleDiscover, handleDoctor, handleHealth, handleSync, syncSelectedSources } from "./commands/sync.js";
 
 installRuntimeWarningFilter();
@@ -42,7 +47,18 @@ export interface CliIo {
   cwd: string;
   stdout: (value: string) => void;
   stderr: (value: string) => void;
+  isTTY?: boolean;
 }
+
+export {
+  CliError,
+  declinedError,
+  isCliError,
+  issuesFoundError,
+  storeNotFoundError,
+  usageError,
+  verificationError,
+} from "./errors.js";
 
 export interface CommandOutput {
   text: string;
@@ -81,6 +97,11 @@ export interface SyncedSourceSummary {
 export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<number> {
   try {
     const parsed = parseCliArgs(argv);
+    // F15: support `-` as a stdin placeholder for any positional or option
+    // value. Reads stdin once and substitutes the trimmed content into every
+    // placeholder site. Lets operators pipe long refs/queries/IDs without
+    // fighting shell quoting: `echo $ref | cchistory show turn -`.
+    await substituteStdinPlaceholders(parsed);
     configureColorPolicy({ color: parsed.globals.color });
 
     if (parsed.version) {
@@ -92,9 +113,12 @@ export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<n
     }
 
     if (parsed.help) {
+      const text = parsed.noArgs
+        ? renderNoArgsHelp(await hasStoreResolved(io, parsed.globals))
+        : renderHelp(parsed.helpTarget);
       printOutput(
         {
-          text: renderHelp(parsed.helpTarget),
+          text,
           json: { help: true },
         },
         parsed.globals.json,
@@ -115,8 +139,14 @@ export async function runCli(argv: string[], io: CliIo = defaultIo()): Promise<n
     printOutput(output, parsed.globals.json || topCommand === "query" || topCommand === "templates", io);
     return output.exitCode ?? 0;
   } catch (error) {
-    configureColorPolicy({ color: !argv.includes("--no-color") });
+    configureColorPolicy({ color: !argv.includes("--no-color") && !argv.includes("--agent") });
     printError(error, io, shouldPrintDebug(argv));
+    if (error instanceof CliError) {
+      return error.exitCode;
+    }
+    if (error instanceof Error && error.message.includes("Store not found")) {
+      return 3;
+    }
     return 1;
   }
 }
@@ -146,6 +176,10 @@ async function dispatchCommand(context: CommandContext): Promise<CommandOutput> 
       return handleContext(context);
     case "stats":
       return handleStats(context);
+    case "today":
+      return handleToday(context);
+    case "status":
+      return handleStatus(context);
     case "export":
       return handleExport(context);
     case "backup":
@@ -168,14 +202,23 @@ async function dispatchCommand(context: CommandContext): Promise<CommandOutput> 
       return handleTemplates();
     case "agent":
       return handleAgent(context);
+    case "completions":
+      return handleCompletions(context);
+    case "resume":
+      return handleResume(context);
+    case "last":
+      return handleLast(context);
     case "tui":
       return handleTui(context);
-    default:
+    default: {
+      // args.ts should normally have caught unknown commands before dispatch.
+      // Fall back to a plain hint-free error to avoid masking an upstream bug.
       throw new Error(`Unknown command: ${commandName(context.commandPath)}`);
+    }
   }
 }
 
-async function handleTui(context: CommandContext): Promise<CommandOutput> {
+export async function handleTui(context: CommandContext): Promise<CommandOutput> {
   const { runTui } = await import("@cchistory/tui");
   const forwardedArgs = rebuildTuiArgs(context);
   const exitCode = await runTui(forwardedArgs, {
@@ -190,7 +233,7 @@ async function handleTui(context: CommandContext): Promise<CommandOutput> {
   return { text: "", json: null };
 }
 
-function rebuildTuiArgs(context: CommandContext): string[] {
+export function rebuildTuiArgs(context: CommandContext): string[] {
   const args: string[] = [];
   for (const pos of context.positionals) {
     args.push(pos);
@@ -204,6 +247,9 @@ function rebuildTuiArgs(context: CommandContext): string[] {
   }
   pushOptionalArg(args, "limit-files", context.options.limitFiles);
   pushOptionalArg(args, "search", context.options.search);
+  pushOptionalArg(args, "project", context.options.project);
+  pushOptionalArg(args, "session", context.options.session);
+  pushOptionalArg(args, "turn", context.options.turn);
   if (context.options.sourceHealth) args.push("--source-health");
   return args;
 }
@@ -292,10 +338,23 @@ export async function requireStoreDatabase(dbPath: string): Promise<void> {
     await access(dbPath);
   } catch (error) {
     if (isMissingPathError(error)) {
-      throw new Error(`Store not found: ${dbPath}. Run \`cchistory sync\` or \`cchistory import\` first.`);
+      throw storeNotFoundError(formatStoreNotFoundMessage(dbPath));
     }
     throw error;
   }
+}
+
+function formatStoreNotFoundMessage(dbPath: string): string {
+  return [
+    `Store not found: ${dbPath}`,
+    "",
+    "CCHistory probed the following locations in order:",
+    `  - ${dbPath}`,
+    "Hints:",
+    "  - Run `cchistory sync` to ingest from local AI coding tools on this machine.",
+    "  - Run `cchistory import <bundle>` to restore from a previously exported bundle.",
+    "  - Use `--store <dir>` or `--db <path>` to point at a non-default store location.",
+  ].join("\n");
 }
 
 export function resolveReadMode(context: CommandContext): ReadMode {
@@ -318,17 +377,84 @@ export async function pathExists(targetPath: string): Promise<boolean> {
   }
 }
 
+async function hasStoreResolved(io: CliIo, globals: ParsedCommand["globals"]): Promise<boolean> {
+  const layout = resolveStoreLayout({
+    cwd: io.cwd,
+    storeArg: globals.store,
+    dbArg: globals.db,
+  });
+  return pathExists(layout.dbPath);
+}
+
+/**
+ * Replace `-` placeholders in positionals and string-valued options with the
+ * trimmed content of stdin. Reads stdin at most once per invocation. Returns
+ * silently if no placeholder is present OR if stdin is a TTY (so an
+ * interactive `cchistory show turn -` doesn't hang waiting for input).
+ */
+async function substituteStdinPlaceholders(parsed: ParsedCommand): Promise<void> {
+  const hasPlaceholder = parsed.positionals.includes("-")
+    || Object.values(parsed.options).some((value) => value === "-" || (Array.isArray(value) && value.includes("-")));
+  if (!hasPlaceholder) return;
+  // Skip when stdin is a TTY — operator almost certainly forgot to pipe.
+  if (process.stdin.isTTY) {
+    throw usageError(
+      "Argument `-` means read from stdin, but stdin is a terminal. Pipe content via `... | cchistory <cmd> -`, or replace `-` with the literal value.",
+    );
+  }
+
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk as Buffer);
+  }
+  const stdinText = Buffer.concat(chunks).toString("utf8").trim();
+  if (stdinText.length === 0) {
+    throw usageError("Argument `-` expected stdin input, but stdin was empty.");
+  }
+
+  parsed.positionals = parsed.positionals.map((value) => (value === "-" ? stdinText : value));
+  const options = parsed.options as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(options)) {
+    if (value === "-") {
+      options[key] = stdinText;
+    } else if (Array.isArray(value)) {
+      options[key] = value.map((entry) => (entry === "-" ? stdinText : entry));
+    }
+  }
+}
+
 function defaultIo(): CliIo {
   return {
     cwd: process.cwd(),
     stdout: (value) => process.stdout.write(value),
     stderr: (value) => process.stderr.write(value),
+    isTTY: Boolean(process.stdout.isTTY),
   };
 }
 
+/**
+ * Bumped whenever the shape of a CLI JSON payload changes in a way that would
+ * break a consumer (renamed field, removed field, changed type). Adds are
+ * forward-compatible and do NOT bump — consumers must already ignore unknown
+ * fields per the schema-stability rules. AI agents parsing the stream can
+ * switch on this field to choose a parser.
+ */
+const CLI_JSON_SCHEMA_VERSION = 1;
+
 function printOutput(output: CommandOutput, jsonMode: boolean, io: CliIo): void {
-  const value = jsonMode ? JSON.stringify(output.json, null, 2) : output.text;
-  io.stdout(`${value}\n`);
+  if (jsonMode) {
+    // Stabilize the JSON envelope: every payload gets schema_version so
+    // consumers can route on (kind, schema_version) without parsing drift.
+    // We only inject when the payload is a plain object; raw arrays or
+    // primitives (rare — used by `query`) pass through untouched.
+    const payload =
+      output.json && typeof output.json === "object" && !Array.isArray(output.json)
+        ? { schema_version: CLI_JSON_SCHEMA_VERSION, ...(output.json as Record<string, unknown>) }
+        : output.json;
+    io.stdout(`${JSON.stringify(payload, null, 2)}\n`);
+    return;
+  }
+  io.stdout(`${output.text}\n`);
 }
 
 export function formatError(error: unknown): string {
@@ -338,10 +464,9 @@ export function formatError(error: unknown): string {
 function printError(error: unknown, io: CliIo, debug: boolean): void {
   const message = formatError(error);
   io.stderr(`${errorStyle(`Error: ${message}`)}\n`);
-  if (message.includes("Store not found")) {
-    io.stderr(`\n${hintStyle("Hint:")} Run \`cchistory sync\` first to ingest data from AI coding tools on this machine.\n`);
-    io.stderr(`${hintStyle("     ")} Run \`cchistory discover\` to see what sources are available.\n`);
-  }
+  // The store-not-found message from formatStoreNotFoundMessage already embeds
+  // the relevant hints inline; appending a separate Hint block here would
+  // duplicate them on every store-missing invocation.
   const hint = getErrorHint(error);
   if (hint) {
     io.stderr(`${hintStyle("Hint:")} ${hint}\n`);

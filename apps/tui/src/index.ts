@@ -81,6 +81,7 @@ export async function runTui(argv: string[], io: TuiIo = defaultIo()): Promise<n
 
     try {
       const browser = buildLocalTuiBrowser(opened.storage, { readMode: opened.readMode });
+      const entryPoint = readEntryPoint(parsed);
 
       if (io.isInteractiveTerminal ?? false) {
         // Enter alternate screen + alternate scroll mode BEFORE Ink renders.
@@ -102,7 +103,17 @@ export async function runTui(argv: string[], io: TuiIo = defaultIo()): Promise<n
         process.on("SIGTERM", onSignal);
 
         try {
-          const app = render(React.createElement(TuiApp, { browser }));
+          let initialState = createBrowserState(browser);
+          if (entryPoint.projectRef) {
+            initialState = reduceBrowserState(browser, initialState, { type: "open-project-ref", ref: entryPoint.projectRef });
+          }
+          if (entryPoint.sessionRef) {
+            initialState = reduceBrowserState(browser, initialState, { type: "open-session-ref", ref: entryPoint.sessionRef });
+          }
+          if (entryPoint.turnRef) {
+            initialState = reduceBrowserState(browser, initialState, { type: "open-turn-ref", ref: entryPoint.turnRef });
+          }
+          const app = render(React.createElement(TuiApp, { browser, initialState }));
           await app.waitUntilExit();
         } finally {
           process.off("SIGINT", onSignal);
@@ -114,6 +125,7 @@ export async function runTui(argv: string[], io: TuiIo = defaultIo()): Promise<n
           searchQuery: getFlag(parsed, "search"),
           showSourceHealth: hasFlag(parsed, "source-health"),
           readMode: opened.readMode,
+          entryPoint,
         }, {
           createBrowserState,
           reduceBrowserState,
@@ -132,23 +144,21 @@ export async function runTui(argv: string[], io: TuiIo = defaultIo()): Promise<n
   }
 }
 
-function renderSnapshot(
-  layout: StoreLayout,
-  browser: LocalTuiBrowser,
-  options: {
-    searchQuery?: string;
-    showSourceHealth?: boolean;
-    readMode: "index" | "full";
-  },
-  helpers: SnapshotHelpers,
-): string {
-  const cols = process.stdout.columns || Number(process.env["COLUMNS"]) || 120;
-  const rows = process.stdout.rows || Number(process.env["LINES"]) || 40;
-  return helpers.renderBrowserSnapshot(browser, buildSnapshotState(browser, options, helpers), {
-    width: cols,
-    height: rows,
-    headerLines: buildSnapshotProvenanceLines(layout, options.readMode),
-  });
+interface EntryPoint {
+  projectRef?: string;
+  sessionRef?: string;
+  turnRef?: string;
+}
+
+function readEntryPoint(parsed: ParsedArgs): EntryPoint {
+  const projectRef = getFlag(parsed, "project");
+  const sessionRef = getFlag(parsed, "session");
+  const turnRef = getFlag(parsed, "turn");
+  const defined = [projectRef, sessionRef, turnRef].filter(Boolean);
+  if (defined.length > 1) {
+    throw new Error("Use at most one of --project / --session / --turn. They select the same initial focus, so combining them is ambiguous.");
+  }
+  return { projectRef, sessionRef, turnRef };
 }
 
 function buildSnapshotState(
@@ -157,10 +167,23 @@ function buildSnapshotState(
     searchQuery?: string;
     showSourceHealth?: boolean;
     readMode: "index" | "full";
+    entryPoint?: EntryPoint;
   },
   helpers: SnapshotHelpers,
 ) {
   let state = helpers.createBrowserState(browser);
+
+  if (options.entryPoint) {
+    if (options.entryPoint.projectRef) {
+      state = helpers.reduceBrowserState(browser, state, { type: "open-project-ref", ref: options.entryPoint.projectRef });
+    }
+    if (options.entryPoint.sessionRef) {
+      state = helpers.reduceBrowserState(browser, state, { type: "open-session-ref", ref: options.entryPoint.sessionRef });
+    }
+    if (options.entryPoint.turnRef) {
+      state = helpers.reduceBrowserState(browser, state, { type: "open-turn-ref", ref: options.entryPoint.turnRef });
+    }
+  }
 
   if (options.showSourceHealth) {
     state = helpers.reduceBrowserState(browser, state, { type: "toggle-source-health" });
@@ -182,6 +205,26 @@ function buildSnapshotState(
   return state;
 }
 
+function renderSnapshot(
+  layout: StoreLayout,
+  browser: LocalTuiBrowser,
+  options: {
+    searchQuery?: string;
+    showSourceHealth?: boolean;
+    readMode: "index" | "full";
+    entryPoint?: EntryPoint;
+  },
+  helpers: SnapshotHelpers,
+): string {
+  const cols = process.stdout.columns || Number(process.env["COLUMNS"]) || 120;
+  const rows = process.stdout.rows || Number(process.env["LINES"]) || 40;
+  return helpers.renderBrowserSnapshot(browser, buildSnapshotState(browser, options, helpers), {
+    width: cols,
+    height: rows,
+    headerLines: buildSnapshotProvenanceLines(layout, options.readMode),
+  });
+}
+
 function renderHelp(): string {
   return [
     "Usage: cchistory tui [options]",
@@ -189,14 +232,20 @@ function renderHelp(): string {
     "Interactive and snapshot TUI for local project, ask, and detail browsing.",
     "",
     "Options:",
-    "  --store <dir>         Local indexed store directory (default: ~/.cchistory)",
-    "  --db <path>            Specific SQLite database path",
-    "  --search <query>       Initial search query",
-    "  --full                 Run a live in-memory scan analogous to CLI `--full`",
+    "  --store <dir>          Local indexed store directory (default: ~/.cchistory)",
+    "  --db <path>             Specific SQLite database path",
+    "  --search <query>        Initial search query",
+    "  --project <id|slug>     Open at a specific project (turns pane focused)",
+    "  --session <id>          Open at the first turn of a specific session",
+    "  --turn <id>             Open at a specific turn (detail pane focused)",
+    "  --full                  Run a live in-memory scan analogous to CLI `--full`",
     "  --source <slot-or-id>   Source slot or id for live scan (when using --full)",
-    "  --limit-files <n>      Limit the number of files scanned (when using --full)",
-    "  --source-health        Include a source-health summary section (snapshot mode only)",
-    "  --help                 Show this help output",
+    "  --limit-files <n>       Limit the number of files scanned (when using --full)",
+    "  --source-health         Include a source-health summary section (snapshot mode only)",
+    "  --help                  Show this help output",
+    "",
+    "Entry-point flags (--project / --session / --turn) are mutually exclusive.",
+    "Refs accept full IDs, slugs, or unique 4+ char prefixes.",
   ].join("\n");
 }
 

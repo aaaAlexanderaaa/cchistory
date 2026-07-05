@@ -25,6 +25,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { BundleChecksums, ImportBundleManifest } from "@cchistory/domain";
 import type { CommandContext, CommandOutput } from "../main.js";
+import { declinedError, usageError } from "../errors.js";
 import { openStorage, resolveStoreLayout, type StoreLayout } from "../store.js";
 import { exportBundle } from "../bundle.js";
 import { formatNumber, renderKeyValue, renderSection, renderTable } from "../renderers.js";
@@ -32,10 +33,10 @@ import { formatNumber, renderKeyValue, renderSection, renderTable } from "../ren
 export async function handleMigration(context: CommandContext): Promise<CommandOutput> {
   const subcommand = context.commandPath[1];
   if (!subcommand) {
-    throw new Error("`migration` requires a subcommand: preview, run, status, validate, reset, or compact.");
+    throw usageError("`migration` requires a subcommand: preview, run, status, validate, reset, or compact.");
   }
   if (context.positionals.length > 0) {
-    throw new Error(`\`migration ${subcommand}\` does not take positional arguments.`);
+    throw usageError(`\`migration ${subcommand}\` does not take positional arguments.`);
   }
 
   const layout = resolveStoreLayout({
@@ -59,7 +60,7 @@ export async function handleMigration(context: CommandContext): Promise<CommandO
     case "compact":
       return runMigrationCompact(context, layout);
     default:
-      throw new Error(`Unknown migration subcommand: ${subcommand}`);
+      throw usageError(`Unknown migration subcommand: ${subcommand}`);
   }
 }
 
@@ -78,21 +79,21 @@ async function runMigrationPreview(context: CommandContext, layout: StoreLayout)
 }
 
 async function runMigrationRun(context: CommandContext, layout: StoreLayout): Promise<CommandOutput> {
-  // B.3 rewrites V2 state per source; --dry-run reports what would happen
-  // without writing so the operator can audit the preview first.
-  const dryRun = context.globals.dryRun;
+  // Preview-first: --write is required to actually backfill. --dry-run is
+  // kept as an explicit preview alias.
+  const dryRun = context.globals.dryRun || !context.options.write;
   if (dryRun) {
     const preview = await readStorageBoundaryMigrationPreview({ dbPath: layout.dbPath });
     return {
       text: [
         renderKeyValue([
           ["Workflow", "migration run"],
-          ["Mode", "preview (--dry-run)"],
+          ["Mode", "preview"],
           ["Would backfill sources", formatNumber(preview.affected.sources)],
           ["Backfill gap", `${formatNumber(preview.backfill.total_missing)} missing V2 rows`],
         ]),
         "",
-        "Re-run without --dry-run to write V2 sidecars. V1 payloads are not touched.",
+        "Re-run with --write to write V2 sidecars. V1 payloads are not touched.",
       ].join("\n"),
       json: {
         kind: "migration-run-dry-run",
@@ -155,8 +156,12 @@ async function runMigrationReset(context: CommandContext, layout: StoreLayout): 
     }
     phase = phaseArg as MigrationPhase;
   }
+  // Preview-first: --write required to clear markers. --dry-run remains as an
+  // explicit preview request. --force still bypasses the running-marker guard.
+  const dryRun = context.globals.dryRun || !context.options.write;
   const storage = await openStorage(layout);
   let rowsDeleted = 0;
+  let previewCount = 0;
   try {
     const db = storage.getDatabaseForMigration();
     // C4: refuse to clear while any marker is still 'running'. The C2 guard
@@ -174,7 +179,7 @@ async function runMigrationReset(context: CommandContext, layout: StoreLayout): 
         const markerLines = running
           .map((row) => `  - ${row.phase}/${row.scope_kind}/${row.scope_id} (started ${row.started_at})`)
           .join("\n");
-        throw new Error(
+        throw declinedError(
           `Refusing to reset migration_state: ${running.length} marker(s) are currently 'running'.\n` +
             `Clearing them while a migration is in progress can introduce the writer-collision the C2 guard exists to prevent — ` +
             `two processes racing on BEGIN IMMEDIATE for the same source_id, where the first COMMIT wins silently.\n\n` +
@@ -183,9 +188,36 @@ async function runMigrationReset(context: CommandContext, layout: StoreLayout): 
         );
       }
     }
-    rowsDeleted = clearMigrationStatesByPhase(db, phase);
+    if (dryRun) {
+      previewCount = listMigrationStates(db)
+        .filter((row) => phase === undefined || row.phase === phase)
+        .length;
+    } else {
+      rowsDeleted = clearMigrationStatesByPhase(db, phase);
+    }
   } finally {
     storage.close();
+  }
+  if (dryRun) {
+    return {
+      text: [
+        renderSection(
+          "Migration Reset Dry-Run (B.5.0)",
+          renderKeyValue([
+            ["Store", layout.dbPath],
+            ["Phase", phase ?? "(all)"],
+            ["Marker rows that would be deleted", formatNumber(previewCount)],
+          ]),
+        ),
+        "",
+        "Re-run with --write to delete these markers and re-populate them on the next migration run.",
+      ].join("\n"),
+      json: {
+        kind: "migration-reset-dry-run",
+        phase: phase ?? null,
+        rows_marked_for_delete: previewCount,
+      },
+    };
   }
   const lines = [
     renderSection(
@@ -318,7 +350,7 @@ function assertNoRunningMigrationMarkers(db: DatabaseSync): void {
   const markerLines = running
     .map((row) => `  - ${row.phase}/${row.scope_kind}/${row.scope_id} (started ${row.started_at})`)
     .join("\n");
-  throw new Error(
+  throw declinedError(
     `Refusing to compact: ${running.length} marker(s) are 'running'.\n` +
       "Audit via `cchistory migration status` and clear with `migration reset --force` after confirming the prior PID is dead.\n" +
       markerLines,
@@ -384,7 +416,7 @@ function assertCompactValidatorsCompleted(db: DatabaseSync): void {
       lines.push(`  - ${row.validator} (${row.scopeId}): ${row.status}${error}`);
     }
   }
-  throw new Error(lines.join("\n"));
+  throw declinedError(lines.join("\n"));
 }
 
 async function assertCompactValidatorsStillPassing(layout: StoreLayout): Promise<void> {
@@ -395,7 +427,7 @@ async function assertCompactValidatorsStillPassing(layout: StoreLayout): Promise
   });
   if (result.exit_code === 0) return;
 
-  throw new Error(
+  throw declinedError(
     [
       "Refusing to compact: current validation failed before dropping V1 turn tables.",
       "The bundle byte-diff marker must already be completed; compact re-runs inventory, read-paths, and v1-payload-digest because they do not need the pre-B.3 bundle.",
@@ -414,7 +446,12 @@ async function runMigrationCompact(context: CommandContext, layout: StoreLayout)
   }
   const step = stepArg as CompactStep;
 
-  if (context.globals.dryRun) {
+  // Preview-first: --write required to apply B.6 (it's IRREVERSIBLE — there is
+  // no rollback path). --dry-run remains as an explicit preview request. We
+  // explicitly OR the two so `--dry-run --write` still previews (defensive:
+  // operators who type both flags should never get a destructive apply).
+  const dryRun = context.globals.dryRun || !context.options.write;
+  if (dryRun) {
     // Dry-run is preview-only: open a read-only SQLite metadata handle and
     // never run storage initialization, schema migrations, checkpoints, or WAL
     // maintenance on the operator store.
@@ -433,7 +470,7 @@ async function runMigrationCompact(context: CommandContext, layout: StoreLayout)
         ]),
       ),
       "",
-      "B.6 is IRREVERSIBLE. Take a backup before running without --dry-run:",
+      "B.6 is IRREVERSIBLE. Take a backup before running with --write:",
       `  cp ${layout.dbPath} ${layout.dbPath}.bak-pre-b6`,
     ];
     if (plan.priorMarkers.length > 0) {
@@ -460,7 +497,7 @@ async function runMigrationCompact(context: CommandContext, layout: StoreLayout)
   // Backup confirmation. B.6 is irreversible; the operator must acknowledge
   // they have a backup. We don't create one for them — cp is their job.
   if (!context.options.confirmNoBackup) {
-    throw new Error(
+    throw declinedError(
       "Refusing to compact without explicit backup confirmation. B.6 is irreversible — " +
         "take a backup first, then re-run with --confirm-no-backup.\n" +
         `  cp ${layout.dbPath} ${layout.dbPath}.bak-pre-b6`,

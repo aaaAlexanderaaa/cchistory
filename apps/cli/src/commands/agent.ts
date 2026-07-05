@@ -20,6 +20,7 @@ import {
 import { exportBundle } from "../bundle.js";
 import { createStorage } from "../store.js";
 import { formatError, type CommandContext, type CommandOutput } from "../main.js";
+import { usageError } from "../errors.js";
 import { applySourceSelection } from "./sync.js";
 
 export async function handleAgent(context: CommandContext): Promise<CommandOutput> {
@@ -92,7 +93,7 @@ async function handleAgentSchedule(context: CommandContext): Promise<CommandOutp
   const intervalSeconds = context.options.intervalSeconds;
   const iterations = context.options.iterations;
   if (intervalSeconds === undefined) {
-    throw new Error("Missing required --interval-seconds flag.");
+    throw usageError("Missing required --interval-seconds flag.");
   }
   if (iterations !== undefined && (!Number.isInteger(iterations) || iterations <= 0)) {
     throw new Error("--iterations must be a positive integer when provided.");
@@ -320,7 +321,7 @@ async function sleep(durationMs: number): Promise<void> {
 
 function requireOption(value: string | undefined, key: string): string {
   if (!value) {
-    throw new Error(`Missing required --${key} flag.`);
+    throw usageError(`Missing required --${key} flag.`);
   }
   return value;
 }

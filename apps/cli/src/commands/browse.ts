@@ -39,11 +39,13 @@ import {
   clusterSearchResults,
   type RelatedWorkRollup,
 } from "../renderers.js";
+import { decodeCursor, encodeCursor } from "../pagination.js";
 import {
   type CommandContext,
   type CommandOutput,
   openReadStore,
 } from "../main.js";
+import { usageError } from "../errors.js";
 import {
   resolveProjectRef,
   resolveSessionRef,
@@ -56,7 +58,7 @@ import { bold, dim, cyan, magenta, muted } from "../colors.js";
 export async function handleLs(context: CommandContext): Promise<CommandOutput> {
   const target = context.commandPath[1] ?? context.positionals[0];
   if (!target || !["projects", "sessions", "sources"].includes(target)) {
-    throw new Error("Use `ls projects`, `ls sessions`, or `ls sources`.");
+    throw usageError("Use `ls projects`, `ls sessions`, or `ls sources`.");
   }
 
   const readStore = await openReadStore(context);
@@ -304,7 +306,7 @@ export async function handleTree(context: CommandContext): Promise<CommandOutput
       };
     }
 
-    throw new Error("Use `tree projects`, `tree project <project-id-or-slug>`, or `tree session <session-ref>`.");
+    throw usageError("Use `tree projects`, `tree project <project-id-or-slug>`, or `tree session <session-ref>`.");
   } finally {
     await readStore.close();
   }
@@ -316,7 +318,7 @@ function validateTreeArity(context: CommandContext, target: string | undefined):
     target === "project" || target === "session" ? (context.commandPath[1] ? 1 : 2) :
     -1;
   if (expectedPositionals < 0 || context.positionals.length !== expectedPositionals) {
-    throw new Error("Use `tree projects`, `tree project <project-id-or-slug>`, or `tree session <session-ref>`.");
+    throw usageError("Use `tree projects`, `tree project <project-id-or-slug>`, or `tree session <session-ref>`.");
   }
 }
 
@@ -324,7 +326,7 @@ export async function handleShow(context: CommandContext): Promise<CommandOutput
   const target = context.commandPath[1] ?? context.positionals[0];
   const ref = context.commandPath[1] ? context.positionals[0] : context.positionals[1];
   if (!target || !ref) {
-    throw new Error("Use `show project|session|turn|source <ref>`.");
+    throw usageError("Use `show project|session|turn|source <ref>`.");
   }
   validateShowArity(context, target);
 
@@ -510,7 +512,7 @@ export async function handleShow(context: CommandContext): Promise<CommandOutput
       };
     }
 
-    throw new Error("Use `show project|session|turn|source <ref>`.");
+    throw usageError("Use `show project|session|turn|source <ref>`.");
   } finally {
     await readStore.close();
   }
@@ -522,14 +524,24 @@ function validateShowArity(context: CommandContext, target: string): void {
   if (validTarget && context.positionals.length === expectedPositionals) {
     return;
   }
-  throw new Error("Use `show project|session|turn|source <ref>`.");
+  throw usageError("Use `show project|session|turn|source <ref>`.");
 }
 
 export async function handleSearch(context: CommandContext): Promise<CommandOutput> {
   const query = context.positionals.join(" ").trim();
   if (!query) {
-    throw new Error("Search requires a query string.");
+    throw usageError("Search requires a query string.");
   }
+  // Cursor takes precedence over --offset for resuming a previous query. The
+  // cursor encodes only the offset today; keeping it opaque lets us add
+  // filter-state hashing later without breaking the wire format.
+  //
+  // Check the conflict before decoding so a malformed cursor paired with
+  // --offset still surfaces the actionable "choose one" message.
+  if (context.options.cursor && context.options.offset !== undefined) {
+    throw usageError("Choose either --cursor or --offset, not both.");
+  }
+  const cursorOffset = decodeCursor(context.options.cursor);
 
   const readStore = await openReadStore(context);
   try {
@@ -538,7 +550,7 @@ export async function handleSearch(context: CommandContext): Promise<CommandOutp
     const sourceRefs = context.options.source;
     const wantAll = context.options.all;
     const limit = wantAll ? 1000 : (context.options.limit ?? 50);
-    const offset = context.options.offset ?? 0;
+    const offset = cursorOffset ?? context.options.offset ?? 0;
     const project = projectRef ? resolveProjectRef(storage, projectRef) : undefined;
     const sourceIds = sourceRefs.length > 0 ? sourceRefs.map((ref) => resolveSourceRef(storage, ref).id) : undefined;
     const sourcesById = new Map(storage.listSources().map((source) => [source.id, source]));
@@ -607,16 +619,18 @@ export async function handleSearch(context: CommandContext): Promise<CommandOutp
       if (totalMatches > results.length || offset > 0) {
         const paginationParts = [`Showing ${pageStart}-${pageEnd} of ${totalMatches} results.`];
         if (pageEnd < totalMatches) {
-          paginationParts.push(`Use ${dim(`--offset ${pageEnd}`)} for next page.`);
+          const nextCursor = encodeCursor(pageEnd);
+          paginationParts.push(`Use ${dim(`--cursor ${nextCursor}`)} for next page.`);
         }
         lines.push(muted(paginationParts.join(" ")));
       } else {
         lines.push(muted(`${totalMatches} result${totalMatches === 1 ? "" : "s"}. Use ${dim("show turn <id>")} to inspect, ${dim("--long")} for full detail.`));
       }
     }
+    const nextCursor = offset + results.length < totalMatches ? encodeCursor(offset + results.length) : null;
     return {
       text: lines.length > 0 ? lines.join("\n") : "(no matches)",
-      json: { kind: "search", db_path: layout.dbPath, query, results, total: totalMatches, offset },
+      json: { kind: "search", db_path: layout.dbPath, query, results, total: totalMatches, offset, next_cursor: nextCursor },
     };
   } finally {
     await readStore.close();

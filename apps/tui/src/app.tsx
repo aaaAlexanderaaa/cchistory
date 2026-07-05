@@ -7,18 +7,19 @@ import { resolveTuiInputEffect } from "./input.js";
 
 export interface TuiAppProps {
   browser: LocalTuiBrowser;
+  initialState?: BrowserState;
 }
 
-export function TuiApp({ browser }: TuiAppProps) {
+export function TuiApp({ browser, initialState }: TuiAppProps) {
   const { exit } = useApp();
   const { stdout } = useStdout();
   const termHeight = stdout?.rows ?? 40;
   const termWidth = stdout?.columns ?? 120;
   const stateRef = useRef<BrowserState | null>(null);
   const [state, setState] = useState<BrowserState>(() => {
-    const initialState = createBrowserState(browser);
-    stateRef.current = initialState;
-    return initialState;
+    const seed = initialState ?? createBrowserState(browser);
+    stateRef.current = seed;
+    return seed;
   });
   stateRef.current = state;
 

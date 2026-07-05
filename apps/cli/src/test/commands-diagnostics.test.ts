@@ -1670,52 +1670,52 @@ test("parser rejects unknown, invalid, and duplicate command options", async () 
 
   try {
     const unknown = await runCliCapture(["search", "probe", "--unknown"], tempRoot);
-    assert.equal(unknown.exitCode, 1);
+    assert.equal(unknown.exitCode, 2);
     assert.match(unknown.stderr, /Unknown option '--unknown'/);
 
     const wrongCommand = await runCliCapture(["search", "probe", "--out", "bundle"], tempRoot);
-    assert.equal(wrongCommand.exitCode, 1);
+    assert.equal(wrongCommand.exitCode, 2);
     assert.match(wrongCommand.stderr, /Unknown option for `search`: --out/);
 
     const invalidNumber = await runCliCapture(["search", "--limit", "nope", "probe"], tempRoot);
-    assert.equal(invalidNumber.exitCode, 1);
+    assert.equal(invalidNumber.exitCode, 2);
     assert.match(invalidNumber.stderr, /Invalid numeric value for --limit: nope/);
 
     const duplicate = await runCliCapture(["search", "--limit", "1", "--limit", "2", "probe"], tempRoot);
-    assert.equal(duplicate.exitCode, 1);
+    assert.equal(duplicate.exitCode, 2);
     assert.match(duplicate.stderr, /Option --limit can only be provided once/);
 
     const invalidStatsDimension = await runCliCapture(["stats", "--by", "workspace"], tempRoot);
-    assert.equal(invalidStatsDimension.exitCode, 1);
+    assert.equal(invalidStatsDimension.exitCode, 2);
     assert.match(invalidStatsDimension.stderr, /Invalid value for --by: workspace\. Expected one of model, project, source, host, day, month\./);
 
     const invalidMergeConflict = await runCliCapture(["merge", "--from", "a.sqlite", "--to", "b.sqlite", "--on-conflict", "abort"], tempRoot);
-    assert.equal(invalidMergeConflict.exitCode, 1);
+    assert.equal(invalidMergeConflict.exitCode, 2);
     assert.match(invalidMergeConflict.stderr, /Invalid value for --on-conflict: abort\. Expected one of skip, replace\./);
     assert.doesNotMatch(invalidMergeConflict.stderr, /error, skip, replace/);
 
     const missingStatsDimension = await runCliCapture(["stats", "usage"], tempRoot);
-    assert.equal(missingStatsDimension.exitCode, 1);
+    assert.equal(missingStatsDimension.exitCode, 2);
     assert.match(missingStatsDimension.stderr, /`stats usage` requires --by <dimension>/);
     assert.match(missingStatsDimension.stderr, /Example: cchistory stats usage --by model/);
     assert.doesNotMatch(missingStatsDimension.stderr, /Store not found|unable to open database/);
 
     const negativeLimit = await runCliCapture(["search", "--limit=-1", "probe"], tempRoot);
-    assert.equal(negativeLimit.exitCode, 1);
+    assert.equal(negativeLimit.exitCode, 2);
     assert.match(negativeLimit.stderr, /Invalid value for --limit: -1\. Expected a positive integer\./);
     assert.doesNotMatch(negativeLimit.stderr, /Store not found|unable to open database/);
 
     const fractionalOffset = await runCliCapture(["search", "--offset", "1.5", "probe"], tempRoot);
-    assert.equal(fractionalOffset.exitCode, 1);
+    assert.equal(fractionalOffset.exitCode, 2);
     assert.match(fractionalOffset.stderr, /Invalid value for --offset: 1\.5\. Expected a non-negative integer\./);
 
     const conflictingReadModes = await runCliCapture(["--full", "--index", "stats"], tempRoot);
-    assert.equal(conflictingReadModes.exitCode, 1);
+    assert.equal(conflictingReadModes.exitCode, 2);
     assert.match(conflictingReadModes.stderr, /Choose either --full or --index, not both\./);
     assert.doesNotMatch(conflictingReadModes.stderr, /Store not found|unable to open database/);
 
     const zeroInterval = await runCliCapture(["agent", "schedule", "--interval-seconds", "0"], tempRoot);
-    assert.equal(zeroInterval.exitCode, 1);
+    assert.equal(zeroInterval.exitCode, 2);
     assert.match(zeroInterval.stderr, /Invalid value for --interval-seconds: 0\. Expected a positive integer\./);
     assert.doesNotMatch(zeroInterval.stderr, /Remote agent state file not found|fetch failed/);
   } finally {
@@ -1744,7 +1744,7 @@ test("usage errors for incomplete commands happen before store or remote access"
 
     for (const { argv, pattern } of cases) {
       const result = await runCliCapture(argv, tempRoot);
-      assert.equal(result.exitCode, 1, argv.join(" "));
+      assert.equal(result.exitCode, 2, argv.join(" "));
       assert.match(result.stderr, pattern, argv.join(" "));
       assert.doesNotMatch(result.stderr, /Store not found|unable to open database|ENOENT|fetch failed/, argv.join(" "));
       assert.equal(result.stdout, "", argv.join(" "));
@@ -1761,16 +1761,16 @@ test("errors hide stack traces unless debug is enabled", async () => {
   try {
     delete process.env.CCHISTORY_DEBUG;
     const normal = await runCliCapture(["unknown"], tempRoot);
-    assert.equal(normal.exitCode, 1);
+    assert.equal(normal.exitCode, 2);
     assert.doesNotMatch(normal.stderr, /\n\s+at /);
 
     const flagDebug = await runCliCapture(["--debug", "unknown"], tempRoot);
-    assert.equal(flagDebug.exitCode, 1);
+    assert.equal(flagDebug.exitCode, 2);
     assert.match(flagDebug.stderr, /\n\s+at /);
 
     process.env.CCHISTORY_DEBUG = "1";
     const envDebug = await runCliCapture(["unknown"], tempRoot);
-    assert.equal(envDebug.exitCode, 1);
+    assert.equal(envDebug.exitCode, 2);
     assert.match(envDebug.stderr, /\n\s+at /);
   } finally {
     if (originalDebug === undefined) {
@@ -1787,7 +1787,7 @@ test("--json failures keep stdout empty and print actionable text to stderr", as
 
   try {
     const result = await runCliCapture(["--json", "search"], tempRoot);
-    assert.equal(result.exitCode, 1);
+    assert.equal(result.exitCode, 2);
     assert.equal(result.stdout, "");
     assert.match(result.stderr, /Search requires a query string\./);
     assert.doesNotMatch(result.stderr, /\n\s+at /);
@@ -1806,11 +1806,11 @@ test("--no-color disables ANSI even when FORCE_COLOR is set", async () => {
     delete process.env.NO_COLOR;
 
     const colored = await runCliCapture(["unknown"], tempRoot);
-    assert.equal(colored.exitCode, 1);
+    assert.equal(colored.exitCode, 2);
     assert.match(colored.stderr, /\x1b\[/);
 
     const plain = await runCliCapture(["--no-color", "unknown"], tempRoot);
-    assert.equal(plain.exitCode, 1);
+    assert.equal(plain.exitCode, 2);
     assert.doesNotMatch(plain.stderr, /\x1b\[/);
   } finally {
     if (originalForceColor === undefined) {

@@ -58,10 +58,33 @@ export function formatBytes(bytes: number): string {
   return `${Math.round(bytes / (1024 * 1024))}MiB`;
 }
 
+export function resolveProgressMode(
+  explicit: string | undefined,
+  detail: boolean,
+  verbose: boolean,
+  isTTY: boolean | undefined,
+): "text" | "jsonl" | "none" {
+  if (explicit) {
+    return explicit as "text" | "jsonl" | "none";
+  }
+  if (detail || verbose) {
+    return "text";
+  }
+  // Default: stay quiet for non-interactive (piped/CI) callers, but stream
+  // operator-readable progress to a TTY so a first-time `cchistory sync` on a
+  // 5GB history does not look like a hang. Suppress with --progress none.
+  return isTTY ? "text" : "none";
+}
+
 export function createProgressReporter(
   context: CommandContext,
 ): ((event: SyncProgressEvent) => void) | undefined {
-  const mode = context.options.progress ?? (context.options.detail || context.globals.verbose ? "text" : "none");
+  const mode = resolveProgressMode(
+    context.options.progress,
+    context.options.detail,
+    context.globals.verbose,
+    context.io.isTTY,
+  );
   if (mode === "none") {
     return undefined;
   }

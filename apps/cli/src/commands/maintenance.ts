@@ -1,6 +1,7 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { type SourceSyncPayload } from "@cchistory/domain";
 import {
   type CCHistoryStorage,
@@ -33,6 +34,7 @@ import {
   pathExists,
   requireStoreDatabase,
 } from "../main.js";
+import { usageError } from "../errors.js";
 import { resolveSourceRef } from "../resolvers.js";
 import { createSourcesListOutput } from "./sync.js";
 import { createStatsOverviewOutput } from "./stats.js";
@@ -67,16 +69,16 @@ export async function handleBackup(context: CommandContext): Promise<CommandOutp
 
 export async function handleRestoreCheck(context: CommandContext): Promise<CommandOutput> {
   if (context.positionals.length > 0) {
-    throw new Error("`restore-check` does not take positional arguments.");
+    throw usageError("`restore-check` does not take positional arguments.");
   }
   if (!context.globals.store && !context.globals.db) {
-    throw new Error("`restore-check` requires an explicit --store or --db target.");
+    throw usageError("`restore-check` requires an explicit --store or --db target.");
   }
   if (context.globals.full) {
-    throw new Error("`restore-check` does not support --full; it verifies the indexed restored store only.");
+    throw usageError("`restore-check` does not support --full; it verifies the indexed restored store only.");
   }
   if (context.options.source.length > 0) {
-    throw new Error("`restore-check` does not support --source filters; it verifies all restored sources together.");
+    throw usageError("`restore-check` does not support --source filters; it verifies all restored sources together.");
   }
 
   const layout = resolveStoreLayout({
@@ -208,11 +210,11 @@ export async function executeExportCommand(
 export async function handleImport(context: CommandContext): Promise<CommandOutput> {
   const [bundleDir] = context.positionals;
   if (!bundleDir) {
-    throw new Error("Import requires a bundle directory.");
+    throw usageError("Import requires a bundle directory.");
   }
   const mode = (context.options.onConflict ?? "error") as "error" | "skip" | "replace";
   if (!["error", "skip", "replace"].includes(mode)) {
-    throw new Error("`import --on-conflict` must be one of error, skip, replace.");
+    throw usageError("`import --on-conflict` must be one of error, skip, replace.");
   }
 
   const layout = resolveStoreLayout({
@@ -317,7 +319,7 @@ export async function handleMergeAlias(context: CommandContext): Promise<Command
   const sourceRefs = context.options.source;
   const conflictOption = context.options.onConflict;
   if (conflictOption === "error") {
-    throw new Error("`merge --on-conflict` must be skip or replace. Use `import --on-conflict error` when you need an error-on-conflict workflow.");
+    throw usageError("`merge --on-conflict` must be skip or replace. Use `import --on-conflict error` when you need an error-on-conflict workflow.");
   }
   const conflictMode: "skip" | "replace" = conflictOption === "skip" ? "skip" : "replace";
   const dryRun = context.globals.dryRun || !context.options.write;
@@ -424,7 +426,11 @@ function resolveMergeStoreLayout(context: CommandContext, targetPath: string): S
 }
 
 export async function handleGc(context: CommandContext): Promise<CommandOutput> {
-  const dryRun = context.globals.dryRun;
+  // Preview-first: without --write the command only reports what would be
+  // pruned. --dry-run is kept as an explicit preview alias for scripts that
+  // want zero ambiguity.
+  const dryRun = context.globals.dryRun || !context.options.write;
+  const mode = dryRun ? "preview" : "write";
   const layout = resolveStoreLayout({
     cwd: context.io.cwd,
     storeArg: context.globals.store,
@@ -442,7 +448,7 @@ export async function handleGc(context: CommandContext): Promise<CommandOutput> 
       text: renderKeyValue([
         ["DB", layout.dbPath],
         ["Raw Dir", layout.rawDir],
-        ["Dry Run", String(dryRun)],
+        ["Mode", mode],
         ["Scanned Files", formatNumber(result.scanned_files)],
         ["Referenced Files", formatNumber(result.referenced_files)],
         [dryRun ? "Would Delete Files" : "Deleted Files", formatNumber(result.deleted_files)],
@@ -453,6 +459,7 @@ export async function handleGc(context: CommandContext): Promise<CommandOutput> 
         kind: "gc",
         db_path: layout.dbPath,
         raw_dir: layout.rawDir,
+        mode,
         dry_run: dryRun,
         result,
       },
@@ -465,7 +472,7 @@ export async function handleGc(context: CommandContext): Promise<CommandOutput> 
 export async function handleMaintenance(context: CommandContext): Promise<CommandOutput> {
   const subcommand = context.commandPath[1];
   if (!subcommand) {
-    throw new Error("`maintenance` requires a subcommand: rebuild-search-index, gc-evidence, checkpoint, vacuum, or refresh-projections.");
+    throw usageError("`maintenance` requires a subcommand: rebuild-search-index, gc-evidence, checkpoint, vacuum, or refresh-projections.");
   }
   const layout = resolveStoreLayout({
     cwd: context.io.cwd,
@@ -473,24 +480,30 @@ export async function handleMaintenance(context: CommandContext): Promise<Comman
     dbArg: context.globals.db,
   });
   await requireStoreDatabase(layout.dbPath);
+  // Preview-first: every maintenance subcommand defaults to preview unless
+  // --write is set. --dry-run is treated as an explicit preview request.
+  const dryRun = context.globals.dryRun || !context.options.write;
 
   switch (subcommand) {
     case "rebuild-search-index":
-      return runMaintenanceRebuildSearchIndex(layout);
+      return runMaintenanceRebuildSearchIndex(layout, dryRun);
     case "gc-evidence":
-      return runMaintenanceGcEvidence(layout);
+      return runMaintenanceGcEvidence(layout, dryRun);
     case "checkpoint":
-      return runMaintenanceCheckpoint(layout);
+      return runMaintenanceCheckpoint(layout, dryRun);
     case "vacuum":
-      return runMaintenanceVacuum(layout);
+      return runMaintenanceVacuum(layout, dryRun);
     case "refresh-projections":
-      return runMaintenanceRefreshProjections(layout);
+      return runMaintenanceRefreshProjections(layout, dryRun);
     default:
-      throw new Error(`Unknown maintenance subcommand: ${subcommand}`);
+      throw usageError(`Unknown maintenance subcommand: ${subcommand}`);
   }
 }
 
-async function runMaintenanceRebuildSearchIndex(layout: StoreLayout): Promise<CommandOutput> {
+async function runMaintenanceRebuildSearchIndex(layout: StoreLayout, dryRun: boolean): Promise<CommandOutput> {
+  if (dryRun) {
+    return previewRebuildSearchIndex(layout);
+  }
   const storage = await openStorage(layout);
   try {
     const result = storage.rebuildSearchIndex();
@@ -514,7 +527,42 @@ async function runMaintenanceRebuildSearchIndex(layout: StoreLayout): Promise<Co
   }
 }
 
-async function runMaintenanceGcEvidence(layout: StoreLayout): Promise<CommandOutput> {
+async function previewRebuildSearchIndex(layout: StoreLayout): Promise<CommandOutput> {
+  const db = new DatabaseSync(layout.dbPath, { readOnly: true });
+  try {
+    const ftsRow = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'search_index'",
+    ).get() as { name?: string } | undefined;
+    const userTurnsRow = db.prepare("SELECT COUNT(*) AS n FROM user_turns_v2").get() as { n: number };
+    return {
+      text: [
+        renderKeyValue([
+          ["DB", layout.dbPath],
+          ["Subcommand", "rebuild-search-index"],
+          ["Mode", "preview"],
+          ["FTS5 Table Present", ftsRow?.name ? "yes" : "no"],
+          ["user_turns_v2 Rows", formatNumber(userTurnsRow.n)],
+          ["Would Index", formatNumber(userTurnsRow.n)],
+        ]),
+        "",
+        "Re-run with --write to repopulate search_index.",
+      ].join("\n"),
+      json: {
+        kind: "maintenance-rebuild-search-index-dry-run",
+        db_path: layout.dbPath,
+        fts5_present: Boolean(ftsRow?.name),
+        rows_to_index: userTurnsRow.n,
+      },
+    };
+  } finally {
+    db.close();
+  }
+}
+
+async function runMaintenanceGcEvidence(layout: StoreLayout, dryRun: boolean): Promise<CommandOutput> {
+  if (dryRun) {
+    return previewGcEvidence(layout);
+  }
   const storage = await openStorage(layout);
   try {
     const result = storage.pruneOrphanEvidence();
@@ -536,7 +584,62 @@ async function runMaintenanceGcEvidence(layout: StoreLayout): Promise<CommandOut
   }
 }
 
-async function runMaintenanceCheckpoint(layout: StoreLayout): Promise<CommandOutput> {
+async function previewGcEvidence(layout: StoreLayout): Promise<CommandOutput> {
+  // PARITY NOTE: this SELECT mirrors the orphan-detection query in
+  // packages/storage/src/internal/gc.ts (collectOrphanEvidenceBlobs). The
+  // preview path needs to report the same orphan count the write path would
+  // delete, so the FROM/JOINs/WHERE must stay byte-identical. The parity test
+  // `gc evidence preview matches storage pruning outcome` in
+  // commands-maintenance.test.ts cross-checks this against the live storage
+  // implementation on a fixture store. If you change the join set here,
+  // update gc.ts (and vice versa) and re-run the parity test.
+  const db = new DatabaseSync(layout.dbPath, { readOnly: true });
+  try {
+    const orphanRow = db.prepare(`
+      SELECT COUNT(*) AS n
+      FROM evidence_blobs eb
+      LEFT JOIN evidence_captures ec ON ec.evidence_sha256 = eb.sha256
+      LEFT JOIN parsed_record_spans prs ON prs.evidence_sha256 = eb.sha256
+      LEFT JOIN source_file_ledger sfl
+        ON sfl.current_evidence_sha256 = eb.sha256
+       AND sfl.sync_axis = 'current'
+      LEFT JOIN turn_context_refs_v2 tcr ON tcr.context_evidence_sha256 = eb.sha256
+      LEFT JOIN derived_cache_refs dcr ON dcr.evidence_sha256 = eb.sha256
+      LEFT JOIN user_turns_v2 utv ON utv.lineage_blob_sha256 = eb.sha256
+      WHERE ec.evidence_sha256 IS NULL
+        AND prs.evidence_sha256 IS NULL
+        AND sfl.current_evidence_sha256 IS NULL
+        AND tcr.context_evidence_sha256 IS NULL
+        AND dcr.evidence_sha256 IS NULL
+        AND utv.lineage_blob_sha256 IS NULL
+    `).get() as { n: number };
+    return {
+      text: [
+        renderKeyValue([
+          ["DB", layout.dbPath],
+          ["Subcommand", "gc-evidence"],
+          ["Mode", "preview"],
+          ["Orphan Evidence Blobs", formatNumber(orphanRow.n)],
+          ["Would Prune", formatNumber(orphanRow.n)],
+        ]),
+        "",
+        "Re-run with --write to delete orphan rows and unlink their content-addressed files.",
+      ].join("\n"),
+      json: {
+        kind: "maintenance-gc-evidence-dry-run",
+        db_path: layout.dbPath,
+        orphan_count: orphanRow.n,
+      },
+    };
+  } finally {
+    db.close();
+  }
+}
+
+async function runMaintenanceCheckpoint(layout: StoreLayout, dryRun: boolean): Promise<CommandOutput> {
+  if (dryRun) {
+    return previewCheckpoint(layout);
+  }
   const storage = await openStorage(layout);
   try {
     const result = storage.checkpointStore();
@@ -560,7 +663,70 @@ async function runMaintenanceCheckpoint(layout: StoreLayout): Promise<CommandOut
   }
 }
 
-async function runMaintenanceVacuum(layout: StoreLayout): Promise<CommandOutput> {
+async function previewCheckpoint(layout: StoreLayout): Promise<CommandOutput> {
+  // Read-only inspection: `PRAGMA wal_checkpoint` requires write access
+  // (it mutates the main DB file by folding WAL frames in), so it errors
+  // out on a non-empty WAL when the handle is opened with `readOnly: true`.
+  // Operators still need a meaningful preview, so we instead report
+  // journal mode, page size, total page count, and the WAL sidecar size
+  // (which is the closest read-only proxy for "uncheckpointed work").
+  const db = new DatabaseSync(layout.dbPath, { readOnly: true });
+  let journalMode = "delete";
+  let pageSize = 0;
+  let pageCount = 0;
+  try {
+    journalMode = (db.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode;
+    pageSize = (db.prepare("PRAGMA page_size").get() as { page_size: number }).page_size;
+    pageCount = (db.prepare("PRAGMA page_count").get() as { page_count: number }).page_count;
+  } finally {
+    db.close();
+  }
+  let walBytes = 0;
+  let walExists = false;
+  try {
+    const walStat = await stat(`${layout.dbPath}-wal`);
+    walExists = true;
+    walBytes = walStat.size;
+  } catch {
+    // WAL sidecar absent (already checkpointed, or store not in WAL mode).
+  }
+  // WAL frame size is page_size + 24 bytes of header per frame; useful as a
+  // rough pending-work indicator without write access.
+  const frameSize = pageSize > 0 ? pageSize + 24 : 0;
+  const approxFrames = frameSize > 0 ? Math.floor(walBytes / frameSize) : 0;
+  return {
+    text: [
+      renderKeyValue([
+        ["DB", layout.dbPath],
+        ["Subcommand", "checkpoint"],
+        ["Mode", "preview"],
+        ["Journal Mode", journalMode],
+        ["Page Size", formatNumber(pageSize)],
+        ["DB Page Count", formatNumber(pageCount)],
+        ["WAL Present", String(walExists)],
+        ["WAL Bytes (Sidecar)", formatNumber(walBytes)],
+        ["Approx WAL Frames", formatNumber(approxFrames)],
+      ]),
+      "",
+      "Re-run with --write to TRUNCATE the WAL into the main SQLite file.",
+    ].join("\n"),
+    json: {
+      kind: "maintenance-checkpoint-dry-run",
+      db_path: layout.dbPath,
+      journal_mode: journalMode,
+      page_size: pageSize,
+      page_count: pageCount,
+      wal_present: walExists,
+      wal_bytes: walBytes,
+      approx_wal_frames: approxFrames,
+    },
+  };
+}
+
+async function runMaintenanceVacuum(layout: StoreLayout, dryRun: boolean): Promise<CommandOutput> {
+  if (dryRun) {
+    return previewVacuum(layout);
+  }
   const storage = await openStorage(layout);
   try {
     const result = storage.vacuumStore();
@@ -582,7 +748,47 @@ async function runMaintenanceVacuum(layout: StoreLayout): Promise<CommandOutput>
   }
 }
 
-async function runMaintenanceRefreshProjections(layout: StoreLayout): Promise<CommandOutput> {
+async function previewVacuum(layout: StoreLayout): Promise<CommandOutput> {
+  const db = new DatabaseSync(layout.dbPath, { readOnly: true });
+  try {
+    const pageSize = (db.prepare("PRAGMA page_size").get() as { page_size: number }).page_size;
+    const pageCount = (db.prepare("PRAGMA page_count").get() as { page_count: number }).page_count;
+    const freelistCount = (db.prepare("PRAGMA freelist_count").get() as { freelist_count: number }).freelist_count;
+    const dbBytes = (await stat(layout.dbPath)).size;
+    const freeBytes = freelistCount * pageSize;
+    return {
+      text: [
+        renderKeyValue([
+          ["DB", layout.dbPath],
+          ["Subcommand", "vacuum"],
+          ["Mode", "preview"],
+          ["DB Size", formatBytes(dbBytes)],
+          ["Page Size", formatNumber(pageSize)],
+          ["Page Count", formatNumber(pageCount)],
+          ["Free Pages", formatNumber(freelistCount)],
+          ["Reclaimable (Approx)", formatBytes(freeBytes)],
+        ]),
+        "",
+        "Re-run with --write to VACUUM the file into the new page size.",
+      ].join("\n"),
+      json: {
+        kind: "maintenance-vacuum-dry-run",
+        db_path: layout.dbPath,
+        page_size: pageSize,
+        page_count: pageCount,
+        freelist_count: freelistCount,
+        reclaimable_bytes: freeBytes,
+      },
+    };
+  } finally {
+    db.close();
+  }
+}
+
+async function runMaintenanceRefreshProjections(layout: StoreLayout, dryRun: boolean): Promise<CommandOutput> {
+  if (dryRun) {
+    return previewRefreshProjections(layout);
+  }
   const storage = await openStorage(layout);
   try {
     const db = storage.getDatabaseForMigration();
@@ -630,6 +836,37 @@ async function runMaintenanceRefreshProjections(layout: StoreLayout): Promise<Co
   }
 }
 
+async function previewRefreshProjections(layout: StoreLayout): Promise<CommandOutput> {
+  const db = new DatabaseSync(layout.dbPath, { readOnly: true });
+  try {
+    const projectRows = (db.prepare("SELECT COUNT(*) AS n FROM project_current").get() as { n: number }).n;
+    const latest = (db.prepare(
+      "SELECT MAX(payload_json->'$.project_last_activity_at') AS latest FROM project_current",
+    ).get() as { latest: string | null }).latest;
+    return {
+      text: [
+        renderKeyValue([
+          ["DB", layout.dbPath],
+          ["Subcommand", "refresh-projections"],
+          ["Mode", "preview"],
+          ["project_current Rows (Current)", formatNumber(projectRows)],
+          ["Latest Activity (Current)", latest ?? "(none)"],
+        ]),
+        "",
+        "Re-run with --write to rebuild project_current from canonical rows.",
+      ].join("\n"),
+      json: {
+        kind: "maintenance-refresh-projections-dry-run",
+        db_path: layout.dbPath,
+        project_rows_current: projectRows,
+        latest_activity_current: latest,
+      },
+    };
+  } finally {
+    db.close();
+  }
+}
+
 function renderExportPlanTableFromRows(
   rows: Array<{ source: SourceSyncPayload["source"]; sessions: number; turns: number; blobs: number }>,
 ): string {
@@ -663,7 +900,7 @@ function renderImportPlanTable(plan: { source_plans: any[] }): string {
 
 function requireOption(value: string | undefined, key: string): string {
   if (!value) {
-    throw new Error(`Missing required --${key} flag.`);
+    throw usageError(`Missing required --${key} flag.`);
   }
   return value;
 }

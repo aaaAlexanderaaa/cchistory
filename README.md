@@ -138,6 +138,8 @@ and checked by `pnpm run verify:support-status`.
 | **CLI** | Admin / AI agent | Data management — sync, export/import, backup, health check, GC, remote agent ops, scriptable `--json` output |
 | **API** | Programmatic access | REST endpoints powering Web UI and external integrations |
 
+> **Canonical vs alias commands:** `export` / `import` are the canonical backup primitives. `backup`, `restore-check`, and `merge` are operator-facing aliases — `backup --write` produces the same bundle as `export`, `restore-check` runs `stats` + `ls sources`, and `merge` chains `export` then `import` between two stores.
+
 ## Quick Start
 
 ### Prerequisites

@@ -63,7 +63,10 @@ export type BrowserAction =
   | { type: "cycle-stats-time-window" }
   | { type: "commit-search" }
   | { type: "scroll-up"; lines: number }
-  | { type: "scroll-down"; lines: number };
+  | { type: "scroll-down"; lines: number }
+  | { type: "open-project-ref"; ref: string }
+  | { type: "open-session-ref"; ref: string }
+  | { type: "open-turn-ref"; ref: string };
 
 export interface RenderDimensions {
   width?: number;
@@ -274,7 +277,154 @@ export function reduceBrowserState(browser: LocalTuiBrowser, state: BrowserState
       const idx = order.indexOf(state.showStatsTimeWindow);
       return { ...state, showStatsTimeWindow: order[(idx + 1) % order.length]! };
     }
+    case "open-project-ref":
+      return openProjectRef(browser, state, action.ref);
+    case "open-session-ref":
+      return openSessionRef(browser, state, action.ref);
+    case "open-turn-ref":
+      return openTurnRef(browser, state, action.ref);
   }
+}
+
+// ── Ref-based jumps (for --project / --session / --turn entry points) ──
+
+function matchesRef(candidate: string | undefined, ref: string): boolean {
+  if (!candidate) return false;
+  if (candidate.toLowerCase() === ref.toLowerCase()) return true;
+  // Allow short-id prefixes (e.g. first 8 chars of a ULID), but require at
+  // least 4 characters to avoid accidental collisions on tiny stores.
+  return ref.length >= 4 && candidate.toLowerCase().startsWith(ref.toLowerCase());
+}
+
+function listMatches<T>(items: T[], predicate: (item: T) => boolean): T[] {
+  return items.filter(predicate);
+}
+
+function disambiguateOrThrow(
+  kind: "project" | "session" | "turn",
+  ref: string,
+  matches: Array<{ id: string; description: string }>,
+): { id: string; description: string } {
+  if (matches.length === 0) {
+    const hint = kind === "project"
+      ? " Use `ls projects` to see known IDs and slugs."
+      : kind === "session"
+        ? " Sessions are keyed by source-native session ids; use `ls sessions` to list them."
+        : " Use `query turns` to look up turn IDs.";
+    throw new Error(`No ${kind} matched --${kind} ${JSON.stringify(ref)}.${hint}`);
+  }
+  if (matches.length > 1) {
+    const sample = matches.slice(0, 5).map((m) => `${m.id} (${m.description})`).join(", ");
+    throw new Error(
+      `--${kind} ${JSON.stringify(ref)} is ambiguous (${matches.length} matches: ${sample}${matches.length > 5 ? ", …" : ""}). Pass a longer prefix or the full ID.`,
+    );
+  }
+  return matches[0]!;
+}
+
+function findProjectIndicesByRef(browser: LocalTuiBrowser, ref: string): number[] {
+  return listMatches(browser.projects, (entry) => {
+    const project = entry.project;
+    // ID or slug only — display_name substring matching is intentionally
+    // omitted because free-text "contains" resolution from a 4-char CLI ref
+    // surprises users by silently picking the first matching name.
+    return matchesRef(project.project_id, ref) || matchesRef(project.slug, ref);
+  }).map((entry) => browser.projects.indexOf(entry));
+}
+
+function openProjectRef(browser: LocalTuiBrowser, state: BrowserState, ref: string): BrowserState {
+  const indices = findProjectIndicesByRef(browser, ref);
+  const resolved = disambiguateOrThrow(
+    "project",
+    ref,
+    indices.map((i) => ({
+      id: browser.projects[i]!.project.project_id,
+      description: browser.projects[i]!.project.display_name,
+    })),
+  );
+  const projectIndex = indices.find(
+    (i) => browser.projects[i]!.project.project_id === resolved.id,
+  )!;
+  return clampState(
+    {
+      ...state,
+      mode: "browse",
+      focusPane: "turns",
+      selectedProjectIndex: projectIndex,
+      selectedTurnIndex: 0,
+      detailScrollOffset: 0,
+      conversationScrollOffset: 0,
+    },
+    browser,
+  );
+}
+
+function openSessionRef(browser: LocalTuiBrowser, state: BrowserState, ref: string): BrowserState {
+  const matches: Array<{ projectIndex: number; turnIndex: number; sessionId: string }> = [];
+  for (let projectIndex = 0; projectIndex < browser.projects.length; projectIndex += 1) {
+    const turns = browser.projects[projectIndex]!.turns;
+    for (let turnIndex = 0; turnIndex < turns.length; turnIndex += 1) {
+      const turn = turns[turnIndex]!.turn;
+      if (matchesRef(turn.session_id, ref)) {
+        matches.push({ projectIndex, turnIndex, sessionId: turn.session_id });
+      }
+    }
+  }
+  // Deduplicate by session id — multiple turns share a session and would
+  // otherwise make a unique session look ambiguous.
+  const seen = new Map<string, { projectIndex: number; turnIndex: number }>();
+  for (const m of matches) {
+    if (!seen.has(m.sessionId)) seen.set(m.sessionId, { projectIndex: m.projectIndex, turnIndex: m.turnIndex });
+  }
+  const resolved = disambiguateOrThrow(
+    "session",
+    ref,
+    [...seen.keys()].map((id) => ({ id, description: id })),
+  );
+  const hit = seen.get(resolved.id)!;
+  return clampState(
+    {
+      ...state,
+      mode: "browse",
+      focusPane: "turns",
+      selectedProjectIndex: hit.projectIndex,
+      selectedTurnIndex: hit.turnIndex,
+      detailScrollOffset: 0,
+      conversationScrollOffset: 0,
+    },
+    browser,
+  );
+}
+
+function openTurnRef(browser: LocalTuiBrowser, state: BrowserState, ref: string): BrowserState {
+  const matches: Array<{ projectIndex: number; turnIndex: number; turnId: string }> = [];
+  for (let projectIndex = 0; projectIndex < browser.projects.length; projectIndex += 1) {
+    const turns = browser.projects[projectIndex]!.turns;
+    for (let turnIndex = 0; turnIndex < turns.length; turnIndex += 1) {
+      const turn = turns[turnIndex]!.turn;
+      if (matchesRef(turn.turn_id, ref)) {
+        matches.push({ projectIndex, turnIndex, turnId: turn.turn_id });
+      }
+    }
+  }
+  const resolved = disambiguateOrThrow(
+    "turn",
+    ref,
+    matches.map((m) => ({ id: m.turnId, description: m.turnId })),
+  );
+  const hit = matches.find((m) => m.turnId === resolved.id)!;
+  return clampState(
+    {
+      ...state,
+      mode: "browse",
+      focusPane: "detail",
+      selectedProjectIndex: hit.projectIndex,
+      selectedTurnIndex: hit.turnIndex,
+      detailScrollOffset: 0,
+      conversationScrollOffset: 0,
+    },
+    browser,
+  );
 }
 
 function handleMove(browser: LocalTuiBrowser, state: BrowserState, delta: number): BrowserState {

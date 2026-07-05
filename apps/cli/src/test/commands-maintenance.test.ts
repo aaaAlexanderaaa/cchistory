@@ -68,7 +68,7 @@ test("A.1: maintenance rebuild-search-index populates FTS5 on demand", async () 
       kind: string;
       ready: boolean;
       rows_indexed: number;
-    }>(["maintenance", "rebuild-search-index", "--store", storeDir]);
+    }>(["maintenance", "rebuild-search-index", "--write", "--store", storeDir]);
     assert.equal(rebuild.kind, "maintenance-rebuild-search-index");
     if (rebuild.ready) {
       assert.ok(rebuild.rows_indexed > 0, "rebuild should have populated FTS5 rows when FTS5 is available");
@@ -121,7 +121,7 @@ test("A.2: maintenance gc-evidence prunes orphaned evidence_blobs rows and unlin
       kind: string;
       pruned_count: number;
       pruned_shas: string[];
-    }>(["maintenance", "gc-evidence", "--store", storeDir]);
+    }>(["maintenance", "gc-evidence", "--write", "--store", storeDir]);
     assert.equal(gc.kind, "maintenance-gc-evidence");
     // The injected orphan is always pruned; the sync may have produced
     // additional pre-existing orphans (e.g. blobs whose only referencer was
@@ -133,6 +133,62 @@ test("A.2: maintenance gc-evidence prunes orphaned evidence_blobs rows and unlin
     await assert.rejects(() => access(orphanFile), "orphan evidence file must be unlinked");
     void tempRoot;
   }, "cchistory-a2-");
+});
+
+test("A.2 parity: maintenance gc-evidence preview orphan count equals storage pruning outcome", async () => {
+  // Cross-checks the byte-copy SQL in maintenance.ts:previewGcEvidence against
+  // the live storage pruning path (packages/storage/src/internal/gc.ts). If
+  // either side changes the join set independently, this test fires. The
+  // shared fixture surfaces enough orphans post-sync to make the count
+  // observable; we additionally inject one explicit orphan for stability.
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const orphanSha = "feedface".repeat(8); // 64 hex chars
+      const sub = orphanSha.slice(0, 2);
+      const { mkdir, writeFile } = await import("node:fs/promises");
+      const orphanFile = path.join(storeDir, "evidence", "blobs", sub, orphanSha);
+      await mkdir(path.dirname(orphanFile), { recursive: true });
+      await writeFile(orphanFile, "orphan");
+      db.prepare(
+        `INSERT OR REPLACE INTO evidence_blobs (sha256, storage_path, size_bytes, media_type, encoding, compression, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        orphanSha,
+        `evidence/blobs/${sub}/${orphanSha}`,
+        6,
+        "application/octet-stream",
+        "binary",
+        "none",
+        new Date().toISOString(),
+      );
+    } finally {
+      db.close();
+    }
+
+    const preview = await runCliJson<{ kind: string; orphan_count: number }>(
+      ["maintenance", "gc-evidence", "--store", storeDir],
+    );
+    assert.equal(preview.kind, "maintenance-gc-evidence-dry-run");
+
+    const written = await runCliJson<{
+      kind: string;
+      pruned_count: number;
+      pruned_shas: string[];
+    }>(["maintenance", "gc-evidence", "--write", "--store", storeDir]);
+    assert.equal(written.kind, "maintenance-gc-evidence");
+
+    // Same fixture, same SQL ⇒ the preview count MUST equal the pruned count.
+    // A mismatch means the preview and write paths disagree on what an orphan
+    // is, and the operator cannot trust the dry-run output.
+    assert.equal(
+      preview.orphan_count,
+      written.pruned_count,
+      `preview reported ${preview.orphan_count} orphans but write pruned ${written.pruned_count} — the maintenance.ts preview SQL has drifted from packages/storage/src/internal/gc.ts`,
+    );
+  }, "cchistory-a2-parity-");
 });
 
 test("A.4: new stores created with 16 KiB page size", async () => {
@@ -154,7 +210,7 @@ test("A.4: maintenance checkpoint and vacuum run without error", async () => {
     await runCliCapture(["sync", "--store", storeDir]);
 
     const checkpoint = await runCliJson<{ kind: string }>(
-      ["maintenance", "checkpoint", "--store", storeDir],
+      ["maintenance", "checkpoint", "--write", "--store", storeDir],
     );
     assert.equal(checkpoint.kind, "maintenance-checkpoint");
 
@@ -162,7 +218,7 @@ test("A.4: maintenance checkpoint and vacuum run without error", async () => {
       kind: string;
       page_size_before: number;
       page_size_after: number;
-    }>(["maintenance", "vacuum", "--store", storeDir]);
+    }>(["maintenance", "vacuum", "--write", "--store", storeDir]);
     assert.equal(vacuum.kind, "maintenance-vacuum");
     assert.equal(vacuum.page_size_after, 16384);
   }, "cchistory-a4-maint-");
@@ -235,7 +291,7 @@ test("refresh-projections: rebuilds stale project_current after manual row delet
       kind: string;
       project_rows_before: number;
       project_rows_after: number;
-    }>(["maintenance", "refresh-projections", "--store", storeDir]);
+    }>(["maintenance", "refresh-projections", "--write", "--store", storeDir]);
     assert.equal(result.kind, "maintenance-refresh-projections");
     assert.equal(result.project_rows_before, 0);
     assert.ok(

@@ -8,20 +8,54 @@ The CCHistory CLI (`apps/cli`) is the primary local operator tool. By default it
 Usage: cchistory <command> [options]
 
 Options:
-  --store <dir>    Override the default store resolution with <dir>/cchistory.sqlite
-  --db <file>      Explicit SQLite file path
-  --index          Read from existing store only (default for reads)
-  --full           Re-scan sources into a temporary in-memory store
-  --json           Machine-readable JSON output
-  --dry-run        Preview supported write workflows without writing
-  --showall        Include empty projects in listings and missing discovery candidates
-  --debug          Print stack traces for troubleshooting
-  --no-color       Disable ANSI color output
+  --store <dir>         Override the default store resolution with <dir>/cchistory.sqlite
+  --db <file>           Explicit SQLite file path
+  --index               Read from existing store only (default for reads)
+  --full                Re-scan sources into a temporary in-memory store
+  --json                Machine-readable JSON output
+  --dry-run             Preview supported write workflows without writing
+  --showall             Include empty projects in listings and missing discovery candidates
+  --debug               Print stack traces for troubleshooting
+  --no-color            Disable ANSI color output
+  --non-interactive     Never block on a prompt (CI). Incompatible commands fail with exit 2.
+  --agent               AI-agent mode: implies --json + --no-color + --non-interactive.
 ```
 
 Use `cchistory <command> --help`, `cchistory help <command>`, or
 `cchistory help <command> <subcommand>` for command-specific usage without
 opening a store or running discovery.
+
+### Stdin placeholder
+
+Use `-` as a string positional or string option value to read it from stdin
+once per invocation. Useful for piping long refs without fighting shell quoting:
+
+```bash
+echo "$TURN_ID" | cchistory show turn -
+```
+
+Numeric options (e.g. `--limit`) reject `-`: their parse runs before stdin
+substitution, so the placeholder can never become a valid number.
+
+### Exit codes
+
+| Code | Meaning                                                            |
+| ---- | ------------------------------------------------------------------ |
+| 0    | Success                                                            |
+| 1    | General/unexpected error (default if no semantic exit code is set) |
+| 2    | Usage error — bad args, unknown command, missing required flag     |
+| 3    | Store not found at the resolved path                               |
+| 4    | Validator / verification gate failed (e.g. `migration validate`)   |
+| 5    | Command ran but surfaced issues (e.g. `doctor` found warnings)     |
+| 64   | Command declined to run (refused an unsafe operation)              |
+
+### Preview-first `--write` convention
+
+Destructive commands (`migration run | reset | compact`, `maintenance checkpoint
+| vacuum | gc-evidence`, `gc`) default to preview mode. Pass `--write` to apply.
+`--dry-run` is still honored as an explicit preview request, and wins over
+`--write` if both are given (defensive: operators who type both flags should
+never get a destructive apply).
 
 ## Failure Behavior
 

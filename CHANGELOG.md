@@ -4,7 +4,77 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
-No changes yet.
+Operator fast paths: new top-level shortcuts, preview-first `--write` semantics
+for destructive maintenance, and structured exit codes for scripting.
+
+### Breaking Changes
+
+- **Write commands are now preview-by-default.** `migration run`, `migration reset`,
+  `migration compact`, `maintenance checkpoint`, `maintenance vacuum`,
+  `maintenance gc-evidence`, and `gc` now print a preview unless `--write` is
+  passed. `--dry-run` remains as an explicit preview request and wins over
+  `--write` when both are given. Operators who scripted the previous behavior
+  must add `--write` to their pipelines.
+- **Usage errors now exit 2 (was 1).** Argument-validation failures, unknown
+  commands, missing required flags, and conflicting options return exit code 2
+  so callers can distinguish usage errors from runtime failures (1) and
+  store-not-found (3). The full exit-code table is in `docs/guide/cli.md`.
+- **`maintenance gc-evidence` dry-run label changed.** The preview JSON `kind`
+  is now `maintenance-gc-evidence-dry-run` (was `maintenance-gc-evidence`); the
+  write path stays `maintenance-gc-evidence`. Scripted consumers that branched
+  on `kind` need to handle both.
+
+### Added
+
+- New top-level commands: `cchistory status` (one-shot index health summary),
+  `cchistory resume [project-ref]` (prints a resume card with the latest
+  session/turn and a TUI launch hint; `--tui` opens the TUI directly),
+  `cchistory last` (shortcut for `resume` against the most recently active
+  project), `cchistory today` (shortcut for `stats --today`),
+  `cchistory completions <bash|zsh|fish>` (shell completion script generator
+  driven by the spec tree).
+- `stats` accepts `--today`, `--week`, `--month`, and `--since <expr>` to scope
+  overview and usage rollups to a time window. Windowed sessions and projects
+  are derived from the filtered turn set so a session that started before the
+  window but contains turns inside it still counts.
+- `--non-interactive` (CI) and `--agent` (AI agents; implies `--json` +
+  `--no-color` + `--non-interactive`) global flags. The CLI never blocks on a
+  prompt when either is set — incompatible commands (e.g. `resume --tui`)
+  reject with a usage error instead of hanging.
+- Cursor-based pagination: `--cursor`, `--limit`, and `--offset` on read
+  commands. The cursor is base64url-encoded JSON so operators can eyeball it.
+- `-` as a stdin placeholder for string positionals and string option values
+  (e.g. `echo $ref | cchistory show turn -`). Numeric options reject `-`
+  because their parse runs before substitution.
+- Shell completions for bash, zsh, and fish emitted by `cchistory completions`.
+  Bash case patterns are emitted unquoted so alternation works; option
+  completions include the `--` prefix.
+- Structured CLI errors with semantic exit codes (`errors.ts`):
+  `usageError(2)`, `storeNotFoundError(3)`, `verificationError(4)`,
+  `issuesFoundError(5)`, `declinedError(64)`.
+- Per-command global-flag filtering so commands only document the global flags
+  that meaningfully apply (e.g. `gc` doesn't list `--limit`).
+
+### Fixed
+
+- `resume <project>` now picks the turn with the maximum `submission_started_at`
+  across the whole project. Previously `turns[0]` was selected, but
+  `listProjectTurnsForReadSurface` sorts by session DESC + turn ASC within a
+  session, so `turns[0]` was the FIRST ask of the latest session — not the
+  latest activity.
+- `stats` time-window counts now match the underlying turn filter. Previously
+  windowed sessions were filtered by `session.created_at` independent of turns,
+  silently dropping sessions that started before the window but contained turns
+  inside it (today's turns with 0 sessions/projects).
+- `maintenance checkpoint` preview now works on read-only handles. The previous
+  `PRAGMA wal_checkpoint(PASSIVE)` call failed on a non-empty WAL because the
+  handle is opened read-only. The preview now reports journal mode, page size,
+  page count, WAL sidecar presence/size, and approximate frame count.
+- `completions bash` no longer wraps case patterns in double quotes (which
+  made `|` literal and broke subcommand completion) and now prefixes option
+  names with `--` so `compgen -W` matches what the user typed.
+- `printError` no longer appends a duplicate Hint block on store-not-found
+  errors (the inline hints in `formatStoreNotFoundMessage` already cover it).
 
 ## [0.3.0] — 2026-07-02
 

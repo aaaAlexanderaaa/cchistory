@@ -176,7 +176,7 @@ test("B.3: migration run writes V2 sidecars, marks sources completed, and is ide
         sources_aborted: number;
         halted_at_source_id: string | null;
       };
-    }>(["migration", "run", "--store", storeDir]);
+    }>(["migration", "run", "--write", "--store", storeDir]);
     assert.equal(first.result.sources_processed, first.result.sources_processed);
     assert.equal(first.result.sources_aborted, 0);
     assert.equal(first.result.halted_at_source_id ?? null, null, "first run must not halt");
@@ -184,7 +184,7 @@ test("B.3: migration run writes V2 sidecars, marks sources completed, and is ide
 
     const second = await runCliJson<{
       result: { sources_processed: number; sources_skipped: number };
-    }>(["migration", "run", "--store", storeDir]);
+    }>(["migration", "run", "--write", "--store", storeDir]);
     assert.equal(second.result.sources_processed, 0, "second run must skip — markers say completed");
     assert.equal(second.result.sources_skipped, first.result.sources_processed);
 
@@ -227,7 +227,7 @@ test("B.3: migration run reconstructs a missing V2 sidecar row from its V1 sourc
 
     const result = await runCliJson<{
       result: { results: Array<{ source_id: string; aborted: boolean; skipped: boolean }> };
-    }>(["migration", "run", "--source", sourceId!, "--store", storeDir]);
+    }>(["migration", "run", "--write", "--source", sourceId!, "--store", storeDir]);
     assert.ok(result.result.results.every((r) => !r.aborted && !r.skipped));
 
     const verifyDb = new DatabaseSync(dbPath);
@@ -267,7 +267,7 @@ test("B.3: migration run refuses to auto-resurrect an aborted source", async () 
 
     const result = await runCliJson<{
       result: { sources_aborted: number; halted_at_source_id: string | null };
-    }>(["migration", "run", "--source", source!.id, "--store", storeDir]);
+    }>(["migration", "run", "--write", "--source", source!.id, "--store", storeDir]);
     assert.equal(result.result.sources_aborted, 1);
     assert.equal(result.result.halted_at_source_id, source!.id);
   }, "cchistory-b3-abort-resurrect-");
@@ -283,7 +283,7 @@ test("B.4: validate --only inventory passes with complete V2 coverage and writes
     // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
     // and B.4 read-paths parity have V1 data to compare against.
     await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     // evidence_captures can legitimately have multiple rows for one current
     // captured blob. Inventory should fail missing coverage, not one-to-one
@@ -365,7 +365,7 @@ test("B.4: validate --only read-paths passes on a freshly-synced store", async (
     // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
     // and B.4 read-paths parity have V1 data to compare against.
     await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     const result = await runCliJson<{
       result: {
@@ -391,7 +391,7 @@ test("B.4: validate --only bundle passes when --pre-bundle was captured from the
     await runCliCapture(["sync", "--store", storeDir]);
     const preBundleDir = path.join(tempRoot, "pre-bundle");
     await runCliCapture(["export", "--out", preBundleDir, "--store", storeDir]);
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     const result = await runCliJson<{
       result: {
@@ -425,7 +425,7 @@ test("B.4: validate --only bundle detects a mutated V2 payload", async () => {
     await runCliCapture(["sync", "--store", storeDir]);
     const preBundleDir = path.join(tempRoot, "pre-bundle");
     await runCliCapture(["export", "--out", preBundleDir, "--store", storeDir]);
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     // C1 made the bundle path read V2 (matching buildSourcePayload). A V1
     // payload mutation is no longer visible in bundle bytes; the validator
@@ -471,7 +471,7 @@ test("B.4: validate --only inventory detects a deleted V2 sidecar row", async ()
     // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
     // and B.4 read-paths parity have V1 data to compare against.
     await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     const { DatabaseSync } = await import("node:sqlite");
     const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
@@ -509,7 +509,7 @@ test("B.4: validate --only read-paths detects a corrupted V2 cache file", async 
     // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
     // and B.4 read-paths parity have V1 data to compare against.
     await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     const { DatabaseSync } = await import("node:sqlite");
     const { writeFileSync } = await import("node:fs");
@@ -569,7 +569,7 @@ test("B.4 + H2: validate --only read-paths detects a corrupted V2 lineage blob",
     // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
     // and B.4 read-paths parity have V1 data to compare against.
     await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     const { DatabaseSync } = await import("node:sqlite");
     const { writeFileSync } = await import("node:fs");
@@ -637,7 +637,7 @@ test("B.4: validate with no --only runs all default validators and writes marker
     await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
     const preBundleDir = path.join(tempRoot, "pre-bundle");
     await runCliCapture(["export", "--out", preBundleDir, "--store", storeDir]);
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     const result = await runCliJson<{
       result: {
@@ -668,7 +668,7 @@ test("B.4: validate --only bundle requires --pre-bundle", async () => {
     // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
     // and B.4 read-paths parity have V1 data to compare against.
     await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     const result = await runCliCapture([
       "migration", "validate", "--only", "bundle", "--store", storeDir,
@@ -777,7 +777,7 @@ test("B.5.0d: validate --only read-paths catches a mutation in a B.5.0 full-cont
     // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
     // and B.4 read-paths parity have V1 data to compare against.
     await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     // Wipe user_messages_json back to the empty default — V1 still has it.
     const { DatabaseSync } = await import("node:sqlite");
@@ -850,8 +850,8 @@ test("B.5.0e: canonical_text_full preserves canonical text past the 16 KiB scan-
 
     // Reset and re-run B.3 so the new V2 schema (canonical_text_full) is populated
     // from the modified V1 payload.
-    await runCliCapture(["migration", "reset", "--phase", "storage-boundary.write", "--store", storeDir]);
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "reset", "--write", "--phase", "storage-boundary.write", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     // B.4c must catch any canonical_text truncation as a UserTurnProjection diff.
     // Pass = canonical_text_full preserved the full 32 KiB and the V2 reader
@@ -909,7 +909,7 @@ test("B.5.0: migration reset clears markers for the named phase and leaves the o
     // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
     // and B.4 read-paths parity have V1 data to compare against.
     await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     const before = await runCliJson<{
       states: Array<{ phase: string; status: string }>;
@@ -921,7 +921,7 @@ test("B.5.0: migration reset clears markers for the named phase and leaves the o
       kind: string;
       phase: string | null;
       rows_deleted: number;
-    }>(["migration", "reset", "--phase", "storage-boundary.write", "--store", storeDir]);
+    }>(["migration", "reset", "--write", "--phase", "storage-boundary.write", "--store", storeDir]);
 
     assert.equal(reset.kind, "migration-reset");
     assert.equal(reset.phase, "storage-boundary.write");
@@ -941,10 +941,10 @@ test("B.5.0: migration reset with no --phase clears every marker", async () => {
     // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
     // and B.4 read-paths parity have V1 data to compare against.
     await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     const reset = await runCliJson<{ rows_deleted: number }>([
-      "migration", "reset", "--store", storeDir,
+      "migration", "reset", "--write", "--store", storeDir,
     ]);
     assert.ok(reset.rows_deleted > 0, "reset must delete at least one marker");
 
@@ -961,12 +961,12 @@ test("B.5.0: after reset, migration run can re-populate markers (idempotent re-m
     // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
     // and B.4 read-paths parity have V1 data to compare against.
     await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
-    await runCliCapture(["migration", "run", "--store", storeDir]);
-    await runCliCapture(["migration", "reset", "--phase", "storage-boundary.write", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
+    await runCliCapture(["migration", "reset", "--write", "--phase", "storage-boundary.write", "--store", storeDir]);
 
     const result = await runCliJson<{
       result: { sources_processed: number; sources_skipped: number };
-    }>(["migration", "run", "--store", storeDir]);
+    }>(["migration", "run", "--write", "--store", storeDir]);
 
     assert.ok(result.result.sources_processed > 0, "re-run must process sources");
     assert.equal(result.result.sources_skipped, 0, "re-run after reset must skip nothing");
@@ -990,7 +990,7 @@ test("B.5.0: migration reset rejects an unknown --phase name (H6)", async () => 
     // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
     // and B.4 read-paths parity have V1 data to compare against.
     await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     const result = await runCliCapture([
       "migration", "reset", "--phase", "storage-boundary.wirte", "--store", storeDir,
@@ -1034,7 +1034,7 @@ test("C4: migration reset refuses to clear while a marker is still 'running'", a
 
     // Plain reset must refuse.
     const refused = await runCliCapture([
-      "migration", "reset", "--phase", "storage-boundary.write", "--store", storeDir,
+      "migration", "reset", "--write", "--phase", "storage-boundary.write", "--store", storeDir,
     ]);
     assert.notEqual(refused.exitCode, 0, "reset must refuse while a marker is running");
     assert.match(refused.stderr, /currently 'running'/i);
@@ -1051,7 +1051,7 @@ test("C4: migration reset refuses to clear while a marker is still 'running'", a
 
     // --force overrides after the operator confirms the prior PID is dead.
     const forced = await runCliJson<{ rows_deleted: number }>([
-      "migration", "reset", "--phase", "storage-boundary.write", "--force", "--store", storeDir,
+      "migration", "reset", "--write", "--phase", "storage-boundary.write", "--force", "--store", storeDir,
     ]);
     assert.ok(forced.rows_deleted > 0, "--force must clear the running marker");
   }, "cchistory-c4-reset-running-guard-");
@@ -1067,7 +1067,7 @@ test("C5: validate writes 'aborted' (not 'completed') on validator FAIL", async 
     // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
     // and B.4 read-paths parity have V1 data to compare against.
     await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     // Mutate V2 to force read-paths to fail.
     const { DatabaseSync } = await import("node:sqlite");
@@ -1120,7 +1120,7 @@ test("C6: validate --only v1-payload-digest captures a sticky baseline on first 
     // B.6: sync no longer writes V1. Seed legacy V1 from V2 so B.3 backfill
     // and B.4 read-paths parity have V1 data to compare against.
     await seedLegacyV1FromV2(path.join(storeDir, "cchistory.sqlite"));
-    await runCliCapture(["migration", "run", "--store", storeDir]);
+    await runCliCapture(["migration", "run", "--write", "--store", storeDir]);
 
     // First run captures the baseline. Status must be PASS.
     const firstCapture = await runCliCapture([
@@ -1219,7 +1219,7 @@ test("C6: validate --only v1-payload-digest captures a sticky baseline on first 
 
     // Reset clears the baseline; the next run captures a fresh one.
     await runCliCapture([
-      "migration", "reset", "--phase", "storage-boundary.validate", "--store", storeDir,
+      "migration", "reset", "--write", "--phase", "storage-boundary.validate", "--store", storeDir,
     ]);
     const postReset = await runCliCapture([
       "migration", "validate", "--only", "v1-payload-digest", "--store", storeDir, "--json",
@@ -1240,14 +1240,14 @@ test("C6: validate --only v1-payload-digest captures a sticky baseline on first 
 // VACUUM step. Operators must back up the store first; the CLI gates on
 // --confirm-no-backup to make that explicit.
 
-test("B.6: compact refuses to run without --confirm-no-backup", async () => {
+test("B.6: compact refuses to apply with --write without --confirm-no-backup", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     await runCliCapture(["sync", "--store", storeDir]);
     createLegacyV1TurnTables(path.join(storeDir, "cchistory.sqlite"));
     const result = await runCliCapture([
-      "migration", "compact", "--step", "drop-v1-tables", "--store", storeDir,
+      "migration", "compact", "--step", "drop-v1-tables", "--write", "--store", storeDir,
     ]);
-    assert.notEqual(result.exitCode, 0, "compact without --confirm-no-backup must fail");
+    assert.notEqual(result.exitCode, 0, "compact --write without --confirm-no-backup must fail");
     assert.match(result.stderr, /--confirm-no-backup/, "error must mention the flag");
 
     // Tables must still exist — the refusal happened before any mutation.
@@ -1271,7 +1271,7 @@ test("B.6: compact refuses to drop V1 tables without completed validator markers
     await seedLegacyV1FromV2(dbPath);
 
     const result = await runCliCapture([
-      "migration", "compact", "--step", "drop-v1-tables", "--confirm-no-backup", "--store", storeDir,
+      "migration", "compact", "--step", "drop-v1-tables", "--write", "--confirm-no-backup", "--store", storeDir,
     ]);
     assert.notEqual(result.exitCode, 0, "compact must refuse without validator sign-off");
     assert.match(result.stderr, /completed validation markers/i);
@@ -1306,7 +1306,7 @@ test("B.6: compact re-runs validators and refuses drift after validation markers
     }
 
     const result = await runCliCapture([
-      "migration", "compact", "--step", "drop-v1-tables", "--confirm-no-backup", "--store", storeDir,
+      "migration", "compact", "--step", "drop-v1-tables", "--write", "--confirm-no-backup", "--store", storeDir,
     ]);
     assert.notEqual(result.exitCode, 0, "compact must refuse when current validation fails");
     assert.match(result.stderr, /current validation failed/i);
@@ -1338,7 +1338,7 @@ test("B.6a: compact --step drop-v1-tables drops V1 user_turns and turn_contexts 
       step: string;
       dropped_tables: string[];
       vacuum: null;
-    }>(["migration", "compact", "--step", "drop-v1-tables", "--confirm-no-backup", "--store", storeDir]);
+    }>(["migration", "compact", "--step", "drop-v1-tables", "--write", "--confirm-no-backup", "--store", storeDir]);
 
     assert.equal(result.kind, "migration-compact");
     assert.equal(result.step, "drop-v1-tables");
@@ -1385,12 +1385,12 @@ test("B.6a: compact --step drop-v1-tables is idempotent — re-running reports t
     markB6ValidatorsCompleted(dbPath);
 
     const first = await runCliJson<{ dropped_tables: string[] }>([
-      "migration", "compact", "--step", "drop-v1-tables", "--confirm-no-backup", "--store", storeDir,
+      "migration", "compact", "--step", "drop-v1-tables", "--write", "--confirm-no-backup", "--store", storeDir,
     ]);
     assert.ok(first.dropped_tables.length === 2, "first run must drop both V1 tables");
 
     const second = await runCliJson<{ dropped_tables: string[] }>([
-      "migration", "compact", "--step", "drop-v1-tables", "--confirm-no-backup", "--store", storeDir,
+      "migration", "compact", "--step", "drop-v1-tables", "--write", "--confirm-no-backup", "--store", storeDir,
     ]);
     assert.equal(second.dropped_tables.length, 0, "second run must report zero drops (already absent)");
   }, "cchistory-b6a-idempotent-");
@@ -1409,7 +1409,7 @@ test("B.6b: compact --step vacuum reclaims bytes and writes the vacuum marker", 
       vacuum: { page_size_before: number; page_size_after: number } | null;
       bytes_before: number;
       bytes_after: number;
-    }>(["migration", "compact", "--step", "vacuum", "--confirm-no-backup", "--store", storeDir]);
+    }>(["migration", "compact", "--step", "vacuum", "--write", "--confirm-no-backup", "--store", storeDir]);
 
     assert.equal(result.kind, "migration-compact");
     assert.equal(result.step, "vacuum");
@@ -1441,7 +1441,7 @@ test("B.6: compact --step both drops tables and vacuums, writing both markers in
       step: string;
       dropped_tables: string[];
       vacuum: { page_size_before: number; page_size_after: number } | null;
-    }>(["migration", "compact", "--step", "both", "--confirm-no-backup", "--store", storeDir]);
+    }>(["migration", "compact", "--step", "both", "--write", "--confirm-no-backup", "--store", storeDir]);
 
     assert.equal(result.kind, "migration-compact");
     assert.equal(result.step, "both");
@@ -1532,7 +1532,7 @@ test("B.6: compact refuses to run while a marker is still 'running'", async () =
     }
 
     const result = await runCliCapture([
-      "migration", "compact", "--step", "drop-v1-tables", "--confirm-no-backup", "--store", storeDir,
+      "migration", "compact", "--step", "drop-v1-tables", "--write", "--confirm-no-backup", "--store", storeDir,
     ]);
     assert.notEqual(result.exitCode, 0, "compact must refuse while a marker is running");
     assert.match(result.stderr, /running/i);
@@ -1545,7 +1545,7 @@ test("B.6: post-compact, capture + listTurns + search still work (V2-only path)"
     const dbPath = path.join(storeDir, "cchistory.sqlite");
     await seedLegacyV1FromV2(dbPath);
     markB6ValidatorsCompleted(dbPath);
-    await runCliCapture(["migration", "compact", "--step", "both", "--confirm-no-backup", "--store", storeDir]);
+    await runCliCapture(["migration", "compact", "--step", "both", "--write", "--confirm-no-backup", "--store", storeDir]);
 
     // query turns must still surface the seeded turn from V2. The output is a
     // bare JSON array (no envelope object) — see commands/query.ts.

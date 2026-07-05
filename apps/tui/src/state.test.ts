@@ -1112,3 +1112,169 @@ test("empty browser state is valid and renderable", async () => {
     assert.match(s, /No projects/i);
   });
 });
+
+// ── F17: open-project-ref / open-session-ref / open-turn-ref entry points ──
+
+test("open-project-ref lands on the named project with turns focused", async () => {
+  await withTempStorage((storage) => {
+    storage.replaceSourcePayload(createFixturePayload("src-a", "Alpha turn", "stg-a", {
+      sessionId: "sess-a", turnId: "turn-a1", workingDirectory: "/ws/a", includeProjectObservation: true,
+    }));
+    storage.upsertProjectOverride({ target_kind: "turn", target_ref: "turn-a1", project_id: "proj-alpha", display_name: "Alpha" });
+
+    storage.replaceSourcePayload(createFixturePayload("src-b", "Beta turn", "stg-b", {
+      sessionId: "sess-b", turnId: "turn-b1", workingDirectory: "/ws/b", includeProjectObservation: true,
+    }));
+    storage.upsertProjectOverride({ target_kind: "turn", target_ref: "turn-b1", project_id: "proj-beta", display_name: "Beta" });
+
+    const browser = buildLocalTuiBrowser(storage);
+    const state = reduceBrowserState(
+      browser,
+      createBrowserState(browser),
+      { type: "open-project-ref", ref: "proj-beta" },
+    );
+
+    assert.equal(state.focusPane, "turns");
+    assert.equal(state.selectedProjectIndex, browser.projects.findIndex((p) => p.project.project_id === "proj-beta"));
+    assert.equal(state.selectedTurnIndex, 0);
+  });
+});
+
+test("open-project-ref resolves by slug and by short prefix", async () => {
+  await withTempStorage((storage) => {
+    storage.replaceSourcePayload(createFixturePayload("src-a", "Alpha turn", "stg-a", {
+      sessionId: "sess-a", turnId: "turn-a1", workingDirectory: "/ws/a", includeProjectObservation: true,
+    }));
+    storage.upsertProjectOverride({ target_kind: "turn", target_ref: "turn-a1", project_id: "proj-alpha", display_name: "Alpha" });
+
+    const browser = buildLocalTuiBrowser(storage);
+    const project = browser.projects[0]!;
+    assert.ok(project, "fixture should produce at least one project");
+
+    // Slug-based resolution (slug is derived from display name; accept whatever the storage produced)
+    const bySlug = reduceBrowserState(
+      browser,
+      createBrowserState(browser),
+      { type: "open-project-ref", ref: project.project.slug },
+    );
+    assert.equal(bySlug.selectedProjectIndex, 0);
+
+    // 4-char prefix of project_id
+    const prefix = project.project.project_id.slice(0, 4);
+    const byPrefix = reduceBrowserState(
+      browser,
+      createBrowserState(browser),
+      { type: "open-project-ref", ref: prefix },
+    );
+    assert.equal(byPrefix.selectedProjectIndex, 0);
+  });
+});
+
+test("open-project-ref throws on no match so the user gets actionable feedback", async () => {
+  await withTempStorage((storage) => {
+    storage.replaceSourcePayload(createFixturePayload("src-a", "Alpha turn", "stg-a", {
+      sessionId: "sess-a", turnId: "turn-a1", workingDirectory: "/ws/a", includeProjectObservation: true,
+    }));
+    storage.upsertProjectOverride({ target_kind: "turn", target_ref: "turn-a1", project_id: "proj-alpha", display_name: "Alpha" });
+
+    const browser = buildLocalTuiBrowser(storage);
+    assert.throws(
+      () => reduceBrowserState(browser, createBrowserState(browser), { type: "open-project-ref", ref: "no-such-project" }),
+      /No project matched/,
+    );
+  });
+});
+
+test("open-project-ref rejects ambiguous prefixes and surfaces the matching IDs", async () => {
+  await withTempStorage((storage) => {
+    storage.replaceSourcePayload(createFixturePayload("src-a", "Alpha turn", "stg-a", {
+      sessionId: "sess-a", turnId: "turn-a1", workingDirectory: "/ws/a", includeProjectObservation: true,
+    }));
+    storage.upsertProjectOverride({ target_kind: "turn", target_ref: "turn-a1", project_id: "proj-shared-1", display_name: "Alpha" });
+
+    storage.replaceSourcePayload(createFixturePayload("src-b", "Beta turn", "stg-b", {
+      sessionId: "sess-b", turnId: "turn-b1", workingDirectory: "/ws/b", includeProjectObservation: true,
+    }));
+    storage.upsertProjectOverride({ target_kind: "turn", target_ref: "turn-b1", project_id: "proj-shared-2", display_name: "Beta" });
+
+    const browser = buildLocalTuiBrowser(storage);
+    assert.throws(
+      () => reduceBrowserState(browser, createBrowserState(browser), { type: "open-project-ref", ref: "proj-shared" }),
+      (err: unknown) => err instanceof Error && /is ambiguous/.test(err.message) && /proj-shared-1/.test(err.message) && /proj-shared-2/.test(err.message),
+    );
+  });
+});
+
+test("open-session-ref rejects ambiguous prefixes when two sessions share a prefix", async () => {
+  await withTempStorage((storage) => {
+    storage.replaceSourcePayload(createFixturePayload("src-a", "Alpha turn", "stg-a1", {
+      sessionId: "sess-shared-1", turnId: "turn-a1", workingDirectory: "/ws/a", includeProjectObservation: true,
+    }));
+    storage.replaceSourcePayload(createFixturePayload("src-b", "Alpha turn 2", "stg-a2", {
+      sessionId: "sess-shared-2", turnId: "turn-a2", workingDirectory: "/ws/a", includeProjectObservation: true,
+    }));
+    storage.upsertProjectOverride({ target_kind: "turn", target_ref: "turn-a1", project_id: "proj-alpha", display_name: "Alpha" });
+    storage.upsertProjectOverride({ target_kind: "turn", target_ref: "turn-a2", project_id: "proj-alpha", display_name: "Alpha" });
+
+    const browser = buildLocalTuiBrowser(storage);
+    assert.throws(
+      () => reduceBrowserState(browser, createBrowserState(browser), { type: "open-session-ref", ref: "sess-shared" }),
+      /is ambiguous/,
+    );
+  });
+});
+
+test("open-session-ref focuses the first turn of the named session", async () => {
+  await withTempStorage((storage) => {
+    storage.replaceSourcePayload(createFixturePayload("src-a", "Alpha turn one", "stg-a1", {
+      sessionId: "sess-a", turnId: "turn-a1", workingDirectory: "/ws/a", includeProjectObservation: true,
+    }));
+    storage.upsertProjectOverride({ target_kind: "turn", target_ref: "turn-a1", project_id: "proj-alpha", display_name: "Alpha" });
+
+    storage.replaceSourcePayload(createFixturePayload("src-b", "Beta turn one", "stg-b1", {
+      sessionId: "sess-b", turnId: "turn-b1", workingDirectory: "/ws/b", includeProjectObservation: true,
+    }));
+    storage.upsertProjectOverride({ target_kind: "turn", target_ref: "turn-b1", project_id: "proj-beta", display_name: "Beta" });
+
+    const browser = buildLocalTuiBrowser(storage);
+    const state = reduceBrowserState(
+      browser,
+      createBrowserState(browser),
+      { type: "open-session-ref", ref: "sess-b" },
+    );
+
+    assert.equal(state.focusPane, "turns");
+    const expectedProjectIndex = browser.projects.findIndex((p) => p.project.project_id === "proj-beta");
+    assert.equal(state.selectedProjectIndex, expectedProjectIndex);
+    assert.equal(state.selectedTurnIndex, 0);
+    const turn = browser.projects[expectedProjectIndex]!.turns[state.selectedTurnIndex]!;
+    assert.equal(turn.turn.session_id, "sess-b");
+  });
+});
+
+test("open-turn-ref drills straight to the detail pane for the named turn", async () => {
+  await withTempStorage((storage) => {
+    storage.replaceSourcePayload(createFixturePayload("src-a", "Alpha turn one", "stg-a1", {
+      sessionId: "sess-a", turnId: "turn-a1", workingDirectory: "/ws/a", includeProjectObservation: true,
+    }));
+    storage.upsertProjectOverride({ target_kind: "turn", target_ref: "turn-a1", project_id: "proj-alpha", display_name: "Alpha" });
+
+    storage.replaceSourcePayload(createFixturePayload("src-b", "Beta turn one", "stg-b1", {
+      sessionId: "sess-b", turnId: "turn-b1", workingDirectory: "/ws/b", includeProjectObservation: true,
+    }));
+    storage.upsertProjectOverride({ target_kind: "turn", target_ref: "turn-b1", project_id: "proj-beta", display_name: "Beta" });
+
+    const browser = buildLocalTuiBrowser(storage);
+    const state = reduceBrowserState(
+      browser,
+      createBrowserState(browser),
+      { type: "open-turn-ref", ref: "turn-b1" },
+    );
+
+    assert.equal(state.focusPane, "detail");
+    const expectedProjectIndex = browser.projects.findIndex((p) => p.project.project_id === "proj-beta");
+    assert.equal(state.selectedProjectIndex, expectedProjectIndex);
+    const turn = browser.projects[expectedProjectIndex]!.turns[state.selectedTurnIndex]!;
+    assert.equal(turn.turn.turn_id, "turn-b1");
+  });
+});

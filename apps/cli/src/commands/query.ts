@@ -6,6 +6,7 @@ import {
   type CommandOutput,
   openReadStore,
 } from "../main.js";
+import { usageError } from "../errors.js";
 import { resolveProjectRef, resolveSessionRef, resolveSourceRef, resolveTurnRef } from "../resolvers.js";
 
 export async function handleQueryAlias(context: CommandContext): Promise<CommandOutput> {
@@ -100,7 +101,7 @@ export async function handleQueryAlias(context: CommandContext): Promise<Command
 function validateQueryTarget(context: CommandContext, target: string | undefined): void {
   const positionalLimit = context.commandPath[1] ? 0 : 1;
   if (context.positionals.length > positionalLimit) {
-    throw new Error("Use `query turns|turn|sessions|session|projects|project ...`.");
+    throw usageError("Use `query turns|turn|sessions|session|projects|project ...`.");
   }
   switch (target) {
     case "turns":
@@ -113,7 +114,7 @@ function validateQueryTarget(context: CommandContext, target: string | undefined
       requireOption(context.options.id, "id");
       return;
     default:
-      throw new Error("Use `query turns|turn|sessions|session|projects|project ...`.");
+      throw usageError("Use `query turns|turn|sessions|session|projects|project ...`.");
   }
 }
 
@@ -129,7 +130,7 @@ function projectHasSourceTurn(storage: CCHistoryStorage, projectId: string, sour
 
 function requireOption(value: string | undefined, key: string): string {
   if (!value) {
-    throw new Error(`Missing required --${key} flag.`);
+    throw usageError(`Missing required --${key} flag.`);
   }
   return value;
 }

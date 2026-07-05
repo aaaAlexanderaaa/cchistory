@@ -125,7 +125,7 @@ export function resolveSessionRef(storage: CCHistoryStorage, ref: string): Sessi
     return workspaceMatch;
   }
 
-  throw new Error(`Unknown session reference: ${ref}`);
+  throw new Error(formatUnknownSessionRefError(ref, sessions));
 }
 
 export function resolveTurnRef(storage: CCHistoryStorage, ref: string): UserTurnProjection {
@@ -165,7 +165,7 @@ export function resolveTurnRef(storage: CCHistoryStorage, ref: string): UserTurn
     return prefixMatch;
   }
 
-  throw new Error(`Unknown turn reference: ${ref}`);
+  throw new Error(formatUnknownTurnRefError(ref, turns));
 }
 
 export function resolveSourceRef(storage: CCHistoryStorage, ref: string): SourceStatus {
@@ -182,7 +182,40 @@ export function resolveSourceRef(storage: CCHistoryStorage, ref: string): Source
   if (slotMatches.length === 1) {
     return slotMatches[0]!;
   }
-  throw new Error(`Unknown source reference: ${ref}`);
+  throw new Error(formatUnknownSourceRefError(ref, sources));
+}
+
+function formatUnknownSessionRefError(ref: string, sessions: SessionProjection[]): string {
+  if (sessions.length === 0) {
+    return `Unknown session reference: ${ref}. No sessions are indexed yet. Run \`cchistory sync\` or \`cchistory ls sessions\` to see what is available.`;
+  }
+  const recent = [...sessions]
+    .sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? ""))
+    .slice(0, 5);
+  const preview = recent.map(formatSessionRefPreview).join("; ");
+  const more = sessions.length > recent.length ? `; +${sessions.length - recent.length} more` : "";
+  return `Unknown session reference: ${ref}. Recent sessions: ${preview}${more}. Use \`cchistory ls sessions\` to enumerate.`;
+}
+
+function formatUnknownTurnRefError(ref: string, turns: UserTurnProjection[]): string {
+  if (turns.length === 0) {
+    return `Unknown turn reference: ${ref}. No turns are indexed yet. Run \`cchistory sync\` or \`cchistory search\` to see what is available.`;
+  }
+  const recent = [...turns]
+    .sort((a, b) => (b.submission_started_at ?? "").localeCompare(a.submission_started_at ?? ""))
+    .slice(0, 5);
+  const preview = recent.map(formatTurnRefPreview).join("; ");
+  const more = turns.length > recent.length ? `; +${turns.length - recent.length} more` : "";
+  return `Unknown turn reference: ${ref}. Recent turns: ${preview}${more}. Use \`cchistory search\` to find a turn by text.`;
+}
+
+function formatUnknownSourceRefError(ref: string, sources: SourceStatus[]): string {
+  if (sources.length === 0) {
+    return `Unknown source reference: ${ref}. No sources are registered yet. Run \`cchistory sync\` to ingest from local AI tools.`;
+  }
+  const preview = sources.slice(0, 8).map((source) => `${source.display_name} handle=${formatSourceHandle(source)} id=${source.id}`).join("; ");
+  const more = sources.length > 8 ? `; +${sources.length - 8} more` : "";
+  return `Unknown source reference: ${ref}. Known sources: ${preview}${more}. Use \`cchistory ls sources\` to enumerate handles.`;
 }
 
 function resolveUniqueSessionMatch(

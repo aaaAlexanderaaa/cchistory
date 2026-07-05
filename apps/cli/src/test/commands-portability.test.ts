@@ -114,7 +114,7 @@ test("merge is preview-first and rejects unsupported conflict modes", async () =
       ],
       tempRoot,
     );
-    assert.equal(unsupportedConflictMode.exitCode, 1);
+    assert.equal(unsupportedConflictMode.exitCode, 2);
     assert.equal(unsupportedConflictMode.stdout, "");
     assert.match(unsupportedConflictMode.stderr, /Invalid value for --on-conflict: error\. Expected one of skip, replace\./);
     assert.doesNotMatch(unsupportedConflictMode.stderr, /unable to open database|Store not found/);
@@ -169,7 +169,7 @@ test("gc dry-run reports orphan raw files without deleting them", async () => {
 
     const dryRun = await runCliCapture(["gc", "--store", storeDir, "--dry-run"], tempRoot);
     assert.equal(dryRun.exitCode, 0, dryRun.stderr);
-    assert.match(dryRun.stdout, /Dry Run\s+:\s+true/);
+    assert.match(dryRun.stdout, /Mode\s+:\s+preview/);
     assert.match(dryRun.stdout, /Would Delete Files\s+:\s+1/);
     assert.doesNotMatch(dryRun.stdout, /Deleted Files\s+:/);
     assert.equal(await fileExists(orphanRaw), true, "gc --dry-run should not delete orphan raw files");

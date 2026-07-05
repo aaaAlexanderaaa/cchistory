@@ -16,9 +16,48 @@ import {
   type CommandOutput,
   openReadStore,
 } from "../main.js";
+import { usageError } from "../errors.js";
 import { resolveSourceRef } from "../resolvers.js";
+import { parseSinceWindow, startOfMonth, startOfToday, startOfWeek } from "../time-window.js";
 
 const USAGE_STATS_DIMENSIONS = ["model", "project", "source", "host", "day", "month"] as const satisfies readonly UsageStatsDimension[];
+
+interface ResolvedTimeWindow {
+  afterDate?: string;
+  label?: string;
+}
+
+function resolveStatsTimeWindow(context: CommandContext): ResolvedTimeWindow {
+  const flags = [
+    { key: "today", value: context.options.today, afterDate: startOfToday(), label: "since start of today" },
+    { key: "week", value: context.options.week, afterDate: startOfWeek(), label: "since start of week" },
+    { key: "month", value: context.options.month, afterDate: startOfMonth(), label: "since start of month" },
+  ].filter((entry) => entry.value);
+  if (flags.length > 1) {
+    throw usageError(
+      `Choose at most one of --today / --week / --month (got ${flags.map((f) => `--${f.key}`).join(", ")}).`,
+    );
+  }
+  if (flags.length === 1) {
+    if (context.options.since) {
+      throw usageError("Choose either a --since window or one of --today / --week / --month, not both.");
+    }
+    return { afterDate: flags[0]!.afterDate, label: flags[0]!.label };
+  }
+  if (context.options.since) {
+    let parsed: string;
+    try {
+      parsed = parseSinceWindow(context.options.since)!;
+    } catch (error) {
+      throw usageError(error instanceof Error ? error.message : String(error));
+    }
+    if (!parsed) {
+      throw usageError(`--since ${JSON.stringify(context.options.since)} did not resolve to a timestamp.`);
+    }
+    return { afterDate: parsed, label: `since ${context.options.since}` };
+  }
+  return {};
+}
 
 export async function handleStats(context: CommandContext): Promise<CommandOutput> {
   const showAll = context.globals.showAll;
@@ -26,11 +65,12 @@ export async function handleStats(context: CommandContext): Promise<CommandOutpu
   const wantsUsageRollup = context.commandPath[1] === "usage" || Boolean(dimension);
 
   if (wantsUsageRollup && !isUsageStatsDimension(dimension)) {
-    throw new Error(
+    throw usageError(
       "`stats usage` requires --by <dimension>. Expected one of model, project, source, host, day, or month.\nExample: cchistory stats usage --by model\nRun `cchistory help stats usage` for details.",
     );
   }
   const usageDimension = isUsageStatsDimension(dimension) ? dimension : undefined;
+  const window = resolveStatsTimeWindow(context);
 
   const readStore = await openReadStore(context);
   try {
@@ -38,22 +78,72 @@ export async function handleStats(context: CommandContext): Promise<CommandOutpu
       ? context.options.source.map((ref) => resolveSourceRef(readStore.storage, ref).id)
       : undefined;
     if (usageDimension) {
-      return createStatsUsageOutput(readStore.layout, readStore.storage, usageDimension, showAll, selectedSourceIds);
+      return createStatsUsageOutput(readStore.layout, readStore.storage, usageDimension, showAll, selectedSourceIds, window);
     }
-    return createStatsOverviewOutput(readStore.layout, readStore.storage, showAll, selectedSourceIds);
+    return createStatsOverviewOutput(readStore.layout, readStore.storage, showAll, selectedSourceIds, window);
   } finally {
     await readStore.close();
   }
 }
 
-export function createStatsOverviewOutput(layout: StoreLayout, storage: CCHistoryStorage, showAll: boolean, selectedSourceIds?: string[]): CommandOutput {
-  const usageFilters = { include_known_zero_token: showAll, source_ids: selectedSourceIds };
+/**
+ * `cchistory today` — shortcut for `cchistory stats --today`. Other time
+ * windows (--week, --month, --since) are still honored so this command
+ * doubles as a session-recap entry point.
+ */
+export async function handleToday(context: CommandContext): Promise<CommandOutput> {
+  if (context.options.today || context.options.week || context.options.month || context.options.since) {
+    // User specified an explicit window; pass through without forcing --today.
+    return handleStats(context);
+  }
+  const delegated: CommandContext = {
+    ...context,
+    commandPath: ["stats"],
+    options: { ...context.options, today: true },
+  };
+  return handleStats(delegated);
+}
+
+export function createStatsOverviewOutput(
+  layout: StoreLayout,
+  storage: CCHistoryStorage,
+  showAll: boolean,
+  selectedSourceIds?: string[],
+  window: ResolvedTimeWindow = {},
+): CommandOutput {
+  const usageFilters = {
+    include_known_zero_token: showAll,
+    source_ids: selectedSourceIds,
+    ...(window.afterDate ? { after_date: window.afterDate } : {}),
+  };
   const overview = storage.getUsageOverview(usageFilters);
   const schema = storage.getSchemaInfo();
   const sources = storage.listSources().filter((source) => !selectedSourceIds || selectedSourceIds.includes(source.id));
-  const sessions = storage.listResolvedSessions().filter((session) => !selectedSourceIds || selectedSourceIds.includes(session.source_id));
-  const turns = storage.listResolvedTurns().filter((turn) => !selectedSourceIds || selectedSourceIds.includes(turn.source_id));
-  const projectIds = new Set(sessions.map((session) => session.primary_project_id).filter((value): value is string => Boolean(value)));
+  // Apply the same window to overview counts so a windowed call (e.g.
+  // `stats --today`) doesn't mix windowed token totals with all-time
+  // session/turn counts. `afterDate` is YYYY-MM-DD (storage contract); we
+  // compare against the same slice of the ISO timestamps on each row.
+  //
+  // Windowed sessions and projects are derived from the filtered *turn* set
+  // (mirroring `buildUsageRows` in the storage layer). A session started
+  // before the window but containing turns inside it must still count; if we
+  // filtered `listResolvedSessions()` by `created_at` we'd silently drop it
+  // and the operator would see today's turns with 0 sessions/projects.
+  const afterDate = window.afterDate;
+  const turns = storage.listResolvedTurns().filter((turn) => {
+    if (selectedSourceIds && !selectedSourceIds.includes(turn.source_id)) return false;
+    if (afterDate && turn.submission_started_at.slice(0, 10) < afterDate) return false;
+    return true;
+  });
+  const turnSessionIds = new Set(turns.map((turn) => turn.session_id));
+  const sessions = storage.listResolvedSessions().filter((session) => {
+    if (selectedSourceIds && !selectedSourceIds.includes(session.source_id)) return false;
+    if (!turnSessionIds.has(session.id)) return false;
+    return true;
+  });
+  const projectIds = new Set(
+    turns.map((turn) => turn.project_id).filter((value): value is string => Boolean(value)),
+  );
   const projects = storage.listProjects().filter((project) => projectIds.has(project.project_id));
   const sourceScope = renderSourceScopeFromIds(storage, selectedSourceIds);
   const excludedNote = overview.excluded_zero_token_turns
@@ -64,6 +154,7 @@ export function createStatsOverviewOutput(layout: StoreLayout, storage: CCHistor
       renderKeyValue([
         ["DB", layout.dbPath],
         ...(sourceScope ? [["Source Scope", sourceScope] as [string, string]] : []),
+        ...(window.label ? [["Window", window.label] as [string, string]] : []),
         ["Schema Version", schema.schema_version],
         ["Schema Migrations", String(schema.migrations.length)],
         ["Search Mode", storage.searchMode],
@@ -86,6 +177,9 @@ export function createStatsOverviewOutput(layout: StoreLayout, storage: CCHistor
     json: {
       kind: "stats-overview",
       db_path: layout.dbPath,
+      window: window.afterDate
+        ? { after_date: window.afterDate, label: window.label ?? null }
+        : null,
       counts: {
         sources: sources.length,
         projects: projects.length,
@@ -106,12 +200,17 @@ export function createStatsUsageOutput(
   dimension: UsageStatsDimension,
   showAll: boolean,
   selectedSourceIds?: string[],
+  window: ResolvedTimeWindow = {},
 ): CommandOutput {
   if (!isUsageStatsDimension(dimension)) {
     throw new Error("`stats usage --by` must be one of model, project, source, host, day, or month.");
   }
 
-  const usageFilters = { include_known_zero_token: showAll, source_ids: selectedSourceIds };
+  const usageFilters = {
+    include_known_zero_token: showAll,
+    source_ids: selectedSourceIds,
+    ...(window.afterDate ? { after_date: window.afterDate } : {}),
+  };
   const rollup = storage.listUsageRollup(dimension, usageFilters);
   const sourceScope = renderSourceScopeFromIds(storage, selectedSourceIds);
   const notesText = renderUsageNotes(rollup.rows, dimension);
@@ -122,6 +221,7 @@ export function createStatsUsageOutput(
   return {
     text: [
       sourceScope ? renderKeyValue([["Source Scope", sourceScope]]) : undefined,
+      window.label ? renderKeyValue([["Window", window.label]]) : undefined,
       renderTable(
         ["Label", "Turns", "Covered", "Coverage", "Total Tokens", "Input", "Cached", "Output"],
         rollup.rows.map((row) => [
@@ -146,6 +246,9 @@ export function createStatsUsageOutput(
       kind: "stats-usage",
       db_path: layout.dbPath,
       dimension,
+      window: window.afterDate
+        ? { after_date: window.afterDate, label: window.label ?? null }
+        : null,
       source_scope: selectedSourceIds ?? null,
       overview: storage.getUsageOverview(usageFilters),
       rollup,

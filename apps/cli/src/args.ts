@@ -1,4 +1,5 @@
 import { parseArgs as parseNodeArgs } from "node:util";
+import { usageError } from "./errors.js";
 
 type OptionKind = "boolean" | "string" | "number" | "enum";
 
@@ -20,6 +21,99 @@ interface CommandSpec {
   examples?: string[];
   options?: string[];
   children?: string[];
+  /** When set, overrides the implicit role derived from category/path. */
+  role?: CommandRole;
+  /**
+   * When set, marks this command as a thin wrapper around the canonical
+   * command(s). Renders an `(alias of <target>)` tag in help and surfaces
+   * the canonical form to operators who want the underlying primitive.
+   */
+  aliasOf?: string;
+  /**
+   * Per-command defaults for shared options (e.g. `{ limit: 50 }`). Used by
+   * `renderCommandHelp` to surface the actual default value next to the
+   * option description instead of a misleading global number.
+   */
+  optionDefaults?: Record<string, number>;
+}
+
+export type CommandRole = "read" | "write" | "diagnostic" | "interactive";
+
+const WRITE_TOP_LEVEL_COMMANDS = new Set([
+  "sync",
+  "gc",
+  "import",
+  "export",
+  "backup",
+  "merge",
+  "maintenance",
+  "migration",
+  "agent",
+]);
+
+const DIAGNOSTIC_TOP_LEVEL_COMMANDS = new Set([
+  "status",
+  "discover",
+  "health",
+  "doctor",
+  "inventory",
+]);
+
+const INTERACTIVE_TOP_LEVEL_COMMANDS = new Set(["tui"]);
+
+/** Subcommand-level role overrides for parent commands that mix read/write. */
+const COMMAND_ROLE_OVERRIDES: Record<string, CommandRole> = {
+  // migration: `run`/`reset`/`compact` mutate; `preview`/`status`/`validate` only read state
+  // (validate writes a marker but its user-visible intent is read-only verification)
+  "migration preview": "read",
+  "migration status": "read",
+  "migration validate": "read",
+  "migration run": "write",
+  "migration reset": "write",
+  "migration compact": "write",
+};
+
+export function commandRole(path: string[]): CommandRole {
+  if (path.length === 0) return "read";
+  const overrideKey = commandName(path);
+  if (COMMAND_ROLE_OVERRIDES[overrideKey]) return COMMAND_ROLE_OVERRIDES[overrideKey]!;
+  const top = path[0]!;
+  const sub = path[1];
+  if (top === "maintenance" && sub) return "write";
+  if (top === "agent" && sub) return "write";
+  if (top === "backup") return "write";
+  if (top === "export") return "write";
+  if (top === "import") return "write";
+  if (top === "merge") return "write";
+  if (INTERACTIVE_TOP_LEVEL_COMMANDS.has(top)) return "interactive";
+  if (DIAGNOSTIC_TOP_LEVEL_COMMANDS.has(top)) return "diagnostic";
+  if (WRITE_TOP_LEVEL_COMMANDS.has(top)) return "write";
+  return "read";
+}
+
+/**
+ * Pick the subset of global flags relevant to a command.
+ *
+ * Write commands don't need --long/--full/--index/--showall (they would be
+ * silently ignored today, and the help noise hides the flags that actually
+ * matter). Diagnostic commands don't need --long (their output is already
+ * summary-style). Interactive commands only need the common subset.
+ */
+type GlobalOptionName = (typeof GLOBAL_OPTION_NAMES)[number];
+
+function globalFlagsForCommand(path: string[]): readonly GlobalOptionName[] {
+  const common: readonly GlobalOptionName[] = ["store", "db", "json", "debug", "color", "non-interactive", "agent"];
+  switch (commandRole(path)) {
+    case "write":
+      return ["store", "db", "json", "dry-run", "debug", "color", "non-interactive", "agent"];
+    case "diagnostic":
+      return ["store", "db", "json", "full", "index", "showall", "debug", "color", "non-interactive", "agent"];
+    case "interactive":
+      return common;
+    case "read":
+    default:
+      return ["store", "db", "json", "long", "full", "index", "dry-run", "showall", "debug", "color", "non-interactive", "agent"];
+  }
 }
 
 export interface CliGlobals {
@@ -34,12 +128,15 @@ export interface CliGlobals {
   debug: boolean;
   color: boolean;
   verbose: boolean;
+  nonInteractive: boolean;
+  agent: boolean;
 }
 
 export interface CommandOptions {
   source: string[];
   limit?: number;
   offset?: number;
+  cursor?: string;
   all: boolean;
   limitFiles?: number;
   since?: string;
@@ -75,6 +172,12 @@ export interface CommandOptions {
   phase?: string;
   step?: string;
   confirmNoBackup: boolean;
+  tui: boolean;
+  session?: string;
+  turn?: string;
+  today: boolean;
+  week: boolean;
+  month: boolean;
 }
 
 export interface ParsedCommand {
@@ -86,6 +189,8 @@ export interface ParsedCommand {
   help: boolean;
   helpTarget: string[];
   version: boolean;
+  /** True when the user invoked the CLI with no arguments at all. */
+  noArgs: boolean;
 }
 
 const GLOBAL_OPTION_NAMES = [
@@ -100,6 +205,8 @@ const GLOBAL_OPTION_NAMES = [
   "debug",
   "verbose",
   "color",
+  "non-interactive",
+  "agent",
   "help",
   "version",
 ] as const;
@@ -150,6 +257,14 @@ const globalOptions: Record<(typeof GLOBAL_OPTION_NAMES)[number], OptionSpec> = 
   color: {
     kind: "boolean",
     description: "Control ANSI color output; use --no-color to disable",
+  },
+  "non-interactive": {
+    kind: "boolean",
+    description: "Refuse any interactive surface (TUI, prompts). For CI/automation.",
+  },
+  agent: {
+    kind: "boolean",
+    description: "AI-agent mode: implies --non-interactive, --no-color, --json. Stable machine-readable output.",
   },
   help: {
     kind: "boolean",
@@ -212,6 +327,11 @@ const commandOptions: Record<string, OptionSpec> = {
     valueName: "n",
     description: "Skip the first N results",
   },
+  cursor: {
+    kind: "string",
+    valueName: "opaque",
+    description: "Pagination cursor from a previous response's next_cursor; overrides --offset",
+  },
   project: {
     kind: "string",
     valueName: "ref",
@@ -272,6 +392,32 @@ const commandOptions: Record<string, OptionSpec> = {
     kind: "string",
     valueName: "query",
     description: "Structured query search text or initial TUI search",
+  },
+  session: {
+    kind: "string",
+    valueName: "ref",
+    description: "TUI entry point: open at the first turn of the named session. Mutually exclusive with --project and --turn.",
+  },
+  turn: {
+    kind: "string",
+    valueName: "ref",
+    description: "TUI entry point: open at the named turn with the detail pane focused. Mutually exclusive with --project and --session.",
+  },
+  tui: {
+    kind: "boolean",
+    description: "resume: launch the TUI at the project's latest turn instead of printing a card",
+  },
+  today: {
+    kind: "boolean",
+    description: "stats: filter to turns submitted since the start of the local day (mutually exclusive with --week / --month / --since)",
+  },
+  week: {
+    kind: "boolean",
+    description: "stats: filter to turns submitted since the start of the current ISO week (Monday local)",
+  },
+  month: {
+    kind: "boolean",
+    description: "stats: filter to turns submitted since the first of the current month",
   },
   "link-state": {
     kind: "enum",
@@ -357,6 +503,15 @@ const remoteUploadOptions = ["state-file", "source", "limit-files", "raw", "forc
 
 const commandSpecs: CommandSpec[] = [
   {
+    path: ["status"],
+    category: "Start Here",
+    usage: "cchistory status [--store <dir>|--db <file>] [--json]",
+    summary: "Show store presence, counts, source health, and next actions",
+    description:
+      "Single-call operator overview. Reports store path, schema version, source/project/session/turn counts, source health (healthy/stale/error), latest sync timestamp, and a recommended Next Actions list. Use this as the entry point when you do not yet know what state the store is in — it routes you to sync, doctor, or stats as appropriate.",
+    examples: ["cchistory status", "cchistory status --json"],
+  },
+  {
     path: ["sync"],
     category: "Data Management",
     usage: "cchistory sync [--source <slot-or-id>] [--limit-files <n>] [--since <time>] [--force-full-resync] [--detail] [--safe] [--dry-run]",
@@ -414,18 +569,22 @@ const commandSpecs: CommandSpec[] = [
     usage: "cchistory ls projects [--long] [--showall]",
     description: "List projects with copyable refs.",
     options: readOptions,
+    examples: ["cchistory ls projects", "cchistory ls projects --long", "cchistory ls projects --source codex"],
   },
   {
     path: ["ls", "sessions"],
     usage: "cchistory ls sessions [--long] [--all] [--limit <n>]",
     description: "List sessions with compact default output.",
     options: ["all", "limit", ...readOptions],
+    optionDefaults: { limit: 30 },
+    examples: ["cchistory ls sessions", "cchistory ls sessions --limit 50", "cchistory ls sessions --long --source codex"],
   },
   {
     path: ["ls", "sources"],
     usage: "cchistory ls sources",
     description: "List configured sources.",
     options: readOptions,
+    examples: ["cchistory ls sources"],
   },
   {
     path: ["tree"],
@@ -437,9 +596,9 @@ const commandSpecs: CommandSpec[] = [
     options: readOptions,
     examples: ["cchistory tree projects", "cchistory tree project chat-ui-kit", "cchistory tree session <session-ref> --long"],
   },
-  { path: ["tree", "projects"], usage: "cchistory tree projects [--long]", description: "Show all projects as a hierarchy.", options: readOptions },
-  { path: ["tree", "project"], usage: "cchistory tree project <project-ref> [--long]", description: "Show one project with session threads.", options: readOptions },
-  { path: ["tree", "session"], usage: "cchistory tree session <session-ref> [--long]", description: "Show one session hierarchy.", options: readOptions },
+  { path: ["tree", "projects"], usage: "cchistory tree projects [--long]", description: "Show all projects as a hierarchy.", options: readOptions, examples: ["cchistory tree projects", "cchistory tree projects --long"] },
+  { path: ["tree", "project"], usage: "cchistory tree project <project-ref> [--long]", description: "Show one project with session threads.", options: readOptions, examples: ["cchistory tree project chat-ui-kit"] },
+  { path: ["tree", "session"], usage: "cchistory tree session <session-ref> [--long]", description: "Show one session hierarchy.", options: readOptions, examples: ["cchistory tree session <session-ref>", "cchistory tree session <session-ref> --long"] },
   {
     path: ["show"],
     category: "Browse & Inspect",
@@ -450,18 +609,19 @@ const commandSpecs: CommandSpec[] = [
     options: readOptions,
     examples: ["cchistory show project chat-ui-kit", "cchistory show turn <turn-id-or-prefix> --long"],
   },
-  { path: ["show", "project"], usage: "cchistory show project <project-ref> [--long]", description: "Show project detail.", options: readOptions },
-  { path: ["show", "session"], usage: "cchistory show session <session-ref> [--long]", description: "Show session detail.", options: readOptions },
-  { path: ["show", "turn"], usage: "cchistory show turn <turn-id-or-prefix> [--long]", description: "Show ask and response detail.", options: readOptions },
-  { path: ["show", "source"], usage: "cchistory show source <source-ref>", description: "Show source detail.", options: readOptions },
+  { path: ["show", "project"], usage: "cchistory show project <project-ref> [--long]", description: "Show project detail.", options: readOptions, examples: ["cchistory show project chat-ui-kit", "cchistory show project chat-ui-kit --long"] },
+  { path: ["show", "session"], usage: "cchistory show session <session-ref> [--long]", description: "Show session detail.", options: readOptions, examples: ["cchistory show session <session-ref>", "cchistory show session <session-ref> --long"] },
+  { path: ["show", "turn"], usage: "cchistory show turn <turn-id-or-prefix> [--long]", description: "Show ask and response detail.", options: readOptions, examples: ["cchistory show turn <turn-id-or-prefix>", "cchistory show turn abc123 --long"] },
+  { path: ["show", "source"], usage: "cchistory show source <source-ref>", description: "Show source detail.", options: readOptions, examples: ["cchistory show source codex", "cchistory show source src-1"] },
   {
     path: ["search"],
     category: "Browse & Inspect",
-    usage: "cchistory search <query> [--project <ref>] [--source <slot-or-id>] [--limit <n>] [--offset <n>] [--all]",
+    usage: "cchistory search <query> [--project <ref>] [--source <slot-or-id>] [--limit <n>] [--offset <n>|--cursor <opaque>] [--all]",
     summary: "Full-text search across asks",
-    description: "Search canonical ask text and print drill-down pivots.",
-    options: ["project", "source", "limit", "offset", "all", "limit-files"],
-    examples: ["cchistory search \"data security\"", "cchistory search refactor --project chat-ui-kit"],
+    description: "Search canonical ask text and print drill-down pivots. The JSON response includes next_cursor when more results are available; pass it back via --cursor to fetch the next page.",
+    options: ["project", "source", "limit", "offset", "cursor", "all", "limit-files"],
+    optionDefaults: { limit: 50 },
+    examples: ["cchistory search \"data security\"", "cchistory search refactor --project chat-ui-kit", "cchistory search refactor --limit 10 --json | jq -r .next_cursor"],
   },
   {
     path: ["context"],
@@ -471,25 +631,37 @@ const commandSpecs: CommandSpec[] = [
     description: "Build a project-scoped context packet for operators and AI agents.",
     children: ["project"],
     options: ["limit", ...readOptions],
+    optionDefaults: { limit: 12 },
     examples: ["cchistory context project chat-ui-kit", "cchistory context project chat-ui-kit --json"],
   },
-  { path: ["context", "project"], usage: "cchistory context project <ref> [--limit <n>] [--json]", description: "Show project context.", options: ["limit", ...readOptions] },
+  { path: ["context", "project"], usage: "cchistory context project <ref> [--limit <n>] [--json]", description: "Show project context.", options: ["limit", ...readOptions], optionDefaults: { limit: 12 }, examples: ["cchistory context project chat-ui-kit", "cchistory context project chat-ui-kit --json"] },
   {
     path: ["stats"],
-    category: "Browse & Inspect",
-    usage: "cchistory stats [--by model|project|source|host|day|month]",
+    category: "Data Management",
+    usage: "cchistory stats [--by model|project|source|host|day|month] [--since <time>|--today|--week|--month]",
     summary: "Token usage statistics",
-    description: "Show the store overview; add --by to roll up token usage.",
+    description: "Show the store overview; add --by to roll up token usage. Pass --since (ISO or relative like 7d/12h), --today, --week, or --month to filter to a recent window.",
     children: ["usage"],
-    options: ["by", ...readOptions],
-    examples: ["cchistory stats", "cchistory stats --by model", "cchistory stats --by project", "cchistory stats usage --by day"],
+    options: ["by", "since", "today", "week", "month", ...readOptions],
+    examples: [
+      "cchistory stats",
+      "cchistory stats --by model",
+      "cchistory stats --today",
+      "cchistory stats --week --by model",
+      "cchistory stats usage --by day --since 7d",
+    ],
   },
   {
     path: ["stats", "usage"],
-    usage: "cchistory stats usage --by model|project|source|host|day|month",
-    description: "Show token usage grouped by model, project, source, host, day, or month.",
-    options: ["by", ...readOptions],
-    examples: ["cchistory stats usage --by model", "cchistory stats usage --by source", "cchistory stats usage --by month"],
+    usage: "cchistory stats usage --by model|project|source|host|day|month [--since <time>|--today|--week|--month]",
+    description: "Show token usage grouped by model, project, source, host, day, or month. Honors the same --since / --today / --week / --month window as `stats`.",
+    options: ["by", "since", "today", "week", "month", ...readOptions],
+    examples: [
+      "cchistory stats usage --by model",
+      "cchistory stats usage --by source",
+      "cchistory stats usage --by month",
+      "cchistory stats usage --by day --since 7d",
+    ],
   },
   {
     path: ["export"],
@@ -507,6 +679,7 @@ const commandSpecs: CommandSpec[] = [
     summary: "Preview-first export (--write to execute)",
     description: "Preview-first portable backup shortcut.",
     options: ["out", "source", "raw", "write"],
+    aliasOf: "export --write",
     examples: ["cchistory backup --out ./my-backup", "cchistory backup --out ./my-backup --write"],
   },
   {
@@ -515,6 +688,7 @@ const commandSpecs: CommandSpec[] = [
     usage: "cchistory restore-check --store <dir>|--db <file>",
     summary: "Validate a store can be restored",
     description: "Read-only post-restore verification.",
+    aliasOf: "stats + ls sources",
     examples: ["cchistory restore-check --store ./restored-store"],
   },
   {
@@ -533,61 +707,75 @@ const commandSpecs: CommandSpec[] = [
     summary: "Preview-first merge via bundle exchange",
     description: "Preview or execute a merge between two stores through the bundle compatibility path.",
     options: ["from", "to", "source", "on-conflict", "write"],
+    aliasOf: "export (from) | import (to)",
     examples: ["cchistory merge --from /host-a/.cchistory --to /host-b/.cchistory", "cchistory merge --from /host-a/.cchistory --to /host-b/.cchistory --write"],
   },
   {
     path: ["gc"],
     category: "Data Management",
-    usage: "cchistory gc [--dry-run]",
-    summary: "Clean orphaned raw snapshots (--dry-run to preview)",
-    description: "Prune raw snapshot files no longer referenced by the current SQLite index.",
-    examples: ["cchistory gc --dry-run"],
+    usage: "cchistory gc [--write] [--dry-run]",
+    summary: "Clean orphaned raw snapshots (preview-first; --write to execute)",
+    description: "Prune raw snapshot files no longer referenced by the current SQLite index. Defaults to preview; pass --write to actually delete.",
+    options: ["write"],
+    examples: ["cchistory gc", "cchistory gc --write", "cchistory gc --dry-run"],
   },
   {
     path: ["maintenance"],
     category: "Data Management",
-    usage: "cchistory maintenance rebuild-search-index|gc-evidence|checkpoint|vacuum|refresh-projections",
-    summary: "Operator maintenance commands",
+    usage: "cchistory maintenance rebuild-search-index|gc-evidence|checkpoint|vacuum|refresh-projections [--write]",
+    summary: "Operator maintenance commands (preview-first; --write to execute)",
     description:
-      "Low-frequency operator commands for the V1+V2 storage boundary. Use these to reclaim space after Phase A landed: rebuild the FTS5 search index (A.1), prune orphaned V2 evidence blobs (A.2), checkpoint the WAL (A.4), or VACUUM the SQLite file into the new 16 KiB page size (A.4).",
+      "Low-frequency operator commands for the V1+V2 storage boundary. Use these to reclaim space after Phase A landed: rebuild the FTS5 search index (A.1), prune orphaned V2 evidence blobs (A.2), checkpoint the WAL (A.4), or VACUUM the SQLite file into the new 16 KiB page size (A.4). All subcommands default to preview; pass --write to actually mutate.",
     children: ["rebuild-search-index", "gc-evidence", "checkpoint", "vacuum", "refresh-projections"],
+    options: ["write"],
     examples: [
       "cchistory maintenance rebuild-search-index",
-      "cchistory maintenance gc-evidence",
-      "cchistory maintenance checkpoint",
-      "cchistory maintenance vacuum",
-      "cchistory maintenance refresh-projections",
+      "cchistory maintenance rebuild-search-index --write",
+      "cchistory maintenance gc-evidence --write",
+      "cchistory maintenance checkpoint --write",
+      "cchistory maintenance vacuum --write",
+      "cchistory maintenance refresh-projections --write",
     ],
   },
   {
     path: ["maintenance", "rebuild-search-index"],
-    usage: "cchistory maintenance rebuild-search-index",
+    usage: "cchistory maintenance rebuild-search-index [--write] [--dry-run]",
     description:
-      "Repopulate the FTS5 search_index table from current user_turns rows. After Phase A.1 the refresh hot path no longer maintains FTS5; this is the explicit operator hook. Has no effect on the scan-path search, which reads user_turns directly.",
+      "Repopulate the FTS5 search_index table from current user_turns rows. After Phase A.1 the refresh hot path no longer maintains FTS5; this is the explicit operator hook. Has no effect on the scan-path search, which reads user_turns directly. Defaults to preview; pass --write to actually index.",
+    options: ["write"],
+    examples: ["cchistory maintenance rebuild-search-index", "cchistory maintenance rebuild-search-index --write"],
   },
   {
     path: ["maintenance", "gc-evidence"],
-    usage: "cchistory maintenance gc-evidence",
+    usage: "cchistory maintenance gc-evidence [--write] [--dry-run]",
     description:
-      "Drop evidence_blobs rows whose sha is no longer referenced from evidence_captures or parsed_record_spans, and unlink the corresponding content-addressed files. Use this to reclaim space accumulated before Phase A.2 wired evidence GC into the purge paths.",
+      "Drop evidence_blobs rows whose sha is no longer referenced from evidence_captures or parsed_record_spans, and unlink the corresponding content-addressed files. Use this to reclaim space accumulated before Phase A.2 wired evidence GC into the purge paths. Defaults to preview; pass --write to delete.",
+    options: ["write"],
+    examples: ["cchistory maintenance gc-evidence", "cchistory maintenance gc-evidence --write"],
   },
   {
     path: ["maintenance", "checkpoint"],
-    usage: "cchistory maintenance checkpoint",
+    usage: "cchistory maintenance checkpoint [--write] [--dry-run]",
     description:
-      "Run PRAGMA wal_checkpoint(TRUNCATE) to fold the WAL into the main SQLite file and truncate the WAL. Useful between long-running sync batches to bound on-disk footprint.",
+      "Run PRAGMA wal_checkpoint(TRUNCATE) to fold the WAL into the main SQLite file and truncate the WAL. Useful between long-running sync batches to bound on-disk footprint. Defaults to preview; pass --write to actually truncate.",
+    options: ["write"],
+    examples: ["cchistory maintenance checkpoint", "cchistory maintenance checkpoint --write"],
   },
   {
     path: ["maintenance", "vacuum"],
-    usage: "cchistory maintenance vacuum",
+    usage: "cchistory maintenance vacuum [--write] [--dry-run]",
     description:
-      "Run VACUUM to rebuild the SQLite file. Required once per store to materialize the new 16 KiB page size from Phase A.4; otherwise the pragma is silently ignored on existing databases. Blocks writes for the duration.",
+      "Run VACUUM to rebuild the SQLite file. Required once per store to materialize the new 16 KiB page size from Phase A.4; otherwise the pragma is silently ignored on existing databases. Blocks writes for the duration. Defaults to preview; pass --write to VACUUM.",
+    options: ["write"],
+    examples: ["cchistory maintenance vacuum", "cchistory maintenance vacuum --write"],
   },
   {
     path: ["maintenance", "refresh-projections"],
-    usage: "cchistory maintenance refresh-projections",
+    usage: "cchistory maintenance refresh-projections [--write] [--dry-run]",
     description:
-      "Rebuild project_current (and the project link revision lineage) from the canonical session/turn rows. Use this when sync crashed mid-flight (e.g. OOM) and left project_current pointing at stale data — `ls projects` will show old `Last Active` even though the raw rows are fresh. Idempotent.",
+      "Rebuild project_current (and the project link revision lineage) from the canonical session/turn rows. Use this when sync crashed mid-flight (e.g. OOM) and left project_current pointing at stale data — `ls projects` will show old `Last Active` even though the raw rows are fresh. Idempotent. Defaults to preview; pass --write to rebuild.",
+    options: ["write"],
+    examples: ["cchistory maintenance refresh-projections", "cchistory maintenance refresh-projections --write"],
   },
   {
     path: ["migration"],
@@ -612,19 +800,22 @@ const commandSpecs: CommandSpec[] = [
     usage: "cchistory migration preview [--store <dir>|--db <file>] [--json]",
     description:
       "Read-only. Inspect V1→V2 row mapping, backfill gap, removable V1 payload_json bytes, and the VACUUM disk-space requirement.",
+    examples: ["cchistory migration preview", "cchistory migration preview --json"],
   },
   {
     path: ["migration", "run"],
-    usage: "cchistory migration run [--source <slot-or-id>] [--dry-run] [--store <dir>|--db <file>]",
+    usage: "cchistory migration run [--source <slot-or-id>] [--write] [--dry-run] [--store <dir>|--db <file>]",
     description:
-      "B.3: per-source V1→V2 backfill. Reads the V1 view of each source and re-runs the canonical V2 write path so missing V2 sidecars are filled. Idempotent: sources already marked completed in migration_state are skipped. V1 payloads are never touched. Halts at the first source that aborts; clear with `cchistory migration reset` after auditing.",
-    options: ["source"],
+      "B.3: per-source V1→V2 backfill. Reads the V1 view of each source and re-runs the canonical V2 write path so missing V2 sidecars are filled. Idempotent: sources already marked completed in migration_state are skipped. V1 payloads are never touched. Defaults to preview; pass --write to actually backfill. Halts at the first source that aborts; clear with `cchistory migration reset` after auditing.",
+    options: ["source", "write"],
+    examples: ["cchistory migration run", "cchistory migration run --write", "cchistory migration run --write --source codex"],
   },
   {
     path: ["migration", "status"],
     usage: "cchistory migration status [--store <dir>|--db <file>] [--json]",
     description:
       "Print migration_state markers: per-source status (running/completed/aborted) for the storage-boundary.write phase.",
+    examples: ["cchistory migration status", "cchistory migration status --json"],
   },
   {
     path: ["migration", "validate"],
@@ -633,20 +824,23 @@ const commandSpecs: CommandSpec[] = [
     description:
       "B.4/B.6: post-B.3 validators. Four independent checks prove the V2 sidecars B.3 wrote are equivalent to V1 and that V1 has not drifted before B.6: (a) bundle byte-diff against a pre-migration bundle (--pre-bundle, required when --only bundle is selected); (b) inventory row-count parity across the four V1↔V2 pairs; (c) read-path parity — deepEqual getTurnContext V1 vs V2 cache across every turn, plus UserTurnProjection V1 vs V2 full-content columns (B.5.0d); (d) V1 payload digest drift detection. All four run by default; each writes its own migration_state marker.",
     options: ["only", "pre-bundle"],
+    examples: ["cchistory migration validate", "cchistory migration validate --only inventory", "cchistory migration validate --only bundle --pre-bundle ./pre-bundle"],
   },
   {
     path: ["migration", "reset"],
-    usage: "cchistory migration reset [--phase <name>] [--force] [--store <dir>|--db <file>] [--json]",
+    usage: "cchistory migration reset [--phase <name>] [--force] [--write] [--dry-run] [--store <dir>|--db <file>] [--json]",
     description:
-      "B.5.0: clear migration_state marker rows so an aborted or stale migration can be re-run. Default clears every phase; --phase storage-boundary.write clears just B.3 markers; --phase storage-boundary.validate clears just B.4 markers. Refuses to clear while any marker is still 'running' (would defeat the C2 abort-resurrect guard); pass --force to override after confirming the prior PID is dead.",
-    options: ["phase", "force"],
+      "B.5.0: clear migration_state marker rows so an aborted or stale migration can be re-run. Default clears every phase; --phase storage-boundary.write clears just B.3 markers; --phase storage-boundary.validate clears just B.4 markers. Refuses to clear while any marker is still 'running' (would defeat the C2 abort-resurrect guard); pass --force to override after confirming the prior PID is dead. Defaults to preview; pass --write to actually clear markers.",
+    options: ["phase", "force", "write"],
+    examples: ["cchistory migration reset", "cchistory migration reset --write", "cchistory migration reset --write --phase storage-boundary.write", "cchistory migration reset --write --force"],
   },
   {
     path: ["migration", "compact"],
-    usage: "cchistory migration compact [--step <drop-v1-tables|vacuum|both>] [--dry-run] [--confirm-no-backup] [--store <dir>|--db <file>] [--json]",
+    usage: "cchistory migration compact [--step <drop-v1-tables|vacuum|both>] [--write] [--dry-run] [--confirm-no-backup] [--store <dir>|--db <file>] [--json]",
     description:
-      "B.6: drop V1 user_turns and turn_contexts tables (step=drop-v1-tables) and/or VACUUM to reclaim pages (step=vacuum). Default step is `both`. IRREVERSIBLE — there is no rollback path; a pre-run backup is mandatory. Pre-flight gates refuse if any validator has drifted, if any marker is still 'running', or if free disk < current DB size (VACUUM needs the room). Pass --confirm-no-backup to skip the backup confirmation prompt; --dry-run previews without mutating.",
-    options: ["step", "confirm-no-backup"],
+      "B.6: drop V1 user_turns and turn_contexts tables (step=drop-v1-tables) and/or VACUUM to reclaim pages (step=vacuum). Default step is `both`. IRREVERSIBLE — there is no rollback path; a pre-run backup is mandatory. Pre-flight gates refuse if any validator has drifted, if any marker is still 'running', or if free disk < current DB size (VACUUM needs the room). Pass --confirm-no-backup to skip the backup confirmation prompt. Defaults to preview; pass --write to apply. --dry-run is still honored as an explicit preview flag (and wins over --write if both are given).",
+    options: ["step", "confirm-no-backup", "write"],
+    examples: ["cchistory migration compact", "cchistory migration compact --write", "cchistory migration compact --write --step vacuum", "cchistory migration compact --write --confirm-no-backup"],
   },
   {
     path: ["query"],
@@ -658,18 +852,19 @@ const commandSpecs: CommandSpec[] = [
     options: readOptions,
     examples: ["cchistory query turns --search refactor --limit 5", "cchistory query turn --id <turn-id>"],
   },
-  { path: ["query", "turns"], usage: "cchistory query turns [--search <query>] [--project <ref>] [--source <slot-or-id>] [--limit <n>]", description: "Query turns.", options: ["search", "project", "source", "limit", "limit-files"] },
-  { path: ["query", "turn"], usage: "cchistory query turn --id <turn-id-or-prefix>", description: "Query one turn.", options: ["id", ...readOptions] },
-  { path: ["query", "sessions"], usage: "cchistory query sessions [--project <ref>] [--source <slot-or-id>] [--limit <n>]", description: "Query sessions.", options: ["project", "source", "limit", "limit-files"] },
-  { path: ["query", "session"], usage: "cchistory query session --id <session-ref>", description: "Query one session.", options: ["id", ...readOptions] },
-  { path: ["query", "projects"], usage: "cchistory query projects [--source <slot-or-id>]", description: "Query projects.", options: readOptions },
-  { path: ["query", "project"], usage: "cchistory query project --id <project-ref> [--source <slot-or-id>] [--link-state all|committed|candidate|unlinked]", description: "Query one project.", options: ["id", "link-state", ...readOptions] },
+  { path: ["query", "turns"], usage: "cchistory query turns [--search <query>] [--project <ref>] [--source <slot-or-id>] [--limit <n>]", description: "Query turns.", options: ["search", "project", "source", "limit", "limit-files"], optionDefaults: { limit: 20 }, examples: ["cchistory query turns --search refactor --limit 5", "cchistory query turns --project chat-ui-kit"] },
+  { path: ["query", "turn"], usage: "cchistory query turn --id <turn-id-or-prefix>", description: "Query one turn.", options: ["id", ...readOptions], examples: ["cchistory query turn --id abc123"] },
+  { path: ["query", "sessions"], usage: "cchistory query sessions [--project <ref>] [--source <slot-or-id>] [--limit <n>]", description: "Query sessions.", options: ["project", "source", "limit", "limit-files"], optionDefaults: { limit: 20 }, examples: ["cchistory query sessions --limit 10", "cchistory query sessions --source codex"] },
+  { path: ["query", "session"], usage: "cchistory query session --id <session-ref>", description: "Query one session.", options: ["id", ...readOptions], examples: ["cchistory query session --id <session-ref>"] },
+  { path: ["query", "projects"], usage: "cchistory query projects [--source <slot-or-id>]", description: "Query projects.", options: readOptions, examples: ["cchistory query projects", "cchistory query projects --source codex"] },
+  { path: ["query", "project"], usage: "cchistory query project --id <project-ref> [--source <slot-or-id>] [--link-state all|committed|candidate|unlinked]", description: "Query one project.", options: ["id", "link-state", ...readOptions], examples: ["cchistory query project --id chat-ui-kit", "cchistory query project --id chat-ui-kit --link-state committed"] },
   {
     path: ["templates"],
     category: "Advanced (experimental)",
     usage: "cchistory templates",
     summary: "List available query templates",
     description: "List source format profiles as JSON.",
+    examples: ["cchistory templates", "cchistory templates > /tmp/profiles.json"],
   },
   {
     path: ["agent"],
@@ -680,17 +875,80 @@ const commandSpecs: CommandSpec[] = [
     children: ["pair", "upload", "schedule", "pull"],
     examples: ["cchistory agent pair --server https://history.example --pair-token <token>", "cchistory agent pull --state-file ~/.cchistory-agent/agent-state.json"],
   },
-  { path: ["agent", "pair"], usage: "cchistory agent pair --server <url> --pair-token <token> [--state-file <file>]", description: "Pair this host with a remote service.", options: ["server", "pair-token", "state-file", "display-name", "reported-hostname"] },
-  { path: ["agent", "upload"], usage: "cchistory agent upload [--state-file <file>] [--source <slot-or-id>] [--force]", description: "Upload changed source payloads.", options: remoteUploadOptions },
-  { path: ["agent", "schedule"], usage: "cchistory agent schedule --interval-seconds <n> [--iterations <n>]", description: "Run repeated local upload cycles.", options: [...remoteUploadOptions, "interval-seconds", "iterations"] },
-  { path: ["agent", "pull"], usage: "cchistory agent pull [--state-file <file>]", description: "Lease one typed collection job and upload the result.", options: remoteUploadOptions },
+  { path: ["agent", "pair"], usage: "cchistory agent pair --server <url> --pair-token <token> [--state-file <file>]", description: "Pair this host with a remote service.", options: ["server", "pair-token", "state-file", "display-name", "reported-hostname"], examples: ["cchistory agent pair --server https://history.example --pair-token <token>", "cchistory agent pair --server https://history.example --pair-token <token> --display-name \"work-laptop\""] },
+  { path: ["agent", "upload"], usage: "cchistory agent upload [--state-file <file>] [--source <slot-or-id>] [--force]", description: "Upload changed source payloads.", options: remoteUploadOptions, examples: ["cchistory agent upload", "cchistory agent upload --source codex --force"] },
+  { path: ["agent", "schedule"], usage: "cchistory agent schedule --interval-seconds <n> [--iterations <n>]", description: "Run repeated local upload cycles.", options: [...remoteUploadOptions, "interval-seconds", "iterations"], examples: ["cchistory agent schedule --interval-seconds 300 --iterations 10"] },
+  { path: ["agent", "pull"], usage: "cchistory agent pull [--state-file <file>]", description: "Lease one typed collection job and upload the result.", options: remoteUploadOptions, examples: ["cchistory agent pull", "cchistory agent pull --state-file ~/.cchistory-agent/agent-state.json"] },
   {
     path: ["tui"],
     category: "Interactive",
-    usage: "cchistory tui [--store <dir>|--db <file>] [--search <query>] [--full] [--source-health]",
+    usage: "cchistory tui [--store <dir>|--db <file>] [--search <query>] [--project <ref>|--session <ref>|--turn <ref>] [--full] [--source-health]",
     summary: "Launch terminal UI browser (projects -> sessions -> conversations)",
-    description: "Launch the local terminal UI browser.",
-    options: ["search", "source", "limit-files", "source-health"],
+    description: "Launch the local terminal UI browser. Pass --project, --session, or --turn to land directly on a specific entity; the three flags are mutually exclusive.",
+    options: ["search", "project", "session", "turn", "source", "limit-files", "source-health"],
+    examples: [
+      "cchistory tui",
+      "cchistory tui --search refactor",
+      "cchistory tui --project my-app",
+      "cchistory tui --session 01H.../",
+      "cchistory tui --turn 01H...",
+      "cchistory tui --source-health",
+    ],
+  },
+  {
+    path: ["completions"],
+    category: "Setup",
+    usage: "cchistory completions <bash|zsh|fish>",
+    summary: "Print a shell completion script for installation",
+    description:
+      "Print a completion script for the requested shell. Install by eval-ing the output (e.g. eval \"$(cchistory completions bash)\") or by saving the script to your shell's completion directory. The script encodes the full command tree, subcommand chains, and option flags known to this CLI build.",
+    examples: [
+      'eval "$(cchistory completions bash)"',
+      'eval "$(cchistory completions zsh)"',
+      "cchistory completions fish > ~/.config/fish/completions/cchistory.fish",
+    ],
+  },
+  {
+    path: ["resume"],
+    category: "Start Here",
+    usage: "cchistory resume <project-ref> [--tui]",
+    summary: "Print a 'where was I' card for a project (optionally open it in the TUI)",
+    description:
+      "Resolve a project reference (id, slug, name, or workspace) and surface its latest session and turn. Pass --tui to launch the TUI directly at the latest turn — equivalent to `cchistory tui --turn <id>` but resolved from the project ref.",
+    options: ["tui"],
+    examples: [
+      "cchistory resume my-app",
+      "cchistory resume my-app --tui",
+      "cchistory resume 01H...",
+    ],
+  },
+  {
+    path: ["last"],
+    category: "Start Here",
+    usage: "cchistory last [project-ref] [--tui]",
+    summary: "Shortcut: resume the most recently active project (or the named one)",
+    description:
+      "Without a ref, picks the project with the most recent activity and runs `cchistory resume <ref>`. With a ref, equivalent to `cchistory resume <ref>`.",
+    options: ["tui"],
+    examples: [
+      "cchistory last",
+      "cchistory last my-app",
+      "cchistory last --tui",
+    ],
+  },
+  {
+    path: ["today"],
+    category: "Start Here",
+    usage: "cchistory today [--by model|project|source|host|day|month]",
+    summary: "Shortcut: stats filtered to today (or another window)",
+    description:
+      "Equivalent to `cchistory stats --today`. Pass --week, --month, or --since to override the window — the explicit flag wins.",
+    options: ["by", "since", "week", "month", ...readOptions],
+    examples: [
+      "cchistory today",
+      "cchistory today --by model",
+      "cchistory today --week",
+    ],
   },
 ];
 
@@ -709,14 +967,22 @@ const allOptionSpecs: Record<string, OptionSpec> = { ...globalOptions, ...comman
 export function parseCliArgs(args: string[]): ParsedCommand {
   const rawArgs = args[0] === "--" ? args.slice(1) : [...args];
   const nodeOptions = buildNodeOptionConfig();
-  const parsed = parseNodeArgs({
-    args: rawArgs,
-    options: nodeOptions,
-    allowPositionals: true,
-    allowNegative: true,
-    strict: true,
-    tokens: true,
-  });
+  let parsed: ReturnType<typeof parseNodeArgs>;
+  try {
+    parsed = parseNodeArgs({
+      args: rawArgs,
+      options: nodeOptions,
+      allowPositionals: true,
+      allowNegative: true,
+      strict: true,
+      tokens: true,
+    });
+  } catch (error) {
+    // node:util's parseArgs throws on unknown options, missing values, and
+    // malformed tokens. All of these are usage errors from the operator's
+    // perspective — surface them with exit code 2, not the default 1.
+    throw usageError(error instanceof Error ? error.message : String(error));
+  }
   const tokens = parsed.tokens ?? [];
   assertNoDuplicateSingletonOptions(tokens);
   const values = parsed.values as Record<string, string | string[] | boolean | undefined>;
@@ -733,6 +999,7 @@ export function parseCliArgs(args: string[]): ParsedCommand {
   if (!wantsHelp && !version) {
     validateCommand(commandPath, tokens);
     validateGlobalCombinations(globals);
+    assertNonInteractive(commandPath, globals, options);
     validateOptionChoices(commandPath, options);
     validateNumericRanges(options);
   } else if (wantsHelp && helpTarget.length > 0) {
@@ -748,6 +1015,7 @@ export function parseCliArgs(args: string[]): ParsedCommand {
     help: wantsHelp || commandPath.length === 0,
     helpTarget: wantsHelp ? (helpTarget.length > 0 ? helpTarget : commandPath) : [],
     version,
+    noArgs: rawArgs.length === 0,
   };
 }
 
@@ -756,6 +1024,26 @@ export function renderHelp(targetPath: string[] = []): string {
     return renderCommandHelp(targetPath);
   }
   return renderGlobalHelp();
+}
+
+/**
+ * First-run-aware wrapper for the no-args case. If the store is missing,
+ * prepend a welcome banner pointing the operator at `cchistory status` and
+ * `cchistory sync`. Otherwise, prepend a one-line tip suggesting `status`.
+ */
+export function renderNoArgsHelp(storePresent: boolean): string {
+  const banner = storePresent
+    ? "Tip: run `cchistory status` for a quick snapshot of this store.\n"
+    : [
+        "Welcome to CCHistory. No store found yet.",
+        "",
+        "Get started:",
+        "  1. Run `cchistory status` for an overview.",
+        "  2. Run `cchistory sync` to ingest history from local AI coding tools (Claude Code, Codex, Cursor, AMP, ...).",
+        "  3. Run `cchistory discover` to see which sources are detectable on this machine.",
+        "",
+      ].join("\n");
+  return `${banner}\n${renderGlobalHelp()}`;
 }
 
 export function commandName(path: string[]): string {
@@ -787,18 +1075,26 @@ function buildNodeOptionConfig(): Record<string, { type: "boolean" | "string"; m
 }
 
 function normalizeGlobals(values: Record<string, string | string[] | boolean | undefined>): CliGlobals {
+  const rawColor = values.color !== false;
+  const agent = readBoolean(values, "agent");
+  const nonInteractive = readBoolean(values, "non-interactive") || agent;
+  // --agent forces JSON output and suppresses color so AI consumers get a
+  // stable, parseable stream. --non-interactive on its own keeps the human
+  // rendering — it only gates interactive surfaces.
   return {
     store: readString(values, "store"),
     db: readString(values, "db"),
-    json: readBoolean(values, "json"),
+    json: readBoolean(values, "json") || agent,
     long: readBoolean(values, "long"),
     full: readBoolean(values, "full"),
     index: readBoolean(values, "index"),
     dryRun: readBoolean(values, "dry-run"),
     showAll: readBoolean(values, "showall"),
     debug: readBoolean(values, "debug"),
-    color: values.color !== false,
+    color: rawColor && !agent,
     verbose: readBoolean(values, "verbose"),
+    nonInteractive,
+    agent,
   };
 }
 
@@ -807,6 +1103,7 @@ function normalizeCommandOptions(values: Record<string, string | string[] | bool
     source: readStringArray(values, "source"),
     limit: readNumber(values, "limit"),
     offset: readNumber(values, "offset"),
+    cursor: readString(values, "cursor"),
     all: readBoolean(values, "all"),
     limitFiles: readNumber(values, "limit-files"),
     since: readString(values, "since"),
@@ -842,6 +1139,12 @@ function normalizeCommandOptions(values: Record<string, string | string[] | bool
     phase: readString(values, "phase"),
     step: readString(values, "step"),
     confirmNoBackup: readBoolean(values, "confirm-no-backup"),
+    tui: readBoolean(values, "tui"),
+    session: readString(values, "session"),
+    turn: readString(values, "turn"),
+    today: readBoolean(values, "today"),
+    week: readBoolean(values, "week"),
+    month: readBoolean(values, "month"),
   };
 }
 
@@ -888,16 +1191,94 @@ function validateCommand(commandPath: string[], tokens: Array<{ kind: string; na
   }
   const spec = getCommandSpec(commandPath);
   if (!spec) {
-    throw new Error(`Unknown command: ${commandName(commandPath)}`);
+    throw usageError(unknownCommandMessage(commandPath));
   }
   const allowed = allowedOptionNamesForCommand(commandPath);
   for (const token of tokens) {
     if (token.kind !== "option" || !token.name) continue;
     if (GLOBAL_OPTION_NAMES.includes(token.name as (typeof GLOBAL_OPTION_NAMES)[number])) continue;
     if (!allowed.has(token.name)) {
-      throw new Error(`Unknown option for \`${commandName(commandPath)}\`: --${token.name}`);
+      throw usageError(`Unknown option for \`${commandName(commandPath)}\`: --${token.name}`);
     }
   }
+}
+
+function unknownCommandMessage(commandPath: string[]): string {
+  const typed = commandName(commandPath);
+  const suggestion = suggestCommandHint(commandPath);
+  return suggestion ? `Unknown command: ${typed}\n${suggestion}` : `Unknown command: ${typed}`;
+}
+
+/**
+ * Build a "Did you mean" hint by Levenshtein distance against the relevant
+ * candidate set: top-level command names if the typo is at position 0, or
+ * the matching parent's children if the typo is at a deeper position.
+ */
+function suggestCommandHint(commandPath: string[]): string | null {
+  if (commandPath.length === 0) return null;
+  if (commandPath.length === 1) {
+    const typed = commandPath[0]!;
+    const candidates = commandSpecs
+      .filter((spec) => spec.path.length === 1)
+      .map((spec) => spec.path[0]!);
+    const matches = closestMatches(typed, candidates);
+    return formatSuggestions(matches);
+  }
+  // Multi-segment: the typo is likely the last segment. Find the parent's
+  // known children and suggest from there.
+  const parentPath = commandPath.slice(0, -1);
+  const parent = getCommandSpec(parentPath);
+  const typed = commandPath[commandPath.length - 1]!;
+  const candidates = parent?.children ?? [];
+  const matches = closestMatches(typed, candidates);
+  return formatSuggestions(matches);
+}
+
+function formatSuggestions(matches: string[]): string | null {
+  if (matches.length === 0) return null;
+  return `Did you mean: ${matches.map((m) => `\`${m}\``).join(", ")}?`;
+}
+
+function closestMatches(target: string, candidates: string[], limit = 3): string[] {
+  const lowerTarget = target.toLowerCase();
+  return candidates
+    .map((candidate) => {
+      const lower = candidate.toLowerCase();
+      const distance = levenshtein(lowerTarget, lower);
+      const prefixMatch = lower.startsWith(lowerTarget) && lowerTarget.length > 0;
+      return { candidate, distance, prefixMatch };
+    })
+    .filter((entry) => entry.distance <= 2 || (entry.prefixMatch && entry.distance <= 3))
+    .sort((a, b) => {
+      if (a.distance !== b.distance) return a.distance - b.distance;
+      // Prefer prefix matches when distance ties
+      return Number(b.prefixMatch) - Number(a.prefixMatch);
+    })
+    .slice(0, limit)
+    .map((entry) => entry.candidate);
+}
+
+/** Iterative Levenshtein with two rolling rows. */
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (a.length === 0) return b.length;
+  if (b.length === 0) return a.length;
+  let previous = new Array<number>(b.length + 1);
+  let current = new Array<number>(b.length + 1);
+  for (let j = 0; j <= b.length; j++) previous[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a.charCodeAt(i - 1) === b.charCodeAt(j - 1) ? 0 : 1;
+      current[j] = Math.min(
+        previous[j]! + 1,        // deletion
+        current[j - 1]! + 1,     // insertion
+        previous[j - 1]! + cost, // substitution
+      );
+    }
+    [previous, current] = [current, previous];
+  }
+  return previous[b.length]!;
 }
 
 function validateHelpTarget(path: string[]): void {
@@ -905,7 +1286,9 @@ function validateHelpTarget(path: string[]): void {
     return;
   }
   if (!getCommandSpec(path)) {
-    throw new Error(`Unknown help topic: ${commandName(path)}`);
+    const suggestion = suggestCommandHint(path);
+    const base = `Unknown help topic: ${commandName(path)}`;
+    throw usageError(suggestion ? `${base}\n${suggestion}` : base);
   }
 }
 
@@ -933,8 +1316,57 @@ function commandOptionsForValidation(path: string[]): Record<string, OptionSpec>
 
 function validateGlobalCombinations(globals: CliGlobals): void {
   if (globals.full && globals.index) {
-    throw new Error("Choose either --full or --index, not both.");
+    throw usageError("Choose either --full or --index, not both.");
   }
+}
+
+/**
+ * Command-specific gate run after the global validation pass. Used by the
+ * TUI launch path to refuse entry under --non-interactive / --agent so an
+ * automation context can never accidentally hang on a fullscreen prompt.
+ *
+ * Also guards the indirect TUI launch paths: `resume --tui` and `last --tui`
+ * synthesize a `["tui"]` context and re-dispatch through `handleTui`, so they
+ * must be refused at parse time for the same reason.
+ */
+export function assertNonInteractive(
+  commandPath: string[],
+  globals: CliGlobals,
+  options: { tui?: boolean },
+): void {
+  if (!globals.nonInteractive) return;
+  const root = commandPath[0];
+  const launchesTui = root === "tui"
+    || ((root === "resume" || root === "last") && options.tui === true);
+  if (launchesTui) {
+    throw usageError(
+      "Refusing to launch the TUI under --non-interactive. Run without the flag, or use a read command (`ls`, `show`, `query`, `search`) for non-interactive inspection.",
+    );
+  }
+}
+
+/**
+ * Public read-only view of the command tree, for shell completion generators.
+ * Returns a deep-frozen snapshot so callers can iterate without fearing
+ * mutation. Each entry includes the path, the option names declared on the
+ * spec (option-level metadata stays internal), and the spec's category.
+ */
+export interface CompletionCommandInfo {
+  path: string[];
+  options: string[];
+  category?: string;
+}
+
+export function listCommandsForCompletion(): CompletionCommandInfo[] {
+  return commandSpecs.map((spec) => ({
+    path: [...spec.path],
+    options: [...(spec.options ?? [])],
+    category: spec.category,
+  }));
+}
+
+export function listGlobalOptionNamesForCompletion(): string[] {
+  return [...GLOBAL_OPTION_NAMES];
 }
 
 function validateNumericRanges(options: CommandOptions): void {
@@ -950,14 +1382,14 @@ function validateNumericRanges(options: CommandOptions): void {
 function validatePositiveInteger(name: string, value: number | undefined): void {
   if (value === undefined) return;
   if (!Number.isInteger(value) || value < 1) {
-    throw new Error(`Invalid value for --${name}: ${value}. Expected a positive integer.`);
+    throw usageError(`Invalid value for --${name}: ${value}. Expected a positive integer.`);
   }
 }
 
 function validateNonNegativeInteger(name: string, value: number | undefined): void {
   if (value === undefined) return;
   if (!Number.isInteger(value) || value < 0) {
-    throw new Error(`Invalid value for --${name}: ${value}. Expected a non-negative integer.`);
+    throw usageError(`Invalid value for --${name}: ${value}. Expected a non-negative integer.`);
   }
 }
 
@@ -966,7 +1398,7 @@ function validateChoice(name: string, value: string | undefined, specs: Record<s
   const spec = specs[name];
   if (!spec?.choices) return;
   if (!spec.choices.includes(value)) {
-    throw new Error(`Invalid value for --${name}: ${value}. Expected one of ${spec.choices.join(", ")}.`);
+    throw usageError(`Invalid value for --${name}: ${value}. Expected one of ${spec.choices.join(", ")}.`);
   }
 }
 
@@ -977,7 +1409,7 @@ function assertNoDuplicateSingletonOptions(tokens: Array<{ kind: string; name?: 
     const spec = allOptionSpecs[token.name];
     if (!spec || spec.multiple) continue;
     if (seen.has(token.name)) {
-      throw new Error(`Option --${token.name} can only be provided once.`);
+      throw usageError(`Option --${token.name} can only be provided once.`);
     }
     seen.add(token.name);
   }
@@ -1005,7 +1437,7 @@ function renderGlobalHelp(): string {
         lines.push("    --all                              Return all matches (up to 1000)");
       }
       if (spec.path[0] === "context") {
-        lines.push("    --limit <n>                        Max recent asks/sessions for context");
+        lines.push("    --limit <n>                        Max recent asks/sessions for context (default 12)");
       }
       if (spec.path[0] === "stats") {
         lines.push("    --by <dimension>                   Roll up token usage by model, project, source, host, day, or month");
@@ -1014,12 +1446,14 @@ function renderGlobalHelp(): string {
     lines.push("");
   }
   lines.push("Global flags:");
-  const globalFlagNames = ["store", "db", "json", "long", "full", "index", "dry-run", "showall"] as const;
+  const globalFlagNames = ["store", "db", "json", "long", "full", "index", "dry-run", "showall", "non-interactive", "agent"] as const;
   const globalFlagWidth = optionUsageWidth(globalFlagNames, globalOptions);
   for (const name of globalFlagNames) {
     lines.push(`  ${formatOptionUsage(name, globalOptions[name], globalFlagWidth)}`);
   }
   lines.push("");
+  lines.push("Automation: pass --non-interactive (CI) or --agent (AI agents; implies --json + --no-color + --non-interactive).");
+  lines.push("Stdin: use `-` as a string positional or string option value to read from stdin — e.g. `echo $ref | cchistory show turn -`. (Numeric options like --limit reject `-`; their parse runs before stdin substitution.)");
   lines.push("Store resolution: ~/.cchistory by default; use --store or --db to pin another location");
   lines.push("Run `cchistory help <command>` for command-specific options and examples.");
   return lines.join("\n");
@@ -1028,12 +1462,13 @@ function renderGlobalHelp(): string {
 function renderCommandHelp(path: string[]): string {
   const spec = getCommandSpec(path);
   if (!spec) {
-    throw new Error(`Unknown help topic: ${commandName(path)}`);
+    throw usageError(`Unknown help topic: ${commandName(path)}`);
   }
+  const descriptionSuffix = spec.aliasOf ? ` (alias of ${spec.aliasOf})` : "";
   const lines = [
     `Usage: ${spec.usage}`,
     "",
-    spec.description,
+    `${spec.description}${descriptionSuffix}`,
   ];
   const childNames = spec.children ?? [];
   if (childNames.length > 0) {
@@ -1052,14 +1487,19 @@ function renderCommandHelp(path: string[]): string {
     const commandOptionSpecs = commandOptionsForHelp(path);
     const localOptionWidth = optionUsageWidth(localOptions, commandOptionSpecs);
     for (const name of localOptions) {
-      lines.push(`  ${formatOptionUsage(name, commandOptionSpecs[name]!, localOptionWidth)}`);
+      const specForName = commandOptionSpecs[name]!;
+      const overridden =
+        spec.optionDefaults && spec.optionDefaults[name] !== undefined
+          ? { ...specForName, description: `${specForName.description} (default ${spec.optionDefaults[name]})` }
+          : specForName;
+      lines.push(`  ${formatOptionUsage(name, overridden, localOptionWidth)}`);
     }
   }
   lines.push("", "Global flags:");
-  const globalFlagNames = ["store", "db", "json", "long", "full", "index", "dry-run", "showall", "debug", "color"] as const;
+  const globalFlagNames = globalFlagsForCommand(path);
   const globalFlagWidth = optionUsageWidth(globalFlagNames, globalOptions);
   for (const name of globalFlagNames) {
-    lines.push(`  ${formatOptionUsage(name, globalOptions[name], globalFlagWidth)}`);
+    lines.push(`  ${formatOptionUsage(name, globalOptions[name]!, globalFlagWidth)}`);
   }
   if (spec.examples && spec.examples.length > 0) {
     lines.push("", "Examples:");
@@ -1082,7 +1522,8 @@ function groupTopLevelCommands(): Map<string, CommandSpec[]> {
 
 function formatCommandSummary(spec: CommandSpec): string {
   const command = spec.usage.replace(/^cchistory\s+/u, "").replace(/\s+\[.*$/u, "");
-  return `${command.padEnd(36)} ${spec.summary ?? spec.description}`;
+  const aliasTag = spec.aliasOf ? ` (alias of ${spec.aliasOf})` : "";
+  return `${command.padEnd(36)} ${spec.summary ?? spec.description}${aliasTag}`;
 }
 
 function commandOptionsForHelp(path: string[]): Record<string, OptionSpec> {
@@ -1151,7 +1592,7 @@ function readNumber(values: Record<string, string | string[] | boolean | undefin
   }
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
-    throw new Error(`Invalid numeric value for --${key}: ${value}`);
+    throw usageError(`Invalid numeric value for --${key}: ${value}`);
   }
   return parsed;
 }
