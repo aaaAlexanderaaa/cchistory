@@ -26,6 +26,7 @@ import type {
   TurnContextProjection,
   UserMessageProjection,
   UserTurnProjection,
+  AskUserQuestionTurn,
 } from "@cchistory/domain";
 import type { ConversationSeedOptions, ExtractedSessionSeed } from "./conversation-seeds.js";
 
@@ -212,6 +213,7 @@ export interface ProcessingCoreResult {
   sessions: SessionProjection[];
   turns: UserTurnProjection[];
   contexts: TurnContextProjection[];
+  askUserQuestionTurns: AskUserQuestionTurn[];
   lossAudits: LossAuditRecord[];
 }
 

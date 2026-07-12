@@ -3,7 +3,7 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "@cchistory/domain";
 
-export const STORAGE_SCHEMA_VERSION = "2026-06-30.1";
+export const STORAGE_SCHEMA_VERSION = "2026-07-11.1";
 
 export interface StorageSchemaMigration {
   id: string;
@@ -91,6 +91,12 @@ const STORAGE_SCHEMA_MIGRATIONS: ReadonlyArray<{
     to_version: STORAGE_SCHEMA_VERSION,
     summary:
       "Add source_file_ledger.content_max_timestamp (nullable TEXT). Authoritative content watermark from the last JSONL record's .timestamp on codex/claude_code/factory_droid; lets the skip path ignore bulk-external mtime bumps. NULL on legacy rows falls back to L0 mtime gate; lazy backfill on next re-encounter. Pure metadata column — adds no evidence blob ref, so prune sites in gc.ts and retireStorageBoundaryV2Sources are unaffected.",
+  },
+  {
+    id: "2026-07-11.1/ask-user-question-turns",
+    to_version: STORAGE_SCHEMA_VERSION,
+    summary:
+      "Add ask_user_question_turns table for synthesized question/answer pairs (Claude AskUserQuestion, Codex request_user_input). Stores full payload JSON keyed by (source_id, id); source-scoped replace is the only write path. No evidence blob ref or project linkage yet — these are derived from atom/edge pairs at projection time.",
   },
 ];
 
@@ -493,6 +499,22 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
 
     CREATE INDEX IF NOT EXISTS idx_migration_state_phase_status
       ON migration_state (phase, status);
+
+    CREATE TABLE IF NOT EXISTS ask_user_question_turns (
+      id TEXT NOT NULL PRIMARY KEY,
+      source_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      call_atom_id TEXT NOT NULL,
+      result_atom_id TEXT NOT NULL,
+      payload_json TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_ask_user_question_turns_session
+      ON ask_user_question_turns (source_id, session_id);
+    CREATE INDEX IF NOT EXISTS idx_ask_user_question_turns_created
+      ON ask_user_question_turns (created_at);
   `);
 
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[0]!);
@@ -512,6 +534,7 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[9]!);
   ensureSourceFileLedgerContentMaxTimestamp(db);
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[11]!);
+  recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[12]!);
   setSchemaMeta(db, "schema_version", STORAGE_SCHEMA_VERSION);
 
   ensureStorageIndexes(db);

@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import type {
   ArtifactCoverageRecord,
   AtomEdge,
+  AskUserQuestionTurn,
   CapturedBlob,
   ConversationAtom,
   DerivedCandidate,
@@ -810,6 +811,7 @@ export class CCHistoryStorage {
         key: "contexts",
         v2Json: streamContextJson,
       },
+      { key: "ask_user_question_turns", table: "ask_user_question_turns", orderBy: "ORDER BY created_at ASC" },
     ];
 
     write(`{"source":${JSON.stringify(source)}`);
@@ -1969,6 +1971,27 @@ export class CCHistoryStorage {
     return Queries.listSessions(this.db);
   }
 
+  listAskUserQuestionTurns(filter?: { source_id?: string; session_id?: string }): AskUserQuestionTurn[] {
+    const db = this.db;
+    const where: string[] = [];
+    const params: string[] = [];
+    if (filter?.source_id) {
+      where.push("source_id = ?");
+      params.push(filter.source_id);
+    }
+    if (filter?.session_id) {
+      where.push("session_id = ?");
+      params.push(filter.session_id);
+    }
+    const whereClause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
+    const stmt = db.prepare(
+      `SELECT payload_json FROM ask_user_question_turns ${whereClause} ORDER BY created_at DESC, id DESC`,
+    );
+    return (stmt.all(...params) as Array<{ payload_json: string }>).map((row) =>
+      fromJson<AskUserQuestionTurn>(row.payload_json),
+    );
+  }
+
   private buildSourcePayload(sourceId: string): SourceSyncPayload {
     const source = this.listSources().find((entry) => entry.id === sourceId);
     if (!source) {
@@ -2007,6 +2030,7 @@ export class CCHistoryStorage {
       sessions: Queries.selectPayloadsBySource<SessionProjection>(this.db, "sessions", sourceId, "ORDER BY created_at ASC, updated_at ASC"),
       turns,
       contexts,
+      ask_user_question_turns: this.listAskUserQuestionTurns({ source_id: sourceId }),
     };
   }
 
@@ -2029,6 +2053,7 @@ export class CCHistoryStorage {
       candidates: [],
       turns: [],
       contexts: [],
+      ask_user_question_turns: [],
     };
   }
 
@@ -2088,6 +2113,7 @@ export class CCHistoryStorage {
       candidates: [],
       turns: [],
       contexts: [],
+      ask_user_question_turns: [],
     };
   }
 
@@ -2110,6 +2136,7 @@ export class CCHistoryStorage {
       candidates: [],
       turns: [],
       contexts: [],
+      ask_user_question_turns: [],
     };
   }
 

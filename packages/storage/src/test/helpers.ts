@@ -446,6 +446,7 @@ export function createFixturePayload(
         raw_event_refs: [recordId],
       },
     ],
+    ask_user_question_turns: [],
   };
 }
 
@@ -498,6 +499,7 @@ export function combineFixturePayloads(
     ],
     turns: [...left.turns, ...right.turns].sort((a, b) => a.created_at.localeCompare(b.created_at)),
     contexts: [...left.contexts, ...right.contexts],
+    ask_user_question_turns: [...left.ask_user_question_turns, ...right.ask_user_question_turns],
   };
 }
 

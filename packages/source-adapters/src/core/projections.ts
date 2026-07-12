@@ -18,6 +18,7 @@ import type {
   LossAuditRecord,
   SourcePlatform,
   SourceDefinition,
+  AskUserQuestionTurn,
 } from "@cchistory/domain";
 import { joinDisplaySegments } from "@cchistory/domain";
 import { applyMaskTemplates, LITERAL_PROMPT_MASK_TEMPLATE_IDS } from "../masks.js";
@@ -45,6 +46,7 @@ import {
 } from "./utils.js";
 import type { SessionDraft, GitProjectEvidence, TokenUsageMetrics } from "./types.js";
 import { resolveSourceFormatProfile } from "./discovery.js";
+import { getAskUserProfile } from "./ask-user-registry.js";
 
 export function buildProjectObservationCandidates(
   draft: SessionDraft,
@@ -981,4 +983,73 @@ export function extractCanonicalFallback(segments: readonly DisplaySegment[]): s
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+export function buildAskUserQuestionTurns(
+  draft: SessionDraft,
+  atoms: ConversationAtom[],
+  edges: AtomEdge[],
+): AskUserQuestionTurn[] {
+  const profile = getAskUserProfile(draft.source_platform);
+  if (!profile) {
+    return [];
+  }
+  const toolNameSet = new Set(profile.toolNames);
+  const atomById = new Map<string, ConversationAtom>();
+  const toolCallEntries: Array<{ atom: ConversationAtom; toolName: string }> = [];
+  for (const atom of atoms) {
+    atomById.set(atom.id, atom);
+    if (atom.content_kind !== "tool_call") {
+      continue;
+    }
+    const toolName = asString(atom.payload.tool_name);
+    if (!toolName || !toolNameSet.has(toolName)) {
+      continue;
+    }
+    toolCallEntries.push({ atom, toolName });
+  }
+  if (toolCallEntries.length === 0) {
+    return [];
+  }
+
+  const toolCallAtomIds = new Set(toolCallEntries.map((entry) => entry.atom.id));
+  const resultAtomByCallAtomId = new Map<string, ConversationAtom>();
+  for (const edge of edges) {
+    if (edge.edge_kind !== "tool_result_for") {
+      continue;
+    }
+    if (!toolCallAtomIds.has(edge.to_atom_id)) {
+      continue;
+    }
+    const resultAtom = atomById.get(edge.from_atom_id);
+    if (resultAtom && resultAtom.content_kind === "tool_result") {
+      resultAtomByCallAtomId.set(edge.to_atom_id, resultAtom);
+    }
+  }
+
+  const turns: AskUserQuestionTurn[] = [];
+  for (const { atom: callAtom, toolName } of toolCallEntries) {
+    const resultAtom = resultAtomByCallAtomId.get(callAtom.id);
+    if (!resultAtom) {
+      continue;
+    }
+    const questions = profile.parseCall(callAtom.payload.input);
+    if (questions.length === 0) {
+      continue;
+    }
+    const answers = profile.parseResult(resultAtom.payload.output, questions);
+    turns.push({
+      id: stableId("aqq", draft.source_id, callAtom.id, resultAtom.id),
+      source_id: draft.source_id,
+      session_id: draft.id,
+      source_platform: draft.source_platform,
+      created_at: resultAtom.time_key,
+      tool_name: toolName,
+      call_atom_id: callAtom.id,
+      result_atom_id: resultAtom.id,
+      questions,
+      answers,
+    });
+  }
+  return turns;
 }

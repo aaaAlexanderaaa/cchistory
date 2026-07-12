@@ -13,6 +13,7 @@ import path from "node:path";
 import process from "node:process";
 import type {
   AtomEdge,
+  AskUserQuestionTurn,
   CapturedBlob,
   ConversationAtom,
   DerivedCandidate,
@@ -136,6 +137,10 @@ export function writeStorageBoundaryV2Sidecars(input: {
 
     for (const turn of normalizedPayload.turns) {
       upsertBoundedUserTurn({ db: input.db, turn, boundedAt: now, assetDir: input.assetDir });
+    }
+
+    for (const aqq of normalizedPayload.ask_user_question_turns) {
+      upsertAskUserQuestionTurn(input.db, aqq);
     }
 
     for (const context of normalizedPayload.contexts) {
@@ -305,6 +310,7 @@ export function streamV2SidecarsFromV1(input: {
     db.prepare("DELETE FROM parsed_record_spans WHERE source_id = ?").run(sourceId);
     db.prepare("DELETE FROM turn_context_refs_v2 WHERE source_id = ?").run(sourceId);
     db.prepare("DELETE FROM user_turns_v2 WHERE source_id = ?").run(sourceId);
+    db.prepare("DELETE FROM ask_user_question_turns WHERE source_id = ?").run(sourceId);
     db.prepare("DELETE FROM derived_cache_refs WHERE source_id = ?").run(sourceId);
 
     // 1. Blob-by-blob: materialize evidence + write blob-scoped V2 rows +
@@ -446,6 +452,7 @@ export interface SourcePayloadStreamingChunk {
   sessions: readonly SessionProjection[];
   turns: readonly UserTurnProjection[];
   contexts: readonly TurnContextProjection[];
+  ask_user_question_turns: readonly AskUserQuestionTurn[];
   trusted_bytes_by_blob_id?: ReadonlyMap<string, Buffer>;
   /**
    * When true, this chunk's origin_path is being preserved (the source file
@@ -860,6 +867,13 @@ export async function mergeSourcePayloadStreaming(
         const normalizedTurn = turn.source_id === sourceId ? turn : { ...turn, source_id: sourceId };
         upsertBoundedUserTurn({ db, turn: normalizedTurn, boundedAt: now, assetDir: input.asset_dir });
       }
+      const askUserForWrite = chunk.ask_user_question_turns.filter((entry) =>
+        changedIncomingSessionRefs.has(entry.session_id),
+      );
+      for (const aqq of askUserForWrite) {
+        const normalizedAqq = aqq.source_id === sourceId ? aqq : { ...aqq, source_id: sourceId };
+        upsertAskUserQuestionTurn(db, normalizedAqq);
+      }
       for (const context of contextsForWrite) {
         const materialized = materializeContextCache({
           assetDir: input.asset_dir,
@@ -1177,6 +1191,7 @@ export function retireStorageBoundaryV2Sources(input: {
       input.db.prepare("DELETE FROM parsed_record_spans WHERE source_id = ?").run(sourceId);
       input.db.prepare("DELETE FROM turn_context_refs_v2 WHERE source_id = ?").run(sourceId);
       input.db.prepare("DELETE FROM user_turns_v2 WHERE source_id = ?").run(sourceId);
+      input.db.prepare("DELETE FROM ask_user_question_turns WHERE source_id = ?").run(sourceId);
       input.db.prepare("DELETE FROM derived_cache_refs WHERE source_id = ?").run(sourceId);
       // A.2: also drop evidence_captures rows for this source so their shas
       // become candidates for pruning. source_file_ledger is left in place
@@ -1387,6 +1402,7 @@ function prepareReplaceCurrentState(
   db.prepare("DELETE FROM parsed_record_spans WHERE source_id = ?").run(sourceId);
   db.prepare("DELETE FROM turn_context_refs_v2 WHERE source_id = ?").run(sourceId);
   db.prepare("DELETE FROM user_turns_v2 WHERE source_id = ?").run(sourceId);
+  db.prepare("DELETE FROM ask_user_question_turns WHERE source_id = ?").run(sourceId);
   db.prepare("DELETE FROM derived_cache_refs WHERE source_id = ?").run(sourceId);
   markUnobservedLedgersSourceAbsent(db, sourceId, incomingOriginPaths, now);
 }
@@ -1443,6 +1459,7 @@ function prepareMergeCurrentState(
   const selectTurnIds = db.prepare("SELECT turn_id FROM user_turns_v2 WHERE source_id = ? AND session_id = ?");
   const deleteContext = db.prepare("DELETE FROM turn_context_refs_v2 WHERE source_id = ? AND turn_id = ?");
   const deleteTurns = db.prepare("DELETE FROM user_turns_v2 WHERE source_id = ? AND session_id = ?");
+  const deleteAskUser = db.prepare("DELETE FROM ask_user_question_turns WHERE source_id = ? AND session_id = ?");
   const deleteSpans = db.prepare("DELETE FROM parsed_record_spans WHERE source_id = ? AND session_ref = ?");
   const deleteCacheRef = db.prepare("DELETE FROM derived_cache_refs WHERE source_id = ? AND scope_kind = ? AND scope_ref = ?");
   for (const sessionRef of sessionRefs) {
@@ -1450,6 +1467,7 @@ function prepareMergeCurrentState(
       deleteContext.run(sourceId, row.turn_id);
     }
     deleteTurns.run(sourceId, sessionRef);
+    deleteAskUser.run(sourceId, sessionRef);
     deleteSpans.run(sourceId, sessionRef);
     deleteCacheRef.run(sourceId, "session", sessionRef);
   }
@@ -2084,6 +2102,30 @@ function upsertBoundedUserTurn(input: {
     lineage.record_refs.length,
     lineage.blob_refs.length,
     lineage.candidate_refs.length,
+  );
+}
+
+function upsertAskUserQuestionTurn(db: DatabaseSync, turn: AskUserQuestionTurn): void {
+  db.prepare(`
+    INSERT OR REPLACE INTO ask_user_question_turns (
+      id,
+      source_id,
+      session_id,
+      tool_name,
+      created_at,
+      call_atom_id,
+      result_atom_id,
+      payload_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    turn.id,
+    turn.source_id,
+    turn.session_id,
+    turn.tool_name,
+    turn.created_at,
+    turn.call_atom_id,
+    turn.result_atom_id,
+    JSON.stringify(turn),
   );
 }
 

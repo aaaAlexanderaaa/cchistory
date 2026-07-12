@@ -369,6 +369,7 @@ export function createLegacySchemaFixturePayload(): SourceSyncPayload {
         raw_event_refs: [],
       },
     ],
+    ask_user_question_turns: [],
   };
 }
 

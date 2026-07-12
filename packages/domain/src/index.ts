@@ -168,7 +168,8 @@ export type CandidateKind =
   | "turn"
   | "context_span"
   | "turn_context"
-  | "project_observation";
+  | "project_observation"
+  | "ask_user_question";
 
 export interface SourceDefinition {
   id: string;
@@ -929,11 +930,68 @@ export interface SourceSyncPayload {
   sessions: SessionProjection[];
   turns: UserTurnProjection[];
   contexts: TurnContextProjection[];
+  ask_user_question_turns: AskUserQuestionTurn[];
 }
 
 export type Session = SessionProjection;
 export type UserTurn = UserTurnProjection;
 export type TurnContext = TurnContextProjection;
+
+export interface AskUserQuestionOptionSpec {
+  label: string;
+  description?: string;
+}
+
+export interface AskUserQuestionSpec {
+  header?: string;
+  question: string;
+  options: AskUserQuestionOptionSpec[];
+  /**
+   * Codex request_user_input assigns each question a stable id; the result
+   * payload keys answers by this id. Claude AskUserQuestion does not set it.
+   */
+  id?: string;
+}
+
+/**
+ * A single user response to one question of an AskUserQuestion /
+ * request_user_input call.
+ *
+ * Semantics:
+ * - `question_index` refers to the parallel `AskUserQuestionSpec[]` on the
+ *   parent turn.
+ * - When the user picked a known option, `selected_label` holds that option's
+ *   label (case-normalized to the spec's casing).
+ * - Otherwise `free_text` carries the raw user input (trimmed). For Codex
+ *   multi-select, the first matched label wins as `selected_label` and the
+ *   remaining labels are joined into `free_text` (comma-separated) because
+ *   this schema only models a single selection per question.
+ * - Questions that received no answer are omitted from the parent turn's
+ *   `answers[]` rather than represented with null fields.
+ */
+export interface AskUserAnswer {
+  question_index: number;
+  selected_label?: string;
+  free_text?: string;
+}
+
+export interface AskUserQuestionTurn {
+  id: string;
+  source_id: string;
+  session_id: string;
+  /**
+   * Reserved for future projection-time linkage to the session's primary
+   * project. Not populated today; consumers should not rely on it being set.
+   */
+  project_id?: string;
+  source_platform: SourcePlatform;
+  created_at: string;
+  tool_name: string;
+  call_atom_id: string;
+  result_atom_id: string;
+  questions: AskUserQuestionSpec[];
+  answers: AskUserAnswer[];
+}
 
 export type UsageStatsDimension = "model" | "project" | "source" | "host" | "day" | "month";
 

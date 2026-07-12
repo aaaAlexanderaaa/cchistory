@@ -6,6 +6,7 @@
 import "./core/registry.test.js";
 import "./core/discovery.test.js";
 import "./core/projections.test.js";
+import "./core/ask-user.test.js";
 import "./core/tokens.test.js";
 import "./core/utils.test.js";
 import "./core/jsonl-records.test.js";

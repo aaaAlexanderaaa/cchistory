@@ -1030,6 +1030,7 @@ async function streamCodexMergeBatch(
           sessions: projected.sessions,
           turns: projected.turns,
           contexts: projected.contexts,
+          ask_user_question_turns: projected.askUserQuestionTurns,
           trusted_bytes_by_blob_id: eventChunk.trusted_bytes_by_blob_id,
           preserved: isPreservingSkip,
         };
@@ -1094,6 +1095,7 @@ async function streamCodexMergeBatch(
         sessions: [],
         turns: [],
         contexts: [],
+        ask_user_question_turns: [],
       };
     })(),
     preserve_origin_paths: preservedOriginPaths,
@@ -1569,6 +1571,7 @@ function buildTailBlobPayloadFromMetadata(
     sessions: [],
     turns: [],
     contexts: [],
+    ask_user_question_turns: [],
   };
 }
 
@@ -1638,6 +1641,7 @@ async function buildCodexMetadataOnlyReusePayloadForStableOldBatch(
     sessions: [],
     turns: [],
     contexts: [],
+    ask_user_question_turns: [],
   };
 }
 

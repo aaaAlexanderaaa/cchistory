@@ -90,6 +90,27 @@ export async function handleQueryAlias(context: CommandContext): Promise<Command
         };
         return { text: JSON.stringify(json, null, 2), json };
       }
+      case "ask-user": {
+        const sourceIds = resolveSourceRefs(storage, context.options.source);
+        const sessionId = context.options.session as string | undefined;
+        const limit = context.options.limit ?? 200;
+        const filter: { source_id?: string; session_id?: string } = {};
+        if (sourceIds.length === 1) {
+          filter.source_id = sourceIds[0];
+        }
+        if (sessionId) {
+          filter.session_id = resolveSessionRef(storage, sessionId).id;
+        }
+        let json = storage.listAskUserQuestionTurns(
+          Object.keys(filter).length > 0 ? filter : undefined,
+        );
+        if (sourceIds.length > 1) {
+          const sourceIdSet = new Set(sourceIds);
+          json = json.filter((turn) => sourceIdSet.has(turn.source_id));
+        }
+        json = json.slice(0, limit);
+        return { text: JSON.stringify(json, null, 2), json };
+      }
       default:
         throw new Error("Unsupported query target.");
     }
@@ -101,12 +122,13 @@ export async function handleQueryAlias(context: CommandContext): Promise<Command
 function validateQueryTarget(context: CommandContext, target: string | undefined): void {
   const positionalLimit = context.commandPath[1] ? 0 : 1;
   if (context.positionals.length > positionalLimit) {
-    throw usageError("Use `query turns|turn|sessions|session|projects|project ...`.");
+    throw usageError("Use `query turns|turn|sessions|session|projects|project|ask-user ...`.");
   }
   switch (target) {
     case "turns":
     case "sessions":
     case "projects":
+    case "ask-user":
       return;
     case "turn":
     case "session":
@@ -114,7 +136,7 @@ function validateQueryTarget(context: CommandContext, target: string | undefined
       requireOption(context.options.id, "id");
       return;
     default:
-      throw usageError("Use `query turns|turn|sessions|session|projects|project ...`.");
+      throw usageError("Use `query turns|turn|sessions|session|projects|project|ask-user ...`.");
   }
 }
 

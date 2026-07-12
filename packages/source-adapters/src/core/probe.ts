@@ -16,6 +16,7 @@ import type {
   SessionProjection,
   UserTurnProjection,
   TurnContextProjection,
+  AskUserQuestionTurn,
   SourceFormatProfile,
   SourcePlatform,
 } from "@cchistory/domain";
@@ -62,6 +63,7 @@ import {
   buildProjectObservationCandidates,
   buildSubmissionGroups,
   buildTurnsAndContext,
+  buildAskUserQuestionTurns,
   buildStageRuns,
 } from "./projections.js";
 import type {
@@ -215,6 +217,7 @@ async function finalizeSourcePayload(
       sessions: [],
       turns: [],
       contexts: [],
+      ask_user_question_turns: [],
     };
   }
 
@@ -287,6 +290,7 @@ async function finalizeSourcePayload(
     sessions: processingCore.sessions,
     turns: processingCore.turns,
     contexts: processingCore.contexts,
+    ask_user_question_turns: processingCore.askUserQuestionTurns,
   };
   emitProbeProgress(options, state.source, {
     stage: "source_done",
@@ -1376,6 +1380,7 @@ async function processCollectedSessions(
   const sessions: SessionProjection[] = [];
   const turns: UserTurnProjection[] = [];
   const contexts: TurnContextProjection[] = [];
+  const askUserQuestionTurns: AskUserQuestionTurn[] = [];
   const lossAudits: LossAuditRecord[] = [];
 
   for (const sessionInput of sessionsById.values()) {
@@ -1423,6 +1428,13 @@ async function processCollectedSessions(
       sessions.push(turnResult.session);
       turns.push(...turnResult.turns);
       contexts.push(...turnResult.contexts);
+      askUserQuestionTurns.push(
+        ...buildAskUserQuestionTurns(
+          sessionInput.draft,
+          sessionInput.atoms,
+          [...sessionInput.edges, ...submissionResult.edges],
+        ),
+      );
     }
     lossAudits.push(...sessionInput.loss_audits);
   }
@@ -1440,6 +1452,7 @@ async function processCollectedSessions(
     sessions,
     turns,
     contexts,
+    askUserQuestionTurns,
     lossAudits,
   };
 }

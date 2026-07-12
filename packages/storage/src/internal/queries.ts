@@ -56,6 +56,7 @@ const ALLOWED_TABLE_NAMES = new Set([
   // turn count post-B.4 / post-B.6.
   "user_turns_v2",
   "turn_context_refs_v2",
+  "ask_user_question_turns",
 ]);
 
 function assertTableName(name: string): void {

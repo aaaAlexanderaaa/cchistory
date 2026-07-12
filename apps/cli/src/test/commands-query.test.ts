@@ -355,3 +355,81 @@ test("show turn human output summarizes prompt while json preserves full text", 
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test("query ask-user returns synthesized AskUserQuestion turns with source and session filters", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-query-ask-user-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    await seedCliFixtures(tempRoot);
+    process.env.HOME = tempRoot;
+    const storeDir = path.join(tempRoot, "store");
+
+    await runCliCapture(["sync", "--store", storeDir, "--source", "claude_code"], tempRoot);
+
+    // No AskUserQuestion calls in the seeded fixtures → empty array, but the
+    // command path (arg parsing, query alias, storage call, JSON output) is
+    // exercised and must produce a valid empty list.
+    const emptyResult = await runCliCapture(["query", "ask-user", "--store", storeDir, "--json"], tempRoot);
+    assert.equal(emptyResult.exitCode, 0, emptyResult.stderr);
+    assert.deepEqual(JSON.parse(emptyResult.stdout), []);
+
+    // Inject a row via the storage API to verify filters and shape end-to-end.
+    const { CCHistoryStorage } = await import("@cchistory/storage");
+    const storage = new CCHistoryStorage(storeDir);
+    const sourceId = storage.listSources()[0]!.id;
+    const sessionsResult = await runCliCapture(["query", "sessions", "--store", storeDir, "--json"], tempRoot);
+    const sessions = JSON.parse(sessionsResult.stdout);
+    const sessionId = sessions[0].id;
+    storage.replaceSourcePayload({
+      ...storage.getSourcePayload(sourceId)!,
+      ask_user_question_turns: [
+        {
+          id: "aqq-cli-1",
+          source_id: sourceId,
+          session_id: sessionId,
+          source_platform: "claude_code",
+          created_at: "2026-07-11T10:00:00.000Z",
+          tool_name: "AskUserQuestion",
+          call_atom_id: "atom-cli-call-1",
+          result_atom_id: "atom-cli-result-1",
+          questions: [
+            {
+              header: "Library",
+              question: "Which library?",
+              options: [{ label: "React" }, { label: "Vue" }],
+            },
+          ],
+          answers: [{ question_index: 0, selected_label: "React" }],
+        },
+      ],
+    });
+
+    const allResult = await runCliCapture(["query", "ask-user", "--store", storeDir, "--json"], tempRoot);
+    assert.equal(allResult.exitCode, 0, allResult.stderr);
+    const allRows = JSON.parse(allResult.stdout);
+    assert.equal(allRows.length, 1);
+    assert.equal(allRows[0].id, "aqq-cli-1");
+    assert.equal(allRows[0].tool_name, "AskUserQuestion");
+    assert.equal(allRows[0].questions[0].header, "Library");
+    assert.equal(allRows[0].answers[0].selected_label, "React");
+
+    const bySessionResult = await runCliCapture(
+      ["query", "ask-user", "--store", storeDir, "--session", sessionId, "--json"],
+      tempRoot,
+    );
+    assert.equal(bySessionResult.exitCode, 0, bySessionResult.stderr);
+    assert.equal(JSON.parse(bySessionResult.stdout).length, 1);
+
+    // Unknown session refs surface as a usage error, matching `query session --id`.
+    const missResult = await runCliCapture(
+      ["query", "ask-user", "--store", storeDir, "--session", "session-missing", "--json"],
+      tempRoot,
+    );
+    assert.notEqual(missResult.exitCode, 0);
+    assert.match(missResult.stderr, /Unknown session reference: session-missing/);
+  } finally {
+    process.env.HOME = originalHome;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

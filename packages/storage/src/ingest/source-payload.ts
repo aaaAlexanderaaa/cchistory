@@ -681,6 +681,7 @@ export function deleteSessionScopedRows(db: DatabaseSync, sourceId: string, sess
     "DELETE FROM turn_context_refs_v2 WHERE source_id = ? AND turn_id IN (SELECT turn_id FROM user_turns_v2 WHERE source_id = ? AND session_id = ?)",
   ).run(sourceId, sourceId, sessionRef);
   db.prepare("DELETE FROM user_turns_v2 WHERE source_id = ? AND session_id = ?").run(sourceId, sessionRef);
+  db.prepare("DELETE FROM ask_user_question_turns WHERE source_id = ? AND session_id = ?").run(sourceId, sessionRef);
   db.prepare("DELETE FROM sessions WHERE source_id = ? AND id = ?").run(sourceId, sessionRef);
   db.prepare("DELETE FROM derived_candidates WHERE source_id = ? AND session_ref = ?").run(sourceId, sessionRef);
   db.prepare("DELETE FROM atom_edges WHERE source_id = ? AND session_ref = ?").run(sourceId, sessionRef);

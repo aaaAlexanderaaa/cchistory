@@ -63,6 +63,7 @@ export function normalizeSourcePayload(payload: SourceSyncPayload): SourceSyncPa
     sessions: payload.sessions.map((session) => normalizeSessionProjection(updateSourceScopedEntry(session, sourceId))),
     turns: payload.turns.map((turn) => updateSourceScopedEntry(turn, sourceId)),
     contexts: payload.contexts,
+    ask_user_question_turns: payload.ask_user_question_turns.map((turn) => updateSourceScopedEntry(turn, sourceId)),
   };
 }
 

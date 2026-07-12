@@ -1302,6 +1302,7 @@ function combineSourcePayloads(left: SourceSyncPayload, right: SourceSyncPayload
     sessions: [...left.sessions, ...right.sessions],
     turns: [...left.turns, ...right.turns],
     contexts: [...left.contexts, ...right.contexts],
+    ask_user_question_turns: [...left.ask_user_question_turns, ...right.ask_user_question_turns],
   };
 }
 

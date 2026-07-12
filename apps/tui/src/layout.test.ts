@@ -482,6 +482,7 @@ function createFixturePayload(
         raw_event_refs: [recordId],
       },
     ],
+    ask_user_question_turns: [],
   };
 }
 

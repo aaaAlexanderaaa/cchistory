@@ -724,11 +724,49 @@ test("B.5.0a: schema migration adds the seven full-content columns to user_turns
           | { value_text: string }
           | undefined
       )?.value_text;
-      assert.equal(schemaVersion, "2026-06-30.1");
+      assert.equal(schemaVersion, "2026-07-11.1");
     } finally {
       db.close();
     }
   }, "cchistory-b5-0a-schema-");
+});
+
+test("2026-07-11.1: schema migration creates ask_user_question_turns table and indexes", async () => {
+  await withSeededHome(async (_tempRoot, storeDir) => {
+    await runCliCapture(["sync", "--store", storeDir]);
+
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const cols = (
+        db.prepare("PRAGMA table_info(ask_user_question_turns)").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      for (const expected of [
+        "id",
+        "source_id",
+        "session_id",
+        "tool_name",
+        "created_at",
+        "call_atom_id",
+        "result_atom_id",
+        "payload_json",
+      ]) {
+        assert.ok(cols.includes(expected), `ask_user_question_turns must have ${expected}`);
+      }
+
+      const indexes = (
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'ask_user_question_turns'").all() as Array<{ name: string }>
+      ).map((row) => row.name);
+      for (const expected of [
+        "idx_ask_user_question_turns_session",
+        "idx_ask_user_question_turns_created",
+      ]) {
+        assert.ok(indexes.includes(expected), `missing index ${expected}`);
+      }
+    } finally {
+      db.close();
+    }
+  }, "cchistory-ask-user-schema-");
 });
 
 test("B.5.0b: B.3 backfill populates the full-content columns on a fresh store", async () => {

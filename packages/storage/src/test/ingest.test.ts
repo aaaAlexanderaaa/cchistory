@@ -755,6 +755,7 @@ function combineSourcePayloads(left: SourceSyncPayload, right: SourceSyncPayload
     sessions: [...left.sessions, ...right.sessions],
     turns: [...left.turns, ...right.turns],
     contexts: [...left.contexts, ...right.contexts],
+    ask_user_question_turns: [...left.ask_user_question_turns, ...right.ask_user_question_turns],
   };
 }
 
@@ -794,6 +795,7 @@ function payloadToChunk(payload: SourceSyncPayload, originPath: string): SourceP
     sessions: payload.sessions,
     turns: payload.turns,
     contexts: payload.contexts,
+    ask_user_question_turns: payload.ask_user_question_turns,
   };
 }
 
@@ -1168,5 +1170,204 @@ test("mergeSourcePayloadStreaming materializes oversized blobs via the streaming
   } finally {
     await rm(dataDir, { recursive: true, force: true });
     await rm(sourceDir, { recursive: true, force: true });
+  }
+});
+
+test("replaceSourcePayload round-trips ask_user_question_turns and listAskUserQuestionTurns filters and orders them", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-aqq-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const sessionId = "session-aqq";
+
+    const basePayload = createFixturePayload("src-aqq", "Question host turn", "sr-aqq", {
+      sessionId,
+      turnId: "turn-aqq",
+    });
+    basePayload.ask_user_question_turns = [
+      {
+        id: "aqq-1",
+        source_id: basePayload.source.id,
+        session_id: sessionId,
+        source_platform: "claude_code",
+        created_at: "2026-07-11T10:00:00.000Z",
+        tool_name: "AskUserQuestion",
+        call_atom_id: "atom-call-1",
+        result_atom_id: "atom-result-1",
+        questions: [
+          {
+            header: "Library",
+            question: "Which library?",
+            options: [{ label: "React" }, { label: "Vue" }],
+          },
+        ],
+        answers: [{ question_index: 0, selected_label: "React" }],
+      },
+      {
+        id: "aqq-2",
+        source_id: basePayload.source.id,
+        session_id: sessionId,
+        source_platform: "claude_code",
+        created_at: "2026-07-11T11:00:00.000Z",
+        tool_name: "AskUserQuestion",
+        call_atom_id: "atom-call-2",
+        result_atom_id: "atom-result-2",
+        questions: [
+          {
+            question: "Light or dark?",
+            options: [{ label: "Light" }, { label: "Dark" }],
+          },
+        ],
+        answers: [{ question_index: 0, selected_label: "Dark" }],
+      },
+    ];
+    storage.replaceSourcePayload(basePayload);
+
+    // The persisted source_id is the normalized instance id (legacy "src-" ids
+    // are re-derived), so look it up from the stored source rather than the
+    // input payload.
+    const storedSourceId = storage.listSources()[0]!.id;
+
+    // No filter: both rows, newest first.
+    const allRows = storage.listAskUserQuestionTurns();
+    assert.equal(allRows.length, 2);
+    assert.equal(allRows[0]!.id, "aqq-2");
+    assert.equal(allRows[1]!.id, "aqq-1");
+    assert.deepEqual(allRows[0]!.answers, [{ question_index: 0, selected_label: "Dark" }]);
+
+    // Filter by source only.
+    const bySource = storage.listAskUserQuestionTurns({ source_id: storedSourceId });
+    assert.equal(bySource.length, 2);
+
+    // Filter by session only (the new SQL path).
+    const bySession = storage.listAskUserQuestionTurns({ session_id: sessionId });
+    assert.equal(bySession.length, 2);
+
+    // Filter by both.
+    const byBoth = storage.listAskUserQuestionTurns({ source_id: storedSourceId, session_id: sessionId });
+    assert.equal(byBoth.length, 2);
+
+    // Filter by session that doesn't exist.
+    const miss = storage.listAskUserQuestionTurns({ session_id: "session-missing" });
+    assert.equal(miss.length, 0);
+
+    // Replace path overwrites prior rows (source-scoped replace deletes by source_id).
+    basePayload.ask_user_question_turns = [
+      {
+        id: "aqq-3",
+        source_id: basePayload.source.id,
+        session_id: sessionId,
+        source_platform: "claude_code",
+        created_at: "2026-07-11T12:00:00.000Z",
+        tool_name: "AskUserQuestion",
+        call_atom_id: "atom-call-3",
+        result_atom_id: "atom-result-3",
+        questions: [{ question: "Solo?", options: [{ label: "Yes" }, { label: "No" }] }],
+        answers: [{ question_index: 0, selected_label: "Yes" }],
+      },
+    ];
+    storage.replaceSourcePayload(basePayload);
+    const afterReplace = storage.listAskUserQuestionTurns({ source_id: storedSourceId });
+    assert.equal(afterReplace.length, 1);
+    assert.equal(afterReplace[0]!.id, "aqq-3");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("mergeSourcePayloadStreaming writes ask_user_question_turns only for changed sessions", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-stream-aqq-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const sourceId = "src-stream-aqq";
+    const baseDir = "/tmp/stream-aqq";
+    const pathA = path.join(baseDir, "a.jsonl");
+    const pathB = path.join(baseDir, "b.jsonl");
+
+    // Seed: two sessions, each with one AQQT row.
+    const seedA = createFixturePayload(sourceId, "Seed A turn", "sr-seed-a", {
+      baseDir,
+      sessionId: "session-a",
+      turnId: "turn-seed-a",
+    });
+    seedA.blobs[0]!.origin_path = pathA;
+    seedA.ask_user_question_turns = [
+      {
+        id: "aqq-seed-a",
+        source_id: sourceId,
+        session_id: "session-a",
+        source_platform: "claude_code",
+        created_at: "2026-07-11T10:00:00.000Z",
+        tool_name: "AskUserQuestion",
+        call_atom_id: "atom-seed-a-call",
+        result_atom_id: "atom-seed-a-result",
+        questions: [{ question: "A?", options: [{ label: "X" }, { label: "Y" }] }],
+        answers: [{ question_index: 0, selected_label: "X" }],
+      },
+    ];
+    const seedB = createFixturePayload(sourceId, "Seed B turn", "sr-seed-b", {
+      baseDir,
+      sessionId: "session-b",
+      turnId: "turn-seed-b",
+    });
+    seedB.blobs[0]!.origin_path = pathB;
+    seedB.ask_user_question_turns = [
+      {
+        id: "aqq-seed-b",
+        source_id: sourceId,
+        session_id: "session-b",
+        source_platform: "claude_code",
+        created_at: "2026-07-11T09:00:00.000Z",
+        tool_name: "AskUserQuestion",
+        call_atom_id: "atom-seed-b-call",
+        result_atom_id: "atom-seed-b-result",
+        questions: [{ question: "B?", options: [{ label: "Yes" }, { label: "No" }] }],
+        answers: [{ question_index: 0, selected_label: "Yes" }],
+      },
+    ];
+    storage.replaceSourcePayload(combineSourcePayloads(seedA, seedB));
+    assert.equal(storage.listAskUserQuestionTurns().length, 2);
+
+    // Stream a chunk that only touches session-a with a new AQQT.
+    // preserve_origin_paths includes pathB so session-b is treated as unchanged
+    // — its AQQT row must be preserved (not deleted, not rewritten).
+    const refreshA = createFixturePayload(sourceId, "Refreshed A turn", "sr-refresh-a", {
+      baseDir,
+      sessionId: "session-a",
+      turnId: "turn-refresh-a",
+    });
+    refreshA.blobs[0]!.origin_path = pathA;
+    refreshA.ask_user_question_turns = [
+      {
+        id: "aqq-refresh-a",
+        source_id: sourceId,
+        session_id: "session-a",
+        source_platform: "claude_code",
+        created_at: "2026-07-11T11:00:00.000Z",
+        tool_name: "AskUserQuestion",
+        call_atom_id: "atom-refresh-a-call",
+        result_atom_id: "atom-refresh-a-result",
+        questions: [{ question: "Refresh?", options: [{ label: "Go" }, { label: "Stop" }] }],
+        answers: [{ question_index: 0, selected_label: "Go" }],
+      },
+    ];
+
+    await mergeSourcePayloadStreaming(
+      (storage as unknown as { db: DatabaseSync }).db,
+      refreshA.source,
+      {
+        chunks: chunksFromPayloads([{ payload: refreshA, origin_path: pathA }]),
+        preserve_origin_paths: new Set([pathB]),
+        observed_origin_paths: new Set([pathA, pathB]),
+        asset_dir: dataDir,
+      },
+    );
+
+    const rows = storage.listAskUserQuestionTurns();
+    // session-a's old row was deleted and the new one written;
+    // session-b's row was preserved untouched.
+    const ids = rows.map((row) => row.id).sort();
+    assert.deepEqual(ids, ["aqq-refresh-a", "aqq-seed-b"]);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
   }
 });

@@ -143,6 +143,7 @@ export function createFailedSourcePayload(
     sessions: [],
     turns: [],
     contexts: [],
+    ask_user_question_turns: [],
   };
 }
 
