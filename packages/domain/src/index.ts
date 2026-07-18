@@ -17,6 +17,7 @@ export type SourcePlatform =
   | "codebuddy"
   | "accio"
   | "zcode"
+  | "kimi"
   | "other";
 
 export type LinkState = "committed" | "candidate" | "unlinked";

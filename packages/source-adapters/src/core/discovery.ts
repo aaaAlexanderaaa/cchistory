@@ -168,6 +168,14 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     description: "ZCode local CLI SQLite session store under ~/.zcode/cli/db, with message/part rows normalized into generic conversation records.",
     capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
+  kimi: {
+    id: "kimi:wire-jsonl:v1",
+    family: "local_coding_agent",
+    platform: "kimi",
+    parser_version: "kimi-parser@2026-07-18.1",
+    description: "Kimi Code main-agent wire JSONL under ~/.kimi-code/sessions, with state, index, user-history, and subagent wires retained as companion evidence.",
+    capabilities: ["session_meta", "title_signal", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
+  },
 };
 
 const DEFAULT_SOURCE_SPECS: ReadonlyArray<
@@ -250,6 +258,12 @@ const DEFAULT_SOURCE_SPECS: ReadonlyArray<
     family: DEFAULT_SOURCE_FAMILY,
     platform: "zcode",
     display_name: "ZCode",
+  },
+  {
+    slot_id: "kimi",
+    family: "local_coding_agent",
+    platform: "kimi",
+    display_name: "Kimi Code",
   },
 ];
 

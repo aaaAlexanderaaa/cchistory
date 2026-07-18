@@ -37,6 +37,7 @@ const MANUAL_SOURCE_OPTIONS: Array<{ platform: SourcePlatform; label: string }> 
   { platform: 'codebuddy', label: 'CodeBuddy' },
   { platform: 'accio', label: 'Accio Work' },
   { platform: 'zcode', label: 'ZCode' },
+  { platform: 'kimi', label: 'Kimi Code' },
 ]
 
 export function SourcesView() {
@@ -496,7 +497,7 @@ function PlatformIcon({ platform }: { platform: SourcePlatform }) {
   if (platform === 'claude_code') return <Terminal className="h-4 w-4 text-muted" />
   if (platform === 'codex') return <Code2 className="h-4 w-4 text-muted" />
   if (platform === 'cursor' || platform === 'antigravity') return <Code2 className="h-4 w-4 text-muted" />
-  if (platform === 'gemini' || platform === 'claude_web' || platform === 'codebuddy' || platform === 'zcode') return <Bot className="h-4 w-4 text-muted" />
+  if (platform === 'gemini' || platform === 'claude_web' || platform === 'codebuddy' || platform === 'zcode' || platform === 'kimi') return <Bot className="h-4 w-4 text-muted" />
   if (platform === 'amp' || platform === 'factory_droid' || platform === 'openclaw' || platform === 'opencode') {
     return <Zap className="h-4 w-4 text-muted" />
   }

@@ -33,6 +33,8 @@ export interface SessionDraftLike {
   title?: string;
   model?: string;
   working_directory?: string;
+  created_at?: string;
+  updated_at?: string;
   source_session_id?: string;
   resume_command?: string;
   resume_working_directory?: string;

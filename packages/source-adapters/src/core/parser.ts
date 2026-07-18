@@ -31,6 +31,8 @@ import {
 } from "../platforms/generic/runtime.js";
 import { parseOpenClawCronRunRecord as parseOpenClawCronRunRuntimeRecord } from "../platforms/openclaw/runtime.js";
 import { extractGeminiProjectKey, resolveGeminiRoot } from "../platforms/gemini.js";
+import { resolveKimiSessionDir } from "../platforms/kimi.js";
+import { parseKimiRecord as parseKimiRuntimeRecord } from "../platforms/kimi/runtime.js";
 import { extractZcodeSqliteSeeds } from "../platforms/zcode/runtime.js";
 import { collectJsonlRecords, extractContentMaxTimestamp, isIncrementalJsonlPlatform } from "./jsonl-records.js";
 import {
@@ -204,6 +206,13 @@ export async function extractRecords(
                 pointer: "settings",
               },
             ]
+          : context.source.platform === "kimi"
+            ? [
+                {
+                  filePath: path.join(resolveKimiSessionDir(context.filePath) ?? path.dirname(context.filePath), "state.json"),
+                  pointer: "state",
+                },
+              ]
           : context.source.platform === "accio"
             ? [
                 {
@@ -286,6 +295,9 @@ export function parseRecord(
   }
   if (context.source.platform === "factory_droid") {
     return parseFactoryRuntimeRecord(context, record, parsed, draft, buildCommonParseRuntimeHelpers());
+  }
+  if (context.source.platform === "kimi") {
+    return parseKimiRuntimeRecord(context, record, parsed, draft, buildCommonParseRuntimeHelpers());
   }
   if (context.source.platform === "codebuddy") {
     const providerData = isObject(parsed.providerData) ? parsed.providerData : undefined;

@@ -19,6 +19,7 @@ export type SourcePlatformDto =
   | "codebuddy"
   | "accio"
   | "zcode"
+  | "kimi"
   | "other";
 
 export type SourceFamilyDto =

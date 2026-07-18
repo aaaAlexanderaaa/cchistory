@@ -23,3 +23,4 @@ import "./platforms/factory-droid.test.js";
 import "./platforms/codebuddy.test.js";
 import "./platforms/accio.test.js";
 import "./platforms/zcode.test.js";
+import "./platforms/kimi.test.js";

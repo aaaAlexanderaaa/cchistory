@@ -1,6 +1,6 @@
 # Current Runtime Surface
 
-This document records the repository-visible runtime surface as of 2026-05-17. It complements the design freeze and should be consulted when implementation inventory matters more than frozen semantics.
+This document records the repository-visible runtime surface as of 2026-07-18. It complements the design freeze and should be consulted when implementation inventory matters more than frozen semantics.
 
 > [`HIGH_LEVEL_DESIGN_FREEZE.md`](../../HIGH_LEVEL_DESIGN_FREEZE.md) remains the source of truth for product semantics and invariants.
 >
@@ -29,7 +29,7 @@ The current product runtime is a four-entrypoint TypeScript workspace with share
 
 # Registered Source Adapters
 
-The repository currently registers 13 source adapters, spanning local coding-agent, conversational-export, and local-runtime-session families. For self-host v1 support claims, registration and support are distinct concepts.
+The repository currently registers 14 source adapters, spanning local coding-agent, conversational-export, and local-runtime-session families. For self-host v1 support claims, registration and support are distinct concepts.
 
 | Platform | Family | Self-host v1 tier | Notes |
 | --- | --- | --- | --- |
@@ -46,6 +46,7 @@ The repository currently registers 13 source adapters, spanning local coding-age
 | `codebuddy` | `local_coding_agent` | `stable` | real-archive-backed `.codebuddy/projects/**/*.jsonl` intake with `settings.json` and `local_storage/*.info` preserved as companion evidence; `providerData.skipRun` noise stays evidence-only and zero-byte sibling JSONL files do not become standalone sessions |
 | `accio` | `local_runtime_sessions` | `experimental` | Accio Work agent session JSONL under `~/.accio/accounts/<id>/agents/<did>/sessions/` with subagent sessions from `subagent-sessions/`; meta.jsonc sidecars provide session titles and parent-child linkage |
 | `zcode` | `local_runtime_sessions` | `experimental` | ZCode local CLI SQLite store under `~/.zcode/cli/db/db.sqlite`; message and part rows are normalized into generic conversation records, while WAL/SHM companions are preserved as evidence when present |
+| `kimi` | `local_coding_agent` | `experimental` | Kimi Code main-agent wire JSONL under `~/.kimi-code/sessions`; state/index/workspace/user-history files and subagent wires are companion evidence, while duplicate context echoes do not create extra user turns |
 
 Source value tier is separate from the self-host v1 support tier above. It
 records product priority and default recall weight from the design freeze.
@@ -53,7 +54,7 @@ records product priority and default recall weight from the design freeze.
 | Value tier | Current registered platforms | Runtime meaning |
 | --- | --- | --- |
 | Primary | `codex`, `claude_code` | Highest-value recall sources; correctness, ranking, sync behavior, and UX polish should be optimized here first. |
-| Standard | `codebuddy`, `cursor`, `antigravity`, `gemini`, `openclaw`, `opencode`, `lobechat`, `accio`, `zcode` | Normal-value sources; keep ingestion truthful and searchable without letting these sources override Primary-source priorities. |
+| Standard | `codebuddy`, `cursor`, `antigravity`, `gemini`, `openclaw`, `opencode`, `lobechat`, `accio`, `zcode`, `kimi` | Normal-value sources; keep ingestion truthful and searchable without letting these sources override Primary-source priorities. |
 | Low | `amp`, `factory_droid` | Lowest-value sources; preserve evidence and searchability, but keep default ranking, QA breadth, and roadmap investment conservative. |
 
 The adapter registry is defined in [`packages/source-adapters/src/platforms/registry.ts`](../../packages/source-adapters/src/platforms/registry.ts).
@@ -81,6 +82,7 @@ As of 2026-03-27, Windows default-root policy is intentionally split between ver
 | `codebuddy` | manual configuration required | Stable adapter for the reviewed local `.codebuddy` layout, but current code still probes `%USERPROFILE%\.codebuddy` without real Windows-host validation; operators should confirm or override `base_dir` manually. |
 | `accio` | manual configuration required | Experimental adapter; do not rely on Windows auto-discovery without an explicit source override. |
 | `zcode` | manual configuration required | Experimental adapter; current code probes `%USERPROFILE%\.zcode`; do not rely on Windows auto-discovery without an explicit source override. |
+| `kimi` | manual configuration required | Experimental adapter; current code probes `%USERPROFILE%\.kimi-code`; do not rely on Windows auto-discovery without an explicit source override. |
 
 Manual overrides are managed through the web `Sources` view or the API endpoints under `/api/admin/source-config`.
 

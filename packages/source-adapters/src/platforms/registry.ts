@@ -9,6 +9,7 @@ import { codexAdapter } from "./codex.js";
 import { cursorAdapter } from "./cursor.js";
 import { factoryDroidAdapter } from "./factory-droid.js";
 import { lobechatAdapter } from "./lobechat.js";
+import { kimiAdapter } from "./kimi.js";
 import { openclawAdapter } from "./openclaw.js";
 import { opencodeAdapter } from "./opencode.js";
 import { zcodeAdapter } from "./zcode.js";
@@ -29,6 +30,7 @@ const adapters = [
   codebuddyAdapter,
   accioAdapter,
   zcodeAdapter,
+  kimiAdapter,
 ] as const satisfies readonly PlatformAdapter[];
 
 const adapterRegistry = Object.fromEntries(

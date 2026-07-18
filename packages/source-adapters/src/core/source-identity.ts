@@ -41,6 +41,14 @@ export function extractSourceSessionId(platform: SourcePlatform, filePath: strin
     return path.basename(filePath, path.extname(filePath));
   }
 
+  if (platform === "kimi") {
+    const normalized = filePath.replace(/\\/gu, "/");
+    const match = normalized.match(/\/((?:session_)[^/]+)\/agents\/main\/wire\.jsonl$/u);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+
   if (platform === "gemini") {
     try {
       const parsed = JSON.parse(fileBuffer.toString("utf8")) as Record<string, unknown>;
