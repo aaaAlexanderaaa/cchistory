@@ -1628,6 +1628,123 @@ export async function seedCodexCumulativeTokenFixture(tempRoot: string): Promise
   return createSourceDefinition("src-codex-token-cumulative", "codex", codexDir);
 }
 
+export async function seedCodexInterleavedCumulativeTokenFixture(tempRoot: string): Promise<SourceDefinition> {
+  const codexDir = path.join(tempRoot, "codex-token-interleaved-cumulative");
+  await mkdir(codexDir, { recursive: true });
+
+  const tokenCheckpoint = (
+    timestamp: string,
+    baseline: { input_tokens: number; cached_input_tokens: number; output_tokens: number; total_tokens: number },
+    last: { input_tokens: number; cached_input_tokens: number; output_tokens: number; total_tokens: number },
+  ) => ({
+    timestamp,
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      info: {
+        total_token_usage: {
+          input_tokens: baseline.input_tokens + last.input_tokens,
+          cached_input_tokens: baseline.cached_input_tokens + last.cached_input_tokens,
+          output_tokens: baseline.output_tokens + last.output_tokens,
+          total_tokens: baseline.total_tokens + last.total_tokens,
+        },
+        last_token_usage: last,
+      },
+    },
+  });
+  const firstCheckpoint = {
+    input_tokens: 40,
+    cached_input_tokens: 30,
+    output_tokens: 10,
+    total_tokens: 50,
+  };
+  const finalCheckpoint = {
+    input_tokens: 80,
+    cached_input_tokens: 60,
+    output_tokens: 20,
+    total_tokens: 100,
+  };
+
+  await writeFile(
+    path.join(codexDir, "rollout-2026-03-09T00-00-00-codex-fixture.jsonl"),
+    [
+      {
+        timestamp: "2026-03-10T06:30:00.000Z",
+        type: "session_meta",
+        payload: {
+          id: "codex-token-interleaved-cumulative-session",
+          cwd: "/workspace/codex-token-interleaved-cumulative",
+          model: "gpt-5",
+        },
+      },
+      {
+        timestamp: "2026-03-10T06:30:01.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "Track interleaved cumulative branches." }],
+        },
+      },
+      {
+        timestamp: "2026-03-10T06:30:02.000Z",
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          stop_reason: "end_turn",
+          content: [{ type: "output_text", text: "One visible reply with four billed updates." }],
+        },
+      },
+      tokenCheckpoint(
+        "2026-03-10T06:30:02.500Z",
+        { input_tokens: 800, cached_input_tokens: 600, output_tokens: 100, total_tokens: 900 },
+        firstCheckpoint,
+      ),
+      tokenCheckpoint(
+        "2026-03-10T06:30:03.000Z",
+        { input_tokens: 800, cached_input_tokens: 600, output_tokens: 100, total_tokens: 900 },
+        finalCheckpoint,
+      ),
+      tokenCheckpoint(
+        "2026-03-10T06:30:03.500Z",
+        { input_tokens: 360, cached_input_tokens: 260, output_tokens: 40, total_tokens: 400 },
+        firstCheckpoint,
+      ),
+      tokenCheckpoint(
+        "2026-03-10T06:30:04.000Z",
+        { input_tokens: 360, cached_input_tokens: 260, output_tokens: 40, total_tokens: 400 },
+        finalCheckpoint,
+      ),
+      tokenCheckpoint(
+        "2026-03-10T06:30:04.500Z",
+        { input_tokens: 880, cached_input_tokens: 660, output_tokens: 120, total_tokens: 1_000 },
+        firstCheckpoint,
+      ),
+      tokenCheckpoint(
+        "2026-03-10T06:30:05.000Z",
+        { input_tokens: 880, cached_input_tokens: 660, output_tokens: 120, total_tokens: 1_000 },
+        finalCheckpoint,
+      ),
+      tokenCheckpoint(
+        "2026-03-10T06:30:05.500Z",
+        { input_tokens: 440, cached_input_tokens: 320, output_tokens: 60, total_tokens: 500 },
+        firstCheckpoint,
+      ),
+      tokenCheckpoint(
+        "2026-03-10T06:30:06.000Z",
+        { input_tokens: 440, cached_input_tokens: 320, output_tokens: 60, total_tokens: 500 },
+        finalCheckpoint,
+      ),
+    ]
+      .map((line) => JSON.stringify(line))
+      .join("\n"),
+    "utf8",
+  );
+
+  return createSourceDefinition("src-codex-token-interleaved-cumulative", "codex", codexDir);
+}
+
 export async function seedCodexDelayedInterleavedTokenFixture(tempRoot: string): Promise<SourceDefinition> {
   const codexDir = path.join(tempRoot, "codex-token-delayed-interleaved");
   await mkdir(codexDir, { recursive: true });

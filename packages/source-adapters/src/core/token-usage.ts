@@ -1,6 +1,16 @@
 import type { AssistantStopReason, TokenUsageMetrics } from "./types.js";
 import { asNumber, asString, isObject, sumDefinedNumbers } from "./type-guards.js";
 
+const TOKEN_USAGE_NUMERIC_FIELDS = [
+  "input_tokens",
+  "cache_read_input_tokens",
+  "cache_creation_input_tokens",
+  "cached_input_tokens",
+  "output_tokens",
+  "reasoning_output_tokens",
+  "total_tokens",
+] as const;
+
 export function accumulateTokenUsageMetrics(
   target: TokenUsageMetrics,
   source: TokenUsageMetrics,
@@ -41,6 +51,38 @@ export function mergeTokenUsageMetrics(
   }
   const result = { ...left };
   accumulateTokenUsageMetrics(result, right);
+  return result;
+}
+
+export function buildTokenUsageCheckpointBaselineKey(
+  cumulative: TokenUsageMetrics | undefined,
+  checkpoint: TokenUsageMetrics | undefined,
+): string | undefined {
+  if (!cumulative || !checkpoint) return undefined;
+  const baseline = TOKEN_USAGE_NUMERIC_FIELDS.map((field) => {
+    const cumulativeValue = cumulative[field];
+    if (cumulativeValue === undefined) return "_";
+    return String(cumulativeValue - (checkpoint[field] ?? 0));
+  });
+  if (baseline.every((value) => value === "_")) return undefined;
+  return `${cumulative.model ?? checkpoint.model ?? ""}|${baseline.join("|")}`;
+}
+
+export function mergeMaxTokenUsageMetrics(
+  left: TokenUsageMetrics | undefined,
+  right: TokenUsageMetrics,
+): TokenUsageMetrics {
+  if (!left) return { ...right };
+  const result = { ...left };
+  for (const field of TOKEN_USAGE_NUMERIC_FIELDS) {
+    const rightValue = right[field];
+    if (rightValue === undefined) continue;
+    const leftValue = left[field];
+    if (leftValue === undefined || rightValue > leftValue) {
+      result[field] = rightValue;
+    }
+  }
+  if (right.model) result.model = right.model;
   return result;
 }
 

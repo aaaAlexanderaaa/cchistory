@@ -81,7 +81,22 @@ import type {
   SourceProbeFileChunk,
   SourceProbeFileSkipReason,
 } from "./types.js";
-import { asArray, asNumber, asString, coerceIso, epochMillisToIso, isObject, normalizeStopReason, safeJsonParse, extractTokenUsage, firstDefinedNumber, truncate, normalizeWorkspacePath } from "./utils.js";
+import {
+  asArray,
+  asNumber,
+  asString,
+  buildTokenUsageCheckpointBaselineKey,
+  coerceIso,
+  epochMillisToIso,
+  extractTokenUsage,
+  firstDefinedNumber,
+  isObject,
+  mergeMaxTokenUsageMetrics,
+  normalizeStopReason,
+  normalizeWorkspacePath,
+  safeJsonParse,
+  truncate,
+} from "./utils.js";
 
 const DEFAULT_MAX_FILE_BYTES = 64 * 1024 * 1024;
 
@@ -1083,6 +1098,7 @@ function buildPreviousSourceIndex(
           resume_working_directory: session?.resume_working_directory,
           resume_command_confidence: session?.resume_command_confidence,
           last_cumulative_token_usage: findLastCumulativeTokenUsage(fragments),
+          cumulative_token_usage_by_baseline: findCumulativeTokenUsageByBaseline(fragments),
         },
       );
       sessionInputs.push({
@@ -1212,6 +1228,7 @@ async function processAppendedJsonlBlob(
     ...previousInput.draft,
     updated_at: undefined,
     last_cumulative_token_usage: findLastCumulativeTokenUsage(previousInput.fragments),
+    cumulative_token_usage_by_baseline: findCumulativeTokenUsageByBaseline(previousInput.fragments),
     source_session_id:
       previousInput.draft.source_session_id ??
       extractSourceSessionIdFromCanonicalSessionId(source.platform, sessionId),
@@ -1319,6 +1336,27 @@ function findLastCumulativeTokenUsage(fragments: readonly SourceFragment[]): Ses
     }
   }
   return undefined;
+}
+
+function findCumulativeTokenUsageByBaseline(
+  fragments: readonly SourceFragment[],
+): SessionDraft["cumulative_token_usage_by_baseline"] {
+  let checkpoints: Record<string, NonNullable<SessionDraft["last_cumulative_token_usage"]>> | undefined;
+  for (const fragment of fragments) {
+    const cumulativeValue = fragment.payload.cumulative_token_usage;
+    if (!isObject(cumulativeValue)) continue;
+    const cumulative = extractTokenUsage(cumulativeValue);
+    const checkpoint = extractTokenUsage(fragment.payload.token_usage);
+    const baselineKey = asString(fragment.payload.cumulative_token_usage_baseline_key) ??
+      buildTokenUsageCheckpointBaselineKey(cumulative, checkpoint);
+    if (!baselineKey || !checkpoint) continue;
+    checkpoints ??= Object.create(null) as Record<
+      string,
+      NonNullable<SessionDraft["last_cumulative_token_usage"]>
+    >;
+    checkpoints[baselineKey] = mergeMaxTokenUsageMetrics(checkpoints[baselineKey], checkpoint);
+  }
+  return checkpoints;
 }
 
 function groupBy<T>(items: readonly T[], keyFor: (item: T) => string): Map<string, T[]> {

@@ -183,6 +183,7 @@ export interface SessionDraft {
   resume_working_directory?: string;
   resume_command_confidence?: number;
   last_cumulative_token_usage?: TokenUsageMetrics;
+  cumulative_token_usage_by_baseline?: Record<string, TokenUsageMetrics>;
 }
 
 export interface SessionBuildInput {

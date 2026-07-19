@@ -183,7 +183,16 @@ export function parseCodexRecord(
     if (eventType === "token_count") {
       const usage = helpers.extractTokenUsage(payload.info ?? payload);
       const cumulativeUsage = helpers.extractCumulativeTokenUsage(payload.info ?? payload);
-      const deltaUsage = helpers.diffTokenUsageMetrics(cumulativeUsage, draft.last_cumulative_token_usage) ?? undefined;
+      const baselineKey = helpers.buildTokenUsageCheckpointBaselineKey(cumulativeUsage, usage);
+      let deltaUsage: typeof usage;
+      if (baselineKey && usage) {
+        const checkpoints = draft.cumulative_token_usage_by_baseline ??= {};
+        const previousCheckpoint = checkpoints[baselineKey];
+        deltaUsage = helpers.diffTokenUsageMetrics(usage, previousCheckpoint) ?? undefined;
+        checkpoints[baselineKey] = helpers.mergeMaxTokenUsageMetrics(previousCheckpoint, usage);
+      } else {
+        deltaUsage = helpers.diffTokenUsageMetrics(cumulativeUsage, draft.last_cumulative_token_usage) ?? undefined;
+      }
       draft.last_cumulative_token_usage = cumulativeUsage ?? draft.last_cumulative_token_usage;
       if (usage) {
         fragments.push(
@@ -192,6 +201,7 @@ export function parseCodexRecord(
             source_event_type: "token_count",
             delta_token_usage: deltaUsage,
             cumulative_token_usage: cumulativeUsage,
+            cumulative_token_usage_baseline_key: baselineKey,
           }),
         );
         return { fragments, lossAudits };

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { appendFile, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -10,6 +10,7 @@ import {
   seedMultiTurnCodexTokenFixture,
   seedMultiReplyCodexTokenFixture,
   seedCodexCumulativeTokenFixture,
+  seedCodexInterleavedCumulativeTokenFixture,
   seedCodexDelayedInterleavedTokenFixture,
   seedClaudeMultiChunkMessageFixture,
 } from "../test-helpers.js";
@@ -193,6 +194,77 @@ test("runSourceProbe uses cumulative token deltas when one visible reply spans m
     assert.equal(payload.turns[0]?.context_summary.token_usage?.input_tokens, 60);
     assert.equal(payload.turns[0]?.context_summary.token_usage?.cache_read_input_tokens, 60);
     assert.equal(payload.turns[0]?.context_summary.token_usage?.output_tokens, 15);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe isolates inherited and interleaved Codex cumulative token branches", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const source = await seedCodexInterleavedCumulativeTokenFixture(tempRoot);
+    const [payload] = (await runSourceProbe({ limit_files_per_source: 1 }, [source])).sources;
+
+    assert.ok(payload);
+    assert.equal(payload.turns.length, 1);
+    assert.equal(payload.contexts[0]?.assistant_replies.length, 1);
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_count, 400);
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_usage?.input_tokens, 80);
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_usage?.cache_read_input_tokens, 240);
+    assert.equal(payload.contexts[0]?.assistant_replies[0]?.token_usage?.output_tokens, 80);
+    assert.equal(payload.turns[0]?.context_summary.total_tokens, 400);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("runSourceProbe restores Codex checkpoint baselines across appended JSONL", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-adapters-"));
+
+  try {
+    const source = await seedCodexInterleavedCumulativeTokenFixture(tempRoot);
+    const firstPayload = (await runSourceProbe({ source_ids: [source.id] }, [source])).sources[0];
+    assert.ok(firstPayload);
+
+    await appendFile(
+      path.join(source.base_dir, "rollout-2026-03-09T00-00-00-codex-fixture.jsonl"),
+      `\n${JSON.stringify({
+        timestamp: "2026-03-10T06:30:06.500Z",
+        type: "event_msg",
+        payload: {
+          type: "token_count",
+          info: {
+            total_token_usage: {
+              input_tokens: 560,
+              cached_input_tokens: 410,
+              output_tokens: 90,
+              total_tokens: 650,
+            },
+            last_token_usage: {
+              input_tokens: 120,
+              cached_input_tokens: 90,
+              output_tokens: 30,
+              total_tokens: 150,
+            },
+          },
+        },
+      })}\n`,
+      "utf8",
+    );
+
+    const progressStages: string[] = [];
+    const updatedPayload = (await runSourceProbe({
+      source_ids: [source.id],
+      changed_since: "1h",
+      previous_payloads: { [source.id]: firstPayload },
+      on_progress: (event) => progressStages.push(event.stage),
+    }, [source])).sources[0];
+
+    assert.ok(updatedPayload);
+    assert.ok(progressStages.includes("file_append_done"));
+    assert.equal(updatedPayload.turns.length, 1);
+    assert.equal(updatedPayload.turns[0]?.context_summary.total_tokens, 450);
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }

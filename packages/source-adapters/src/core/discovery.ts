@@ -67,7 +67,7 @@ const SOURCE_FORMAT_PROFILES: Record<SupportedSourcePlatform, SourceFormatProfil
     id: "codex:jsonl:v1",
     family: DEFAULT_SOURCE_FAMILY,
     platform: "codex",
-    parser_version: "codex-parser@2026-06-02.1",
+    parser_version: "codex-parser@2026-07-19.1",
     description: "Codex local JSONL sessions with session_meta, turn_context, response items, tool records, and token_count events.",
     capabilities: ["session_meta", "workspace_signal", "model_signal", ...COMMON_PARSER_CAPABILITIES],
   },
