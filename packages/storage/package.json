@@ -20,10 +20,11 @@
     }
   },
   "scripts": {
-    "build": "pnpm --filter @cchistory/domain build && tsc -p tsconfig.json",
+    "build": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/canonical build && tsc -p tsconfig.json",
     "test": "pnpm run build && tsc -p tsconfig.test.json && node --import ../../scripts/install-node-sqlite-warning-filter.mjs --test dist/index.test.js"
   },
   "dependencies": {
+    "@cchistory/canonical": "workspace:*",
     "@cchistory/domain": "workspace:*"
   }
 }

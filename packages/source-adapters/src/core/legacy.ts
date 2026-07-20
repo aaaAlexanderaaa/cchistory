@@ -5,3 +5,4 @@ export * from "./probe.js";
 export * from "./parser.js";
 export * from "./atomizer.js";
 export * from "./projections.js";
+export * from "./session-grouping.js";

@@ -1,0 +1,25 @@
+{
+  "name": "@cchistory/lite-tui",
+  "version": "0.3.0",
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "cchistory-lite-tui": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "pnpm --filter @cchistory/live-runtime build && tsc -p tsconfig.json && chmod +x dist/index.js",
+    "test": "pnpm run build && tsc -p tsconfig.test.json && node --test dist/index.test.js"
+  },
+  "dependencies": {
+    "@cchistory/domain": "workspace:*",
+    "@cchistory/live-runtime": "workspace:*"
+  }
+}

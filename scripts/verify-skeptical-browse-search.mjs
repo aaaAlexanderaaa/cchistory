@@ -151,7 +151,10 @@ async function main() {
     assert.equal(tuiSearch.exitCode, 0, tuiSearch.stderr);
     assert.match(tuiSearch.stdout, /Search: expert code reviewer/);
     assert.match(tuiSearch.stdout, /Project: chat-ui-kit/);
-    assert.match(tuiSearch.stdout, /Claude Code \(claude_code\)/);
+    // The bounded detail column may ellipsize the platform token on narrower
+    // non-interactive snapshots; require the full label and an unambiguous
+    // platform prefix without demanding text beyond the viewport.
+    assert.match(tuiSearch.stdout, /Claude Code \(claude_co/);
     assert.match(tuiSearch.stdout, /Related: \d+ (?:child|parent)/);
     assert.doesNotMatch(tuiSearch.stdout, /<command-name>|<command-message>|<local-command-caveat>/);
     assert.doesNotMatch(tuiSearch.stdout, /\/clear/);

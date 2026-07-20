@@ -936,7 +936,7 @@ test("browser snapshot can show lightweight source health summary", async () => 
     let state = createBrowserState(browser);
     state = reduceBrowserState(browser, state, { type: "toggle-source-health" });
 
-    const snapshot = renderBrowserSnapshot(browser, state);
+    const snapshot = stripAnsi(renderBrowserSnapshot(browser, state));
     assert.match(snapshot, /Source Health/);
     assert.match(snapshot, /Healthy: 1/);
     assert.match(snapshot, /Stale: 1/);

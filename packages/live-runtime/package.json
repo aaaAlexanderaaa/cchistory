@@ -1,0 +1,26 @@
+{
+  "name": "@cchistory/live-runtime",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "pnpm --filter @cchistory/domain build && pnpm --filter @cchistory/canonical build && pnpm --filter @cchistory/source-adapters build && tsc -p tsconfig.json",
+    "test": "pnpm run build && pnpm --filter @cchistory/storage build && tsc -p tsconfig.test.json && node --import ../../scripts/install-node-sqlite-warning-filter.mjs --test dist/index.test.js"
+  },
+  "dependencies": {
+    "@cchistory/canonical": "workspace:*",
+    "@cchistory/domain": "workspace:*",
+    "@cchistory/source-adapters": "workspace:*"
+  },
+  "devDependencies": {
+    "@cchistory/storage": "workspace:*"
+  }
+}

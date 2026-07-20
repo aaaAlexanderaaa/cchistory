@@ -4,12 +4,14 @@ This document records the repository-visible runtime surface as of 2026-07-18. I
 
 > [`HIGH_LEVEL_DESIGN_FREEZE.md`](../../HIGH_LEVEL_DESIGN_FREEZE.md) remains the source of truth for product semantics and invariants.
 >
-> The current package/API/Web release marker is `0.2.0`. The `self-host v1`
+> The current package/API/Web release marker is `0.3.0`. The `self-host v1`
 > wording below describes deployment and support scope, not semver.
 
 # Entry Points
 
-The current product runtime is a four-entrypoint TypeScript workspace with shared packages for domain, storage, DTOs, presentation, and source adapters.
+The current product runtime is a six-entrypoint TypeScript workspace. Full and
+Lite share registered adapters and canonical derivation/read semantics, then
+split into durable and ephemeral materializers.
 
 | Path | Role | Current status source |
 | --- | --- | --- |
@@ -17,8 +19,12 @@ The current product runtime is a four-entrypoint TypeScript workspace with share
 | `apps/web` | canonical frontend for history and admin review | `apps/web/app/page.tsx`, `apps/web/components/app-shell.tsx` |
 | `apps/cli` | canonical local operator CLI | `apps/cli/src/index.ts` |
 | `apps/tui` | canonical local TUI with pane-based browse, search drill-down, and source-health summary | `apps/tui/src/index.ts` |
+| `apps/lite-cli` | zero-store, one-shot single-machine CLI with live browse/search/stats/detail and one-way export | `apps/lite-cli/src/index.ts` |
+| `apps/lite-tui` | zero-store process-lifetime terminal browser over one ephemeral snapshot | `apps/lite-tui/src/index.ts` |
 | `packages/domain` | canonical model, lifecycle, ordering, and stage contracts | `packages/domain/src/index.ts` |
 | `packages/source-adapters` | adapter registry, probe pipeline, parser and atomization flow | `packages/source-adapters/src/platforms/registry.ts` |
+| `packages/canonical` | storage-neutral project linking, fallback observations, read ordering, search, and usage aggregation | `packages/canonical/src/index.ts` |
+| `packages/live-runtime` | ephemeral materializer, source-root isolation, lookup, search, and stats reader for Lite | `packages/live-runtime/src/index.ts` |
 | `packages/storage` | SQLite persistence, linking, lineage, tombstones, search | `packages/storage/src/index.ts` |
 | `packages/api-client` | API DTO surface shared by clients | `packages/api-client/src/index.ts` |
 | `packages/presentation` | presentation-layer mapping consumed by web | `packages/presentation/src/index.ts` |
@@ -26,6 +32,41 @@ The current product runtime is a four-entrypoint TypeScript workspace with share
 # TUI Status
 
 `apps/tui` now provides a canonical local TUI entrypoint with pane-based project, turn, and detail browsing, global search drill-down, lightweight source-health summary, and richer read-side detail cues such as project/session/turn breadcrumbs, related-work summaries in turn/search rows, and child-session or automation trail lines in the detail pane.
+
+# Lite Surface
+
+CC History Lite is a separate single-machine profile, not a branch or a
+simplified parser. `@cchistory/source-adapters` remains the only adapter roster
+and canonical source producer. `@cchistory/canonical` owns shared project/read
+semantics; Full materializes them into `@cchistory/storage`, while
+`@cchistory/live-runtime` holds the same final read objects only for the process
+lifetime.
+
+The Lite binaries are:
+
+- `cchistory-lite`: `sources`, `ls`, `tree`, `search`, `show`, `stats`, and
+  `export` (`jsonl`, `json`, or `markdown`)
+- `cchistory-lite-tui`: project/session/turn browse, search, detail, stats,
+  source status, and explicit refresh over one in-memory snapshot
+
+Lite accepts repeatable `--source-root <slot-or-id>=<path>` overrides and
+`--source <slot-or-id>` selection. It rejects `.cchistory`,
+`cchistory.sqlite`, recognizable Full bundle roots, `--store`, and `--db`.
+Upstream tools' native SQLite files remain adapter-owned source data and are
+opened read-only. Only an explicit export destination is written; export uses
+the one-way marker `cchistory-lite-export/v1` and is not importable or
+restorable.
+
+Fixture-backed parity currently covers Codex, Claude Code, Factory Droid, AMP,
+Cursor, Antigravity, Gemini CLI, OpenClaw, OpenCode, CodeBuddy, and Accio Work.
+The gate compares final source status, semantic project linkage, sessions,
+ordered `UserTurn` objects, contexts, AskUserQuestion rows, search results, and
+usage aggregation with a clean Full materialization. Full-only incremental
+project revision counters and database first-seen timestamps are materializer
+lifecycle metadata rather than a parser/linker accuracy difference.
+
+See [`docs/guide/lite.md`](../guide/lite.md) and
+[`R43_CC_HISTORY_LITE_DESIGN.md`](R43_CC_HISTORY_LITE_DESIGN.md).
 
 # Registered Source Adapters
 
@@ -115,7 +156,7 @@ Additional current behavior:
 
 The current web view wiring is visible in [`apps/web/app/page.tsx`](../../apps/web/app/page.tsx) and [`apps/web/components/app-shell.tsx`](../../apps/web/components/app-shell.tsx).
 
-# CLI Surface
+# Full CLI Surface
 
 `apps/cli` is a real operator entrypoint with sync, read, query, bundle-management, and upload-first remote-agent workflows, not a thin debug wrapper.
 
@@ -165,6 +206,7 @@ Current install and verification surfaces:
 - offline web-build verification: `pnpm run verify:web-build-offline` proves the canonical web production build works without public-network fetches during build time
 - support-status verification: `pnpm run verify:support-status` checks README/runtime/release-gate/source-reference support claims and Web manual-source inventory against the adapter registry
 - runtime-inventory verification: `pnpm run verify:runtime-inventory` checks API route registrations against the OpenAPI path summary
+- Lite parity and isolation verification: `pnpm run verify:lite` runs shared canonical tests, the fixture-backed Full/Lite matrix, zero-write and native-SQLite checks, Lite CLI/TUI tests, and the production dependency-boundary audit
 - seeded CLI/API/TUI acceptance verification: `pnpm run verify:v1-seeded-acceptance` proves one canonical multi-source recall, source-summary, and restore-readability journey across the shipped local entrypoints
 - read-only admin verification: `pnpm run verify:read-only-admin` proves CLI store-scoped health plus source reads, TUI source-health and missing-store truthfulness, and API read-side admin visibility without mutating the seeded store
 - fixture-backed sync-to-recall verification: `pnpm run verify:fixture-sync-recall` proves a clean store can sync from repo `mock_data/` default roots and then expose one canonical project recall/search/drill-down path through CLI, API, and TUI

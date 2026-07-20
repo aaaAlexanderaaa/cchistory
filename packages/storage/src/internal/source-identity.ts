@@ -61,9 +61,23 @@ export function normalizeSourcePayload(payload: SourceSyncPayload): SourceSyncPa
     edges: payload.edges.map((edge) => updateSourceScopedEntry(edge, sourceId)),
     candidates: payload.candidates.map((candidate) => normalizeDerivedCandidate(updateSourceScopedEntry(candidate, sourceId))),
     sessions: payload.sessions.map((session) => normalizeSessionProjection(updateSourceScopedEntry(session, sourceId))),
-    turns: payload.turns.map((turn) => updateSourceScopedEntry(turn, sourceId)),
+    turns: payload.turns.map((turn) => normalizeUserTurnProjection(updateSourceScopedEntry(turn, sourceId))),
     contexts: payload.contexts,
-    ask_user_question_turns: payload.ask_user_question_turns.map((turn) => updateSourceScopedEntry(turn, sourceId)),
+    ask_user_question_turns: (payload.ask_user_question_turns ?? []).map((turn) =>
+      updateSourceScopedEntry(turn, sourceId),
+    ),
+  };
+}
+
+function normalizeUserTurnProjection(turn: UserTurnProjection): UserTurnProjection {
+  const turnId = turn.turn_id ?? turn.id;
+  const turnRevisionId = turn.turn_revision_id ?? turn.revision_id ?? `${turnId}:r1`;
+  return {
+    ...turn,
+    id: turn.id ?? turnId,
+    revision_id: turn.revision_id ?? turnRevisionId,
+    turn_id: turnId,
+    turn_revision_id: turnRevisionId,
   };
 }
 
@@ -152,4 +166,3 @@ function updateSourceScopedEntry<T extends { source_id: string }>(entry: T, sour
 function normalizeComparablePath(value: string | undefined): string | undefined {
   return normalizeLocalPathIdentity(value);
 }
-

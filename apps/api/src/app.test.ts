@@ -1944,6 +1944,7 @@ function createStoredSourcePayload(source: SourceDefinition, baseDir: string): S
     sessions: [],
     turns: [],
     contexts: [],
+    ask_user_question_turns: [],
   };
 }
 
@@ -2322,5 +2323,6 @@ function createApiFixturePayload(
         raw_event_refs: [recordId],
       },
     ],
+    ask_user_question_turns: [],
   };
 }

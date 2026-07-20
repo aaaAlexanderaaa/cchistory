@@ -11,6 +11,7 @@ import {
 import { createReadStream, createWriteStream, type ReadStream } from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { boundSearchCanonicalText } from "@cchistory/canonical";
 import type {
   AtomEdge,
   AskUserQuestionTurn,
@@ -1998,7 +1999,7 @@ function upsertBoundedUserTurn(input: {
   const displaySegmentsJson = boundedJson(turn.display_segments, 8 * 1024);
   const contextSummaryJson = boundedJson(turn.context_summary ?? {}, 8 * 1024);
   const lineageRefsJson = boundedJson(turn.lineage ?? {}, 8 * 1024);
-  const canonicalText = boundedString(turn.canonical_text ?? "", 16 * 1024);
+  const canonicalText = boundSearchCanonicalText(turn.canonical_text ?? "");
   const rawTextPreview = boundedString(turn.raw_text ?? "", 4 * 1024);
   const payloadBytes =
     Buffer.byteLength(canonicalText, "utf8") +

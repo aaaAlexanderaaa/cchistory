@@ -45,9 +45,17 @@ and support tiers live in
 - `apps/tui`: canonical keyboard-first local read surface for projects,
   sessions, turns, full conversation drill-down, search, stats, and source
   health.
+- `apps/lite-cli`: single-machine zero-store CLI for live source browse,
+  search, stats, detail, and one-way normalized export.
+- `apps/lite-tui`: process-lifetime zero-store terminal browser over the Lite
+  ephemeral snapshot.
 - `packages/domain`: canonical contracts and terms.
+- `packages/canonical`: storage-neutral project linking, fallback observation,
+  read ordering, search, and usage semantics shared by Full and Lite.
 - `packages/source-adapters`: adapter registry, discovery, parsing, atomization,
   and projection.
+- `packages/live-runtime`: source-root isolation and ephemeral materialization
+  for Lite; its production graph must not depend on Full storage.
 - `packages/storage`: SQLite persistence, linking, lineage, search, tombstones,
   and read projections.
 - `packages/api-client`: shared API DTO contract.
@@ -63,11 +71,15 @@ and support tiers live in
 - TUI is the primary terminal end-user read surface.
 - Web is the richer end-user read and admin surface.
 - API is the managed programmatic surface.
+- Lite CLI/TUI are independent single-machine read profiles. They share Full's
+  adapters and canonical semantics but never read or create the Full store.
 
 Review the entrypoint before changing a surface:
 
 - `apps/cli/src/index.ts`
 - `apps/tui/src/index.ts`
+- `apps/lite-cli/src/index.ts`
+- `apps/lite-tui/src/index.ts`
 - `apps/web/app/page.tsx`
 - `apps/web/components/app-shell.tsx`
 - `apps/api/src/app.ts`
@@ -82,8 +94,12 @@ Package checks:
 
 - `pnpm --filter @cchistory/domain build`
 - `pnpm --filter @cchistory/domain test`
+- `pnpm --filter @cchistory/canonical build`
+- `pnpm --filter @cchistory/canonical test`
 - `pnpm --filter @cchistory/source-adapters build`
 - `pnpm --filter @cchistory/source-adapters test`
+- `pnpm --filter @cchistory/live-runtime build`
+- `pnpm --filter @cchistory/live-runtime test`
 - `pnpm --filter @cchistory/storage build`
 - `pnpm --filter @cchistory/storage test`
 - `pnpm --filter @cchistory/api-client build`
@@ -94,6 +110,10 @@ Package checks:
 - `pnpm --filter @cchistory/cli test`
 - `pnpm --filter @cchistory/tui build`
 - `pnpm --filter @cchistory/tui test`
+- `pnpm --filter @cchistory/lite-cli build`
+- `pnpm --filter @cchistory/lite-cli test`
+- `pnpm --filter @cchistory/lite-tui build`
+- `pnpm --filter @cchistory/lite-tui test`
 - `pnpm --filter @cchistory/api build`
 - `pnpm --filter @cchistory/api test`
 - `cd apps/web && pnpm lint`
@@ -107,6 +127,7 @@ Repository verification:
 - `pnpm run verify:web-build-offline`
 - `pnpm run verify:support-status`
 - `pnpm run verify:runtime-inventory`
+- `pnpm run verify:lite`
 - `pnpm run verify:cli-tui-read-side`
 - `pnpm run verify:v1-seeded-acceptance`
 - `pnpm run verify:read-only-admin`

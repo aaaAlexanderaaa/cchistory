@@ -13,7 +13,7 @@
 - 具体功能或审查工作：按下面的功能领域进入。
 
 `self-host v1` 是部署和支持范围，不是 package semver。当前仓库发布版本是
-`0.2.0`。
+`0.3.0`。
 
 ## 发布与验证
 
@@ -22,6 +22,7 @@
 | [SELF_HOST_V1_RELEASE_GATE.md](SELF_HOST_V1_RELEASE_GATE.md) | 单用户 self-host 支持范围的最低发布门槛、支持 tier 定义、验证命令 |
 | [V1_VALIDATION_STRATEGY.md](V1_VALIDATION_STRATEGY.md) | 产品目标对应的验证旅程、自动化验证器清单、手动测试矩阵 |
 | [CURRENT_RUNTIME_SURFACE.md](CURRENT_RUNTIME_SURFACE.md) | 当前运行时全貌：入口点、adapter 状态、CLI/API/Web/TUI 功能清单 |
+| [R43 — CC History Lite](R43_CC_HISTORY_LITE_DESIGN.md) | 单机、零存储 Lite profile 的 Full/Lite parity、CLI/TUI、单向导出与隔离边界 |
 | [FIXTURE_CORPUS_MANIFEST.md](FIXTURE_CORPUS_MANIFEST.md) | 测试 fixture 的覆盖模型和采样规则 |
 | [OPERATOR_REVIEW_RUBRIC.md](OPERATOR_REVIEW_RUBRIC.md) | 操作者审查评分标准，被 R22/R29/R31 等合约引用 |
 

@@ -23,6 +23,7 @@ live adapter exists.
 | Guide | Audience |
 | --- | --- |
 | [`guide/cli.md`](guide/cli.md) | Local operators and AI agents using `cchistory` for sync, browse, search, backup, import, remote-agent upload, and JSON queries |
+| [`guide/lite.md`](guide/lite.md) | Single-machine, zero-store CLI/TUI inspection through the shared canonical adapter pipeline, plus one-way export |
 | [`guide/tui.md`](guide/tui.md) | Keyboard-first local browsing of projects, turns, search results, and source-health snapshots |
 | [`guide/web.md`](guide/web.md) | Mouse-first review and admin workflows through the Next.js web surface |
 | [`guide/api.md`](guide/api.md) | Managed Fastify API routes, configuration, and remote-agent control-plane endpoints |
@@ -63,7 +64,7 @@ The most commonly referenced validation documents are:
 
 The `self-host v1` phrase is a support and deployment-scope gate. It is not the
 same thing as the repository package version. The current package/API/Web
-release marker is `0.2.0`.
+release marker is `0.3.0`.
 
 ## Maintenance Rules
 

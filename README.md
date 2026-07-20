@@ -36,6 +36,7 @@ store rather than separate interpretations.
 | Find an old ask and inspect the surrounding session | [`cchistory search`](docs/guide/cli.md#search), [`cchistory show`](docs/guide/cli.md#show), [`cchistory tree`](docs/guide/cli.md#tree) |
 | Give an AI agent project context before it continues work | [`cchistory context project <ref>`](docs/guide/cli.md#context) |
 | Browse history interactively | [TUI guide](docs/guide/tui.md) or [Web guide](docs/guide/web.md) |
+| Inspect native local history without creating or reading a CCHistory store | [CC History Lite guide](docs/guide/lite.md), `cchistory-lite`, `cchistory-lite-tui` |
 | Backup, restore, or move a store | [CLI backup/import/restore guide](docs/guide/cli.md#backup-and-restore) |
 | Understand support status and parser coverage | [Documentation map](docs/README.md), [runtime surface](docs/design/CURRENT_RUNTIME_SURFACE.md), [source notes](docs/sources/README.md) |
 
@@ -47,6 +48,7 @@ store rather than separate interpretations.
 - **AI-ready project context** — `cchistory context project <ref>` gives an agent recent asks, session threads, and next inspection commands across sessions
 - **Full-text search** — Search across all canonical turn text with project and source filters
 - **Four aligned surfaces** — TUI and Web are end-user read surfaces; CLI and API are admin, automation, and integration surfaces
+- **Zero-store Lite profile** — Reuses the same adapters, `UserTurn`/context derivation, project linking, search, and stats in an ephemeral single-machine CLI/TUI with one-way export
 - **Token usage analytics** — Track tokens across models, projects, sources, and time periods
 - **Export / Import / Merge** — Portable bundles for backup, migration, and multi-host merging
 - **Data health monitoring** — Drift and consistency metrics with source-level health matrix
@@ -142,6 +144,11 @@ and checked by `pnpm run verify:support-status`.
 
 > **Canonical vs alias commands:** `export` / `import` are the canonical backup primitives. `backup`, `restore-check`, and `merge` are operator-facing aliases — `backup --write` produces the same bundle as `export`, `restore-check` runs `stats` + `ls sources`, and `merge` chains `export` then `import` between two stores.
 
+CC History Lite branches after the shared adapter and canonical derivation
+pipeline. Full persists evidence and projections in SQLite; Lite keeps the
+final snapshot only in memory and never reads Full's store. The Lite production
+graph is `source-adapters -> canonical -> live-runtime -> lite-cli/lite-tui`.
+
 ## Quick Start
 
 ### Prerequisites
@@ -210,6 +217,39 @@ These local verifiers and review helpers do **not** mean every manual review gap
 is already closed: the user-started managed-runtime web/API diaries tracked under
 `R31` and the server-backed remote-agent diaries tracked under `R35` are still
 blocked manual review work until a user provides the required running services.
+
+### Use CC History Lite (no CCHistory store)
+
+Build the independent Lite entrypoints:
+
+```bash
+pnpm --filter @cchistory/lite-cli build
+pnpm --filter @cchistory/lite-tui build
+```
+
+Inspect automatically discovered native source roots:
+
+```bash
+pnpm lite -- sources
+pnpm lite -- ls projects
+pnpm lite -- search "parser regression"
+pnpm lite:tui
+```
+
+Override and optionally select one registered adapter:
+
+```bash
+pnpm lite -- search "migration" \
+  --source-root codex=/mnt/history/.codex/sessions \
+  --source codex
+```
+
+Lite provides `sources`, `ls`, `tree`, `search`, `show`, `stats`, and one-way
+`export` in JSONL/JSON/Markdown. It has no import, sync, backup, restore, merge,
+GC, API, `--store`, or `--db` surface. Its export marker is
+`cchistory-lite-export/v1` and is not a Full backup. See the
+[Lite guide](docs/guide/lite.md) and run `pnpm run verify:lite` for the focused
+parity/isolation gate.
 
 ### Use the standalone CLI artifact
 

@@ -77,6 +77,24 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  apps/lite-cli:
+    dependencies:
+      '@cchistory/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@cchistory/live-runtime':
+        specifier: workspace:*
+        version: link:../../packages/live-runtime
+
+  apps/lite-tui:
+    dependencies:
+      '@cchistory/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
+      '@cchistory/live-runtime':
+        specifier: workspace:*
+        version: link:../../packages/live-runtime
+
   apps/tui:
     dependencies:
       '@cchistory/presentation':
@@ -178,7 +196,29 @@ importers:
         specifier: workspace:*
         version: link:../domain
 
+  packages/canonical:
+    dependencies:
+      '@cchistory/domain':
+        specifier: workspace:*
+        version: link:../domain
+
   packages/domain: {}
+
+  packages/live-runtime:
+    dependencies:
+      '@cchistory/canonical':
+        specifier: workspace:*
+        version: link:../canonical
+      '@cchistory/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@cchistory/source-adapters':
+        specifier: workspace:*
+        version: link:../source-adapters
+    devDependencies:
+      '@cchistory/storage':
+        specifier: workspace:*
+        version: link:../storage
 
   packages/presentation:
     dependencies:
@@ -197,6 +237,9 @@ importers:
 
   packages/storage:
     dependencies:
+      '@cchistory/canonical':
+        specifier: workspace:*
+        version: link:../canonical
       '@cchistory/domain':
         specifier: workspace:*
         version: link:../domain

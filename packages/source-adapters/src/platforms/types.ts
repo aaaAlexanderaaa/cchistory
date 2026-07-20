@@ -33,6 +33,12 @@ export interface PlatformAdapter {
   getDefaultBaseDirCandidates(options: DefaultSourceResolutionOptions): string[];
   getSourceRoots?(baseDir: string): string[];
   matchesSourceFile(filePath: string): boolean;
+  /**
+   * Declares that source files can be grouped by the canonical source-session
+   * identity and each group projected independently. Omit when the adapter
+   * requires source-wide assembly or has not proved a narrower boundary.
+   */
+  logicalSessionGrouping?: "source_session_id";
   getSourceFilePriority?(filePath: string): number;
   getSupplementalSourceRoots?(baseDir: string): string[];
   getCompanionEvidencePaths?(baseDir: string, filePath: string): string[] | Promise<string[]>;

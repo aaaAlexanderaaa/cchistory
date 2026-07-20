@@ -6,4 +6,5 @@ export const claudeCodeAdapter: PlatformAdapter = {
   supportTier: "stable",
   getDefaultBaseDirCandidates: (options) => [path.join(options.homeDir ?? "", ".claude", "projects")],
   matchesSourceFile: (filePath) => filePath.endsWith(".jsonl") && path.basename(filePath) !== "history.jsonl",
+  logicalSessionGrouping: "source_session_id",
 };

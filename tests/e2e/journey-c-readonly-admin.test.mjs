@@ -138,7 +138,7 @@ describe("Journey C — Read-only admin / source-health", () => {
       ["restore-check", "--store", missingStoreDir],
       tempRoot,
     );
-    assert.equal(result.exitCode, 1);
+    assert.equal(result.exitCode, 3);
     assert.match(result.stderr, /Store not found:/);
     assert.doesNotMatch(result.stderr, /ExperimentalWarning/);
     assert.equal(

@@ -265,7 +265,7 @@ export function listTurns(db: DatabaseSync): UserTurnProjection[] {
   // against a post-B.6 store — surface as a programming error rather than
   // silently returning empty.
   return db
-    .prepare("SELECT payload_json FROM user_turns ORDER BY submission_started_at DESC, created_at DESC")
+    .prepare("SELECT payload_json FROM user_turns ORDER BY submission_started_at DESC, created_at DESC, id ASC")
     .all()
     .map((row) => fromJson<UserTurnProjection>((row as { payload_json: string }).payload_json));
 }
@@ -466,7 +466,7 @@ export function listUserTurnsFromV2(input: {
   withLineage?: boolean;
 }): UserTurnProjection[] {
   const rows = input.db
-    .prepare(`SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 ORDER BY submission_started_at DESC, created_at DESC`)
+    .prepare(`SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 ORDER BY submission_started_at DESC, created_at DESC, turn_id ASC`)
     .all() as unknown as UserTurnV2Row[];
   return mapV2TurnRows(rows, { assetDir: input.assetDir, withLineage: input.withLineage });
 }
@@ -479,7 +479,7 @@ export function listUserTurnsFromV2BySession(input: {
 }): UserTurnProjection[] {
   const rows = input.db
     .prepare(
-      `SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 WHERE session_id = ? ORDER BY submission_started_at ASC, created_at ASC`,
+      `SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 WHERE session_id = ? ORDER BY submission_started_at ASC, created_at ASC, turn_id ASC`,
     )
     .all(input.sessionId) as unknown as UserTurnV2Row[];
   return mapV2TurnRows(rows, { assetDir: input.assetDir, withLineage: input.withLineage });
@@ -492,7 +492,7 @@ export function listUserTurnsFromV2BySource(input: {
   orderBy?: string;
   withLineage?: boolean;
 }): UserTurnProjection[] {
-  const orderBy = input.orderBy ?? "ORDER BY submission_started_at DESC, created_at DESC";
+  const orderBy = input.orderBy ?? "ORDER BY submission_started_at DESC, created_at DESC, turn_id ASC";
   const rows = input.db
     .prepare(`SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 WHERE source_id = ? ${orderBy}`)
     .all(input.sourceId) as unknown as UserTurnV2Row[];
@@ -543,7 +543,7 @@ export function getSession(db: DatabaseSync, sessionId: string): SessionProjecti
 
 export function listSessions(db: DatabaseSync): SessionProjection[] {
   return db
-    .prepare("SELECT payload_json FROM sessions ORDER BY updated_at DESC, created_at DESC")
+    .prepare("SELECT payload_json FROM sessions ORDER BY updated_at DESC, created_at DESC, id ASC")
     .all()
     .map((row) => fromJson<SessionProjection>((row as { payload_json: string }).payload_json));
 }

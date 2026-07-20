@@ -1,12 +1,20 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { LinkState, SearchHighlight, UserTurnProjection, ValueAxis } from "@cchistory/domain";
+import type { DerivedCandidate, LinkState, UserTurnProjection, ValueAxis } from "@cchistory/domain";
+import {
+  buildSearchPlan as buildBaseSearchPlan,
+  computeRelevanceScore,
+  findHighlights,
+  materializeSearchCandidate,
+  matchesSearchCandidatePlan,
+  matchesSearchCandidateQuery,
+  stripSearchTruncationMarker,
+  type SearchCandidateFields,
+  type SearchPlan as BaseSearchPlan,
+} from "@cchistory/canonical";
 import { setSearchIndexStatus } from "../db/schema.js";
 
-export interface SearchCandidateFields {
-  canonical_text?: string;
-  path_text?: string;
-}
+export { computeRelevanceScore, findHighlights, matchesSearchCandidateQuery, type SearchCandidateFields };
 
 export interface SearchScanCandidate extends SearchCandidateFields {
   id: string;
@@ -18,25 +26,22 @@ export interface SearchScanCandidate extends SearchCandidateFields {
   project_id?: string;
 }
 
-interface SearchPlan {
-  normalizedQuery: string;
-  terms: SearchTerm[];
+interface SearchPlan extends BaseSearchPlan {
   requiresLiteralScan: boolean;
 }
 
-interface SearchTerm {
-  value: string;
-  mode: "prefix" | "literal";
-}
-
 /**
- * Compute a lightweight hash of the indexable fields for a turn so we can
- * detect changes without reading the full FTS content back from SQLite.
+ * Compute a lightweight hash of the exact text written into the FTS index so
+ * we can detect changes without reading the full FTS content back from SQLite.
  */
-function turnIndexHash(turn: UserTurnProjection): string {
+function turnIndexHash(
+  turn: UserTurnProjection,
+  indexedCanonicalText: string,
+  indexedPathText: string,
+): string {
   return createHash("sha1")
     .update(
-      `canonical-search-v3\0${turn.project_id ?? ""}\0${turn.source_id}\0${turn.link_state}\0${turn.value_axis}\0${turn.canonical_text ?? ""}\0${turn.path_text ?? ""}`,
+      `canonical-search-v3\0${turn.project_id ?? ""}\0${turn.source_id}\0${turn.link_state}\0${turn.value_axis}\0${indexedCanonicalText}\0${indexedPathText}`,
     )
     .digest("hex");
 }
@@ -95,7 +100,12 @@ export function replaceSearchIndex(
     // table existed — currentHashes will be empty while search_index already
     // contains rows.
     for (const turn of turns) {
-      const hash = turnIndexHash(turn);
+      const candidate = materializeSearchCandidate({ turn });
+      // Keep the truncation marker out of the index: without this, FTS prefix
+      // matching on "truncated"/"truncat" would hit every >16KiB turn.
+      const indexedCanonicalText = stripSearchTruncationMarker(candidate.canonical_text ?? "");
+      const indexedPathText = candidate.path_text ?? "";
+      const hash = turnIndexHash(turn, indexedCanonicalText, indexedPathText);
       const existingHash = currentHashes.get(turn.id);
       if (existingHash === hash) {
         continue;
@@ -107,8 +117,8 @@ export function replaceSearchIndex(
         turn.source_id,
         turn.link_state,
         turn.value_axis,
-        turn.canonical_text,
-        turn.path_text ?? "",
+        indexedCanonicalText,
+        indexedPathText,
         "",
       );
       upsertHash.run(turn.id, hash);
@@ -137,7 +147,7 @@ export function querySearchIndex(input: {
   try {
     const ftsQuery = buildFtsQuery(input.query);
     const rows = input.db
-      .prepare("SELECT turn_id FROM search_index WHERE search_index MATCH ? ORDER BY rank LIMIT ?")
+      .prepare("SELECT turn_id FROM search_index WHERE search_index MATCH ? ORDER BY rank, turn_id ASC LIMIT ?")
       .all(ftsQuery, input.limit) as Array<{ turn_id: string }>;
     const indexedTurnIds = rows.map((row) => row.turn_id);
     if (!plan.requiresLiteralScan) {
@@ -183,7 +193,7 @@ export function querySearchIndexPage(input: {
   try {
     const ftsQuery = buildFtsQuery(input.query);
     const rows = input.db
-      .prepare("SELECT turn_id FROM search_index WHERE search_index MATCH ? ORDER BY rank LIMIT ?")
+      .prepare("SELECT turn_id FROM search_index WHERE search_index MATCH ? ORDER BY rank, turn_id ASC LIMIT ?")
       .all(ftsQuery, input.candidateLimit) as Array<{ turn_id: string }>;
     return rows.map((row) => row.turn_id);
   } catch {
@@ -197,6 +207,7 @@ export function scanSearchCandidateRows(input: {
   candidateTurnIds?: readonly string[];
 }): Generator<SearchScanCandidate> {
   const plan = buildSearchPlan(input.query);
+  const observationCandidatesFor = makeObservationCandidateLookup(input.db);
   // B.5.1: V2 read path. canonical_text reads the bounded 16 KiB scan hint
   // (per V2 contract — that is the column's purpose). Searches for terms
   // that appear only past 16 KiB in canonical_text will not match; this is
@@ -210,7 +221,10 @@ export function scanSearchCandidateRows(input: {
              ut.session_id,
              ut.submission_started_at,
              ut.canonical_text AS canonical_text,
-             ${searchPathTextSql()} AS path_text,
+             ut.path_text AS path_text,
+             json_extract(s.payload_json, '$.working_directory') AS session_working_directory,
+             json_extract(s.payload_json, '$.resume_working_directory') AS session_resume_working_directory,
+             json_extract(s.payload_json, '$.source_native_project_ref') AS session_source_native_project_ref,
              ut.link_state AS link_state,
              ut.value_axis AS value_axis,
              ut.project_id AS project_id
@@ -221,8 +235,14 @@ export function scanSearchCandidateRows(input: {
     return (function* (): Generator<SearchScanCandidate> {
       for (const turnId of input.candidateTurnIds ?? []) {
         const row = select.get(turnId) as SearchCandidateRow | undefined;
-        if (row && matchesSearchCandidateRow(row, plan)) {
-          yield hydrateSearchCandidateRow(row);
+        if (row) {
+          const candidate = hydrateSearchCandidateRow(
+            row,
+            observationCandidatesFor(row.source_id, row.session_id),
+          );
+          if (matchesSearchCandidatePlan(candidate, plan)) {
+            yield candidate;
+          }
         }
       }
     })();
@@ -234,61 +254,28 @@ export function scanSearchCandidateRows(input: {
            ut.session_id,
            ut.submission_started_at,
            ut.canonical_text AS canonical_text,
-           ${searchPathTextSql()} AS path_text,
+           ut.path_text AS path_text,
+           json_extract(s.payload_json, '$.working_directory') AS session_working_directory,
+           json_extract(s.payload_json, '$.resume_working_directory') AS session_resume_working_directory,
+           json_extract(s.payload_json, '$.source_native_project_ref') AS session_source_native_project_ref,
            ut.link_state AS link_state,
            ut.value_axis AS value_axis,
            ut.project_id AS project_id
       FROM user_turns_v2 ut
       LEFT JOIN sessions s ON s.id = ut.session_id
-     ORDER BY ut.submission_started_at DESC, ut.created_at DESC
+     ORDER BY ut.submission_started_at DESC, ut.created_at DESC, ut.turn_id ASC
   `);
   return (function* (): Generator<SearchScanCandidate> {
     for (const row of statement.iterate() as Iterable<SearchCandidateRow>) {
-      if (matchesSearchCandidateRow(row, plan)) {
-        yield hydrateSearchCandidateRow(row);
+      const candidate = hydrateSearchCandidateRow(
+        row,
+        observationCandidatesFor(row.source_id, row.session_id),
+      );
+      if (matchesSearchCandidatePlan(candidate, plan)) {
+        yield candidate;
       }
     }
   })();
-}
-
-export function computeRelevanceScore(
-  turn: Pick<UserTurnProjection, "submission_started_at">,
-  highlights: SearchHighlight[],
-): number {
-  const nowMs = Date.now();
-  const turnMs = Date.parse(turn.submission_started_at) || 0;
-  const ageMs = Math.max(0, nowMs - turnMs);
-  const NINETY_DAYS_MS = 90 * 24 * 60 * 60 * 1000;
-  // Logarithmic decay: recent turns get a meaningful boost that tapers off.
-  // recency ranges from 0 (very old) to 5 (just now).
-  const recency = 5 * Math.max(0, 1 - Math.log1p(ageMs / NINETY_DAYS_MS) / Math.log1p(100));
-  return highlights.length * 10 + recency;
-}
-
-export function findHighlights(text: string, query: string): SearchHighlight[] {
-  const plan = buildSearchPlan(query);
-  const terms = plan.terms.length > 0 ? plan.terms.map((term) => term.value) : plan.normalizedQuery ? [plan.normalizedQuery] : [];
-  if (terms.length === 0) {
-    return [];
-  }
-
-  // Use regex with the 'ig' flags to find matches in the original text.
-  // This avoids the offset mismatch caused by toLowerCase() changing
-  // string length for certain Unicode characters (e.g. İ → i̇).
-  const highlights: SearchHighlight[] = [];
-  for (const term of terms) {
-    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(escaped, "gi");
-    let match: RegExpExecArray | null;
-    while ((match = regex.exec(text)) !== null) {
-      highlights.push({ start: match.index, end: match.index + match[0].length });
-      if (match[0].length === 0) {
-        regex.lastIndex++;
-      }
-    }
-  }
-
-  return mergeHighlights(highlights);
 }
 
 function fallbackTurnIds(turns: UserTurnProjection[], query: string, limit: number): string[] {
@@ -311,54 +298,23 @@ function buildFtsQueryText(plan: SearchPlan): string {
 }
 
 function buildSearchPlan(query: string): SearchPlan {
-  const normalizedQuery = query.trim().toLowerCase();
-  const seen = new Set<string>();
-  const terms: SearchTerm[] = [];
+  const plan = buildBaseSearchPlan(query);
+  // FTS5 cannot express arbitrary literal substrings, so terms that contain
+  // non-alphanumeric characters need a verifying scan over the real text.
   let requiresLiteralScan = false;
-  for (const segment of normalizedQuery.split(/\s+/u)) {
-    if (!segment) {
-      continue;
-    }
-    const mode = /^[\p{L}\p{N}]+$/u.test(segment) && segment.length > 1 ? "prefix" : "literal";
-    const key = `${mode}:${segment}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    terms.push({ value: segment, mode });
-    if (mode === "literal" && /[^\p{L}\p{N}]/u.test(segment)) {
+  for (const term of plan.terms) {
+    if (term.mode === "literal" && /[^\p{L}\p{N}]/u.test(term.value)) {
       requiresLiteralScan = true;
+      break;
     }
   }
-  return {
-    normalizedQuery,
-    terms,
-    requiresLiteralScan,
-  };
-}
-
-function matchesSearchPlan(text: string, plan: SearchPlan): boolean {
-  const loweredText = text.toLowerCase();
-  if (plan.terms.length > 0) {
-    return plan.terms.every((term) => loweredText.includes(term.value));
-  }
-  return plan.normalizedQuery.length === 0 ? true : loweredText.includes(plan.normalizedQuery);
-}
-
-function matchesTurnSearchPlan(
-  turn: Pick<SearchCandidateFields, "canonical_text" | "path_text">,
-  plan: SearchPlan,
-): boolean {
-  return matchesSearchPlan(turn.canonical_text ?? "", plan) || matchesSearchPlan(turn.path_text ?? "", plan);
-}
-
-export function matchesSearchCandidateQuery(candidate: SearchCandidateFields, query: string): boolean {
-  const plan = buildSearchPlan(query);
-  return matchesTurnSearchPlan(candidate, plan);
+  return { ...plan, requiresLiteralScan };
 }
 
 function findMatchingTurnIds(turns: UserTurnProjection[], query: string): string[] {
-  return turns.filter((turn) => matchesSearchCandidateQuery(turn, query)).map((turn) => turn.id);
+  return turns
+    .filter((turn) => matchesSearchCandidateQuery(materializeSearchCandidate({ turn }), query))
+    .map((turn) => turn.id);
 }
 
 interface SearchCandidateRow {
@@ -368,56 +324,81 @@ interface SearchCandidateRow {
   submission_started_at: string;
   canonical_text: unknown;
   path_text: unknown;
+  session_working_directory: unknown;
+  session_resume_working_directory: unknown;
+  session_source_native_project_ref: unknown;
   link_state: unknown;
   value_axis: unknown;
   project_id: unknown;
 }
 
-function matchesSearchCandidateRow(row: SearchCandidateRow, plan: SearchPlan): boolean {
-  return matchesTurnSearchPlan(
-    {
+function hydrateSearchCandidateRow(
+  row: SearchCandidateRow,
+  projectObservationCandidates: readonly DerivedCandidate[],
+): SearchScanCandidate {
+  const candidate = materializeSearchCandidate({
+    turn: {
       canonical_text: asString(row.canonical_text),
       path_text: asString(row.path_text),
     },
-    plan,
-  );
-}
-
-function hydrateSearchCandidateRow(row: SearchCandidateRow): SearchScanCandidate {
+    session: {
+      working_directory: asString(row.session_working_directory),
+      resume_working_directory: asString(row.session_resume_working_directory),
+      source_native_project_ref: asString(row.session_source_native_project_ref),
+    },
+    project_observation_candidates: projectObservationCandidates,
+  });
   return {
     id: row.id,
     source_id: row.source_id,
     session_id: row.session_id,
     submission_started_at: row.submission_started_at,
-    canonical_text: asString(row.canonical_text),
-    path_text: asString(row.path_text),
+    canonical_text: candidate.canonical_text,
+    path_text: candidate.path_text,
     link_state: asLinkState(row.link_state),
     value_axis: asValueAxis(row.value_axis),
     project_id: asString(row.project_id),
   };
 }
 
-function searchPathTextSql(): string {
-  return `
-    COALESCE(ut.path_text, '') || ' ' ||
-    COALESCE(json_extract(s.payload_json, '$.working_directory'), '') || ' ' ||
-    COALESCE(json_extract(s.payload_json, '$.resume_working_directory'), '') || ' ' ||
-    COALESCE(json_extract(s.payload_json, '$.source_native_project_ref'), '') || ' ' ||
-    COALESCE((
-      SELECT GROUP_CONCAT(
-        COALESCE(json_extract(dc.payload_json, '$.evidence.workspace_path'), '') || ' ' ||
-        COALESCE(json_extract(dc.payload_json, '$.evidence.workspace_path_normalized'), '') || ' ' ||
-        COALESCE(json_extract(dc.payload_json, '$.evidence.repo_root'), '') || ' ' ||
-        COALESCE(json_extract(dc.payload_json, '$.evidence.repo_remote'), '') || ' ' ||
-        COALESCE(json_extract(dc.payload_json, '$.evidence.repo_fingerprint'), '') || ' ' ||
-        COALESCE(json_extract(dc.payload_json, '$.evidence.source_native_project_ref'), ''),
-        ' '
-      )
-      FROM derived_candidates dc
-      WHERE dc.session_ref = ut.session_id
-        AND dc.candidate_kind = 'project_observation'
-    ), '')
-  `;
+/**
+ * Look up project_observation candidates per (source, session) on demand,
+ * memoized for the lifetime of one scan. Uses the (source_id, session_ref)
+ * index, so FTS-narrowed searches only touch the sessions they actually scan
+ * instead of parsing the whole derived_candidates table per keystroke.
+ */
+function makeObservationCandidateLookup(
+  db: DatabaseSync,
+): (sourceId: string, sessionId: string) => readonly DerivedCandidate[] {
+  const statement = db.prepare(`
+    SELECT payload_json
+      FROM derived_candidates
+     WHERE source_id = ? AND session_ref = ? AND candidate_kind = 'project_observation'
+     ORDER BY id ASC
+  `);
+  const cache = new Map<string, readonly DerivedCandidate[]>();
+  let warnedCorruptPayload = false;
+  return (sourceId, sessionId) => {
+    const cacheKey = `${sourceId}\0${sessionId}`;
+    const cached = cache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const parsed: DerivedCandidate[] = [];
+    for (const row of statement.iterate(sourceId, sessionId) as Iterable<{ payload_json: string }>) {
+      try {
+        parsed.push(JSON.parse(row.payload_json) as DerivedCandidate);
+      } catch {
+        // One corrupt row must not break every search; skip it and report once.
+        if (!warnedCorruptPayload) {
+          warnedCorruptPayload = true;
+          console.warn("[cchistory] skipping corrupt project_observation payload_json in derived_candidates");
+        }
+      }
+    }
+    cache.set(cacheKey, parsed);
+    return parsed;
+  };
 }
 
 function asString(value: unknown): string | undefined {
@@ -430,29 +411,6 @@ function asLinkState(value: unknown): LinkState {
 
 function asValueAxis(value: unknown): ValueAxis {
   return value === "covered" || value === "archived" || value === "suppressed" ? value : "active";
-}
-
-function mergeHighlights(highlights: SearchHighlight[]): SearchHighlight[] {
-  if (highlights.length === 0) {
-    return highlights;
-  }
-  const sorted = [...highlights].sort((left, right) => {
-    if (left.start !== right.start) {
-      return left.start - right.start;
-    }
-    return left.end - right.end;
-  });
-
-  const merged: SearchHighlight[] = [sorted[0]!];
-  for (const highlight of sorted.slice(1)) {
-    const previous = merged[merged.length - 1]!;
-    if (highlight.start <= previous.end) {
-      previous.end = Math.max(previous.end, highlight.end);
-      continue;
-    }
-    merged.push({ ...highlight });
-  }
-  return merged;
 }
 
 function sanitizeFtsPhrase(query: string): string {

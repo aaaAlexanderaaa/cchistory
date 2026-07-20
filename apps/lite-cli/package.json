@@ -1,0 +1,17 @@
+{
+  "name": "@cchistory/lite-cli",
+  "version": "0.3.0",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "cchistory-lite": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "pnpm --filter @cchistory/live-runtime build && tsc -p tsconfig.json && chmod +x dist/index.js",
+    "test": "pnpm run build && tsc -p tsconfig.test.json && node --test dist/index.test.js"
+  },
+  "dependencies": {
+    "@cchistory/domain": "workspace:*",
+    "@cchistory/live-runtime": "workspace:*"
+  }
+}

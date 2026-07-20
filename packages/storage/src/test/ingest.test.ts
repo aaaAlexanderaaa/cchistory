@@ -45,6 +45,25 @@ test("replaceSourcePayload persists pipeline layers and lineage drill-down", asy
   }
 });
 
+test("replaceSourcePayload normalizes legacy optional payload and turn identity fields", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-legacy-ask-user-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const payload = createFixturePayload("src-legacy-ask-user", "Legacy payload", "stage-run-legacy-ask-user");
+    delete (payload as Partial<SourceSyncPayload>).ask_user_question_turns;
+    delete (payload.turns[0] as Partial<SourceSyncPayload["turns"][number]>).turn_id;
+    delete (payload.turns[0] as Partial<SourceSyncPayload["turns"][number]>).turn_revision_id;
+
+    storage.replaceSourcePayload(payload);
+    assert.equal(storage.listAskUserQuestionTurns().length, 0);
+    assert.equal(storage.listTurns().length, 1);
+    assert.equal(storage.listTurns()[0]?.turn_id, storage.listTurns()[0]?.id);
+    assert.equal(storage.listTurns()[0]?.turn_revision_id, storage.listTurns()[0]?.revision_id);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("replaceSourcePayload replaces prior rows for the same source deterministically", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-replace-"));
   try {

@@ -13,7 +13,7 @@ before starting non-trivial corrective work.
 ## Current Status
 
 **R17, R31, and R35 are blocked on operator-provided data or user-started
-services.** R39 completed in-place on 2026-05-17 after the canonical-only
+services. R43 completed in-place on 2026-07-18.** R39 completed in-place on 2026-05-17 after the canonical-only
 default-search fix, focused local validation, and three successful independent
 final reviews. R40 completed in-place on 2026-05-31 after resume provenance,
 path-aware search, CLI/TUI/Web projection work, source-shaped E2E coverage, and
@@ -49,8 +49,115 @@ on 2026-05-17.
 | R17 - LobeChat Real-Sample Validation | active | Waiting for user-provided real LobeChat data |
 | R31 - Managed-Runtime Manual Review Diaries | active | Waiting for user to start canonical services |
 | R35 - Managed Remote-Agent Manual Review | active | Waiting for user to start canonical API service |
+| R43 - CC History Lite | done | none |
 
 231 completed objectives were archived and subsequently removed during repository cleanup.
+
+---
+
+## Objective: R43 - CC History Lite
+Status: done
+Priority: P0
+Source: explicit user direction on 2026-07-18
+Design: `docs/design/R43_CC_HISTORY_LITE_DESIGN.md`
+
+Deliver a single-machine, non-persistent CC History Lite product that shares
+Full's registered adapters, logical-session assembly, canonical `UserTurn` /
+context derivation, masking, project linking, and read semantics. Lite must not
+read or depend on the Full SQLite store. It may read upstream tools' native
+SQLite formats through their adapters. It supports read-only CLI/TUI workflows
+and one-way normalized export, with no import or storage-management surface.
+
+### KR: R43-KR1 Shared canonical pipeline and parity contract
+Status: done
+Acceptance: Full and Lite consume one registered adapter/canonical derivation
+path, and fixture-backed parity proves normalized canonical output matches.
+
+- Task: document the Lite product boundary and semantic parity contract
+  Status: done
+  Acceptance: `docs/design/R43_CC_HISTORY_LITE_DESIGN.md` records the decided
+  single-host, no-Full-store, one-pipeline/two-materializer architecture and
+  verifiable acceptance criteria.
+
+- Task: complete multi-perspective design review and synthesis
+  Status: done
+  Acceptance: independent consistency, UX, and engineering-cost reviews are
+  synthesized into the design before implementation proceeds. Independent
+  review workers were attempted but rate-limited; the design records the three
+  required lenses and the resulting synthesis explicitly.
+
+- Task: extract or expose storage-neutral canonical project/read helpers
+  Status: done
+  Acceptance: Lite can resolve the same default projects and canonical read
+  objects without a production dependency on `@cchistory/storage`.
+
+- Task: add Full/Lite canonical parity verification
+  Status: done
+  Acceptance: fixture-backed tests compare normalized Full in-memory readback
+  with the Lite ephemeral snapshot across the v0 adapter matrix.
+
+### KR: R43-KR2 Non-persistent Lite runtime and CLI
+Status: done
+Acceptance: an independent `cchistory-lite` binary performs the documented
+single-host read and one-way export commands without creating or reading a Full
+store.
+
+- Task: implement the ephemeral live runtime and source-root overrides
+  Status: done
+  Acceptance: default/explicit registered sources scan through the canonical
+  producer, forbidden Full paths fail before open, and no history state is
+  written.
+
+- Task: implement Lite sources, ls, tree, search, show, stats, and export
+  Status: done
+  Acceptance: human and JSON outputs are deterministic, exports carry the Lite
+  schema marker, and no import/storage commands exist.
+
+### KR: R43-KR3 Lite TUI and end-to-end zero-store proof
+Status: done
+Acceptance: the Lite TUI browses the same ephemeral snapshot and the complete
+Lite surface passes parity, no-write, and adjacent Full regression checks.
+
+- Task: implement the independent Lite TUI entrypoint
+  Status: done
+  Acceptance: project/session/turn navigation, search, detail, stats, source
+  status, and refresh work without a durable store.
+
+- Task: run package, parity, zero-write, and holistic evaluation gates
+  Status: done
+  Acceptance: affected builds/tests pass sequentially; Lite production
+  dependency graphs exclude Full storage; no implicit filesystem writes occur;
+  Phase 7 findings are resolved or recorded.
+
+Completion evidence:
+
+- `packages/canonical` now owns the storage-neutral default project linker,
+  fallback observations, stable read ordering, search, and usage aggregation;
+  Full storage consumes or compatibility-re-exports those implementations.
+- `packages/live-runtime` consumes the registered `source-adapters` probe
+  pipeline into a process-lifetime snapshot, supports default and explicit
+  source roots, rejects Full stores/bundles and ancestor/symlink escapes, and
+  verifies upstream native SQLite access remains read-only.
+- Context-light CLI scans bound Codex and Claude Code producer memory by one
+  canonical logical session. Claude parent/subagent and cross-path files are
+  grouped by source-session ID before projection; undeclared adapters retain
+  the source-level canonical fallback.
+- `apps/lite-cli` ships `sources`, `ls`, `tree`, `search`, `show`, `stats`,
+  one-way `export`, and the `tui` launcher without import or storage-management
+  commands. Export destinations are resolved before write so symlinks cannot
+  redirect output into native source roots or the Full store.
+- `apps/lite-tui` provides one-scan project/session/turn browsing, search,
+  source detail, stats, full turn context, and explicit refresh; a failed
+  refresh retains the previous complete snapshot.
+- The parity matrix covers Codex, Claude Code, Factory Droid, AMP, Cursor,
+  Antigravity, Gemini CLI, OpenClaw, OpenCode, CodeBuddy, and Accio Work. It
+  compares source status, projects, ordered sessions/turns, contexts,
+  AskUserQuestion projections, search, and stats against clean Full readback.
+- Focused and adjacent validation passed: `pnpm run verify:lite`,
+  `pnpm --filter @cchistory/source-adapters test`,
+  `pnpm --filter @cchistory/storage test`, `pnpm run test:e2e`,
+  `pnpm run verify:cli-tui-read-side`, `pnpm run verify:support-status`, and
+  `pnpm run verify:runtime-inventory`.
 
 ---
 

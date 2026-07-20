@@ -11,6 +11,7 @@ import {
   type UsageStatsRollup,
   type UserTurnProjection,
 } from "@cchistory/domain";
+import { buildProjectDisplayList } from "@cchistory/canonical";
 import type { CCHistoryStorage } from "./internal/storage.js";
 import { buildLocalReadOverview, type LocalReadOverview } from "./read-overview.js";
 
@@ -74,16 +75,7 @@ export interface LocalTuiBrowser {
 }
 
 export function buildLocalTuiBrowser(storage: CCHistoryStorage, options: { readMode?: "index" | "full" } = {}): LocalTuiBrowser {
-  const projects = storage
-    .listProjects()
-    .slice()
-    .filter((project) => project.committed_turn_count + project.candidate_turn_count > 0)
-    .sort((left, right) => {
-      const leftTurns = left.committed_turn_count + left.candidate_turn_count;
-      const rightTurns = right.committed_turn_count + right.candidate_turn_count;
-      if (rightTurns !== leftTurns) return rightTurns - leftTurns;
-      return (right.project_last_activity_at ?? "").localeCompare(left.project_last_activity_at ?? "");
-    });
+  const projects = buildProjectDisplayList(storage.listProjects());
   const sources = storage
     .listSources()
     .slice()

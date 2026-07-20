@@ -7,6 +7,7 @@ export {
   runSourceProbe,
   streamSourceProbe,
   projectFileSessionInputs,
+  deriveSourceFileLogicalSessionKey,
   getBuiltinMaskTemplates,
   listSourceFiles,
 } from "./core/legacy.js";

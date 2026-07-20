@@ -136,6 +136,7 @@ export class CCHistoryStorage {
   private cachedProjectsById?: Map<string, ProjectIdentity>;
   private cachedSessionsById?: Map<string, SessionProjection>;
   private cachedRelatedWorkBySessionId?: Map<string, SessionRelatedWorkProjection[]>;
+  private warnedCorruptDerivedCandidateRow = false;
   private cachedSearchLinkedTurnsById?: Map<string, UserTurnProjection>;
   private cachedReadSurfaceSearchProjectResolver?: ReadSurfaceSearchProjectResolver;
   readonly dbPath: string;
@@ -745,7 +746,7 @@ export class CCHistoryStorage {
     // drops V1 user_turns/turn_contexts, only the V2 path remains. Other
     // tables (records/fragments/atoms/etc.) are not migrated and stay on V1
     // payload_json — the bundle surface is a hybrid until B.6.
-    const turnsOrderBy = "ORDER BY submission_started_at DESC, created_at DESC";
+    const turnsOrderBy = "ORDER BY submission_started_at DESC, created_at DESC, turn_id ASC";
     const turnsFromV2 = Queries.listUserTurnsFromV2BySource({
       db: this.db,
       sourceId,
@@ -1670,6 +1671,7 @@ export class CCHistoryStorage {
     const needsResolvedLinkage = Boolean(options.project_id || linkStates);
     const resolvedTurnsById = needsResolvedLinkage ? this.getSearchLinkedTurnsById() : undefined;
     const pageCapacity = offset + limit;
+    const nowMs = Date.now();
     const retained: RankedSearchCandidate[] = [];
     let total = 0;
 
@@ -1702,7 +1704,7 @@ export class CCHistoryStorage {
         candidate,
         resolvedTurn,
         highlights,
-        relevance_score: computeRelevanceScore(candidate, highlights),
+        relevance_score: computeRelevanceScore(candidate, highlights, nowMs),
       });
       pruneRankedRetainedIfFull(retained, pageCapacity);
     }
@@ -1799,6 +1801,7 @@ export class CCHistoryStorage {
       : 0;
     const retained: RankedSearchCandidate[] = [];
     const pageCapacity = resultOffset + limit;
+    const nowMs = Date.now();
 
     if (selectedGroup && pageCapacity > 0) {
       for (const candidate of scanSearchCandidateRows({ db: this.db, query })) {
@@ -1812,7 +1815,7 @@ export class CCHistoryStorage {
         retained.push({
           candidate,
           highlights,
-          relevance_score: computeRelevanceScore(candidate, highlights),
+          relevance_score: computeRelevanceScore(candidate, highlights, nowMs),
         });
         pruneRankedRetainedIfFull(retained, pageCapacity);
       }
@@ -2007,7 +2010,7 @@ export class CCHistoryStorage {
       db: this.db,
       sourceId,
       assetDir: this.assetDir,
-      orderBy: "ORDER BY submission_started_at DESC, created_at DESC",
+      orderBy: "ORDER BY submission_started_at DESC, created_at DESC, turn_id ASC",
       // Bundle export serializes the full projection; lineage must round-trip
       // byte-identically for B.4a bundle byte-diff to pass.
       withLineage: true,
@@ -2267,7 +2270,7 @@ export class CCHistoryStorage {
 
   private resolveSearchPageLinkage(turns: readonly UserTurnProjection[]): UserTurnProjection[] {
     const sessions = this.listSessions();
-    const candidates = Queries.selectAllPayloads<DerivedCandidate>(this.db, "derived_candidates");
+    const candidates = this.listDerivedCandidatesToleratingCorruptRows();
     const snapshot = deriveProjectLinkSnapshot({
       sessions,
       turns: [...turns],
@@ -2284,6 +2287,26 @@ export class CCHistoryStorage {
       overrides: this.listProjectOverrides(),
     });
     return snapshot.turns;
+  }
+
+  private listDerivedCandidatesToleratingCorruptRows(): DerivedCandidate[] {
+    const rows = this.db
+      .prepare("SELECT payload_json FROM derived_candidates ORDER BY id DESC")
+      .all() as Array<{ payload_json: string }>;
+    const candidates: DerivedCandidate[] = [];
+    for (const row of rows) {
+      try {
+        candidates.push(fromJson<DerivedCandidate>(row.payload_json));
+      } catch {
+        // One corrupt candidate row must not break every paginated search;
+        // skip it and surface the corruption once per storage instance.
+        if (!this.warnedCorruptDerivedCandidateRow) {
+          this.warnedCorruptDerivedCandidateRow = true;
+          console.warn("[cchistory] skipping corrupt derived_candidates payload_json during search linkage");
+        }
+      }
+    }
+    return candidates;
   }
 
   private buildSessionRelatedWorkIndex(): Map<string, SessionRelatedWorkProjection[]> {

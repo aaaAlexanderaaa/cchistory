@@ -303,6 +303,25 @@ test("searchTurns does not match raw-only turn text", async () => {
   }
 });
 
+test("searchTurns uses the bounded canonical scan hint rather than full long turn text", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-bounded-canonical-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const canonicalText = `${"a".repeat(16 * 1024)} beyond-boundary-token`;
+    storage.replaceSourcePayload(
+      createFixturePayload("src-search-bounded-canonical", canonicalText, "sr-bounded-canonical", {
+        turnId: "turn-bounded-canonical",
+        sessionId: "session-bounded-canonical",
+      }),
+    );
+
+    assert.match(storage.getTurn("turn-bounded-canonical")?.canonical_text ?? "", /beyond-boundary-token/u);
+    assert.deepEqual(storage.searchTurns({ query: "beyond-boundary-token" }), []);
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("searchTurns requires all canonical query terms and ignores session metadata partial overlap", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-session-overlap-"));
   try {
@@ -422,6 +441,7 @@ test("searchTurns matches project workspace path from project observations", asy
         projectObservation: {
           workspacePath: "/Users/mock_user/workspace/provider-isolated-history",
           repoRoot: "/Users/mock_user/workspace/provider-isolated-history",
+          repoRemote: "https://example.test/remote-search-parity.git",
           repoFingerprint: "fp-provider-isolated-history",
           sourceNativeProjectRef: "-Users-mock-user-workspace-provider-isolated-history",
         },
@@ -434,6 +454,14 @@ test("searchTurns matches project workspace path from project observations", asy
     );
     assert.deepEqual(
       storage.searchTurns({ query: "-Users-mock-user-workspace-provider-isolated-history" }).map((result) => result.turn.id),
+      ["turn-search-project-path"],
+    );
+    assert.deepEqual(
+      storage.searchTurns({ query: "remote-search-parity" }).map((result) => result.turn.id),
+      ["turn-search-project-path"],
+    );
+    assert.deepEqual(
+      storage.searchTurns({ query: "fp-provider-isolated-history" }).map((result) => result.turn.id),
       ["turn-search-project-path"],
     );
   } finally {
@@ -558,6 +586,84 @@ test("searchTurns with limit returns at most N results", async () => {
     }
     const limited = storage.searchTurns({ limit: 2 });
     assert.equal(limited.length, 2, "Should respect limit");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("search skips corrupt project_observation payloads instead of failing every query", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-corrupt-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(
+      createFixturePayload("src-search-corrupt", "Corrupt candidate tolerance check", "sr-corrupt", {
+        turnId: "turn-corrupt",
+        sessionId: "session-corrupt",
+      }),
+    );
+    storage.close();
+
+    const db = new DatabaseSync(path.join(dataDir, "cchistory.sqlite"));
+    const turnRow = db
+      .prepare("SELECT source_id, session_id FROM user_turns_v2 WHERE turn_id = ?")
+      .get("turn-corrupt") as { source_id: string; session_id: string };
+    db.prepare(
+      "INSERT INTO derived_candidates (id, source_id, session_ref, candidate_kind, payload_json) VALUES (?, ?, ?, ?, ?)",
+    ).run("corrupt-candidate", turnRow.source_id, turnRow.session_id, "project_observation", "{not valid json");
+    db.close();
+
+    const reopened = new CCHistoryStorage(dataDir);
+    try {
+      const scan = reopened.searchTurns({ query: "tolerance" });
+      assert.equal(scan.length, 1, "scan path must survive a corrupt candidate row");
+      const page = reopened.searchTurnsPaginated({ query: "corrupt", limit: 10 });
+      assert.equal(page.total, 1, "paginated path must survive a corrupt candidate row");
+    } finally {
+      reopened.close();
+    }
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("FTS index text excludes the bound truncation marker", async (t) => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-marker-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    if (storage.searchMode !== "fts5") {
+      storage.close();
+      t.skip("FTS5 is unavailable in this Node SQLite build");
+      return;
+    }
+    storage.replaceSourcePayload(
+      createFixturePayload("src-search-marker", `markerhead ${"x".repeat(20 * 1024)}`, "sr-marker", {
+        turnId: "turn-marker",
+        sessionId: "session-marker",
+      }),
+    );
+    storage.close();
+
+    const db = new DatabaseSync(path.join(dataDir, "cchistory.sqlite"));
+    try {
+      const row = db
+        .prepare("SELECT canonical_text FROM search_index WHERE turn_id = ?")
+        .get("turn-marker") as { canonical_text: string };
+      assert.ok(row.canonical_text.startsWith("markerhead "), "indexed text keeps the head of the turn");
+      assert.ok(
+        !row.canonical_text.includes("...[truncated]"),
+        "indexed text must not contain the bound truncation marker",
+      );
+      const markerMatches = db
+        .prepare("SELECT turn_id FROM search_index WHERE search_index MATCH ?")
+        .all("truncated*") as unknown[];
+      assert.equal(markerMatches.length, 0, "the marker token must not be FTS-searchable");
+      const realMatches = db
+        .prepare("SELECT turn_id FROM search_index WHERE search_index MATCH ?")
+        .all("markerhead*") as unknown[];
+      assert.deepEqual(realMatches, [{ turn_id: "turn-marker" }], "real content within the bound stays searchable");
+    } finally {
+      db.close();
+    }
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

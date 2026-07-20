@@ -515,6 +515,8 @@ function buildAcceptancePayload(sourceId, canonicalText, options) {
       {
         id: options.turnId,
         revision_id: `${options.turnId}:r1`,
+        turn_id: options.turnId,
+        turn_revision_id: `${options.turnId}:r1`,
         user_messages: [
           {
             id: `${options.turnId}-user-message`,
@@ -592,6 +594,7 @@ function buildAcceptancePayload(sourceId, canonicalText, options) {
         raw_event_refs: [recordId],
       },
     ],
+    ask_user_question_turns: [],
   };
 }
 
