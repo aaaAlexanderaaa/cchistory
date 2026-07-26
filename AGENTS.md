@@ -8,13 +8,20 @@ When an agent starts without a specific user instruction:
 2. Follow the decision tree in `PIPELINE.md`.
 3. Before changing docs, code, data models, or source semantics, read
    `HIGH_LEVEL_DESIGN_FREEZE.md`.
+4. Before changing ownership, dependencies, public contracts, or governance,
+   read `ARCHITECTURE.md`, `docs/README.md`, and the relevant current/target
+   contract under `docs/contracts/`.
 
 When the user gives a specific instruction, satisfy that instruction while still
 preserving the frozen design invariants.
 
 ## Source Of Truth
 
-- `HIGH_LEVEL_DESIGN_FREEZE.md` defines product semantics and architecture.
+- `HIGH_LEVEL_DESIGN_FREEZE.md` defines product semantics and frozen
+  invariants.
+- `ARCHITECTURE.md` defines structural ownership and dependency direction.
+- `docs/README.md` defines document authority and lifecycle routing.
+- `docs/contracts/` defines current and accepted target cross-surface behavior.
 - `docs/design/CURRENT_RUNTIME_SURFACE.md` is the current repository-visible
   runtime inventory.
 - `PIPELINE.md` defines work decomposition and completion rules.
@@ -32,6 +39,26 @@ allowance, not proof that a live adapter exists. The registered adapter roster
 and support tiers live in
 `packages/source-adapters/src/platforms/registry.ts` and are checked by
 `pnpm run verify:support-status`.
+
+## Contract And Document Lifecycle Gate
+
+- A material change is one that changes product semantics, a public contract,
+  durable state, multiple consumers, a user/operator workflow, authorization,
+  migration, governance, or an architecture boundary.
+- Before material implementation, land or reconcile the governing contract and
+  a complete-end-state plan. Plans do not override the design freeze,
+  architecture, or current contracts.
+- Classify the work as routine, material, or high-risk. High-risk architecture,
+  governance, semantic, irreversible-data, and cross-stack work requires the
+  independent review and fresh-context evidence defined in `PIPELINE.md`.
+- Same-context analysis is not independent evidence. If an independent context
+  is required but unavailable, keep the owning KR/objective `verifying` or
+  `blocked` unless the user grants a named governance exception.
+- New contracts, plans, issues, evidence, and backlog archives use the forms in
+  `docs/templates/` and the lifecycle rules in `docs/contracts/repository-governance.md`.
+- Historical design documents are adopted incrementally. Do not bulk-add
+  metadata merely to satisfy the checker; when one becomes current authority or
+  is materially revised, add it to the governed set in `docs-policy.json`.
 
 ## Repository Map
 
@@ -84,6 +111,27 @@ Review the entrypoint before changing a surface:
 - `apps/web/components/app-shell.tsx`
 - `apps/api/src/app.ts`
 
+## Frontend And Backend Development Discipline
+
+Frontend changes translate dated user/operator intent into reachable states,
+layout, interaction, focus, accessibility, responsive behavior, and visible
+failure/recovery. Use `docs/templates/frontend-surface.md`; verify both
+perceptual output and rendered structure for layout-affecting work. The frontend
+owns presentation and ephemeral interaction state, not hidden domain truth.
+
+Backend changes name one owner for domain state and mutation authorization. Use
+`docs/templates/backend-change.md`; specify public interfaces, invalid
+transitions, idempotency, concurrency, ordering, persistence, timeouts, retry
+eligibility, recovery, observability, permissions, migration, and rollback.
+Preserve parser input independently from derived output and update every
+evidence-liveness/prune site when adding a reference.
+
+Cross-stack changes use `docs/templates/cross-stack-change.md` and land the
+shared state/DTO contract first. Backend owns canonical truth and errors;
+frontend owns the user-visible projection. Cut over all required producers and
+consumers under one explicit compatibility decision, and verify API
+self-consistency plus every relevant user-visible state.
+
 ## Validation Commands
 
 Prefer the smallest package-scoped command that proves the changed layer.
@@ -122,6 +170,9 @@ Package checks:
 
 Repository verification:
 
+- `pnpm run verify:governance`
+- `pnpm run verify:doc-governance`
+- `pnpm run verify:architecture-boundaries`
 - `pnpm run validate:core`
 - `pnpm run verify:clean-install`
 - `pnpm run verify:cli-artifact`
@@ -351,8 +402,10 @@ leak into product semantics.
 ## Testing Guidelines
 
 Test the layer changed. Design-only edits should cite the affected sections in
-`HIGH_LEVEL_DESIGN_FREEZE.md`. Reference-code work should run only relevant
-legacy tests and clearly state what slice the result validates.
+`HIGH_LEVEL_DESIGN_FREEZE.md` and, for structural work, `ARCHITECTURE.md`.
+Governance policy, template, or verifier changes run `pnpm run
+verify:governance`. Reference-code work should run only relevant legacy tests
+and clearly state what slice the result validates.
 
 ## Commit And PR Guidelines
 

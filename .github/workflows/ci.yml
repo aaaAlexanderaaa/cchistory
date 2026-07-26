@@ -11,6 +11,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  governance:
+    name: Documentation and architecture governance
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      - name: Verify governance harness
+        run: pnpm run verify:governance
+
   build-and-test:
     name: Full profile
     runs-on: ubuntu-latest

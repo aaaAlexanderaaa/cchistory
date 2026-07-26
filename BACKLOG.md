@@ -1,9 +1,22 @@
+---
+doc_type: backlog
+status: active
+authority: planning
+last_reconciled: 2026-07-26
+supersedes: []
+---
+
 # Backlog
 
 This is the living work surface for CCHistory and the active backlog. Agents must read this file at the start of every session.
 
 For the operational workflow that governs how objectives and tasks are executed,
 see `PIPELINE.md`.
+
+This file owns active portfolio state, not the only historical ledger.
+Completed objectives remain here until an intentional compaction moves them to
+a dated file indexed by `docs/archive/backlog/README.md`, with stable objective
+ids and acceptance-evidence links. Do not silently delete completed history.
 
 When there is no executable task, agents must run the KR review sweep defined in
 `PIPELINE.md` across the whole project's open work, not only the currently
@@ -35,6 +48,12 @@ Documentation drift guardrail work from `R36` was completed in-place on
 2026-05-14 and is kept below as the current ownership record for support/runtime
 inventory drift.
 
+R44's mechanical governance migration is complete on the independent branch:
+the document lifecycle, architecture map, templates, fixture-backed gates, and
+CI wiring pass alongside existing support/runtime/profile/Lite checks. R44
+remains active only because genuinely independent governance review and
+synthesis are still blocked; no same-context substitute is claimed.
+
 CLI/TUI quality work from `R37` was completed in-place on 2026-05-15 and is
 kept below as the current quality-gate ownership record.
 
@@ -47,12 +66,105 @@ on 2026-05-17.
 
 | Objective | Status | Blocker |
 |-----------|--------|---------|
+| R44 - Contract Lifecycle And AI Governance Harness | active | Independent three-lens governance review and synthesis require separate contexts |
 | R17 - LobeChat Real-Sample Validation | active | Waiting for user-provided real LobeChat data |
 | R31 - Managed-Runtime Manual Review Diaries | active | Waiting for user to start canonical services |
 | R35 - Managed Remote-Agent Manual Review | active | Waiting for user to start canonical API service |
 | R43 - CC History Lite | active | Independent three-lens design review and synthesis remain pending |
 
-231 completed objectives were archived and subsequently removed during repository cleanup.
+231 completed objectives were archived and subsequently removed during earlier
+repository cleanup. Their unavailable content is a legacy exception recorded
+in `docs/archive/backlog/README.md`; this governance migration does not
+fabricate a reconstruction.
+
+---
+
+## Objective: R44 - Contract Lifecycle And AI Governance Harness
+Status: active
+Priority: P0
+Source: explicit user direction on 2026-07-26
+Design: `docs/contracts/repository-governance.md`
+Plan: `docs/plans/2026-07-26-repository-governance-migration.md`
+
+Evolve repository governance without changing frozen product semantics. The
+result must combine typed document lifecycle, structural ownership, reusable
+cross-stack contracts, machine-checkable boundaries, and the existing
+fixture-first / independent-review AI execution pipeline. All work occurs on
+the independent branch `governance/contract-lifecycle-harness`.
+
+### KR: R44-KR1 Governance contract and independent review
+Status: active
+Acceptance: the paradigm change has a landed target contract, complete-end-state
+plan, and genuinely independent consistency, UX, and engineering-cost reviews
+plus synthesis, or an explicit operator governance exception.
+
+- Task: land the governance contract and migration plan
+  Status: done
+  Acceptance: the contract preserves the design freeze, declares authority,
+  lifecycle, enforcement, adoption, and review rules, and the plan records the
+  coherent end state, risks, rollback, and verification matrix.
+  Artifact: `docs/contracts/repository-governance.md`,
+  `docs/plans/2026-07-26-repository-governance-migration.md`
+
+- Task: complete independent governance review and synthesis
+  Status: blocked
+  Blocker: current execution policy does not authorize spawning independent
+  sub-agents, and same-context analysis is not independent evidence.
+  Acceptance: three independent reports and a synthesis review the frozen
+  semantics, contributor/operator UX, and engineering/maintenance cost, or the
+  operator records a named governance exception.
+
+### KR: R44-KR2 Structural and document authority
+Status: done
+Acceptance: current governance entrypoints have machine-readable roles and one
+architecture authority maps owner, consumers, forbidden knowledge, and
+enforcement for material invariants.
+
+- Task: add architecture ownership and incremental document lifecycle
+  Status: done
+  Acceptance: `ARCHITECTURE.md`, authority maps, lifecycle metadata, and
+  active/archive routing are internally consistent without bulk-rewriting
+  historical feature documents.
+  Artifact: `ARCHITECTURE.md`, `docs-policy.json`, `docs/README.md`, and
+  `docs/archive/backlog/README.md`
+
+### KR: R44-KR3 Reusable contracts and mechanical enforcement
+Status: done
+Acceptance: reusable frontend/backend/cross-stack/review templates and Node-based
+document/architecture checks are tested and run in CI alongside existing
+domain-specific drift guards.
+
+- Task: add governance templates and directory routing
+  Status: done
+  Acceptance: new material work can use current contract, plan, issue,
+  evidence, independent-review, and holistic-evaluation forms.
+  Artifact: `docs/templates/`, `docs/contracts/README.md`,
+  `docs/plans/README.md`, `docs/issues/README.md`, `docs/evidence/README.md`
+
+- Task: implement and test document-governance verification
+  Status: done
+  Acceptance: governed metadata, lifecycle relationships, target aging,
+  structured promises, required templates, and repository-contained paths fail
+  with actionable messages when violated.
+  Artifact: `docs-policy.json`, `scripts/verify-doc-governance.mjs`,
+  `scripts/verify-doc-governance.test.mjs`, `pnpm run verify:doc-governance`
+
+- Task: implement and test architecture-boundary verification
+  Status: done
+  Acceptance: non-vacuous declared boundary rules catch forbidden references
+  while existing `verify:lite` and product-profile checks remain authoritative
+  for their current scopes.
+  Artifact: `architecture-rules.json`,
+  `scripts/verify-architecture-boundaries.mjs`,
+  `scripts/verify-architecture-boundaries.test.mjs`,
+  `pnpm run verify:architecture-boundaries`
+
+- Task: reconcile contributor docs, scripts, CI, and completion evidence
+  Status: done
+  Acceptance: `AGENTS.md`, `PIPELINE.md`, docs maps, runtime inventory,
+  `package.json`, CI, contract/plan states, and R44 evidence agree on what is
+  implemented, enforced, and still awaiting independent review.
+  Artifact: `docs/evidence/2026-07-26-repository-governance-technical-verification.md`
 
 ---
 

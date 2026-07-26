@@ -1,3 +1,11 @@
+---
+doc_type: roadmap
+status: current
+authority: planning
+last_reconciled: 2026-07-26
+supersedes: []
+---
+
 # Roadmap
 
 本 roadmap 记录 CCHistory `0.2.0` 之后的主要工作方向，分为以下六个部分。
@@ -8,6 +16,16 @@
 > 自 2026-03-20 起，self-host v1 的支持门槛以 [`docs/design/SELF_HOST_V1_RELEASE_GATE.md`](./design/SELF_HOST_V1_RELEASE_GATE.md) 为准。各 adapter 的 `stable` / `experimental` 分级同样以 registry 和 `verify:support-status` 输出为准。
 >
 > 本文档是实时里程碑路线图，但不替代设计冻结。
+
+## 工程治理 `P0`
+
+- R44 在独立分支推进契约生命周期与 AI 执行治理融合：产品语义继续由设计
+  freeze 负责，`ARCHITECTURE.md` 负责结构所有权，material change 由
+  contract/plan 驱动，文档和通用依赖边界由轻量 Node gate 守护。
+- 历史设计资料渐进接入，不做 flag-day metadata 重写；完成目标只有在写入
+  稳定 backlog archive index 后才可从 active backlog 移除。
+- 该治理范式的技术实现不等于目标闭环；独立三视角与 fresh-context 证据仍按
+  `PIPELINE.md` 单独验收，不能由同一上下文自证。
 
 ## 0.2.0 Baseline / Self-Host Gate
 

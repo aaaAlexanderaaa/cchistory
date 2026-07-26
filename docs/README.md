@@ -1,3 +1,11 @@
+---
+doc_type: authority-map
+status: current
+authority: normative
+last_reconciled: 2026-07-26
+supersedes: []
+---
+
 # CCHistory Documentation
 
 This directory is organized by reader task. The root [`README.md`](../README.md)
@@ -9,14 +17,52 @@ operator, source-adapter, and design material.
 | Document | Use it for |
 | --- | --- |
 | [`HIGH_LEVEL_DESIGN_FREEZE.md`](../HIGH_LEVEL_DESIGN_FREEZE.md) | Product semantics, frozen architecture, and canonical terms such as `UserTurn`, `ProjectIdentity`, `candidate`, `committed`, and `unlinked` |
+| [`ARCHITECTURE.md`](../ARCHITECTURE.md) | Structural owners, public consumers, dependency direction, forbidden knowledge, and enforcement surfaces |
+| [`contracts/`](contracts/README.md) | Current and accepted target cross-package/surface behavior, including repository governance |
 | [`design/CURRENT_RUNTIME_SURFACE.md`](design/CURRENT_RUNTIME_SURFACE.md) | Current repo-visible runtime inventory: entrypoints, registered adapters, routes, and verification surfaces |
 | [`ROADMAP.md`](ROADMAP.md) | Current milestone priorities and non-blocking future work |
 | [`../PIPELINE.md`](../PIPELINE.md) | Backlog and completion workflow for repository agents |
+| [`../BACKLOG.md`](../BACKLOG.md) | Active portfolio state, priority, task/KR/objective status, and blockers |
 
-When documents disagree, prefer the design freeze for semantics, the runtime
-surface for implemented inventory, and the adapter registry for support tiers.
-Broader enums in domain or DTO packages are schema allowance, not proof that a
-live adapter exists.
+When documents disagree, use this authority order:
+
+1. the design freeze for product semantics;
+2. `ARCHITECTURE.md` for ownership and dependency direction;
+3. current contracts for cross-surface behavior;
+4. the runtime surface for implemented inventory, with registries and
+   entrypoints as its audited code facts;
+5. `PIPELINE.md` and `BACKLOG.md` for execution and active portfolio state;
+6. plans for execution order, issues for finding lifecycle, guides for
+   procedure, and evidence for reproducible support.
+
+A lower role does not silently override a higher role. Broader enums in domain
+or DTO packages are schema allowance, not proof that a live adapter exists.
+
+## Document Lifecycle And Routing
+
+The incremental governance policy lives in [`../docs-policy.json`](../docs-policy.json)
+and is checked by `pnpm run verify:doc-governance`.
+
+- `current`: authoritative for present behavior.
+- `target`: accepted future behavior; not proof of implementation.
+- `active`: plan, backlog, or triage work in progress.
+- `completed`: finished plan retained for traceability.
+- `historical`: context/evidence only.
+- `superseded`: explicitly replaced and linked to its successor.
+- `needs_reconciliation`: a known conflict blocks dependent work.
+
+New normative work goes to [`contracts/`](contracts/README.md), execution plans
+to [`plans/`](plans/README.md), durable findings to
+[`issues/`](issues/README.md), and verification records to
+[`evidence/`](evidence/README.md). Reusable forms live in `templates/` and have
+no authority until completed and landed in the correct directory. Completed
+portfolio history moves only through the indexed
+[`archive/backlog/`](archive/backlog/README.md) path.
+
+The first governed set is intentionally small. Historical design/source/guide
+documents remain readable without a flag-day frontmatter rewrite; add a
+document to `docs-policy.json` when it is materially revised or promoted to
+current authority.
 
 ## User And Operator Guides
 
@@ -74,9 +120,14 @@ release marker is `0.3.0`.
   `packages/source-adapters/src/platforms/registry.ts`.
 - Run `pnpm run verify:support-status` after changing adapter support tables or
   platform lists.
+- Run `pnpm run verify:governance` after changing governed metadata, templates,
+  architecture ownership/rules, or the governance checkers.
 - Put product semantics in the design freeze, runtime inventory in
   `design/CURRENT_RUNTIME_SURFACE.md`, and source-layout details in
   `sources/`.
+- Land a contract and complete-end-state plan before material implementation;
+  do not use a plan, issue, evidence record, or backlog note as a substitute for
+  normative behavior.
 - Do not fix parsing or rendering bugs by stripping captured content from the
   evidence model; use masking or projection behavior when content should be
   collapsed, redacted, or deemphasized.

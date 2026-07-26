@@ -1,3 +1,11 @@
+---
+doc_type: pipeline
+status: current
+authority: normative
+last_reconciled: 2026-07-26
+supersedes: []
+---
+
 # Agent Execution Pipeline
 
 This document defines the operational workflow for executing work in the
@@ -18,6 +26,9 @@ It answers four questions that other project documents do not:
 | Document | Defines | Relationship to this pipeline |
 | --- | --- | --- |
 | `HIGH_LEVEL_DESIGN_FREEZE.md` | what to build and what invariants to preserve | all work must be traceable to frozen semantics |
+| `ARCHITECTURE.md` | structural owners, consumers, dependency direction, and enforcement | material boundary changes must preserve or explicitly reconcile it |
+| `docs/contracts/` | current and accepted target cross-surface behavior | material implementation is blocked until the governing contract exists |
+| `docs/README.md` | document authority, lifecycle, and routing | plans, issues, evidence, and archives keep their distinct roles |
 | `docs/design/SELF_HOST_V1_RELEASE_GATE.md` | quality bar for v1 release | the current P0 exit criteria |
 | `docs/ROADMAP.md` | directional priorities | source of objectives to decompose |
 | `BACKLOG.md` | living work surface | where decomposed objectives, KRs, and tasks live |
@@ -88,6 +99,28 @@ proposed -> decomposing -> active -> verifying -> done
 - `done`: all acceptance criteria verified and evaluation passed.
 
 ## Cross-Cutting Execution Constraints
+
+### Material-Change Contract Gate
+
+Before non-trivial implementation, classify the change:
+
+- **routine:** a bounded repair under an existing clear contract, with no new
+  semantics, migration, public interface, or architecture boundary;
+- **material:** changes behavior, public contracts, durable state, multiple
+  consumers, or a user/operator workflow;
+- **high-risk:** changes frozen/structural semantics, governance,
+  authorization, irreversible data behavior, cross-process compatibility, or a
+  high-impact cross-stack interaction.
+
+Material and high-risk work requires a landed current or target contract under
+`docs/contracts/` and a complete-end-state plan under `docs/plans/` before
+implementation. Record the owner, states/triggers, failure and recovery,
+non-goals, acceptance outcomes, risk classification, and review topology.
+
+Routine defects may use the lighter path only after identifying the root
+category, preserving a reproducer, and adding a category-level guard. A task is
+not reclassified as routine merely because an independent reviewer is
+unavailable.
 
 ### Temporary Utilities And Command Surface
 
@@ -238,6 +271,11 @@ fixing a parser edge case).
 3. If disagreements exist on frozen invariants or user experience fundamentals,
    pause and present the synthesis to the user for decision.
 
+If required independent contexts are unavailable, record the exact blocked
+state in `BACKLOG.md`. Same-context perspectives may help implementation but
+must be labeled non-independent and cannot satisfy this protocol. Only an
+explicit, scoped user governance exception can replace required independence.
+
 #### Design Document Format
 
 Regardless of whether the multi-perspective protocol was used, every design
@@ -248,6 +286,10 @@ decision must be documented with:
 - Trade-offs considered and rejected alternatives.
 - Acceptance criteria (verifiable by running commands or inspecting outputs).
 - Impact on existing system (which packages, which tests, which APIs).
+
+For material work, the normative result lives in `docs/contracts/` and the
+execution order lives in `docs/plans/`; a feature note under `docs/design/`
+cannot silently take both roles.
 
 For source-adapter design work, the design document must also state:
 
@@ -377,6 +419,11 @@ documented as accepted known limitations.
 
 **This phase should be executed by a fresh agent context** to avoid the
 implementation bias of the agent that wrote the code.
+
+For high-risk work, record the evaluator/context identity and whether genuine
+fresh-context independence was achieved. If it was required but unavailable,
+technical checks may finish but the objective remains `verifying` or `blocked`
+unless the user records a named governance exception.
 
 **Evaluation dimensions**:
 
@@ -568,13 +615,19 @@ Acceptance: [one-sentence verifiable criterion]
 2. Only one task should be `in_progress` per agent session.
 3. Task status is updated in real time as work progresses.
 4. New objectives are added at the bottom of the active section.
-5. Completed objectives are moved to a `## Completed` section at the bottom of
-   the file (not deleted).
+5. Completed objectives remain in a `## Completed` section until an intentional
+   compaction. Compaction moves them to a dated file under
+   `docs/archive/backlog/`, updates that stable index with objective ids and
+   acceptance evidence, and then removes them from the active surface. Silent
+   deletion is forbidden.
 6. An agent must read `BACKLOG.md` at the start of every session.
 7. Decomposition work (Phases 1-3) is itself tracked as tasks in the backlog
    under the objective being decomposed.
 8. Findings from a KR review sweep are added to `BACKLOG.md` before any
    non-trivial corrective implementation begins.
+9. Plans, issues, contracts, and evidence are not embedded into the backlog as
+   substitutes for their durable records; the backlog links to them and owns
+   only current portfolio state and priority.
 
 ## Agent Decision Points
 

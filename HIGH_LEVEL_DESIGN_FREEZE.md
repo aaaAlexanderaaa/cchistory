@@ -1,3 +1,11 @@
+---
+doc_type: design-freeze
+status: current
+authority: normative
+last_reconciled: 2026-07-26
+supersedes: []
+---
+
 # CCHistory High-Level Design Freeze
 
 ## Status

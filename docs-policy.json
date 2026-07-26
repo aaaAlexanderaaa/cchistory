@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "futureDateToleranceDays": 1,
+  "targetMaxAgeDays": 90,
+  "allowed": {
+    "docTypes": [
+      "architecture",
+      "design-freeze",
+      "authority-map",
+      "runtime-inventory",
+      "pipeline",
+      "backlog",
+      "roadmap",
+      "directory-index",
+      "archive-index",
+      "contract",
+      "surface-contract",
+      "plan",
+      "issue-tracker",
+      "evidence"
+    ],
+    "statuses": [
+      "current",
+      "target",
+      "active",
+      "completed",
+      "historical",
+      "superseded",
+      "needs_reconciliation"
+    ],
+    "authorities": ["normative", "planning", "guidance", "evidence"],
+    "implementations": [
+      "not_started",
+      "in_progress",
+      "partial",
+      "implemented",
+      "retired"
+    ],
+    "verificationStatuses": ["pending", "partial", "enforced", "not_applicable"],
+    "promiseStatuses": ["open", "resolved", "cancelled"]
+  },
+  "governedFiles": [
+    {"path": "ARCHITECTURE.md", "docType": "architecture", "status": "current", "authority": "normative"},
+    {"path": "HIGH_LEVEL_DESIGN_FREEZE.md", "docType": "design-freeze", "status": "current", "authority": "normative"},
+    {"path": "PIPELINE.md", "docType": "pipeline", "status": "current", "authority": "normative"},
+    {"path": "BACKLOG.md", "docType": "backlog", "status": "active", "authority": "planning"},
+    {"path": "docs/README.md", "docType": "authority-map", "status": "current", "authority": "normative"},
+    {"path": "docs/ROADMAP.md", "docType": "roadmap", "status": "current", "authority": "planning"},
+    {"path": "docs/design/README.md", "docType": "directory-index", "status": "current", "authority": "guidance"},
+    {"path": "docs/design/CURRENT_RUNTIME_SURFACE.md", "docType": "runtime-inventory", "status": "current", "authority": "normative"}
+  ],
+  "governedRoots": [
+    "docs/contracts",
+    "docs/plans",
+    "docs/issues",
+    "docs/evidence",
+    "docs/archive/backlog"
+  ],
+  "relationshipFields": ["implements", "supersedes", "superseded_by"],
+  "templates": {
+    "root": "docs/templates",
+    "required": {
+      "bug-report.md": {"docType": "issue-tracker", "sections": ["Summary", "Surface", "Affected area", "Reproduction steps", "Expected behavior", "Actual behavior", "Evidence", "Scope check", "Category and root mechanism", "Contract impact", "Decision and resolution", "Evidence-preservation checklist"]},
+      "contract.md": {"docType": "contract", "sections": ["Purpose", "Scope", "Frozen-design anchors", "Ownership and boundary", "States and triggers", "Normative invariants", "Failure, recovery, and intervention", "Compatibility, migration, and rollback", "Acceptance evidence", "Promise register", "Reconciliation log"]},
+      "frontend-surface.md": {"docType": "surface-contract", "sections": ["User outcome", "Raw stakeholder layer", "Translated surface contract", "Reachable states", "Layout and size contract", "Interaction, focus, and accessibility", "Backend projection boundary", "Responsive and support targets", "Verification matrix", "Known abnormality classes", "Reconciliation log"]},
+      "backend-change.md": {"docType": "contract", "sections": ["Outcome and scope", "Frozen-design and architecture anchors", "Ownership", "Public interface", "State machine", "Concurrency, ordering, and idempotency", "Failure and recovery", "Persistence, evidence, and migration", "Authorization and capability boundary", "Observability", "Class-level acceptance tests", "Reconciliation log"]},
+      "cross-stack-change.md": {"docType": "contract", "sections": ["User or operator outcome", "Frozen-design anchors", "Shared vocabulary and state matrix", "Ownership boundary", "Interface contract", "Frontend surface projection", "Compatibility and cutover", "End-to-end acceptance matrix", "Failure-category guards", "Reconciliation log"]},
+      "implementation-plan.md": {"docType": "plan", "sections": ["Cold-start summary", "Authority and risk classification", "Complete end state", "Current state and gap", "Seven-phase execution record", "Review topology", "Risk register", "Verification matrix", "Rollout, migration, and rollback", "Progress and completion record"]},
+      "verification-report.md": {"docType": "evidence", "sections": ["Claim and evidence class", "Environment", "Result matrix", "Failure and recovery checks", "Data and fixture preservation", "Anomalies and limitations", "Verdict"]},
+      "independent-review.md": {"docType": "evidence", "sections": ["Scope and independence", "Inputs", "Findings", "Trade-offs and residual risk", "Limitations", "Verdict"]},
+      "holistic-evaluation.md": {"docType": "evidence", "sections": ["Claim and completion layer", "Fresh-context status", "Evidence inventory", "Evaluation dimensions", "Open findings and decisions", "Verdict and closure"]},
+      "evidence-preserving-data.md": {"docType": "contract", "sections": ["Scope and value hierarchy", "Authoritative input and derived output", "Preservation invariants", "Evidence reference inventory", "Migration, capacity, and cleanup", "Acceptance evidence", "Reconciliation log"]}
+    }
+  }
+}

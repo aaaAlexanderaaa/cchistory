@@ -1,6 +1,14 @@
+---
+doc_type: runtime-inventory
+status: current
+authority: normative
+last_reconciled: 2026-07-26
+supersedes: []
+---
+
 # Current Runtime Surface
 
-This document records the repository-visible runtime surface as of 2026-07-25. It complements the design freeze and should be consulted when implementation inventory matters more than frozen semantics.
+This document records the repository-visible runtime surface as of 2026-07-26. It complements the design freeze and should be consulted when implementation inventory matters more than frozen semantics.
 
 > [`HIGH_LEVEL_DESIGN_FREEZE.md`](../../HIGH_LEVEL_DESIGN_FREEZE.md) remains the source of truth for product semantics and invariants.
 >
@@ -230,6 +238,10 @@ The CLI dispatcher and help text live in [`apps/cli/src/index.ts`](../../apps/cl
 
 Current install and verification surfaces:
 
+- governance harness: `pnpm run verify:governance` runs fixture-backed document
+  lifecycle and architecture-boundary checks; the generic architecture rules
+  explicitly complement rather than replace the Lite, product-profile,
+  support-status, and runtime-inventory verifiers
 - repo-clone install plus default Full-profile build: `README.md` and `pnpm run verify:clean-install`
 - standalone CLI artifact generation: `pnpm run cli:artifact` writes `dist/cli-artifacts/cchistory-cli-standalone-<version>/` plus a sibling `.tgz`
 - standalone CLI artifact verification: `pnpm run verify:cli-artifact` unpacks generated artifacts, verifies first install plus replacement-style upgrade semantics, and now runs the installed `cchistory` command through skeptical local restore/conflict, multi-source browse/search, store-scoped admin, and structured retrieval workflows (`sync -> backup preview/write -> import -> restore-check -> search/show -> conflict dry-run/replace`, plus `ls projects --long`, `ls sessions --long`, `show session`, `tree session --long`, `health --store-only`, `ls sources`, `stats`, `query session --id`, and `query turn --id`)

@@ -1,3 +1,10 @@
+---
+doc_type: directory-index
+status: current
+authority: guidance
+last_reconciled: 2026-07-26
+---
+
 # Design Documents
 
 本目录收录 CCHistory 的设计决策、运行时清单、验证合约和审查记录。
@@ -11,6 +18,13 @@
   [`SELF_HOST_V1_RELEASE_GATE.md`](SELF_HOST_V1_RELEASE_GATE.md) 与
   [`V1_VALIDATION_STRATEGY.md`](V1_VALIDATION_STRATEGY.md)。
 - 具体功能或审查工作：按下面的功能领域进入。
+
+新发生的 material change 不再让单份 feature design 同时承担规范、计划和
+证据三种角色：跨包/跨 surface 的规范写入 [`../contracts/`](../contracts/README.md)，
+执行顺序写入 [`../plans/`](../plans/README.md)，验证结果写入
+[`../evidence/`](../evidence/README.md)。本目录已有历史文档继续保留；只有在它们
+被实质修改或重新提升为 current authority 时，才渐进接入 `docs-policy.json`，
+不做一次性 metadata 重写。
 
 `self-host v1` 是部署和支持范围，不是 package semver。当前仓库发布版本是
 `0.3.0`。

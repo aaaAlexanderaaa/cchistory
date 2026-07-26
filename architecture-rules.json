@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "complements": [
+    "verify:lite",
+    "verify:product-profiles",
+    "verify:support-status",
+    "verify:runtime-inventory"
+  ],
+  "rules": [
+    {
+      "id": "canonical-stays-storage-neutral",
+      "description": "Canonical semantics must not import the Full storage implementation.",
+      "includeRoots": ["packages/canonical/src"],
+      "extensions": [".ts", ".tsx", ".js", ".mjs"],
+      "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
+      "forbiddenPatterns": ["@cchistory/storage"]
+    },
+    {
+      "id": "source-adapters-stop-at-parse-boundary",
+      "description": "Source adapters must not depend on Full storage or the Lite materializer.",
+      "includeRoots": ["packages/source-adapters/src"],
+      "extensions": [".ts", ".tsx", ".js", ".mjs"],
+      "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
+      "forbiddenPatterns": ["@cchistory/storage", "@cchistory/live-runtime"]
+    },
+    {
+      "id": "lite-materializer-stays-zero-store",
+      "description": "The Lite production materializer must not import Full storage or Full applications.",
+      "includeRoots": ["packages/live-runtime/src"],
+      "extensions": [".ts", ".tsx", ".js", ".mjs"],
+      "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
+      "forbiddenPatterns": ["@cchistory/storage", "apps/cli", "apps/tui", "apps/api"]
+    },
+    {
+      "id": "client-contract-stays-storage-independent",
+      "description": "Shared API DTOs and presentation mapping must not import Full storage.",
+      "includeRoots": ["packages/api-client/src", "packages/presentation/src"],
+      "extensions": [".ts", ".tsx", ".js", ".mjs"],
+      "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
+      "forbiddenPatterns": ["@cchistory/storage"]
+    },
+    {
+      "id": "lite-surfaces-do-not-reach-full",
+      "description": "Lite CLI and TUI must use the Lite runtime rather than Full storage or Full applications.",
+      "includeRoots": ["apps/lite-cli/src", "apps/lite-tui/src"],
+      "extensions": [".ts", ".tsx", ".js", ".mjs"],
+      "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
+      "forbiddenPatterns": ["@cchistory/storage", "apps/cli", "apps/tui", "apps/api"]
+    }
+  ]
+}

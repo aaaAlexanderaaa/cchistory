@@ -1,8 +1,16 @@
-# Bug Report
+---
+doc_type: issue-tracker
+status: active
+authority: evidence
+last_reconciled: {{YYYY-MM-DD}}
+subject: {{surface-or-invariant}}
+---
+
+# {{Issue title}} bug report
 
 ## Summary
 
-One-sentence description of the problem.
+One-sentence description of the problem and user-visible impact.
 
 ## Surface
 
@@ -62,6 +70,23 @@ Attach screenshot(s) and describe what they show.
 - [ ] unknown
 
 Notes:
+
+## Category and root mechanism
+
+- Suspected category: {{parsing / ingestion / masking / rendering / lifecycle / other}}
+- Root mechanism after investigation: {{mechanism-or-pending}}
+- Sibling variants checked: {{inputs-or-surfaces}}
+
+## Contract impact
+
+- Governing contract/design-freeze section: {{path-and-section}}
+- Classification: {{implementation regression / ambiguity / requirement change / evidence conflict}}
+
+## Decision and resolution
+
+- Decision: {{repair / reconcile / defer with authority}}
+- Class-level guard: {{test-or-runtime-check}}
+- Resolution revision and evidence: {{pending-or-links}}
 
 ## Evidence-preservation checklist
 
