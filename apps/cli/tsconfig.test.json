@@ -4,5 +4,5 @@
     "outDir": "dist"
   },
   "include": ["src/**/*.ts"],
-  "exclude": []
+  "exclude": ["src/test/commands-agent.test.ts"]
 }

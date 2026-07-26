@@ -23,7 +23,9 @@ bash scripts/dev-services.sh start api    # Port 8040
 | `PORT` | `8040` | API listen port |
 | `HOST` | `127.0.0.1` | API listen host |
 | `CCHISTORY_CORS_ORIGIN` | `http://localhost:8085,http://127.0.0.1:8085` | Allowed CORS origins |
-| `CCHISTORY_API_TOKEN` | _(none)_ | Bearer token for auth (all routes except `/health`) |
+| `CCHISTORY_API_TOKEN` | _(none)_ | Bearer token for Managed routes (except `/health` and `/openapi.json`) |
+| `CCHISTORY_AGENT_EXTENSION` | `false` | Enable the optional remote Agent-extension routes and OpenAPI paths |
+| `CCHISTORY_AGENT_PAIRING_TOKEN` | _(none)_ | Pairing token; setting one also enables the Agent extension unless it is explicitly disabled |
 
 ## Core Endpoints
 
@@ -126,7 +128,13 @@ bash scripts/dev-services.sh start api    # Port 8040
 | `GET` | `/api/admin/masks` | Built-in mask templates |
 | `GET` | `/api/admin/drift` | Drift and consistency report |
 
-### Remote-Agent Control Plane
+### Optional Agent Extension
+
+These routes are absent from the default Managed API and its OpenAPI document.
+Set `CCHISTORY_AGENT_EXTENSION=true` (or configure a pairing token) before
+starting the API to enable the remote-agent control plane. Collector-facing
+`/api/agent/*` routes use pairing/agent credentials; the `/api/admin/*` routes
+remain protected by `CCHISTORY_API_TOKEN` when that token is configured.
 
 | Method | Path | Description |
 |--------|------|-------------|

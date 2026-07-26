@@ -3,7 +3,6 @@ import "./test/commands-query.test.js";
 import "./test/commands-context.test.js";
 import "./test/commands-diagnostics.test.js";
 import "./test/commands-portability.test.js";
-import "./test/commands-agent.test.js";
 import "./test/commands-agent-mode.test.js";
 import "./test/commands-completions.test.js";
 import "./test/commands-resume.test.js";

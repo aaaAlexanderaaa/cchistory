@@ -17,9 +17,9 @@ pnpm --filter @cchistory/lite-cli build
 pnpm --filter @cchistory/lite-tui build
 
 # One-shot CLI
-pnpm lite -- sources
-pnpm lite -- ls projects
-pnpm lite -- search "parser regression"
+pnpm lite sources
+pnpm lite ls projects
+pnpm lite search "parser regression"
 
 # Process-lifetime terminal browser
 pnpm lite:tui
@@ -40,6 +40,18 @@ pnpm run lite:tui:link  # installs cchistory-lite-tui (needed for `cchistory-lit
 
 Re-run the link commands after rebuilding to pick up changes; remove them with
 `npm unlink -g @cchistory/lite-cli` / `npm unlink -g @cchistory/lite-tui`.
+
+For a receiving machine without the monorepo or private workspace links, build
+the self-contained two-binary artifact:
+
+```bash
+pnpm run lite:artifact
+pnpm run verify:lite-artifact
+```
+
+Extract `dist/lite-artifacts/cchistory-lite-standalone-<version>.tgz` and run
+`bin/cchistory-lite` or `bin/cchistory-lite-tui`. The artifact vendors the
+complete Lite runtime dependency closure.
 
 ## Source Selection
 
@@ -86,8 +98,14 @@ browse, search, detail, source, and stats operations.
 For large Codex and Claude archives, ordinary read commands materialize one
 canonical logical session at a time and release full assistant/tool context
 after deriving the turn and session projections. Commands that return complete
-context (`show session`, `show turn`, JSON/JSONL export) and the TUI retain that
-context for the process lifetime and therefore have a larger memory envelope.
+context (`show session`, `show turn`, JSON/JSONL export) retain that context for
+the command lifetime and therefore have a larger memory envelope. The TUI
+startup and refresh snapshots are context-light; `turn <ref>` performs a
+targeted full-context scan for only that logical session.
+
+Lite entrypoints calculate the default Node old-space ceiling as
+`min(host memory / 2, 4096 MiB)`. This replaces the former fixed 1024 MiB cap
+that caused large local TUI launches to fail before the canonical scan finished.
 
 ## Lite TUI Commands
 
@@ -130,6 +148,8 @@ raw parser input.
 Full and Lite share adapter registration, logical-session assembly,
 `UserTurn`/context derivation, built-in masks, fallback project observations,
 project linking, read ordering, search matching/ranking, and usage aggregation.
+Related-work projection is also shared: delegated-session and automation-run
+rows are derived before Lite releases `session_relation` fragments.
 The fixture matrix verifies final sources, projects, sessions, turns, contexts,
 search results, and stats against a clean Full materialization.
 
@@ -145,4 +165,5 @@ Run the focused gate with:
 
 ```bash
 pnpm run verify:lite
+pnpm run verify:lite-artifact
 ```

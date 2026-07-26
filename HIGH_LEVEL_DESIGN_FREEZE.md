@@ -244,6 +244,9 @@ Rules:
 - `History feeds`: project or global views of `UserTurn` objects.
 - `Search results`: filtered views of `UserTurn` objects.
 - `Session context views`: a projection of `Session` and `TurnContext`.
+- `Session related work`: typed delegated-session and automation-run relations
+  projected canonically from evidence before any materializer releases source
+  fragments.
 - `Admin diagnostics`: projections of source, import, linking, and mask states.
 
 ## 7. Canonical Pipeline
@@ -761,6 +764,34 @@ Performance intent:
   datasets.
 - Scoped rebuilds should complete as bounded maintenance jobs rather than
   requiring full-system reprocessing for ordinary mask or linker changes.
+
+### 16.1 Product Delivery Profiles
+
+The repository has four independent delivery profiles. A profile is a
+build/test/release boundary, not a new canonical model:
+
+- **Core/Full**: domain, canonical derivation, registered adapters, durable
+  storage, presentation contracts, and the local CLI/TUI product.
+- **Lite**: domain, canonical derivation, registered adapters, the ephemeral
+  live materializer, and the two zero-store Lite terminal products. It has its
+  own self-contained release artifact and never requires private workspace
+  links on the receiving machine.
+- **Managed Web/API**: the optional API and Web deployment over Full's durable
+  canonical objects. It is not a prerequisite for local Full or Lite builds.
+- **Agent extension**: opt-in remote-agent CLI and API control-plane behavior.
+  The Managed API does not register or advertise these routes unless the
+  extension is explicitly configured.
+
+Each profile must have independently runnable build, test, and release gates.
+Combining profiles is allowed only through an explicitly named aggregate gate;
+the default Full build must not silently gate Lite, Web/API, or the Agent
+extension.
+
+Lite Node entrypoints set their default old-space ceiling from physical host
+memory as `min(host memory / 2, 4096 MiB)`. The Lite TUI startup and refresh
+snapshots remain context-light; complete turn context is materialized on demand
+for one logical session so the default launch does not retain every assistant
+and tool payload at once.
 
 ## 17. System Invariants
 

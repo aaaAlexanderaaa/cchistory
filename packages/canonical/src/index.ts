@@ -50,4 +50,8 @@ export {
   compareTurnsByChronology,
   compareTurnsByRecency,
 } from "./read-order.js";
+export {
+  buildSessionRelatedWorkIndex,
+  listSessionRelatedWork,
+} from "./related-work.js";
 export { installRuntimeWarningFilter } from "./runtime-warning-filter.js";

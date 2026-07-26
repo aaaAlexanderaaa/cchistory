@@ -418,6 +418,7 @@ test("mapTurnContext converts nested temporal fields and preserves detail orderi
 test("mapSessionRelatedWork converts temporal fields and preserves raw detail", () => {
   const relatedWork = mapSessionRelatedWork({
     id: "related-1",
+    query_session_ref: "session-1",
     source_id: "src-1",
     source_platform: "claude_code",
     source_session_ref: "session-1",
@@ -440,6 +441,7 @@ test("mapSessionRelatedWork converts temporal fields and preserves raw detail", 
 
   assert.ok(relatedWork.created_at instanceof Date);
   assert.ok(relatedWork.updated_at instanceof Date);
+  assert.equal(relatedWork.query_session_ref, "session-1");
   assert.equal(relatedWork.relation_kind, "delegated_session");
   assert.equal(relatedWork.direction, "inbound");
   assert.equal(relatedWork.parent_session_ref, "parent-1");

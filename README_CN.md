@@ -145,8 +145,13 @@ pnpm install
 # 安装 Web 应用依赖（独立的 lockfile）
 cd apps/web && pnpm install && cd ../..
 
-# 第一次构建（非 Web 工作区）
+# 默认本机 Full profile
 pnpm run build
+
+# 彼此独立的可选 profile
+pnpm run build:lite
+pnpm run build:managed
+pnpm run build:agent-extension
 ```
 
 `apps/web` 的生产构建验证独立于这里的安装路径；需要时可单独运行：
@@ -219,16 +224,16 @@ pnpm --filter @cchistory/lite-tui build
 直接扫描本机已发现的原生工具历史：
 
 ```bash
-pnpm lite -- sources
-pnpm lite -- ls projects
-pnpm lite -- search "parser regression"
+pnpm lite sources
+pnpm lite ls projects
+pnpm lite search "parser regression"
 pnpm lite:tui
 ```
 
 也可以覆盖并只选择一个已注册 adapter：
 
 ```bash
-pnpm lite -- search "migration" \
+pnpm lite search "migration" \
   --source-root codex=/mnt/history/.codex/sessions \
   --source codex
 ```
@@ -239,6 +244,13 @@ merge、GC、API、`--store` 或 `--db`；导出标记为
 `cchistory-lite-export/v1`，不是 Full backup。完整说明见
 [`docs/guide/lite.md`](docs/guide/lite.md)，聚焦验证命令是
 `pnpm run verify:lite`。
+
+目标机器没有 monorepo 或私有 workspace link 时，运行
+`pnpm run lite:artifact` 生成同时包含两个 Lite binary 及完整运行时依赖闭包的
+自包含制品；`pnpm run verify:lite-artifact` 会在仓库外临时目录解压并实际运行。
+Lite 入口默认按 `min(主机内存 / 2, 4096 MiB)` 设置 Node old-space 上限，TUI
+启动/刷新只保留 context-light snapshot，查看具体 turn 时再按单个逻辑 session
+读取完整 context。
 
 ### 使用独立 CLI 制品
 
@@ -408,10 +420,14 @@ cchistory/
 ├── apps/
 │   ├── api/                    # Fastify REST API 服务器 (:8040)
 │   ├── cli/                    # 命令行工具 (cchistory)
+│   ├── lite-cli/               # 零存储 Lite 命令行读取端
+│   ├── lite-tui/               # 零存储 Lite 终端浏览器
 │   ├── tui/                    # 基于 Ink 的本地 TUI 浏览器
 │   └── web/                    # Next.js 16 Web 前端 (:8085)
 ├── packages/
+│   ├── canonical/              # 存储中立的 canonical 读取语义
 │   ├── domain/                 # 核心领域契约和类型
+│   ├── live-runtime/           # Lite 临时内存 materializer
 │   ├── source-adapters/        # 平台特定的解析器
 │   ├── storage/                # SQLite 持久化和关联
 │   ├── api-client/             # 共享 API DTO 契约
@@ -432,20 +448,21 @@ cchistory/
 ## 开发
 
 ```bash
-# 构建所有非 Web 包
+# 构建默认本机 Full profile
 pnpm run build
 
-# 构建 Web 应用
-NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build
+# 构建可选 profile，或显式构建全部 profile
+pnpm run build:lite
+pnpm run build:managed
+pnpm run build:agent-extension
+pnpm run build:aggregate
 
-# 运行测试
-pnpm --filter @cchistory/source-adapters test
-pnpm --filter @cchistory/storage test
-pnpm --filter @cchistory/api-client test
-pnpm --filter @cchistory/presentation test
-pnpm --filter @cchistory/cli test
-pnpm --filter @cchistory/tui test
-pnpm --filter @cchistory/api test
+# 运行彼此独立的 profile gate
+pnpm run test:full
+pnpm run test:lite
+pnpm run test:managed
+pnpm run test:agent-extension
+pnpm run test:aggregate
 
 # 代码检查
 cd apps/web && pnpm lint

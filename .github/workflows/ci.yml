@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: build + test:core + verify
+    name: Full profile
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -31,14 +31,69 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      - name: Build
-        run: pnpm run build
+      - name: Build Full profile
+        run: pnpm run build:full
 
-      - name: Core tests
-        run: pnpm run test:core
+      - name: Test Full profile
+        run: pnpm run test:full
 
       - name: Verify support status
         run: pnpm run verify:support-status
 
       - name: Verify runtime inventory
         run: pnpm run verify:runtime-inventory
+
+      - name: Verify product profiles
+        run: pnpm run verify:product-profiles
+
+  lite:
+    name: Lite profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Test Lite profile
+        run: pnpm run verify:lite
+      - name: Verify standalone Lite artifact
+        run: pnpm run verify:lite-artifact -- --skip-build
+
+  managed:
+    name: Managed Web/API profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build Managed profile
+        run: pnpm run build:managed
+      - name: Test Managed profile
+        run: pnpm run test:managed
+
+  agent-extension:
+    name: Agent extension profile
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Test Agent extension profile
+        run: pnpm run test:agent-extension

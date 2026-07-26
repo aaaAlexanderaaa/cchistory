@@ -10,6 +10,7 @@ import { runLiteTui } from "./index.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const codexRoot = path.join(repoRoot, "mock_data", ".codex", "sessions");
+const openclawRoot = path.join(repoRoot, "mock_data", ".openclaw", "agents");
 
 test("Lite TUI renders a non-interactive ephemeral snapshot", async () => {
   const stdout: string[] = [];
@@ -60,6 +61,56 @@ test("Lite TUI reuses one snapshot for browse and replaces it only after refresh
   } finally {
     await rm(tempHome, { recursive: true, force: true });
   }
+});
+
+test("Lite TUI starts context-light and loads one turn context on demand", async () => {
+  const scanOptions = {
+    homeDir: repoRoot,
+    hostname: "cchistory-lite-tui-context-on-demand-host",
+    sourceRoots: [{ sourceRef: "codex", baseDir: codexRoot }],
+    sourceRefs: ["codex"],
+    safeMode: true,
+  } as const;
+  const light = await scanLiteHistory({ ...scanOptions, contextMode: "none" });
+  const turn = light.listResolvedTurns()[0];
+  const session = turn ? light.getSession(turn.session_id) : undefined;
+  assert.ok(turn && session?.source_session_id);
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const calls: Array<{
+    contextMode?: string;
+    sessionRefs?: readonly string[];
+    sourceRefs?: readonly string[];
+    sourceRoots?: readonly { sourceRef: string; baseDir: string }[];
+  }> = [];
+  const commands = [`turn ${turn.id}`, "q"];
+
+  const exitCode = await runLiteTui(["--source-root", `codex=${codexRoot}`, "--safe"], {
+    cwd: repoRoot,
+    homeDir: repoRoot,
+    hostname: "cchistory-lite-tui-context-on-demand-host",
+    stdout: (value) => stdout.push(value),
+    stderr: (value) => stderr.push(value),
+    isInteractiveTerminal: true,
+    readLine: async () => commands.shift(),
+    scan: async (options) => {
+      calls.push({
+        contextMode: options.contextMode,
+        sessionRefs: options.sessionRefs,
+        sourceRefs: options.sourceRefs,
+        sourceRoots: options.sourceRoots,
+      });
+      return calls.length === 1 ? light : scanLiteHistory(options);
+    },
+  });
+
+  assert.equal(exitCode, 0, stderr.join(""));
+  assert.equal(calls[0]?.contextMode, "none");
+  assert.equal(calls[1]?.contextMode, "full");
+  assert.deepEqual(calls[1]?.sessionRefs, [session.source_session_id]);
+  assert.deepEqual(calls[1]?.sourceRefs, ["codex"]);
+  assert.deepEqual(calls[1]?.sourceRoots, [{ sourceRef: "codex", baseDir: codexRoot }]);
+  assert.match(stdout.join(""), /Assistant replies: [1-9]/);
 });
 
 test("Lite TUI exits cleanly when input closes instead of hanging on a pending prompt", { timeout: 15_000 }, async () => {
@@ -267,6 +318,34 @@ test("Lite TUI retains the previous complete snapshot when refresh fails", async
   } finally {
     await rm(tempHome, { recursive: true, force: true });
   }
+});
+
+test("Lite TUI session detail shows canonical related work", async () => {
+  const snapshot = await scanLiteHistory({
+    homeDir: repoRoot,
+    hostname: "cchistory-lite-tui-related-work-host",
+    sourceRoots: [{ sourceRef: "openclaw", baseDir: openclawRoot }],
+    sourceRefs: ["openclaw"],
+    safeMode: true,
+    contextMode: "none",
+  });
+  const sessionId = "sess:openclaw:44444444-5555-4666-8777-888888888888";
+  const stdout: string[] = [];
+  const stderr: string[] = [];
+  const commands = [`session ${sessionId}`, "q"];
+
+  const exitCode = await runLiteTui([], {
+    cwd: repoRoot,
+    stdout: (value) => stdout.push(value),
+    stderr: (value) => stderr.push(value),
+    isInteractiveTerminal: true,
+    readLine: async () => commands.shift(),
+    scan: async () => snapshot,
+  });
+
+  assert.equal(exitCode, 0, stderr.join(""));
+  assert.match(stdout.join(""), /Related work \(1\)/);
+  assert.match(stdout.join(""), /automation run · self/);
 });
 
 test("Lite TUI rejects Full store flags before scanning", async () => {

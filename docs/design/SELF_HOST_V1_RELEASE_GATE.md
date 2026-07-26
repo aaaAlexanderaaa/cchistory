@@ -37,8 +37,9 @@ Call a release `self-host v1` only when all six conditions below are true.
 - A clean machine can complete install and first build by following the docs
   only.
 - Supported Node and pnpm versions are explicit.
-- The verification command must stay scoped to install plus the first non-web
-  build. Web production build validation remains Gate 4.
+- The verification command must stay scoped to install plus the default local
+  Full-profile build. Managed Web/API production validation remains an
+  independent profile gate; offline Web validation remains Gate 4.
 
 ### 2. Upgrades do not damage an existing store
 
@@ -109,5 +110,6 @@ Use the smallest targeted command that proves the changed layer:
 
 - `pnpm --filter @cchistory/storage test`
 - `pnpm --filter @cchistory/api test`
+- `pnpm --filter @cchistory/web test`
 - `cd apps/web && pnpm lint`
 - `NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build`

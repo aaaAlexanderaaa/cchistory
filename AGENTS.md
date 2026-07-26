@@ -116,6 +116,7 @@ Package checks:
 - `pnpm --filter @cchistory/lite-tui test`
 - `pnpm --filter @cchistory/api build`
 - `pnpm --filter @cchistory/api test`
+- `pnpm --filter @cchistory/web test`
 - `cd apps/web && pnpm lint`
 - `NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build`
 
@@ -127,7 +128,9 @@ Repository verification:
 - `pnpm run verify:web-build-offline`
 - `pnpm run verify:support-status`
 - `pnpm run verify:runtime-inventory`
+- `pnpm run verify:product-profiles`
 - `pnpm run verify:lite`
+- `pnpm run verify:lite-artifact`
 - `pnpm run verify:cli-tui-read-side`
 - `pnpm run verify:v1-seeded-acceptance`
 - `pnpm run verify:read-only-admin`
@@ -140,10 +143,16 @@ Repository verification:
 - `pnpm run probe:smoke -- --source-id=src-codex --limit=1`
 - `pnpm run mock-data:validate`
 - `pnpm run build`
+- `pnpm run build:lite`
+- `pnpm run build:managed`
+- `pnpm run build:agent-extension`
+- `pnpm run build:aggregate`
 - `pnpm run build:all:safe`
 
-Use `pnpm run build` and `pnpm run build:all:safe` only when explicit
-full-workspace validation is warranted.
+Root `pnpm run build` selects the local Full profile. Use the profile-specific
+commands for Lite, Managed Web/API, or Agent-extension work. Use
+`pnpm run build:aggregate` (or compatibility alias `build:all:safe`) only when
+explicit all-product validation is warranted.
 
 Use `pnpm run verify:cli-tui-read-side` as the repeatable local quality gate
 when work affects CLI/TUI read-side behavior, read/admin command paths, or
@@ -204,8 +213,7 @@ Dependency install:
 
 Build:
 
-1. `pnpm run build`
-2. `NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build`
+1. `pnpm run build:aggregate`
 
 Services:
 

@@ -4,7 +4,7 @@
 
 - Date: 2026-07-18
 - Objective: `R43`
-- State: implemented and validated
+- State: corrective implementation validated; independent review pending
 - User direction: deliver a single-machine, non-persistent Lite product that
   shares Full's canonical adapter and derivation semantics while exposing a
   read-only CLI and TUI plus one-way export.
@@ -126,13 +126,14 @@ files are assembled exactly as the source-level collector assembles them.
 Adapters without that declaration continue to use source-at-a-time
 materialization.
 
-## Multi-Perspective Review And Synthesis
+## Attempted Multi-Perspective Review (Not Governance Evidence)
 
 The repository's independent review workers were invoked for the required
 system-consistency, user-experience, and engineering-cost lenses, but the review
-service returned rate-limit failures before producing usable reports. Execution
-therefore continued with the same three lenses recorded explicitly below rather
-than silently skipping the review dimensions.
+service returned rate-limit failures before producing usable reports. The three
+sections below were written by the implementation context. They are working
+analysis only: they are not independent reports, do not satisfy `PIPELINE.md`,
+and cannot close R43's mandatory design-review gate.
 
 ### System Consistency Lens
 
@@ -161,9 +162,10 @@ than silently skipping the review dimensions.
 - Cold-scan progress and failures must name the source. TUI navigation begins
   only from a complete snapshot in v0; it does not present partial results as
   final.
-- TUI is particularly valuable because one scan is amortized across repeated
-  browse/search/detail/stats operations. Refresh is explicit and discards the
-  previous snapshot only after a replacement scan succeeds.
+- TUI is particularly valuable because one context-light scan is amortized
+  across repeated browse/search/stats operations. Turn detail performs a
+  targeted full-context scan for one logical session. Refresh is explicit and
+  discards the previous snapshot only after a replacement scan succeeds.
 - Lite export is visibly one-way and uses its own schema marker. No output text
   may imply that it is a backup or can be restored.
 
@@ -184,9 +186,9 @@ than silently skipping the review dimensions.
   change is a new consumer of already-covered adapter output, not a new platform
   parser.
 
-### Synthesis
+### Provisional Implementation Decision (Not Independent Synthesis)
 
-The agreed v0 package boundary is:
+The implementation context selected this v0 package boundary:
 
 ```text
 @cchistory/source-adapters  canonical source producer
@@ -207,6 +209,11 @@ not `packages/storage`'s `SourcePayloadStreamingChunk`. It must preserve
 cross-file session assembly. An adapter may opt in only when its grouping key is
 the same canonical source-session identity used by parsing; source-at-a-time
 materialization remains the fallback for every undeclared adapter.
+
+Follow-up review on 2026-07-25 invalidated the earlier governance completion
+claim. R43 remains open until three genuinely independent lens reports and a
+synthesis are recorded, or the user explicitly records a human governance
+exception. Approval to implement the review findings is not such an exception.
 
 ## Source Configuration
 
@@ -236,6 +243,7 @@ The ephemeral snapshot contains:
 - resolved projects, sessions, and turns
 - AskUserQuestion projections
 - loss audits for the current scan
+- canonical delegated-session and automation-run related-work projections
 - source locators needed for detail and diagnostics
 
 Raw blobs, records, fragments, and atoms are not exposed as a Lite product
@@ -262,9 +270,10 @@ It intentionally has no `sync`, `import`, `backup`, `restore-check`, `merge`,
 ## TUI Surface
 
 The Lite TUI is a separate runtime entrypoint so the CLI package need not depend
-on Ink/React. It scans once at startup, keeps the ephemeral snapshot in memory,
-and supports project/session/turn browse, search, stats, source status, detail,
-and explicit refresh. Exiting the process releases the snapshot.
+on Ink/React. It scans context-light data once at startup, keeps that ephemeral
+snapshot in memory, and supports project/session/turn browse, search, stats,
+source status, detail, and explicit refresh. Turn detail scans complete context
+for one logical session on demand. Exiting the process releases the snapshot.
 
 During an active scan, progress may be displayed, but incomplete data must be
 labelled as partial. Final browse/search/stats claims are shown only after the
@@ -326,23 +335,38 @@ storage and TUI. It remains a useful parity oracle and implementation bridge.
 9. Lite TUI starts from the same ephemeral snapshot, supports browse/search/
    detail/stats/refresh, and creates no persistent store.
 10. Existing Full package tests remain green for every shared package changed.
+11. Full and Lite derive the same `SessionRelatedWorkProjection` rows from
+    `session_relation` fragments before Lite releases those fragments.
+12. Lite CLI/TUI tests run in pull-request CI, and a self-contained artifact
+    runs both binaries outside the monorepo without `workspace:*` resolution.
+13. Lite entrypoints use `min(host memory / 2, 4096 MiB)` as the default Node
+    old-space ceiling; TUI startup remains context-light and turn detail loads
+    one logical session on demand.
+14. Core/Full, Lite, Managed Web/API, and Agent extension profiles have
+    independent build/test/release gates, with only an explicit aggregate gate.
 
 ## Initial Known Limitations
 
 - Cold commands rescan selected source roots and can be slower than Full's
   indexed reads.
-- Full-context snapshots (notably the TUI, turn/session detail, and JSON/JSONL
-  export) can still be large because complete assistant/tool context is retained
-  for the process lifetime. Context-light CLI reads (`sources`, `ls`, `tree`,
-  `search`, `stats`, project/source detail, and Markdown export) release context
-  after each logical session.
+- Full-context one-shot CLI reads (`show session`, `show turn`, and JSON/JSONL
+  export) can still be large. TUI startup/refresh and ordinary CLI reads are
+  context-light; the TUI loads one logical session's complete turn context on
+  demand and releases that detail snapshot after rendering.
 - Adapters without a declared logical-session grouping boundary still use
   source-at-a-time materialization; any future opt-in requires parity coverage.
 - Full manual project overrides and custom masks affect Lite only when equivalent
   explicit rule inputs are supplied; v0 supports built-in/default rules.
 - Lite is single-host and does not merge remote or previously exported history.
 
-## Implemented Packages And Validation
+## Corrective Implementation Status
+
+The 2026-07-25 follow-up implementation completed related-work parity, adaptive
+memory and the TUI startup OOM fix, standalone release closure, independent
+product profiles, API extension gating, and CI coverage. Passing corrective
+tests do not close the independent-review gate.
+
+## Historical Implementation Record
 
 Implemented surface:
 
@@ -355,7 +379,11 @@ Implemented surface:
 
 Validation remained package-scoped and sequential on the local profile.
 
-## Completion Evidence
+## Historical Completion Evidence (Governance Claim Superseded)
+
+The evidence below records what passed on 2026-07-18. It remains useful as a
+technical baseline, but it no longer proves R43 completion because the required
+independent architecture review did not occur and follow-up review found gaps.
 
 - `@cchistory/source-adapters` remains the only registered source producer for
   both profiles. Adding or fixing an adapter does not require a Lite-specific
@@ -375,9 +403,10 @@ Validation remained package-scoped and sequential on the local profile.
   JSONL/JSON/Markdown export. Export writes are explicit and destination paths
   are resolved before opening so symlinks cannot redirect output into native
   source data or the Full store.
-- `cchistory-lite-tui` amortizes one complete scan across browse, search,
-  detail, stats, and source-health commands. Refresh replaces the snapshot only
-  after a successful scan; failure leaves the previous complete view intact.
+- `cchistory-lite-tui` amortizes one context-light scan across browse, search,
+  stats, and source-health commands, then loads full turn context for one
+  logical session on demand. Refresh replaces the snapshot only after a
+  successful scan; failure leaves the previous complete view intact.
 - The fixture-backed parity matrix covers Codex, Claude Code, Factory Droid,
   AMP, Cursor, Antigravity, Gemini CLI, OpenClaw, OpenCode, CodeBuddy, and Accio
   Work. It compares normalized projects, deterministic session/turn ordering,

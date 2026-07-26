@@ -61,6 +61,44 @@ test("runtime defaults to the home .cchistory directory when no explicit store i
   }
 });
 
+test("Managed API omits the remote-agent extension unless explicitly enabled", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-managed-profile-"));
+  const dataDir = path.join(tempRoot, "data");
+  const runtime = await createApiRuntime({ dataDir, sources: [] });
+  try {
+    const agentRoute = await runtime.app.inject({ method: "POST", url: "/api/agent/pair", payload: {} });
+    assert.equal(agentRoute.statusCode, 404);
+    const openApi = JSON.parse((await runtime.app.inject({ method: "GET", url: "/openapi.json" })).body) as {
+      paths: Record<string, unknown>;
+    };
+    assert.equal("/api/agent/pair" in openApi.paths, false);
+    assert.equal("/api/admin/agents" in openApi.paths, false);
+    assert.equal(existsSync(path.join(dataDir, "remote-agents.json")), false);
+
+    const enabledRuntime = await createApiRuntime({
+      dataDir: path.join(tempRoot, "agent-enabled"),
+      sources: [],
+      agentExtension: true,
+    });
+    try {
+      const enabledAgentRoute = await enabledRuntime.app.inject({ method: "POST", url: "/api/agent/pair", payload: {} });
+      assert.notEqual(enabledAgentRoute.statusCode, 404);
+      const enabledOpenApi = JSON.parse(
+        (await enabledRuntime.app.inject({ method: "GET", url: "/openapi.json" })).body,
+      ) as { paths: Record<string, unknown> };
+      assert.equal("/api/agent/pair" in enabledOpenApi.paths, true);
+      assert.equal("/api/admin/agents" in enabledOpenApi.paths, true);
+    } finally {
+      await enabledRuntime.app.close();
+      enabledRuntime.storage.close();
+    }
+  } finally {
+    await runtime.app.close();
+    runtime.storage.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 
 test("runtime honors CCHISTORY_API_DATA_DIR when no explicit dataDir option is provided", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
@@ -736,6 +774,71 @@ test("manual source instances can be added alongside the default source for the 
       assert.ok(turns.some((turn) => turn.canonical_text === "Manual Codex source turn."));
     } finally {
       await runtime.app.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("stored-only source instances retain their own identity when they share a default adapter slot", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
+
+  try {
+    const localSource = await seedCodexSourceFixture(tempRoot, "stored-only-local-default", {
+      userText: "Local default Codex turn.",
+    });
+    const remoteBaseDir = path.join(tempRoot, "remote-imported-codex");
+    await mkdir(remoteBaseDir, { recursive: true });
+    const remoteHostId = deriveHostId("stored-only-remote-host");
+    const remoteSourceId = deriveSourceInstanceId({
+      host_id: remoteHostId,
+      slot_id: "codex",
+      base_dir: remoteBaseDir,
+    });
+    const remotePayload = createApiFixturePayload(remoteSourceId, "Remote imported Codex turn.", {
+      sessionId: "stored-only-remote-session",
+      turnId: "stored-only-remote-turn",
+      hostId: remoteHostId,
+      platform: "codex",
+      workingDirectory: "/workspace/stored-only-remote",
+    });
+    remotePayload.source = {
+      ...remotePayload.source,
+      slot_id: "codex",
+      display_name: "Remote imported Codex",
+      base_dir: remoteBaseDir,
+      host_id: remoteHostId,
+    };
+
+    const dataDir = path.join(tempRoot, "data-stored-only-source");
+    const storage = new CCHistoryStorage(dataDir);
+    storage.replaceSourcePayload(remotePayload);
+    const runtime = await createApiRuntime({ dataDir, storage, sources: [localSource] });
+
+    try {
+      const sourcesResponse = await runtime.app.inject({ method: "GET", url: "/api/sources" });
+      assert.equal(sourcesResponse.statusCode, 200);
+      const sources = JSON.parse(sourcesResponse.body).sources as Array<{
+        id: string;
+        display_name: string;
+        base_dir: string;
+        host_id: string;
+        is_default_source: boolean;
+        total_turns: number;
+      }>;
+
+      assert.equal(sources.length, 2);
+      assert.equal(new Set(sources.map((source) => source.id)).size, 2);
+      assert.ok(sources.some((source) => source.id === localSource.id && source.is_default_source));
+      const remoteSource = sources.find((source) => source.id === remoteSourceId);
+      assert.equal(remoteSource?.display_name, "Remote imported Codex");
+      assert.equal(remoteSource?.base_dir, remoteBaseDir);
+      assert.equal(remoteSource?.host_id, remoteHostId);
+      assert.equal(remoteSource?.is_default_source, false);
+      assert.equal(remoteSource?.total_turns, 1);
+    } finally {
+      await runtime.app.close();
+      runtime.storage.close();
     }
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
@@ -1915,36 +2018,24 @@ async function writeCodexFixtureDirectory(
 }
 
 function createStoredSourcePayload(source: SourceDefinition, baseDir: string): SourceSyncPayload {
+  const payload = createApiFixturePayload(source.id, "Stored default source", {
+    sessionId: "stored-default-session",
+    turnId: "stored-default-turn",
+    hostId: deriveHostId(os.hostname()),
+    platform: source.platform,
+    workingDirectory: baseDir,
+  });
   return {
+    ...payload,
     source: {
-      id: source.id,
+      ...payload.source,
       slot_id: source.slot_id,
       family: source.family,
       platform: source.platform,
       display_name: source.display_name,
       base_dir: baseDir,
-      host_id: "host-stored-source",
-      last_sync: "2026-03-09T08:00:00.000Z",
-      sync_status: "healthy",
-      total_blobs: 1,
-      total_records: 1,
-      total_fragments: 1,
-      total_atoms: 1,
-      total_sessions: 1,
-      total_turns: 1,
+      host_id: deriveHostId(os.hostname()),
     },
-    stage_runs: [],
-    loss_audits: [],
-    blobs: [],
-    records: [],
-    fragments: [],
-    atoms: [],
-    edges: [],
-    candidates: [],
-    sessions: [],
-    turns: [],
-    contexts: [],
-    ask_user_question_turns: [],
   };
 }
 
@@ -1970,7 +2061,7 @@ interface ApiFixtureOptions {
   sessionId: string;
   turnId: string;
   hostId: string;
-  platform: "codex" | "claude_code" | "factory_droid" | "amp";
+  platform: SourceDefinition["platform"];
   workingDirectory: string;
   projectObservation?: {
     workspacePath?: string;

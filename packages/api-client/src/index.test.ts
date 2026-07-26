@@ -287,6 +287,9 @@ test("api-client proves fixture-backed session related-work drill-down against a
 
       for (const session of sessions) {
         const relatedWork = await client.getSessionRelatedWork(session.id);
+        for (const entry of relatedWork) {
+          assert.equal(entry.query_session_ref, session.id);
+        }
         if (relatedWork.some((entry) => entry.relation_kind === "delegated_session" && entry.target_kind === "session" && entry.transcript_primary)) {
           sawDelegatedSession = true;
         }

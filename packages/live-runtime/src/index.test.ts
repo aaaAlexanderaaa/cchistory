@@ -11,6 +11,9 @@ import { CCHistoryStorage } from "@cchistory/storage";
 import {
   assertLiteSourceRoot,
   buildLiveSnapshot,
+  buildAdaptiveNodeExecArgv,
+  calculateAdaptiveOldSpaceMiB,
+  isAdaptiveNodeMemoryApplied,
   LiveHistorySnapshot,
   resolveLiteSources,
   scanLiteHistory,
@@ -31,6 +34,22 @@ const fixtureRoots = {
   codebuddy: ".codebuddy",
   accio: "fixtures/accio-multi-agent/agents",
 } as const;
+
+test("Lite Node heap policy uses half host memory capped at 4 GiB", () => {
+  assert.equal(calculateAdaptiveOldSpaceMiB(3 * 1024 ** 3), 1536);
+  assert.equal(calculateAdaptiveOldSpaceMiB(8 * 1024 ** 3), 4096);
+  assert.equal(calculateAdaptiveOldSpaceMiB(32 * 1024 ** 3), 4096);
+  assert.deepEqual(
+    buildAdaptiveNodeExecArgv(
+      ["--trace-warnings", "--max-old-space-size=1024", "--max_old_space_size", "768"],
+      1536,
+    ),
+    ["--trace-warnings", "--max-old-space-size=1536"],
+  );
+  assert.equal(isAdaptiveNodeMemoryApplied([], "1536", 1536), false);
+  assert.equal(isAdaptiveNodeMemoryApplied(["--max-old-space-size=1536"], "1536", 1536), true);
+  assert.equal(isAdaptiveNodeMemoryApplied(["--max-old-space-size=1024"], "1536", 1536), false);
+});
 
 test("Lite materializer matches Full canonical readback across the fixture-backed adapter matrix", async () => {
   const tempStore = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-full-parity-"));
@@ -113,6 +132,12 @@ test("Lite materializer matches Full canonical readback across the fixture-backe
       );
       assert.deepEqual(lite.listResolvedSessions(), jsonNormalize(full.listResolvedSessions()));
       assert.deepEqual(lite.listResolvedTurns(), jsonNormalize(full.listResolvedTurns()));
+      for (const session of lite.listResolvedSessions()) {
+        assert.deepEqual(
+          jsonNormalize(lite.listSessionRelatedWork(session.id)),
+          jsonNormalize(full.getSessionRelatedWork(session.id)),
+        );
+      }
       for (const turn of lite.listResolvedTurns()) {
         assert.deepEqual(jsonNormalize(lite.getTurnContext(turn.id)), jsonNormalize(full.getTurnContext(turn.id)));
       }
@@ -261,6 +286,34 @@ test("Lite context-light Codex scanning preserves canonical turns while releasin
   } finally {
     await rm(tempHome, { recursive: true, force: true });
   }
+});
+
+test("Lite targeted full-context scan materializes only the requested logical session", async () => {
+  const base = await scanLiteHistory({
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    hostname: "cchistory-lite-targeted-context-host",
+    sourceRefs: ["codex"],
+    sourceRoots: [{ sourceRef: "codex", baseDir: path.join(mockDataRoot, fixtureRoots.codex) }],
+    safeMode: true,
+    contextMode: "none",
+  });
+  const target = base.listResolvedSessions()[0];
+  assert.ok(target?.source_session_id);
+
+  const detailed = await scanLiteHistory({
+    homeDir: path.join(mockDataRoot, "empty-home"),
+    hostname: "cchistory-lite-targeted-context-host",
+    sourceRefs: ["codex"],
+    sourceRoots: [{ sourceRef: "codex", baseDir: path.join(mockDataRoot, fixtureRoots.codex) }],
+    safeMode: true,
+    contextMode: "full",
+    sessionRefs: [target.source_session_id],
+  });
+
+  assert.deepEqual(detailed.listResolvedSessions().map((session) => session.id), [target.id]);
+  const turn = detailed.listResolvedTurns()[0];
+  assert.ok(turn);
+  assert.ok(detailed.getTurnContext(turn.id));
 });
 
 test("Lite context-light Claude scanning assembles parent and subagent files before projection", async () => {

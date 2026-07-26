@@ -13,7 +13,8 @@ before starting non-trivial corrective work.
 ## Current Status
 
 **R17, R31, and R35 are blocked on operator-provided data or user-started
-services. R43 completed in-place on 2026-07-18.** R39 completed in-place on 2026-05-17 after the canonical-only
+services. R43's 2026-07-25 technical corrections are complete; it remains open
+only for the mandatory independent three-lens review and synthesis.** R39 completed in-place on 2026-05-17 after the canonical-only
 default-search fix, focused local validation, and three successful independent
 final reviews. R40 completed in-place on 2026-05-31 after resume provenance,
 path-aware search, CLI/TUI/Web projection work, source-shaped E2E coverage, and
@@ -49,14 +50,14 @@ on 2026-05-17.
 | R17 - LobeChat Real-Sample Validation | active | Waiting for user-provided real LobeChat data |
 | R31 - Managed-Runtime Manual Review Diaries | active | Waiting for user to start canonical services |
 | R35 - Managed Remote-Agent Manual Review | active | Waiting for user to start canonical API service |
-| R43 - CC History Lite | done | none |
+| R43 - CC History Lite | active | Independent three-lens design review and synthesis remain pending |
 
 231 completed objectives were archived and subsequently removed during repository cleanup.
 
 ---
 
 ## Objective: R43 - CC History Lite
-Status: done
+Status: active
 Priority: P0
 Source: explicit user direction on 2026-07-18
 Design: `docs/design/R43_CC_HISTORY_LITE_DESIGN.md`
@@ -69,7 +70,7 @@ SQLite formats through their adapters. It supports read-only CLI/TUI workflows
 and one-way normalized export, with no import or storage-management surface.
 
 ### KR: R43-KR1 Shared canonical pipeline and parity contract
-Status: done
+Status: active
 Acceptance: Full and Lite consume one registered adapter/canonical derivation
 path, and fixture-backed parity proves normalized canonical output matches.
 
@@ -80,11 +81,15 @@ path, and fixture-backed parity proves normalized canonical output matches.
   verifiable acceptance criteria.
 
 - Task: complete multi-perspective design review and synthesis
-  Status: done
+  Status: blocked
+  Blocker: the attempted independent workers produced no usable reports, and
+  the same implementation context's three lens notes do not satisfy the
+  mandatory protocol in `PIPELINE.md`. Three genuinely independent reports and
+  a synthesis are still required unless the user explicitly grants a human
+  governance exception.
   Acceptance: independent consistency, UX, and engineering-cost reviews are
-  synthesized into the design before implementation proceeds. Independent
-  review workers were attempted but rate-limited; the design records the three
-  required lenses and the resulting synthesis explicitly.
+  synthesized into the design and the R43 design no longer presents same-
+  context analysis as independent review evidence.
 
 - Task: extract or expose storage-neutral canonical project/read helpers
   Status: done
@@ -95,6 +100,15 @@ path, and fixture-backed parity proves normalized canonical output matches.
   Status: done
   Acceptance: fixture-backed tests compare normalized Full in-memory readback
   with the Lite ephemeral snapshot across the v0 adapter matrix.
+
+- Task: project canonical session related work before Lite releases source fragments
+  Status: done
+  Acceptance: shared canonical code derives `SessionRelatedWorkProjection`
+  objects from `session_relation` fragments for both Full and Lite, and Lite
+  CLI/TUI session tree/detail paths expose delegated-session and automation-run
+  relations with parity regressions.
+  Artifact: `packages/canonical`, `packages/live-runtime`, Lite CLI/TUI tests,
+  and `pnpm run verify:lite`
 
 ### KR: R43-KR2 Non-persistent Lite runtime and CLI
 Status: done
@@ -113,6 +127,13 @@ store.
   Acceptance: human and JSON outputs are deterministic, exports carry the Lite
   schema marker, and no import/storage commands exist.
 
+- Task: ship a repository-independent Lite release closure
+  Status: done
+  Acceptance: one generated Lite artifact contains both binaries plus every
+  runtime workspace dependency, installs/runs outside the monorepo without
+  `workspace:*` resolution, and has a repeatable artifact verifier.
+  Artifact: Lite artifact builder/verifier and `pnpm run verify:lite-artifact`
+
 ### KR: R43-KR3 Lite TUI and end-to-end zero-store proof
 Status: done
 Acceptance: the Lite TUI browses the same ephemeral snapshot and the complete
@@ -129,11 +150,46 @@ Lite surface passes parity, no-write, and adjacent Full regression checks.
   dependency graphs exclude Full storage; no implicit filesystem writes occur;
   Phase 7 findings are resolved or recorded.
 
+- Task: fix local Lite TUI startup OOM with a host-adaptive heap policy
+  Status: done
+  Acceptance: product entrypoints derive their default Node old-space ceiling
+  as `min(host memory / 2, 4096 MiB)`, the Lite TUI avoids retaining unnecessary
+  full context during startup, and a regression proves the launcher policy and
+  context-light startup/detail behavior. The reproduced 1 GiB local launch OOM
+  no longer occurs under the adaptive default.
+  Artifact: shared launcher/runtime tests and `pnpm --filter @cchistory/lite-tui test`
+
+### KR: R43-KR4 Independent product profiles and gates
+Status: done
+Acceptance: Core/Full, Lite, Managed Web/API, and remote Agent extension have
+explicit independent build/test/release gates, with only an explicitly named
+aggregate gate combining them.
+
+- Task: include Lite CLI and TUI regressions in pull-request CI
+  Status: done
+  Acceptance: `.github/workflows/ci.yml` runs the Lite verification profile,
+  including both application test suites, on pull requests.
+  Artifact: `.github/workflows/ci.yml` and `pnpm run verify:lite`
+
+- Task: split build, test, and release profile commands
+  Status: done
+  Acceptance: root scripts and documentation define independent Core/Full,
+  Lite, Managed Web/API, and Agent extension profiles; root `build` is no
+  longer an implicit all-product gate, and the aggregate gate is explicit.
+  Artifact: `package.json`, profile verification, design freeze, and runtime docs
+
+- Task: make the API remote-agent extension opt-in
+  Status: done
+  Acceptance: `createApiRuntime` does not read state or register agent/admin
+  routes in the default Managed API profile; explicit configuration enables
+  them and OpenAPI truthfully reflects the selected runtime profile.
+  Artifact: `apps/api` runtime and tests
+
 Completion evidence:
 
 - `packages/canonical` now owns the storage-neutral default project linker,
-  fallback observations, stable read ordering, search, and usage aggregation;
-  Full storage consumes or compatibility-re-exports those implementations.
+  fallback observations, related-work projection, stable read ordering, search,
+  and usage aggregation; Full storage and Lite consume the same implementations.
 - `packages/live-runtime` consumes the registered `source-adapters` probe
   pipeline into a process-lifetime snapshot, supports default and explicit
   source roots, rejects Full stores/bundles and ancestor/symlink escapes, and
@@ -146,9 +202,9 @@ Completion evidence:
   one-way `export`, and the `tui` launcher without import or storage-management
   commands. Export destinations are resolved before write so symlinks cannot
   redirect output into native source roots or the Full store.
-- `apps/lite-tui` provides one-scan project/session/turn browsing, search,
-  source detail, stats, full turn context, and explicit refresh; a failed
-  refresh retains the previous complete snapshot.
+- `apps/lite-tui` provides project/session/turn browsing, search, source detail,
+  stats, on-demand single-session turn context, and explicit context-light
+  refresh; a failed refresh retains the previous complete snapshot.
 - The parity matrix covers Codex, Claude Code, Factory Droid, AMP, Cursor,
   Antigravity, Gemini CLI, OpenClaw, OpenCode, CodeBuddy, and Accio Work. It
   compares source status, projects, ordered sessions/turns, contexts,
@@ -158,6 +214,18 @@ Completion evidence:
   `pnpm --filter @cchistory/storage test`, `pnpm run test:e2e`,
   `pnpm run verify:cli-tui-read-side`, `pnpm run verify:support-status`, and
   `pnpm run verify:runtime-inventory`.
+- Corrective validation on 2026-07-25 passed `pnpm run verify:lite`,
+  `pnpm run verify:lite-artifact`, `pnpm run verify:product-profiles`,
+  `pnpm run build:managed`, API full/Managed/Agent-extension tests, and the
+  storage suite. Pull-request CI now runs Lite CLI/TUI tests, the standalone
+  Lite artifact, a Managed Web production build, Managed API/Web tests, and the
+  Agent-extension tests as separate jobs.
+- The previous fixed 1024 MiB local Lite TUI launch reproduced a V8 heap OOM.
+  With `min(host memory / 2, 4096 MiB)` (about 1827 MiB on the 3.57 GiB host)
+  and context-light startup, the same approximately 2.7 GiB native source set
+  completed with 7 sources, 92 projects, 1996 sessions, and 4846 turns.
+- The only remaining R43 work is the blocked independent-review task above;
+  passing technical gates are not a substitute for that governance evidence.
 
 ---
 

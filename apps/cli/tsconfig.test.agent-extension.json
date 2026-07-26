@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.test.json",
+  "include": ["src/test/commands-agent.test.ts"],
+  "exclude": []
+}

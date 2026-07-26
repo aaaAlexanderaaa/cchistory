@@ -4,10 +4,12 @@ import test from "node:test";
 import type {
   ProjectIdentity,
   SessionProjection,
+  SourceFragment,
   SourceStatus,
   UserTurnProjection,
 } from "@cchistory/domain";
 import {
+  buildSessionRelatedWorkIndex,
   boundSearchCanonicalText,
   buildProjectDisplayList,
   buildSearchPlan,
@@ -87,6 +89,73 @@ test("shared read ordering uses stable IDs to break timestamp ties", () => {
   const turnB = { ...turn, id: "turn-b", turn_id: "turn-b" };
   assert.deepEqual([turnB, turnA].sort(compareTurnsByRecency).map((entry) => entry.id), ["turn-a", "turn-b"]);
   assert.deepEqual([turnB, turnA].sort(compareTurnsByChronology).map((entry) => entry.id), ["turn-a", "turn-b"]);
+});
+
+test("shared canonical related-work projection resolves delegated sessions and automation runs", () => {
+  const source = createSource();
+  const parent = {
+    ...createSession(source),
+    id: "sess:factory_droid:parent-native",
+    source_session_id: "parent-native",
+    title: "Parent session",
+  };
+  const child = {
+    ...createSession(source),
+    id: "sess:factory_droid:child-native",
+    source_session_id: "child-native",
+    title: "Child session",
+  };
+  const fragments: SourceFragment[] = [
+    {
+      id: "fragment-delegated",
+      source_id: source.id,
+      session_ref: child.id,
+      record_id: "record-delegated",
+      seq_no: 1,
+      fragment_kind: "session_relation",
+      time_key: "2026-01-01T00:00:01.000Z",
+      payload: {
+        callingSessionId: "parent-native",
+        child_session_id: "child-native",
+        agentId: "worker-1",
+      },
+      raw_refs: [],
+      source_format_profile_id: "factory:test:v1",
+    },
+    {
+      id: "fragment-automation",
+      source_id: source.id,
+      session_ref: child.id,
+      record_id: "record-automation",
+      seq_no: 2,
+      fragment_kind: "session_relation",
+      time_key: "2026-01-01T00:00:02.000Z",
+      payload: {
+        relation_kind: "automation_run",
+        parent_id: "parent-native",
+        job_id: "job-1",
+        session_key: "run-1",
+      },
+      raw_refs: [],
+      source_format_profile_id: "factory:test:v1",
+    },
+  ];
+
+  const relatedBySession = buildSessionRelatedWorkIndex([parent, child], fragments);
+  assert.deepEqual(
+    relatedBySession.get(parent.id)?.map((entry) => [entry.relation_kind, entry.direction, entry.target_session_ref]),
+    [
+      ["delegated_session", "outbound", child.id],
+      ["automation_run", "outbound", parent.id],
+    ],
+  );
+  assert.deepEqual(
+    relatedBySession.get(child.id)?.map((entry) => [entry.relation_kind, entry.direction, entry.target_session_ref]),
+    [
+      ["delegated_session", "inbound", parent.id],
+      ["automation_run", "self", parent.id],
+    ],
+  );
 });
 
 test("shared search materialization matches the bounded Full candidate surface", () => {

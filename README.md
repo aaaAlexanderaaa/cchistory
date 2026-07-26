@@ -159,7 +159,7 @@ graph is `source-adapters -> canonical -> live-runtime -> lite-cli/lite-tui`.
 ### Install & Build
 
 This is the canonical clean-machine install path for the repository. It installs
-both lockfiles and performs the first non-web workspace build.
+both lockfiles and performs the default local Full-profile build.
 
 ```bash
 # Clone and install
@@ -170,8 +170,13 @@ pnpm install
 # Install web app dependencies (separate lockfile)
 cd apps/web && pnpm install && cd ../..
 
-# First build (non-web workspace)
+# Default local Full profile
 pnpm run build
+
+# Independent optional profiles
+pnpm run build:lite
+pnpm run build:managed
+pnpm run build:agent-extension
 ```
 
 The `apps/web` production build is validated separately from this install path.
@@ -230,16 +235,16 @@ pnpm --filter @cchistory/lite-tui build
 Inspect automatically discovered native source roots:
 
 ```bash
-pnpm lite -- sources
-pnpm lite -- ls projects
-pnpm lite -- search "parser regression"
+pnpm lite sources
+pnpm lite ls projects
+pnpm lite search "parser regression"
 pnpm lite:tui
 ```
 
 Override and optionally select one registered adapter:
 
 ```bash
-pnpm lite -- search "migration" \
+pnpm lite search "migration" \
   --source-root codex=/mnt/history/.codex/sessions \
   --source codex
 ```
@@ -250,6 +255,11 @@ GC, API, `--store`, or `--db` surface. Its export marker is
 `cchistory-lite-export/v1` and is not a Full backup. See the
 [Lite guide](docs/guide/lite.md) and run `pnpm run verify:lite` for the focused
 parity/isolation gate.
+
+For a receiving machine without the workspace, run `pnpm run lite:artifact`.
+The resulting archive contains both Lite binaries and every private runtime
+dependency; `pnpm run verify:lite-artifact` proves the extracted closure works
+outside the monorepo.
 
 ### Use the standalone CLI artifact
 
@@ -421,10 +431,14 @@ cchistory/
 ├── apps/
 │   ├── api/                    # Fastify REST API server (:8040)
 │   ├── cli/                    # Command-line tool (cchistory)
+│   ├── lite-cli/               # Zero-store Lite command-line reader
+│   ├── lite-tui/               # Zero-store Lite terminal browser
 │   ├── tui/                    # Ink-based local TUI browser
 │   └── web/                    # Next.js 16 web frontend (:8085)
 ├── packages/
+│   ├── canonical/              # Storage-neutral canonical read semantics
 │   ├── domain/                 # Core domain contracts and types
+│   ├── live-runtime/           # Ephemeral Lite materializer
 │   ├── source-adapters/        # Platform-specific parsers
 │   ├── storage/                # SQLite persistence and linking
 │   ├── api-client/             # Shared API DTO contracts
@@ -445,20 +459,21 @@ cchistory/
 ## Development
 
 ```bash
-# Build all non-web packages
+# Build the default local Full profile
 pnpm run build
 
-# Build web app
-NODE_OPTIONS=--max-old-space-size=1536 pnpm --filter @cchistory/web build
+# Build optional profiles, or all profiles explicitly
+pnpm run build:lite
+pnpm run build:managed
+pnpm run build:agent-extension
+pnpm run build:aggregate
 
-# Run tests
-pnpm --filter @cchistory/source-adapters test
-pnpm --filter @cchistory/storage test
-pnpm --filter @cchistory/api-client test
-pnpm --filter @cchistory/presentation test
-pnpm --filter @cchistory/cli test
-pnpm --filter @cchistory/tui test
-pnpm --filter @cchistory/api test
+# Run independent profile gates
+pnpm run test:full
+pnpm run test:lite
+pnpm run test:managed
+pnpm run test:agent-extension
+pnpm run test:aggregate
 
 # Lint
 cd apps/web && pnpm lint

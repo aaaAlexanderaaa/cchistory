@@ -1,6 +1,6 @@
 # Current Runtime Surface
 
-This document records the repository-visible runtime surface as of 2026-07-18. It complements the design freeze and should be consulted when implementation inventory matters more than frozen semantics.
+This document records the repository-visible runtime surface as of 2026-07-25. It complements the design freeze and should be consulted when implementation inventory matters more than frozen semantics.
 
 > [`HIGH_LEVEL_DESIGN_FREEZE.md`](../../HIGH_LEVEL_DESIGN_FREEZE.md) remains the source of truth for product semantics and invariants.
 >
@@ -23,7 +23,7 @@ split into durable and ephemeral materializers.
 | `apps/lite-tui` | zero-store process-lifetime terminal browser over one ephemeral snapshot | `apps/lite-tui/src/index.ts` |
 | `packages/domain` | canonical model, lifecycle, ordering, and stage contracts | `packages/domain/src/index.ts` |
 | `packages/source-adapters` | adapter registry, probe pipeline, parser and atomization flow | `packages/source-adapters/src/platforms/registry.ts` |
-| `packages/canonical` | storage-neutral project linking, fallback observations, read ordering, search, and usage aggregation | `packages/canonical/src/index.ts` |
+| `packages/canonical` | storage-neutral project linking, fallback observations, related-work projection, read ordering, search, and usage aggregation | `packages/canonical/src/index.ts` |
 | `packages/live-runtime` | ephemeral materializer, source-root isolation, lookup, search, and stats reader for Lite | `packages/live-runtime/src/index.ts` |
 | `packages/storage` | SQLite persistence, linking, lineage, tombstones, search | `packages/storage/src/index.ts` |
 | `packages/api-client` | API DTO surface shared by clients | `packages/api-client/src/index.ts` |
@@ -32,6 +32,25 @@ split into durable and ephemeral materializers.
 # TUI Status
 
 `apps/tui` now provides a canonical local TUI entrypoint with pane-based project, turn, and detail browsing, global search drill-down, lightweight source-health summary, and richer read-side detail cues such as project/session/turn breadcrumbs, related-work summaries in turn/search rows, and child-session or automation trail lines in the detail pane.
+
+# Product Profiles
+
+The build/test/release boundary is explicit:
+
+| Profile | Build | Test | Release |
+| --- | --- | --- | --- |
+| Core/Full | `pnpm run build:full` (root `build` selects this profile) | `pnpm run test:full` | `pnpm run release:full` |
+| Lite | `pnpm run build:lite` | `pnpm run test:lite` | `pnpm run release:lite` |
+| Managed Web/API | `pnpm run build:managed` | `pnpm run test:managed` | `pnpm run release:managed` |
+| Agent extension | `pnpm run build:agent-extension` | `pnpm run test:agent-extension` | `pnpm run release:agent-extension` |
+| Explicit aggregate | `pnpm run build:aggregate` | `pnpm run test:aggregate` | `pnpm run release:aggregate` |
+
+`pnpm run verify:product-profiles` guards this separation. Managed API starts
+without remote-agent state/routes by default; `CCHISTORY_AGENT_EXTENSION=true`
+or an explicitly configured pairing token enables the Agent extension.
+The Managed test profile runs API-client integrations, API regressions, Web
+masking/token-usage tests, and Web lint; its build profile performs the capped
+production Web build.
 
 # Lite Surface
 
@@ -56,6 +75,18 @@ Upstream tools' native SQLite files remain adapter-owned source data and are
 opened read-only. Only an explicit export destination is written; export uses
 the one-way marker `cchistory-lite-export/v1` and is not importable or
 restorable.
+
+The CLI/TUI session projections include canonical related work. Lite computes
+these rows from `session_relation` fragments before releasing fragment payloads.
+The TUI startup and refresh scans are context-light; opening a turn targets one
+logical session for full context. Lite entrypoints derive the Node old-space
+ceiling as `min(host memory / 2, 4096 MiB)`; on the 3.57 GiB local host this is
+about 1827 MiB rather than the previous fixed 1024 MiB.
+
+`pnpm run lite:artifact` generates one self-contained artifact containing both
+Lite binaries plus `domain`, `canonical`, `source-adapters`, and `live-runtime`.
+`pnpm run verify:lite-artifact` extracts it into a repository-independent temp
+directory and runs both entrypoints plus a fixture-backed search.
 
 Fixture-backed parity currently covers Codex, Claude Code, Factory Droid, AMP,
 Cursor, Antigravity, Gemini CLI, OpenClaw, OpenCode, CodeBuddy, and Accio Work.
@@ -193,15 +224,16 @@ Default store resolution:
 - use `~/.cchistory/` by default
 - use `--store <dir>` or `--db <file>` to pin a repo-local, restored, or custom store
 
-The current remote-agent CLI slice now ships through `cchistory agent pair`, `cchistory agent upload`, `cchistory agent schedule`, and `cchistory agent pull`. The local agent state file persists pairing plus cheap dirty-source fingerprints, `agent upload` supports bounded retry/backoff flags, `agent schedule` runs repeated local upload cycles on a caller-provided interval, and `agent pull` leases one typed collection job from the main service, reuses the same canonical bundle/upload path, and reports success or failure back to the control plane. On the API side, the paired-agent control plane also accepts heartbeat updates, exposes admin inventory/label-management routes, and now persists typed collection jobs plus lease/result metadata through dedicated agent/admin job routes.
+The current remote-agent CLI slice now ships through `cchistory agent pair`, `cchistory agent upload`, `cchistory agent schedule`, and `cchistory agent pull`. The local agent state file persists pairing plus cheap dirty-source fingerprints, `agent upload` supports bounded retry/backoff flags, `agent schedule` runs repeated local upload cycles on a caller-provided interval, and `agent pull` leases one typed collection job from the main service, reuses the same canonical bundle/upload path, and reports success or failure back to the control plane. When the API Agent extension is enabled, the paired-agent control plane also accepts heartbeat updates, exposes admin inventory/label-management routes, and persists typed collection jobs plus lease/result metadata through dedicated agent/admin job routes.
 
 The CLI dispatcher and help text live in [`apps/cli/src/index.ts`](../../apps/cli/src/index.ts).
 
 Current install and verification surfaces:
 
-- repo-clone install plus first non-web build: `README.md` and `pnpm run verify:clean-install`
+- repo-clone install plus default Full-profile build: `README.md` and `pnpm run verify:clean-install`
 - standalone CLI artifact generation: `pnpm run cli:artifact` writes `dist/cli-artifacts/cchistory-cli-standalone-<version>/` plus a sibling `.tgz`
 - standalone CLI artifact verification: `pnpm run verify:cli-artifact` unpacks generated artifacts, verifies first install plus replacement-style upgrade semantics, and now runs the installed `cchistory` command through skeptical local restore/conflict, multi-source browse/search, store-scoped admin, and structured retrieval workflows (`sync -> backup preview/write -> import -> restore-check -> search/show -> conflict dry-run/replace`, plus `ls projects --long`, `ls sessions --long`, `show session`, `tree session --long`, `health --store-only`, `ls sources`, `stats`, `query session --id`, and `query turn --id`)
+- standalone Lite artifact generation/verification: `pnpm run lite:artifact` creates the two-binary private-dependency closure; `pnpm run verify:lite-artifact` extracts and executes it outside the monorepo
 - grouped local full-read bundle: `pnpm run verify:local-full-read-bundle` performs one higher-level local confidence pass by building the canonical local CLI/TUI entrypoints once, then running standalone artifact verification plus skeptical built-TUI `--full` verification in sequence
 - offline web-build verification: `pnpm run verify:web-build-offline` proves the canonical web production build works without public-network fetches during build time
 - support-status verification: `pnpm run verify:support-status` checks README/runtime/release-gate/source-reference support claims and Web manual-source inventory against the adapter registry
@@ -224,7 +256,10 @@ automated proof.
 
 # API Surface
 
-The managed API exposes recall, project, artifact, source-config, probe/replay, remote-agent pairing/upload plus liveness, inventory, and leased-job control-plane surfaces, lineage, lifecycle, mask, drift, and tombstone surfaces.
+The default Managed API exposes recall, project, artifact, source-config,
+probe/replay, lineage, lifecycle, mask, drift, and tombstone surfaces. The
+remote-agent pairing/upload/liveness/inventory/job control plane is an optional
+Agent extension and is absent from runtime routing and OpenAPI unless enabled.
 
 Default data-dir resolution matches the CLI default-store policy unless `CCHISTORY_API_DATA_DIR` is set for the API process:
 
@@ -234,7 +269,7 @@ Default data-dir resolution matches the CLI default-store policy unless `CCHISTO
 Current route groups:
 
 - health and OpenAPI: `/health`, `/openapi.json`
-- remote-agent control plane: `/api/agent/pair`, `/api/agent/heartbeat`, `/api/agent/jobs/lease`, `/api/agent/uploads`, `/api/agent/jobs/{jobId}/complete`, `/api/admin/agents`, `/api/admin/agents/{agentId}/labels`, `/api/admin/agent-jobs`
+- optional Agent extension: `/api/agent/pair`, `/api/agent/heartbeat`, `/api/agent/jobs/lease`, `/api/agent/uploads`, `/api/agent/jobs/{jobId}/complete`, `/api/admin/agents`, `/api/admin/agents/{agentId}/labels`, `/api/admin/agent-jobs`
 - recall: `/api/sources`, `/api/turns`, `/api/turns/summary`, `/api/turns/search`, `/api/turns/{turnId}`, `/api/turns/{turnId}/context`, `/api/sessions`, `/api/sessions/{sessionId}`
 - projects and artifacts: `/api/projects`, `/api/projects/{projectId}`, `/api/projects/{projectId}/turns`, `/api/projects/{projectId}/revisions`, `/api/artifacts`, `/api/artifacts/{artifactId}/coverage`
 - linking and lifecycle admin: `/api/admin/linking`, `/api/admin/linking/overrides`, `/api/admin/sessions/{sessionId}/related-work`, `/api/admin/projects/lineage-events`, `/api/admin/projects/{projectId}/delete`, `/api/admin/lifecycle/candidate-gc`

@@ -12,6 +12,8 @@ import {
   type LossAuditRecord,
   type ProjectIdentity,
   type SessionProjection,
+  type SessionRelatedWorkProjection,
+  type SourceFragment,
   type SourceDefinition,
   type SourcePlatform,
   type SourceStatus,
@@ -26,6 +28,7 @@ import {
 import {
   buildFallbackProjectObservationCandidates,
   buildProjectDisplayList,
+  buildSessionRelatedWorkIndex,
   compareSessionsByRecency,
   compareTurnsByChronology,
   compareTurnsByRecency,
@@ -37,6 +40,13 @@ import {
   type UsageFilters,
 } from "@cchistory/canonical";
 import type { SourceProbeProgressEvent } from "@cchistory/source-adapters";
+
+export {
+  buildAdaptiveNodeExecArgv,
+  calculateAdaptiveOldSpaceMiB,
+  isAdaptiveNodeMemoryApplied,
+  runWithAdaptiveNodeMemory,
+} from "./node-memory.js";
 
 installRuntimeWarningFilter();
 
@@ -58,6 +68,7 @@ export interface ScanLiteHistoryOptions extends ResolveLiteSourcesOptions {
   limitFiles?: number;
   safeMode?: boolean;
   contextMode?: LiteContextMode;
+  sessionRefs?: readonly string[];
   onProgress?: (event: SourceProbeProgressEvent) => void;
 }
 
@@ -73,18 +84,26 @@ type LiveSourcePayload = Pick<
   | "contexts"
   | "ask_user_question_turns"
   | "loss_audits"
->;
+> & {
+  fragments?: readonly SourceFragment[];
+  related_work?: readonly SessionRelatedWorkProjection[];
+};
 
 export interface LiveSnapshotData {
   host: Host;
   sources: SourceStatus[];
   projects: ProjectIdentity[];
   sessions: SessionProjection[];
+  related_work: SessionRelatedWorkProjection[];
   turns: UserTurnProjection[];
   contexts: TurnContextProjection[];
   ask_user_question_turns: AskUserQuestionTurn[];
   loss_audits: LossAuditRecord[];
 }
+
+type LiveSnapshotInputData = Omit<LiveSnapshotData, "related_work"> & {
+  related_work?: SessionRelatedWorkProjection[];
+};
 
 export interface LiveSearchOptions {
   query?: string;
@@ -99,6 +118,7 @@ export class LiveHistorySnapshot {
   private readonly sourcesById: Map<string, SourceStatus>;
   private readonly projectsById: Map<string, ProjectIdentity>;
   private readonly sessionsById: Map<string, SessionProjection>;
+  private readonly relatedWorkBySessionId: Map<string, SessionRelatedWorkProjection[]>;
   private readonly turnsById: Map<string, UserTurnProjection>;
   private readonly contextsByTurnId: Map<string, TurnContextProjection>;
   private readonly searchCandidates: readonly DerivedCandidate[];
@@ -108,11 +128,17 @@ export class LiveHistorySnapshot {
   private turnsByProjectId?: Map<string, UserTurnProjection[]>;
   private searchRankCache?: Map<string, readonly TurnSearchResult[]>;
 
-  constructor(data: LiveSnapshotData, searchCandidates: readonly DerivedCandidate[] = []) {
-    this.data = data;
+  constructor(data: LiveSnapshotInputData, searchCandidates: readonly DerivedCandidate[] = []) {
+    this.data = { ...data, related_work: data.related_work ?? [] };
     this.sourcesById = new Map(data.sources.map((source) => [source.id, source]));
     this.projectsById = new Map(data.projects.map((project) => [project.project_id, project]));
-    this.sessionsById = new Map(data.sessions.map((session) => [session.id, session]));
+    this.sessionsById = new Map(this.data.sessions.map((session) => [session.id, session]));
+    this.relatedWorkBySessionId = new Map();
+    for (const entry of this.data.related_work) {
+      const related = this.relatedWorkBySessionId.get(entry.query_session_ref);
+      if (related) related.push(entry);
+      else this.relatedWorkBySessionId.set(entry.query_session_ref, [entry]);
+    }
     this.turnsById = new Map(data.turns.map((turn) => [turn.id, turn]));
     this.contextsByTurnId = new Map(data.contexts.map((context) => [context.turn_id, context]));
     this.searchCandidates = searchCandidates;
@@ -132,6 +158,11 @@ export class LiveHistorySnapshot {
 
   listResolvedTurns(): UserTurnProjection[] {
     return [...this.data.turns];
+  }
+
+  listSessionRelatedWork(sessionRef: string): SessionRelatedWorkProjection[] {
+    const session = this.getSession(sessionRef);
+    return session ? [...(this.relatedWorkBySessionId.get(session.id) ?? [])] : [];
   }
 
   listAskUserQuestionTurns(filter: { sourceId?: string; sessionId?: string } = {}): AskUserQuestionTurn[] {
@@ -345,12 +376,14 @@ export function buildLiveSnapshot(probe: { host: Host; sources: readonly LiveSou
     turns,
     candidates: [...candidates, ...fallbackCandidates],
   });
+  const relatedWork = probe.sources.flatMap((payload) => materializeRelatedWork(payload));
 
   return new LiveHistorySnapshot(normalizeJsonShapeForJsonOutputMutating({
     host: probe.host,
     sources,
     projects: linked.projects,
     sessions: linked.sessions,
+    related_work: relatedWork,
     turns: linked.turns,
     contexts: probe.sources.flatMap((payload) => payload.contexts),
     ask_user_question_turns: probe.sources.flatMap((payload) => payload.ask_user_question_turns),
@@ -372,9 +405,12 @@ async function scanSourceWithCollector(
   if (!payload) {
     throw new Error(`Lite source probe produced no payload for ${source.display_name}.`);
   }
+  const compacted = compactSourcePayload(payload, contextMode);
   return {
     host: probe.host,
-    payload: compactSourcePayload(payload, contextMode),
+    payload: options.sessionRefs?.length
+      ? filterLiveSourcePayloadBySessions(compacted, options.sessionRefs)
+      : compacted,
   };
 }
 
@@ -398,12 +434,25 @@ async function scanLogicalSessionGroups(
     else filesByGroup.set(key, [filePath]);
   }
 
+  const requestedSessionRefs = options.sessionRefs?.filter((ref) => ref.trim().length > 0) ?? [];
+  const selectedGroupFiles = requestedSessionRefs.length === 0
+    ? [...filesByGroup.values()]
+    : [...filesByGroup.entries()]
+        .filter(([groupKey]) => requestedSessionRefs.some((ref) => sessionRefMatchesGroup(ref, groupKey, source)))
+        .map(([, groupFiles]) => groupFiles);
+  if (requestedSessionRefs.length > 0 && selectedGroupFiles.length === 0) {
+    throw new Error(
+      `Lite source ${source.display_name} does not contain requested session ${requestedSessionRefs.join(", ")}.`,
+    );
+  }
+
   const blobsById = new Map<string, SourceSyncPayload["blobs"][number]>();
   const candidatesById = new Map<string, SourceSyncPayload["candidates"][number]>();
   const sessionsById = new Map<string, SessionProjection>();
   const turnsById = new Map<string, UserTurnProjection>();
   const contextsByTurnId = new Map<string, TurnContextProjection>();
   const askTurnsById = new Map<string, SourceSyncPayload["ask_user_question_turns"][number]>();
+  const sessionRelationFragments: SourceFragment[] = [];
   const lossAudits: LossAuditRecord[] = [];
   const fileProcessingErrors: string[] = [];
   let totalRecords = 0;
@@ -413,7 +462,7 @@ async function scanLogicalSessionGroups(
   let forwardedSourceStart = false;
   let host: Host | undefined;
 
-  for (const groupFiles of filesByGroup.values()) {
+  for (const groupFiles of selectedGroupFiles) {
     const probe = await sourceAdapters.runSourceProbe(
       {
         ...buildProbeOptions(source, options),
@@ -455,6 +504,9 @@ async function scanLogicalSessionGroups(
       for (const context of groupPayload.contexts) contextsByTurnId.set(context.turn_id, context);
     }
     for (const askTurn of groupPayload.ask_user_question_turns) askTurnsById.set(askTurn.id, askTurn);
+    sessionRelationFragments.push(
+      ...groupPayload.fragments.filter((fragment) => fragment.fragment_kind === "session_relation"),
+    );
     lossAudits.push(...groupPayload.loss_audits);
   }
 
@@ -499,6 +551,7 @@ async function scanLogicalSessionGroups(
       blobs: [...blobsById.values()],
       candidates: [...candidatesById.values()],
       sessions,
+      related_work: flattenRelatedWorkIndex(buildSessionRelatedWorkIndex(sessions, sessionRelationFragments)),
       turns,
       contexts: [...contextsByTurnId.values()],
       ask_user_question_turns: [...askTurnsById.values()],
@@ -522,11 +575,53 @@ function compactSourcePayload(payload: SourceSyncPayload, contextMode: LiteConte
     blobs: payload.blobs,
     candidates: payload.candidates.filter((candidate) => candidate.candidate_kind === "project_observation"),
     sessions: payload.sessions,
+    related_work: flattenRelatedWorkIndex(buildSessionRelatedWorkIndex(payload.sessions, payload.fragments)),
     turns: payload.turns,
     contexts: contextMode === "full" ? payload.contexts : [],
     ask_user_question_turns: payload.ask_user_question_turns,
     loss_audits: payload.loss_audits,
   };
+}
+
+function filterLiveSourcePayloadBySessions(
+  payload: LiveSourcePayload,
+  sessionRefs: readonly string[],
+): LiveSourcePayload {
+  const sessions = payload.sessions.filter((session) =>
+    sessionRefs.some((ref) => ref === session.id || ref === session.source_session_id),
+  );
+  const sessionIds = new Set(sessions.map((session) => session.id));
+  const turns = payload.turns.filter((turn) => sessionIds.has(turn.session_id));
+  const turnIds = new Set(turns.map((turn) => turn.id));
+  return {
+    ...payload,
+    sessions,
+    turns,
+    candidates: payload.candidates.filter((candidate) => sessionIds.has(candidate.session_ref)),
+    contexts: payload.contexts.filter((context) => turnIds.has(context.turn_id)),
+    ask_user_question_turns: payload.ask_user_question_turns.filter((turn) => sessionIds.has(turn.session_id)),
+    related_work: payload.related_work?.filter((entry) => sessionIds.has(entry.query_session_ref)),
+  };
+}
+
+function sessionRefMatchesGroup(ref: string, groupKey: string, source: SourceDefinition): boolean {
+  return (
+    ref === groupKey ||
+    ref === `sess:${source.platform}:${groupKey}` ||
+    ref.endsWith(`:${groupKey}`) ||
+    groupKey.endsWith(`:${ref}`)
+  );
+}
+
+function materializeRelatedWork(payload: LiveSourcePayload): SessionRelatedWorkProjection[] {
+  if (payload.related_work) return [...payload.related_work];
+  return flattenRelatedWorkIndex(buildSessionRelatedWorkIndex(payload.sessions, payload.fragments ?? []));
+}
+
+function flattenRelatedWorkIndex(
+  index: ReadonlyMap<string, readonly SessionRelatedWorkProjection[]>,
+): SessionRelatedWorkProjection[] {
+  return [...index.values()].flatMap((entries) => [...entries]);
 }
 
 export async function resolveLiteSources(options: ResolveLiteSourcesOptions = {}): Promise<SourceDefinition[]> {

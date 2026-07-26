@@ -8,6 +8,7 @@ import { formatTuiLaunchError, runLiteCli } from "./index.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const codexRoot = path.join(repoRoot, "mock_data", ".codex", "sessions");
+const openclawRoot = path.join(repoRoot, "mock_data", ".openclaw", "agents");
 
 test("Lite CLI searches, reports stats, and writes one-way export", async () => {
   const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-cli-"));
@@ -197,6 +198,33 @@ test("Lite CLI rejects empty inline flag values and non-positive search limits",
     const emptyLimitInline = captureIo(tempHome);
     assert.equal(await runLiteCli(["search", "mock", "--limit=", ...rootArgs], emptyLimitInline.io), 2);
     assert.match(emptyLimitInline.stderr.join(""), /--limit requires a value/);
+  } finally {
+    await rm(tempHome, { recursive: true, force: true });
+  }
+});
+
+test("Lite CLI tree and session detail preserve canonical related work", async () => {
+  const tempHome = await mkdtemp(path.join(os.tmpdir(), "cchistory-lite-cli-related-work-"));
+  const sessionId = "sess:openclaw:44444444-5555-4666-8777-888888888888";
+  try {
+    const rootArgs = ["--source-root", `openclaw=${openclawRoot}`, "--safe", "--json"];
+    const tree = captureIo(tempHome);
+    assert.equal(await runLiteCli(["tree", "session", sessionId, ...rootArgs], tree.io), 0);
+    const treePayload = JSON.parse(tree.stdout.join("")) as {
+      session: { related_work: Array<{ relation_kind: string; direction: string }> };
+    };
+    assert.deepEqual(
+      treePayload.session.related_work.map((entry) => [entry.relation_kind, entry.direction]),
+      [["automation_run", "self"]],
+    );
+
+    const detail = captureIo(tempHome);
+    assert.equal(await runLiteCli(["show", "session", sessionId, ...rootArgs], detail.io), 0);
+    const detailPayload = JSON.parse(detail.stdout.join("")) as {
+      related_work: Array<{ relation_kind: string; query_session_ref: string }>;
+    };
+    assert.equal(detailPayload.related_work[0]?.relation_kind, "automation_run");
+    assert.equal(detailPayload.related_work[0]?.query_session_ref, sessionId);
   } finally {
     await rm(tempHome, { recursive: true, force: true });
   }

@@ -37,7 +37,7 @@ async function main() {
       await runCommand(command);
     }
     console.log('[cchistory] clean install verification passed');
-    console.log('[cchistory] verified scope: canonical install path + first non-web build');
+    console.log('[cchistory] verified scope: canonical install path + default Full-profile build');
   } catch (error) {
     console.error(`[cchistory] clean install verification failed in ${tempRepo}`);
     console.error('[cchistory] rerun with --keep-temp if you want to inspect the temp copy');

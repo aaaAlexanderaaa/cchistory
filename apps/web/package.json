@@ -2,11 +2,13 @@
   "name": "@cchistory/web",
   "version": "0.3.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "NODE_OPTIONS=\"${NODE_OPTIONS:+$NODE_OPTIONS }--max-old-space-size=${NODE_MEMORY_MB:-1536}\" next dev --hostname 0.0.0.0 --port 8085",
     "build": "next build",
     "start": "next start --hostname 0.0.0.0 --port 8085",
-    "lint": "eslint . --max-warnings=0"
+    "lint": "eslint . --max-warnings=0",
+    "test": "node --experimental-strip-types --test lib/*.test.mjs"
   },
   "dependencies": {
     "@cchistory/api-client": "workspace:*",

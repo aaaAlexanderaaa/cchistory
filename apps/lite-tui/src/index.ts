@@ -9,10 +9,12 @@ import type {
   ProjectIdentity,
   SessionProjection,
   SourceStatus,
+  TurnContextProjection,
   UsageStatsDimension,
   UserTurnProjection,
 } from "@cchistory/domain";
 import {
+  runWithAdaptiveNodeMemory,
   scanLiteHistory,
   type LiteSourceRoot,
   type LiveHistorySnapshot,
@@ -85,6 +87,7 @@ export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): P
       sourceRefs: parsed.sourceRefs,
       safeMode: parsed.safeMode,
       limitFiles: parsed.limitFiles,
+      contextMode: "none",
       onProgress: io.isInteractiveTerminal
         ? (event) => {
             if (event.stage === "source_start") {
@@ -99,6 +102,21 @@ export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): P
     };
 
     let snapshot = await scan(scanOptions);
+    const loadTurnContext = async (turn: UserTurnProjection): Promise<TurnContextProjection | undefined> => {
+      const existing = snapshot.getTurnContext(turn.id);
+      if (existing) return existing;
+      const session = snapshot.getSession(turn.session_id);
+      const source = snapshot.getSource(turn.source_id);
+      if (!session || !source) return undefined;
+      const detailed = await scan({
+        ...scanOptions,
+        sourceRoots: [{ sourceRef: source.slot_id, baseDir: source.base_dir }],
+        sourceRefs: [source.slot_id],
+        contextMode: "full",
+        sessionRefs: [session.source_session_id ?? session.id],
+      });
+      return detailed.getTurnContext(turn.id);
+    };
     const paging: PagingState = {};
     io.stdout(renderSnapshot(snapshot));
     if (!io.isInteractiveTerminal) {
@@ -175,7 +193,7 @@ export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): P
           continue;
         }
         try {
-          runSnapshotCommand(command, snapshot, io, paging);
+          await runSnapshotCommand(command, snapshot, io, paging, loadTurnContext);
         } catch (error) {
           io.stderr(`${errorMessage(error)}\n`);
         }
@@ -194,12 +212,13 @@ export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): P
   }
 }
 
-function runSnapshotCommand(
+async function runSnapshotCommand(
   command: string,
   snapshot: LiveHistorySnapshot,
   io: LiteTuiIo,
   paging: PagingState,
-): void {
+  loadTurnContext: (turn: UserTurnProjection) => Promise<TurnContextProjection | undefined>,
+): Promise<void> {
   if (command === "p" || command === "projects") {
     showPagedView({ kind: "projects", pageIndex: 0 }, snapshot, io, paging);
     return;
@@ -263,7 +282,7 @@ function runSnapshotCommand(
     const ref = command.slice("turn ".length).trim();
     const turn = snapshot.getTurn(ref);
     if (!turn) throw new TuiUsageError(`UserTurn not found: ${ref}.`);
-    io.stdout(renderTurnDetail(snapshot, turn));
+    io.stdout(renderTurnDetail(snapshot, turn, await loadTurnContext(turn)));
     return;
   }
   if (command.startsWith("source ")) {
@@ -523,7 +542,18 @@ ${renderPageNavigation(pageIndex, pageCount)}
 
 function renderSessionDetail(snapshot: LiveHistorySnapshot, session: SessionProjection, pageIndex: number): PagedRender {
   const turns = snapshot.listSessionTurns(session.id);
+  const relatedWork = snapshot.listSessionRelatedWork(session.id);
   const pageCount = collectionPageCount(turns.length, TURN_PAGE_SIZE);
+  const relatedLines = relatedWork.length === 0
+    ? ["Related work (0)"]
+    : [
+        `Related work (${relatedWork.length})`,
+        ...relatedWork.map((entry) => {
+          const kind = entry.relation_kind === "automation_run" ? "automation run" : "delegated session";
+          const target = entry.title ?? entry.target_session_ref ?? entry.target_run_ref ?? entry.id;
+          return `- ${kind} · ${entry.direction ?? "unknown"} · ${target}`;
+        }),
+      ];
   return { output: `Session · ${session.title ?? session.source_session_id ?? session.id}
 ID: ${session.id}
 Source: ${session.source_platform}
@@ -531,13 +561,19 @@ Workspace: ${session.working_directory ?? "—"}
 Updated: ${session.updated_at}
 Resume: ${session.resume_command ?? "—"}
 
+${relatedLines.join("\n")}
+
 ${renderTurnLines(turns, pageIndex, TURN_PAGE_SIZE).join("\n")}
 ${renderPageNavigation(pageIndex, pageCount)}
 `, pageCount };
 }
 
-function renderTurnDetail(snapshot: LiveHistorySnapshot, turn: UserTurnProjection): string {
-  const context = snapshot.getTurnContext(turn.id);
+function renderTurnDetail(
+  snapshot: LiveHistorySnapshot,
+  turn: UserTurnProjection,
+  loadedContext?: TurnContextProjection,
+): string {
+  const context = loadedContext ?? snapshot.getTurnContext(turn.id);
   return `UserTurn · ${turn.id}
 Time: ${turn.submission_started_at}
 Session: ${turn.session_id}
@@ -760,7 +796,7 @@ function isDirectEntry(): boolean {
 }
 
 if (isDirectEntry()) {
-  runLiteTui(process.argv.slice(2)).then(
+  runWithAdaptiveNodeMemory(() => runLiteTui(process.argv.slice(2))).then(
     (code) => {
       process.exitCode = code;
     },

@@ -177,6 +177,7 @@ export type SessionRelatedWorkDirection = "outbound" | "inbound" | "self";
 
 export interface SessionRelatedWork {
   id: string;
+  query_session_ref: string;
   source_id: string;
   source_platform: SourcePlatform;
   source_session_ref: string;

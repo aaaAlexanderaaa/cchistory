@@ -13,7 +13,8 @@
 The remote-agent slice is now real product surface, not speculative design:
 
 - CLI: `agent pair`, `agent upload`, `agent schedule`, `agent pull`
-- API: pairing, heartbeat, leasing, upload, completion, inventory, labels, jobs
+- optional API Agent extension: pairing, heartbeat, leasing, upload,
+  completion, inventory, labels, jobs
 - tests: targeted mocked CLI/API coverage for pair/upload/schedule/pull behavior
 
 What was still missing was a validation contract that says:
@@ -34,8 +35,8 @@ The repository already proves the following without a live remote server:
 - `agent schedule` repeats upload cycles locally and honors retry flags
 - `agent pull` leases one typed collection job, uploads one filtered bundle,
   and reports completion
-- API route tests cover the shipped remote-agent control-plane route family and
-  typed job persistence behavior
+- API route tests cover opt-in registration of the remote-agent control-plane
+  route family and typed job persistence behavior
 
 These proofs are important, but they are still mostly mocked control-plane
 checks rather than a user-run operator workflow against a long-lived service.

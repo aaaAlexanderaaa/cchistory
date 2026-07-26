@@ -15,6 +15,7 @@ import type {
   UserTurnProjection,
 } from "@cchistory/domain";
 import {
+  runWithAdaptiveNodeMemory,
   scanLiteHistory,
   type LiteSourceRoot,
   type LiveHistorySnapshot,
@@ -231,6 +232,7 @@ function runShow(parsed: ParsedArgs, snapshot: LiveHistorySnapshot, io: LiteCliI
     const turns = snapshot.listSessionTurns(session.id);
     detail = {
       session,
+      related_work: snapshot.listSessionRelatedWork(session.id),
       turns: turns.map((turn) => ({ turn, context: snapshot.getTurnContext(turn.id) })),
     };
   } else if (kind === "turn") {
@@ -347,9 +349,10 @@ function buildProjectNode(snapshot: LiveHistorySnapshot, project: ProjectIdentit
 function buildSessionNode(snapshot: LiveHistorySnapshot, session: SessionProjection, projectId?: string): {
   session: SessionProjection;
   turns: UserTurnProjection[];
+  related_work: ReturnType<LiveHistorySnapshot["listSessionRelatedWork"]>;
 } {
   const turns = snapshot.listSessionTurns(session.id).filter((turn) => projectId ? turn.project_id === projectId : true);
-  return { session, turns };
+  return { session, turns, related_work: snapshot.listSessionRelatedWork(session.id) };
 }
 
 function formatExport(snapshot: LiveHistorySnapshot, format: "json" | "markdown"): string {
@@ -369,6 +372,7 @@ function formatExport(snapshot: LiveHistorySnapshot, format: "json" | "markdown"
     `- Projects: ${data.projects.length}`,
     `- Sessions: ${data.sessions.length}`,
     `- UserTurns: ${data.turns.length}`,
+    `- Related work: ${data.related_work.length}`,
     "",
     "## UserTurns",
     "",
@@ -386,6 +390,7 @@ function* iterateJsonlRows(snapshot: LiveHistorySnapshot): Iterable<unknown> {
   for (const value of data.sources) yield { schema: EXPORT_SCHEMA, kind: "source", value };
   for (const value of data.projects) yield { schema: EXPORT_SCHEMA, kind: "project", value };
   for (const value of data.sessions) yield { schema: EXPORT_SCHEMA, kind: "session", value };
+  for (const value of data.related_work) yield { schema: EXPORT_SCHEMA, kind: "related_work", value };
   for (const value of data.turns) yield { schema: EXPORT_SCHEMA, kind: "turn", value };
   for (const value of data.contexts) yield { schema: EXPORT_SCHEMA, kind: "context", value };
   for (const value of data.ask_user_question_turns) {
@@ -489,7 +494,23 @@ function renderSessionTreeLines(node: ReturnType<typeof buildSessionNode>, prefi
   for (const turn of node.turns) {
     lines.push(`${prefix}│  └─ ${turn.submission_started_at} ${singleLine(turn.canonical_text, 100)}`);
   }
+  if (node.related_work.length > 0) {
+    lines.push(`${prefix}│  └─ Related Work (${node.related_work.length})`);
+    for (const related of node.related_work) {
+      lines.push(
+        `${prefix}│     └─ ${formatRelatedWorkLabel(related)} · ${related.direction ?? "unknown"}`,
+      );
+    }
+  }
   return lines;
+}
+
+function formatRelatedWorkLabel(
+  related: ReturnType<LiveHistorySnapshot["listSessionRelatedWork"]>[number],
+): string {
+  const kind = related.relation_kind === "automation_run" ? "automation run" : "delegated session";
+  const target = related.title ?? related.target_session_ref ?? related.target_run_ref ?? related.id;
+  return `${kind}: ${target}`;
 }
 
 function output(io: LiteCliIo, json: boolean, payload: unknown, text: string): void {
@@ -822,7 +843,7 @@ function isDirectEntry(): boolean {
 }
 
 if (isDirectEntry()) {
-  runLiteCli(process.argv.slice(2)).then(
+  runWithAdaptiveNodeMemory(() => runLiteCli(process.argv.slice(2))).then(
     (code) => {
       process.exitCode = code;
     },

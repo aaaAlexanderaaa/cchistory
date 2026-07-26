@@ -17,12 +17,8 @@ import {
 import { getDefaultSources, getDefaultSourcesForHost, runSourceProbe } from "@cchistory/source-adapters";
 import { CCHistoryStorage } from "@cchistory/storage";
 import { resolveDefaultCchistoryDataDir } from "@cchistory/storage/store-layout";
-import {
-  readRemoteAgentState,
-} from "./remote-agent.js";
 
 import { buildOpenApiDocument } from "./utils/openapi.js";
-import { registerAgentRoutes } from "./routes/agents.js";
 import { registerSourceRoutes, type ConfiguredSourceStatus, type ManualSourceRecord, type SourceOverrideMap, type SourceOverrideRecord } from "./routes/sources.js";
 import { registerDataRoutes } from "./routes/data.js";
 import { normalizePathKey } from "./utils/summarizers.js";
@@ -35,6 +31,7 @@ export interface ApiRuntimeOptions {
   sources?: readonly SourceDefinition[];
   storage?: CCHistoryStorage;
   agentPairingToken?: string;
+  agentExtension?: boolean;
 }
 
 export interface ApiRuntime {
@@ -42,6 +39,7 @@ export interface ApiRuntime {
   dataDir: string;
   rawStoreDir: string;
   storage: CCHistoryStorage;
+  agentExtensionEnabled: boolean;
 }
 
 interface PersistedSourceConfig {
@@ -66,8 +64,11 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     hostId,
   );
   let sourceConfig = normalizePersistedSourceConfig(await readSourceConfig(sourceConfigPath), hostId);
-  let remoteAgentState = await readRemoteAgentState(remoteAgentStatePath);
   const agentPairingToken = options.agentPairingToken ?? process.env.CCHISTORY_AGENT_PAIRING_TOKEN;
+  const agentExtensionEnabled =
+    options.agentExtension ??
+    parseOptionalBoolean(process.env.CCHISTORY_AGENT_EXTENSION) ??
+    Boolean(agentPairingToken);
 
   mkdirSync(rawStoreDir, { recursive: true });
 
@@ -96,7 +97,11 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   if (apiToken) {
     const expectedAuth = Buffer.from(`Bearer ${apiToken}`, "utf8");
     app.addHook("onRequest", async (request, reply) => {
-      if (request.url === "/health" || request.url === "/openapi.json" || request.url.startsWith("/api/agent/")) {
+      if (
+        request.url === "/health" ||
+        request.url === "/openapi.json" ||
+        (agentExtensionEnabled && request.url.startsWith("/api/agent/"))
+      ) {
         return;
       }
       const header = request.headers.authorization ?? "";
@@ -118,16 +123,23 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     hostname: hostName,
   }));
 
-  app.get("/openapi.json", async () => buildOpenApiDocument());
+  app.get("/openapi.json", async () => buildOpenApiDocument({ includeAgentExtension: agentExtensionEnabled }));
 
-  registerAgentRoutes(app, {
-    storage,
-    getRemoteAgentState: () => remoteAgentState,
-    setRemoteAgentState: (state) => { remoteAgentState = state; },
-    remoteAgentStatePath,
-    agentPairingToken,
-    rawStoreDir,
-  });
+  if (agentExtensionEnabled) {
+    const [{ readRemoteAgentState }, { registerAgentRoutes }] = await Promise.all([
+      import("./remote-agent.js"),
+      import("./routes/agents.js"),
+    ]);
+    let remoteAgentState = await readRemoteAgentState(remoteAgentStatePath);
+    registerAgentRoutes(app, {
+      storage,
+      getRemoteAgentState: () => remoteAgentState,
+      setRemoteAgentState: (state) => { remoteAgentState = state; },
+      remoteAgentStatePath,
+      agentPairingToken,
+      rawStoreDir,
+    });
+  }
 
   registerSourceRoutes(app, {
     storage,
@@ -266,7 +278,15 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
 
   await bootstrapStorage();
 
-  return { app, dataDir, rawStoreDir, storage };
+  return { app, dataDir, rawStoreDir, storage, agentExtensionEnabled };
+}
+
+function parseOptionalBoolean(value: string | undefined): boolean | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error(`CCHISTORY_AGENT_EXTENSION must be a boolean flag; received ${JSON.stringify(value)}.`);
 }
 
 const VIRTUAL_BLOB_PATH_PREFIXES = ["antigravity-live://"];
