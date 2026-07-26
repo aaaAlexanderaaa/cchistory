@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -8,6 +8,7 @@ const REQUIRED_METADATA = ["doc_type", "status", "authority", "last_reconciled"]
 const PROMISE_RE = /^\s*-\s*promise\[([a-z0-9][a-z0-9-]*)\]:\s*(.+?)\s*$/;
 
 function parseFrontmatter(text) {
+  text = text.replace(/\r\n?/g, "\n");
   if (!text.startsWith("---\n")) {
     return { metadata: {}, error: "missing frontmatter" };
   }
@@ -85,28 +86,56 @@ function recordFields(payload) {
   return { fields, errors };
 }
 
-function repositoryPath(root, relativePath) {
+async function repositoryPath(root, relativePath) {
   if (!relativePath || path.isAbsolute(relativePath)) return null;
   const resolved = path.resolve(root, relativePath);
   const relative = path.relative(root, resolved);
   if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
     return null;
   }
-  return resolved;
+  try {
+    const canonical = await realpath(resolved);
+    const canonicalRelative = path.relative(root, canonical);
+    if (canonicalRelative === ".." || canonicalRelative.startsWith(`..${path.sep}`) || path.isAbsolute(canonicalRelative)) {
+      return null;
+    }
+    return canonical;
+  } catch {
+    // Let the caller report a more specific missing/unreadable-path error.
+    return resolved;
+  }
 }
 
-async function markdownFiles(directory) {
+async function markdownFiles(directory, repositoryRoot) {
   const result = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const candidate = path.join(directory, entry.name);
-    if (entry.isDirectory()) result.push(...await markdownFiles(candidate));
+    if (entry.isSymbolicLink()) {
+      throw new Error(`symbolic link is not permitted: ${path.relative(repositoryRoot, candidate)}`);
+    }
+    if (entry.isDirectory()) result.push(...await markdownFiles(candidate, repositoryRoot));
     else if (entry.isFile() && entry.name.endsWith(".md")) result.push(candidate);
   }
   return result;
 }
 
+function validateRoleSpecificMetadata(metadata, relativePath, allowed, add) {
+  if (["contract", "surface-contract"].includes(metadata.doc_type)) {
+    if (!metadata.implementation) add(relativePath, "contract missing implementation status");
+    else if (!allowed.implementations?.includes(metadata.implementation)) add(relativePath, `invalid implementation: ${metadata.implementation}`);
+    if (!metadata.verification_status) add(relativePath, "contract missing verification_status");
+    else if (!allowed.verificationStatuses?.includes(metadata.verification_status)) add(relativePath, `invalid verification_status: ${metadata.verification_status}`);
+    if (metadata.status === "current" && metadata.implementation === "not_started") add(relativePath, "current contract cannot be implementation: not_started");
+    if (metadata.status === "target" && metadata.implementation === "implemented") add(relativePath, "target contract cannot claim implementation: implemented");
+  }
+  if (metadata.doc_type === "plan") {
+    if (!metadata.implements) add(relativePath, "plans require an implements relationship");
+    if (metadata.status === "current") add(relativePath, "plans cannot use status: current");
+  }
+}
+
 export async function verifyDocGovernance({ root = process.cwd(), today = new Date() } = {}) {
-  root = path.resolve(root);
+  root = await realpath(path.resolve(root));
   today = parseDate(new Date(today).toISOString().slice(0, 10));
   const errors = [];
   const add = (relativePath, message) => errors.push({ path: relativePath, message });
@@ -122,7 +151,7 @@ export async function verifyDocGovernance({ root = process.cwd(), today = new Da
 
   const governed = new Map();
   for (const expected of policy.governedFiles ?? []) {
-    const resolved = repositoryPath(root, expected.path);
+    const resolved = await repositoryPath(root, expected.path);
     if (!resolved) {
       add("docs-policy.json", `governed path must stay inside repository: ${expected.path}`);
       continue;
@@ -130,13 +159,13 @@ export async function verifyDocGovernance({ root = process.cwd(), today = new Da
     governed.set(resolved, expected);
   }
   for (const relativeRoot of policy.governedRoots ?? []) {
-    const resolvedRoot = repositoryPath(root, relativeRoot);
+    const resolvedRoot = await repositoryPath(root, relativeRoot);
     if (!resolvedRoot) {
       add("docs-policy.json", `governed root must stay inside repository: ${relativeRoot}`);
       continue;
     }
     try {
-      for (const file of await markdownFiles(resolvedRoot)) {
+      for (const file of await markdownFiles(resolvedRoot, root)) {
         if (!governed.has(file)) governed.set(file, { path: path.relative(root, file) });
       }
     } catch (error) {
@@ -145,6 +174,30 @@ export async function verifyDocGovernance({ root = process.cwd(), today = new Da
   }
 
   const allowed = policy.allowed ?? {};
+  for (const docType of allowed.docTypes ?? []) {
+    const role = allowed.roles?.[docType];
+    if (!role) {
+      add("docs-policy.json", `missing role policy for doc_type: ${docType}`);
+      continue;
+    }
+    if (!Array.isArray(role.authorities) || role.authorities.length === 0) {
+      add("docs-policy.json", `role ${docType} requires at least one authority`);
+    } else {
+      for (const authority of role.authorities) {
+        if (!allowed.authorities?.includes(authority)) add("docs-policy.json", `role ${docType} has invalid authority: ${authority}`);
+      }
+    }
+    if (!Array.isArray(role.statuses) || role.statuses.length === 0) {
+      add("docs-policy.json", `role ${docType} requires at least one status`);
+    } else {
+      for (const status of role.statuses) {
+        if (!allowed.statuses?.includes(status)) add("docs-policy.json", `role ${docType} has invalid status: ${status}`);
+      }
+    }
+  }
+  for (const docType of Object.keys(allowed.roles ?? {})) {
+    if (!allowed.docTypes?.includes(docType)) add("docs-policy.json", `role policy has unknown doc_type: ${docType}`);
+  }
   const records = new Map();
   for (const [absolutePath, expected] of [...governed.entries()].sort(([a], [b]) => a.localeCompare(b))) {
     const relativePath = path.relative(root, absolutePath);
@@ -170,6 +223,17 @@ export async function verifyDocGovernance({ root = process.cwd(), today = new Da
         add(relativePath, `invalid ${field}: ${metadata[field]}`);
       }
     }
+    const role = allowed.roles?.[metadata.doc_type];
+    if (metadata.doc_type && !role) {
+      add(relativePath, `doc_type has no role policy: ${metadata.doc_type}`);
+    } else if (role) {
+      if (metadata.authority && !role.authorities?.includes(metadata.authority)) {
+        add(relativePath, `${metadata.doc_type} does not permit authority: ${metadata.authority}`);
+      }
+      if (metadata.status && !role.statuses?.includes(metadata.status)) {
+        add(relativePath, `${metadata.doc_type} does not permit status: ${metadata.status}`);
+      }
+    }
     for (const [field, expectedValue] of [
       ["doc_type", expected.docType],
       ["status", expected.status],
@@ -185,24 +249,23 @@ export async function verifyDocGovernance({ root = process.cwd(), today = new Da
     } else if (reconciled && reconciled > addDays(today, policy.futureDateToleranceDays ?? 0)) {
       add(relativePath, `last_reconciled is in the future: ${metadata.last_reconciled}`);
     }
+    validateRoleSpecificMetadata(metadata, relativePath, allowed, add);
     if (["contract", "surface-contract"].includes(metadata.doc_type)) {
-      if (metadata.authority !== "normative") add(relativePath, "contracts require authority: normative");
-      if (!metadata.implementation) add(relativePath, "contract missing implementation status");
-      else if (!allowed.implementations?.includes(metadata.implementation)) add(relativePath, `invalid implementation: ${metadata.implementation}`);
-      if (!metadata.verification_status) add(relativePath, "contract missing verification_status");
-      else if (!allowed.verificationStatuses?.includes(metadata.verification_status)) add(relativePath, `invalid verification_status: ${metadata.verification_status}`);
-      if (metadata.status === "current" && metadata.implementation === "not_started") add(relativePath, "current contract cannot be implementation: not_started");
-      if (metadata.status === "target" && metadata.implementation === "implemented") add(relativePath, "target contract cannot claim implementation: implemented");
       if (metadata.status === "target") {
-        const due = metadata.review_due ? parseDate(metadata.review_due) : reconciled && addDays(reconciled, policy.targetMaxAgeDays ?? 90);
-        if (metadata.review_due && !due) add(relativePath, `review_due must be YYYY-MM-DD: ${metadata.review_due}`);
-        else if (due && today > due) add(relativePath, `target document review overdue since ${due.toISOString().slice(0, 10)}`);
+        const explicitDue = metadata.review_due ? parseDate(metadata.review_due) : null;
+        const maximumDue = reconciled && addDays(reconciled, policy.targetMaxAgeDays ?? 90);
+        if (metadata.review_due && !explicitDue) {
+          add(relativePath, `review_due must be YYYY-MM-DD: ${metadata.review_due}`);
+        } else {
+          if (explicitDue && maximumDue && explicitDue > maximumDue) {
+            add(relativePath, `review_due exceeds target maximum age deadline ${maximumDue.toISOString().slice(0, 10)}: ${metadata.review_due}`);
+          }
+          const due = explicitDue && maximumDue
+            ? new Date(Math.min(explicitDue.valueOf(), maximumDue.valueOf()))
+            : explicitDue ?? maximumDue;
+          if (due && today > due) add(relativePath, `target document review overdue since ${due.toISOString().slice(0, 10)}`);
+        }
       }
-    }
-    if (metadata.doc_type === "plan") {
-      if (metadata.authority !== "planning") add(relativePath, "plans require authority: planning");
-      if (!metadata.implements) add(relativePath, "plans require an implements relationship");
-      if (metadata.status === "current") add(relativePath, "plans cannot use status: current");
     }
     if (metadata.status === "superseded" && !metadata.superseded_by) {
       add(relativePath, "status superseded requires superseded_by");
@@ -212,7 +275,7 @@ export async function verifyDocGovernance({ root = process.cwd(), today = new Da
     for (const field of policy.relationshipFields ?? []) {
       for (const value of relationValues(metadata[field])) {
         const withoutFragment = value.split("#", 1)[0];
-        const target = repositoryPath(root, withoutFragment);
+        const target = await repositoryPath(root, withoutFragment);
         if (!target) add(relativePath, `${field} path must stay inside repository: ${value}`);
         else {
           try { await readFile(target); }
@@ -240,13 +303,18 @@ export async function verifyDocGovernance({ root = process.cwd(), today = new Da
     }
   }
 
-  const templateRoot = repositoryPath(root, policy.templates?.root);
+  const templateRoot = await repositoryPath(root, policy.templates?.root);
   const requiredTemplates = policy.templates?.required ?? {};
   if (!templateRoot) add("docs-policy.json", "template root must stay inside repository");
   else {
     for (const [filename, requirement] of Object.entries(requiredTemplates)) {
-      const absolutePath = path.join(templateRoot, filename);
-      const relativePath = path.relative(root, absolutePath);
+      const declaredPath = path.join(policy.templates.root, filename);
+      const absolutePath = await repositoryPath(root, declaredPath);
+      const relativePath = declaredPath;
+      if (!absolutePath) {
+        add(relativePath, "required template path must stay inside repository");
+        continue;
+      }
       let text;
       try { text = await readFile(absolutePath, "utf8"); }
       catch (error) { add(relativePath, `required template is missing: ${error.message}`); continue; }
@@ -254,6 +322,18 @@ export async function verifyDocGovernance({ root = process.cwd(), today = new Da
       if (error) add(relativePath, error);
       for (const field of REQUIRED_METADATA) if (!metadata[field]) add(relativePath, `template missing metadata: ${field}`);
       if (metadata.doc_type !== requirement.docType) add(relativePath, `template doc_type must be ${requirement.docType}: ${metadata.doc_type ?? "missing"}`);
+      const role = allowed.roles?.[metadata.doc_type];
+      if (metadata.doc_type && !role) {
+        add(relativePath, `template doc_type has no role policy: ${metadata.doc_type}`);
+      } else if (role) {
+        if (metadata.authority && !role.authorities?.includes(metadata.authority)) {
+          add(relativePath, `template ${metadata.doc_type} does not permit authority: ${metadata.authority}`);
+        }
+        if (metadata.status && !role.statuses?.includes(metadata.status)) {
+          add(relativePath, `template ${metadata.doc_type} does not permit status: ${metadata.status}`);
+        }
+      }
+      validateRoleSpecificMetadata(metadata, relativePath, allowed, add);
       if (!/\{\{[^}]+\}\}/.test(text)) add(relativePath, "template contains no placeholders");
       const inventory = headings(text);
       for (const section of requirement.sections ?? []) {

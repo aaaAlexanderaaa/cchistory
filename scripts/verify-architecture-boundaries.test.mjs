@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -65,4 +65,26 @@ test("architecture include roots cannot escape the repository", async (t) => {
   const result = await verifyArchitectureBoundaries({ root });
   assert.equal(result.ok, false);
   assert.match(messages(result), /include root must stay inside repository/);
+});
+
+test("architecture include roots cannot escape through repository symlinks", async (t) => {
+  const root = await createFixture(t, { includeRoot: "linked-src" });
+  const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-architecture-outside-"));
+  t.after(async () => rm(outsideRoot, { recursive: true, force: true }));
+  await writeFile(path.join(outsideRoot, "index.ts"), "export const outside = true;\n", "utf8");
+  await symlink(outsideRoot, path.join(root, "linked-src"));
+  const result = await verifyArchitectureBoundaries({ root });
+  assert.equal(result.ok, false);
+  assert.match(messages(result), /include root must stay inside repository: linked-src/);
+});
+
+test("architecture include roots reject nested symbolic links", async (t) => {
+  const root = await createFixture(t);
+  const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-architecture-nested-outside-"));
+  t.after(async () => rm(outsideRoot, { recursive: true, force: true }));
+  await writeFile(path.join(outsideRoot, "escaped.ts"), 'import "forbidden-package";\n', "utf8");
+  await symlink(path.join(outsideRoot, "escaped.ts"), path.join(root, "src", "escaped.ts"));
+  const result = await verifyArchitectureBoundaries({ root });
+  assert.equal(result.ok, false);
+  assert.match(messages(result), /rule fixture-boundary cannot scan include root: symbolic link is not permitted: src\/escaped\.ts/);
 });

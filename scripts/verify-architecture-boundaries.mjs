@@ -1,29 +1,40 @@
 #!/usr/bin/env node
 
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-function repositoryPath(root, relativePath) {
+async function repositoryPath(root, relativePath) {
   if (!relativePath || path.isAbsolute(relativePath)) return null;
   const resolved = path.resolve(root, relativePath);
   const relative = path.relative(root, resolved);
   if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
-  return resolved;
+  try {
+    const canonical = await realpath(resolved);
+    const canonicalRelative = path.relative(root, canonical);
+    if (canonicalRelative === ".." || canonicalRelative.startsWith(`..${path.sep}`) || path.isAbsolute(canonicalRelative)) return null;
+    return canonical;
+  } catch {
+    // Let the caller report a more specific missing/unreadable-path error.
+    return resolved;
+  }
 }
 
-async function filesBelow(directory) {
+async function filesBelow(directory, repositoryRoot) {
   const result = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const candidate = path.join(directory, entry.name);
-    if (entry.isDirectory()) result.push(...await filesBelow(candidate));
+    if (entry.isSymbolicLink()) {
+      throw new Error(`symbolic link is not permitted: ${path.relative(repositoryRoot, candidate)}`);
+    }
+    if (entry.isDirectory()) result.push(...await filesBelow(candidate, repositoryRoot));
     else if (entry.isFile()) result.push(candidate);
   }
   return result;
 }
 
 export async function verifyArchitectureBoundaries({ root = process.cwd() } = {}) {
-  root = path.resolve(root);
+  root = await realpath(path.resolve(root));
   const errors = [];
   const add = (relativePath, message) => errors.push({ path: relativePath, message });
   let manifest;
@@ -51,13 +62,13 @@ export async function verifyArchitectureBoundaries({ root = process.cwd() } = {}
     if (!Array.isArray(rule.forbiddenPatterns) || rule.forbiddenPatterns.length === 0) add("architecture-rules.json", `rule ${label} requires forbiddenPatterns`);
     const matched = new Set();
     for (const relativeRoot of rule.includeRoots ?? []) {
-      const includeRoot = repositoryPath(root, relativeRoot);
+      const includeRoot = await repositoryPath(root, relativeRoot);
       if (!includeRoot) {
         add("architecture-rules.json", `rule ${label} include root must stay inside repository: ${relativeRoot}`);
         continue;
       }
       try {
-        for (const file of await filesBelow(includeRoot)) {
+        for (const file of await filesBelow(includeRoot, root)) {
           if (rule.extensions?.length && !rule.extensions.includes(path.extname(file))) continue;
           if (rule.excludeSuffixes?.some((suffix) => file.endsWith(suffix))) continue;
           matched.add(file);

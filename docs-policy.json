@@ -29,6 +29,22 @@
       "needs_reconciliation"
     ],
     "authorities": ["normative", "planning", "guidance", "evidence"],
+    "roles": {
+      "architecture": {"authorities": ["normative"], "statuses": ["current", "superseded", "needs_reconciliation"]},
+      "design-freeze": {"authorities": ["normative"], "statuses": ["current", "superseded", "needs_reconciliation"]},
+      "authority-map": {"authorities": ["normative"], "statuses": ["current", "superseded", "needs_reconciliation"]},
+      "runtime-inventory": {"authorities": ["normative"], "statuses": ["current", "superseded", "needs_reconciliation"]},
+      "pipeline": {"authorities": ["normative"], "statuses": ["current", "superseded", "needs_reconciliation"]},
+      "backlog": {"authorities": ["planning"], "statuses": ["active", "completed", "historical", "superseded", "needs_reconciliation"]},
+      "roadmap": {"authorities": ["planning"], "statuses": ["current", "historical", "superseded", "needs_reconciliation"]},
+      "directory-index": {"authorities": ["guidance"], "statuses": ["current", "superseded", "needs_reconciliation"]},
+      "archive-index": {"authorities": ["evidence"], "statuses": ["current", "superseded", "needs_reconciliation"]},
+      "contract": {"authorities": ["normative"], "statuses": ["current", "target", "superseded", "needs_reconciliation"]},
+      "surface-contract": {"authorities": ["normative"], "statuses": ["current", "target", "superseded", "needs_reconciliation"]},
+      "plan": {"authorities": ["planning"], "statuses": ["active", "completed", "historical", "superseded", "needs_reconciliation"]},
+      "issue-tracker": {"authorities": ["evidence"], "statuses": ["active", "completed", "historical", "superseded", "needs_reconciliation"]},
+      "evidence": {"authorities": ["evidence"], "statuses": ["historical", "superseded"]}
+    },
     "implementations": [
       "not_started",
       "in_progress",

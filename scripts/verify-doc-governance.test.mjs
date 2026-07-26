@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { cp, mkdtemp, mkdir, readFile, rm, unlink, writeFile } from "node:fs/promises";
+import { cp, mkdtemp, mkdir, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -53,6 +53,15 @@ test("governed entrypoints require lifecycle metadata", async (t) => {
   assert.match(messages(result), /ARCHITECTURE\.md: missing required metadata: authority/);
 });
 
+test("governed frontmatter accepts CRLF checkouts", async (t) => {
+  const root = await createFixture(t);
+  const target = path.join(root, "ARCHITECTURE.md");
+  const text = await readFile(target, "utf8");
+  await writeFile(target, text.replace(/\n/g, "\r\n"), "utf8");
+  const result = await verifyDocGovernance({ root, today: fixedToday });
+  assert.equal(result.ok, true, messages(result));
+});
+
 test("relationship paths cannot escape the repository", async (t) => {
   const root = await createFixture(t);
   await replace(
@@ -66,6 +75,71 @@ test("relationship paths cannot escape the repository", async (t) => {
   assert.match(messages(result), /implements path must stay inside repository/);
 });
 
+test("relationship paths cannot escape through repository symlinks", async (t) => {
+  const root = await createFixture(t);
+  const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-doc-governance-outside-"));
+  t.after(async () => rm(outsideRoot, { recursive: true, force: true }));
+  await writeFile(path.join(outsideRoot, "contract.md"), "outside\n", "utf8");
+  await symlink(path.join(outsideRoot, "contract.md"), path.join(root, "docs", "outside-contract.md"));
+  await replace(
+    root,
+    "docs/plans/2026-07-26-repository-governance-migration.md",
+    "implements: docs/contracts/repository-governance.md",
+    "implements: docs/outside-contract.md",
+  );
+  const result = await verifyDocGovernance({ root, today: fixedToday });
+  assert.equal(result.ok, false);
+  assert.match(messages(result), /implements path must stay inside repository: docs\/outside-contract\.md/);
+});
+
+test("governed roots reject nested symbolic links", async (t) => {
+  const root = await createFixture(t);
+  const outsideRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-doc-governance-nested-outside-"));
+  t.after(async () => rm(outsideRoot, { recursive: true, force: true }));
+  await writeFile(path.join(outsideRoot, "contract.md"), "outside\n", "utf8");
+  await symlink(path.join(outsideRoot, "contract.md"), path.join(root, "docs", "contracts", "external-contract.md"));
+  const result = await verifyDocGovernance({ root, today: fixedToday });
+  assert.equal(result.ok, false);
+  assert.match(messages(result), /docs\/contracts: cannot scan governed root: symbolic link is not permitted: docs\/contracts\/external-contract\.md/);
+});
+
+test("document roles constrain authority", async (t) => {
+  const root = await createFixture(t);
+  await replace(
+    root,
+    "docs/evidence/2026-07-26-repository-governance-technical-verification.md",
+    "authority: evidence",
+    "authority: normative",
+  );
+  const result = await verifyDocGovernance({ root, today: fixedToday });
+  assert.equal(result.ok, false);
+  assert.match(messages(result), /evidence does not permit authority: normative/);
+});
+
+test("document roles constrain lifecycle status", async (t) => {
+  const root = await createFixture(t);
+  await replace(
+    root,
+    "docs/evidence/2026-07-26-repository-governance-technical-verification.md",
+    "status: historical",
+    "status: current",
+  );
+  const result = await verifyDocGovernance({ root, today: fixedToday });
+  assert.equal(result.ok, false);
+  assert.match(messages(result), /evidence does not permit status: current/);
+});
+
+test("every allowed document type requires a role policy", async (t) => {
+  const root = await createFixture(t);
+  const target = path.join(root, "docs-policy.json");
+  const policy = JSON.parse(await readFile(target, "utf8"));
+  delete policy.allowed.roles.evidence;
+  await writeFile(target, `${JSON.stringify(policy, null, 2)}\n`, "utf8");
+  const result = await verifyDocGovernance({ root, today: fixedToday });
+  assert.equal(result.ok, false);
+  assert.match(messages(result), /docs-policy\.json: missing role policy for doc_type: evidence/);
+});
+
 test("overdue target contracts fail", async (t) => {
   const root = await createFixture(t);
   await replace(
@@ -77,6 +151,19 @@ test("overdue target contracts fail", async (t) => {
   const result = await verifyDocGovernance({ root, today: fixedToday });
   assert.equal(result.ok, false);
   assert.match(messages(result), /target document review overdue since 2026-07-25/);
+});
+
+test("explicit target review dates cannot exceed the maximum age", async (t) => {
+  const root = await createFixture(t);
+  await replace(
+    root,
+    "docs/contracts/repository-governance.md",
+    "review_due: 2026-10-24",
+    "review_due: 2099-10-24",
+  );
+  const result = await verifyDocGovernance({ root, today: fixedToday });
+  assert.equal(result.ok, false);
+  assert.match(messages(result), /review_due exceeds target maximum age deadline 2026-10-24: 2099-10-24/);
 });
 
 test("structured promises require an owner", async (t) => {
@@ -111,4 +198,25 @@ test("required governance template sections cannot drift", async (t) => {
   const result = await verifyDocGovernance({ root, today: fixedToday });
   assert.equal(result.ok, false);
   assert.match(messages(result), /template missing required section: Review topology/);
+});
+
+test("contract templates require contract-specific lifecycle metadata", async (t) => {
+  const root = await createFixture(t);
+  await replace(root, "docs/templates/contract.md", "implementation: not_started\n", "");
+  const result = await verifyDocGovernance({ root, today: fixedToday });
+  assert.equal(result.ok, false);
+  assert.match(messages(result), /docs\/templates\/contract\.md: contract missing implementation status/);
+});
+
+test("plan templates require an implements relationship", async (t) => {
+  const root = await createFixture(t);
+  await replace(
+    root,
+    "docs/templates/implementation-plan.md",
+    "implements: docs/contracts/{{contract}}.md\n",
+    "",
+  );
+  const result = await verifyDocGovernance({ root, today: fixedToday });
+  assert.equal(result.ok, false);
+  assert.match(messages(result), /docs\/templates\/implementation-plan\.md: plans require an implements relationship/);
 });
