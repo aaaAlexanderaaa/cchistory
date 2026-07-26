@@ -48,6 +48,46 @@ test("api-client traverses the canonical projects-search-context read chain agai
   }
 });
 
+test("api-client search defaults to active lifecycle axes and can explicitly recall source-absent turns", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-client-source-absence-"));
+
+  try {
+    const source = await seedCodexSourceFixture(tempRoot, "api-client-source-absence", {
+      userText: "Retain this source-absent managed API turn.",
+    });
+    const dataDir = path.join(tempRoot, "data-api-client-source-absence");
+    const runtime = await createApiRuntime({ dataDir, sources: [source] });
+
+    try {
+      const client = createCCHistoryApiClient({
+        baseUrl: TEST_BASE_URL,
+        fetch: createInjectedFetch(runtime.app),
+      });
+      const active = await client.searchTurns({ q: "source-absent managed API turn" });
+      assert.equal(active.length, 1);
+      const turnId = active[0]!.turn.id;
+
+      runtime.storage.pruneSourcePayloadByObservedOriginPaths(source.id, [], { refreshDerived: false });
+
+      const defaultResults = await client.searchTurns({ q: "source-absent managed API turn" });
+      assert.equal(defaultResults.length, 0);
+      const absentResults = await client.searchTurns({
+        q: "source-absent managed API turn",
+        sync_axes: ["source_absent"],
+      });
+      assert.equal(absentResults.length, 1);
+      assert.equal(absentResults[0]?.turn.id, turnId);
+      assert.equal(absentResults[0]?.turn.sync_axis, "source_absent");
+      assert.equal((await client.getTurn(turnId)).sync_axis, "source_absent");
+    } finally {
+      await runtime.app.close();
+      runtime.storage.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 
 
 

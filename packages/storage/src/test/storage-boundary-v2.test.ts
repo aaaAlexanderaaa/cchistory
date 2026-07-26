@@ -753,7 +753,7 @@ test("storage boundary v2 uses collision-safe ledger ids for path-scoped rows", 
   }
 });
 
-test("storage boundary v2 merge retires stale ledgers and hot rows while preserving skipped files", async () => {
+test("storage boundary v2 merge marks stale projections source-absent while preserving all rows", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-boundary-v2-merge-"));
   try {
     const dataDir = path.join(tempRoot, "store");
@@ -789,7 +789,13 @@ test("storage boundary v2 merge retires stale ledgers and hot rows while preserv
       observed_origin_paths: [keepPath, newPath],
     });
 
-    assert.deepEqual(storage.listTurns().map((turn) => turn.canonical_text).sort(), ["Keep V2 turn", "New V2 turn"]);
+    assert.deepEqual(storage.listTurns().map((turn) => turn.canonical_text).sort(), [
+      "Keep V2 turn",
+      "New V2 turn",
+      "Stale V2 turn",
+    ]);
+    assert.equal(storage.getTurn("turn-v2-stale")?.sync_axis, "source_absent");
+    assert.equal(storage.getSession("session-v2-stale")?.sync_axis, "source_absent");
     storage.close();
 
     const db = new DatabaseSync(path.join(dataDir, "cchistory.sqlite"));
@@ -797,7 +803,20 @@ test("storage boundary v2 merge retires stale ledgers and hot rows while preserv
       const hotTexts = (db.prepare("SELECT canonical_text FROM user_turns_v2 WHERE source_id = ? ORDER BY canonical_text").all(sourceId) as Array<{
         canonical_text: string;
       }>).map((row) => row.canonical_text);
-      assert.deepEqual(hotTexts, ["Keep V2 turn", "New V2 turn"]);
+      assert.deepEqual(hotTexts, ["Keep V2 turn", "New V2 turn", "Stale V2 turn"]);
+
+      const hotAxes = db.prepare(`
+        SELECT canonical_text,
+               sync_axis
+          FROM user_turns_v2
+         WHERE source_id = ?
+         ORDER BY canonical_text
+      `).all(sourceId) as Array<{ canonical_text: string; sync_axis: string }>;
+      assert.deepEqual(hotAxes.map((row) => ({ ...row })), [
+        { canonical_text: "Keep V2 turn", sync_axis: "current" },
+        { canonical_text: "New V2 turn", sync_axis: "current" },
+        { canonical_text: "Stale V2 turn", sync_axis: "source_absent" },
+      ]);
 
       const ledgers = db.prepare(`
         SELECT origin_path,
@@ -814,6 +833,890 @@ test("storage boundary v2 merge retires stale ledgers and hot rows while preserv
     } finally {
       db.close();
     }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("shared-session replacement retains an absent sibling contribution and replaces only the current origin", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-shared-session-absence-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+    const absentPath = path.join(sourceRoot, "absent.jsonl");
+    const changedPath = path.join(sourceRoot, "changed.jsonl");
+    const sourceId = "srcinst-shared-session-absence";
+    const sessionId = "session-shared-absence";
+
+    const absent = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: absentPath,
+      text: "{\"absent\":1}\n",
+      canonicalText: "absent sibling turn",
+      stageRunId: "stage-shared-absent",
+      sessionId,
+      turnId: "turn-shared-absent",
+    });
+    const oldCurrent = retargetPayloadSession(createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: changedPath,
+      text: "{\"current\":1}\n",
+      canonicalText: "old current sibling turn",
+      stageRunId: "stage-shared-current-old",
+      sessionId: "session-before-retarget",
+      turnId: "turn-shared-current-old",
+    }), sessionId, { omitSession: true });
+
+    const storage = new CCHistoryStorage(storeDir);
+    storage.replaceSourcePayload(combineSourcePayloads(absent, oldCurrent));
+
+    const newCurrent = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: changedPath,
+      text: "{\"current\":2}\n",
+      canonicalText: "new current sibling turn",
+      stageRunId: "stage-shared-current-new",
+      sessionId,
+      turnId: "turn-shared-current-new",
+    });
+    storage.mergeSourcePayloadByOriginPath(newCurrent, {
+      observed_origin_paths: [changedPath],
+      refreshDerived: false,
+    });
+
+    assert.equal(storage.getTurn("turn-shared-absent")?.sync_axis, "current");
+    assert.equal(storage.getTurn("turn-shared-current-old"), undefined);
+    assert.equal(storage.getTurn("turn-shared-current-new")?.sync_axis, "current");
+    assert.equal(storage.getSession(sessionId)?.sync_axis, "current");
+    assert.ok(storage.getTurnLineage("turn-shared-absent")?.blobs.some((blob) => blob.origin_path === absentPath));
+
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const absentRaw = db.prepare(
+        "SELECT COUNT(*) AS count FROM raw_records WHERE source_id = ? AND blob_id = ?",
+      ).get(sourceId, absent.blobs[0]!.id) as { count: number };
+      assert.equal(absentRaw.count, 1);
+    } finally {
+      db.close();
+    }
+    storage.close();
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("shared-session replacement keeps lineage coherent when a sibling parse is non-authoritative", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-shared-session-failure-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+    const failedPath = path.join(sourceRoot, "failed.jsonl");
+    const changedPath = path.join(sourceRoot, "changed.jsonl");
+    const sourceId = "srcinst-shared-session-failure";
+    const sessionId = "session-shared-failure";
+
+    const priorFailedSibling = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: failedPath,
+      text: "{\"valid\":1}\n",
+      canonicalText: "last valid failed sibling turn",
+      stageRunId: "stage-shared-failed-old",
+      sessionId,
+      turnId: "turn-shared-failed-old",
+    });
+    const priorChangedSibling = retargetPayloadSession(createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: changedPath,
+      text: "{\"changed\":1}\n",
+      canonicalText: "old changed sibling turn",
+      stageRunId: "stage-shared-changed-old",
+      sessionId: "session-shared-failure-before-retarget",
+      turnId: "turn-shared-changed-old",
+    }), sessionId, { omitSession: true });
+    const storage = new CCHistoryStorage(storeDir);
+    storage.replaceSourcePayload(combineSourcePayloads(priorFailedSibling, priorChangedSibling));
+
+    const changedSibling = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: changedPath,
+      text: "{\"changed\":2}\n",
+      canonicalText: "new changed sibling turn",
+      stageRunId: "stage-shared-changed-new",
+      sessionId,
+      turnId: "turn-shared-changed-new",
+    });
+    const failedCapture = retargetPayloadSession(createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: failedPath,
+      text: "{\"invalid\":",
+      canonicalText: "must not replace failed sibling turn",
+      stageRunId: "stage-shared-failed-new",
+      sessionId: "session-shared-failure-failed-retarget",
+      turnId: "turn-shared-failed-new",
+    }), sessionId, { omitSession: true });
+    failedCapture.loss_audits = [{
+      ...failedCapture.loss_audits[0]!,
+      stage_kind: "parse_source_fragments",
+      diagnostic_code: "record_json_parse_failed",
+      severity: "warning",
+      blob_ref: failedCapture.blobs[0]!.id,
+    }];
+
+    storage.mergeSourcePayloadByOriginPath(combineSourcePayloads(changedSibling, failedCapture), {
+      observed_origin_paths: [changedPath, failedPath],
+      refreshDerived: false,
+      skipPrune: true,
+    });
+    storage.pruneEvidenceBlobsNow();
+
+    assert.equal(storage.getTurn("turn-shared-failed-old")?.sync_axis, "current");
+    assert.equal(storage.getTurn("turn-shared-failed-new"), undefined);
+    assert.equal(storage.getTurn("turn-shared-changed-old")?.sync_axis, "current");
+    assert.equal(storage.getTurn("turn-shared-changed-new"), undefined);
+    assert.ok(storage.getTurnLineage("turn-shared-failed-old")?.blobs.some((blob) => blob.origin_path === failedPath));
+    assert.ok(storage.getTurnLineage("turn-shared-changed-old")?.blobs.some((blob) => blob.origin_path === changedPath));
+    storage.close();
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("lifecycle-only merge reports a projection change and preserves stale source health", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-lifecycle-only-progress-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const sourceRoot = path.join(tempRoot, "source");
+    const originPath = path.join(sourceRoot, "session.jsonl");
+    const sourceId = "srcinst-lifecycle-only-progress";
+    const storage = new CCHistoryStorage(storeDir);
+    const initial = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath,
+      text: "{\"lifecycle\":1}\n",
+      canonicalText: "retained lifecycle-only turn",
+      stageRunId: "stage-lifecycle-only",
+      sessionId: "session-lifecycle-only",
+      turnId: "turn-lifecycle-only",
+    });
+    storage.replaceSourcePayload(initial);
+
+    const lifecycleOnly: SourceSyncPayload = {
+      ...initial,
+      source: { ...initial.source, sync_status: "stale" },
+      blobs: [],
+      records: [],
+      fragments: [],
+      atoms: [],
+      edges: [],
+      candidates: [],
+      sessions: [],
+      turns: [],
+      contexts: [],
+      ask_user_question_turns: [],
+    };
+    const progress: boolean[] = [];
+    storage.mergeSourcePayloadByOriginPath(lifecycleOnly, {
+      observed_origin_paths: [],
+      refreshDerived: false,
+      onProgress: (event) => {
+        if (event.stage === "write_store_done") {
+          progress.push(event.projection_changed);
+        }
+      },
+    });
+
+    assert.deepEqual(progress, [true]);
+    assert.equal(storage.getTurn("turn-lifecycle-only")?.sync_axis, "source_absent");
+    assert.equal(storage.listSources()[0]?.sync_status, "stale");
+    assert.equal(storage.listSources()[0]?.total_turns, 1);
+    storage.close();
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("source absence retains non-streaming evidence and projections through forced GC", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-absence-nonstream-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+    const absentPath = path.join(sourceRoot, "absent.jsonl");
+    const currentPath = path.join(sourceRoot, "current.jsonl");
+    const absentText = "{\"absence\":\"retained\"}\n";
+    const currentText = "{\"current\":true}\n";
+    await writeFile(absentPath, absentText, "utf8");
+    await writeFile(currentPath, currentText, "utf8");
+
+    const sourceId = "srcinst-claude-absence-retention";
+    const absent = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: absentPath,
+      text: absentText,
+      canonicalText: "retain absent projection",
+      stageRunId: "stage-absence-old",
+      sessionId: "session-absence-old",
+      turnId: "turn-absence-old",
+    });
+    const current = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: currentPath,
+      text: currentText,
+      canonicalText: "keep current projection",
+      stageRunId: "stage-absence-current",
+      sessionId: "session-absence-current",
+      turnId: "turn-absence-current",
+    });
+
+    const storage = new CCHistoryStorage({ dbPath });
+    storage.replaceSourcePayload(absent);
+    const before = new DatabaseSync(dbPath);
+    const evidence = before.prepare(`
+      SELECT ec.evidence_sha256, eb.storage_path
+        FROM evidence_captures ec
+        JOIN evidence_blobs eb ON eb.sha256 = ec.evidence_sha256
+       WHERE ec.source_id = ? AND ec.blob_id = ?
+    `).get(sourceId, absent.blobs[0]!.id) as { evidence_sha256: string; storage_path: string };
+    before.close();
+    const evidencePath = path.join(storeDir, evidence.storage_path);
+    await access(evidencePath);
+
+    await rm(absentPath);
+    storage.mergeSourcePayloadByOriginPath(current, {
+      observed_origin_paths: [currentPath],
+      refreshDerived: false,
+      skipPrune: true,
+    });
+    storage.pruneEvidenceBlobsNow();
+
+    const retainedTurn = storage.getTurn("turn-absence-old");
+    assert.ok(retainedTurn, "source-absent UserTurn remains addressable");
+    assert.equal(retainedTurn.sync_axis, "source_absent");
+    assert.equal(storage.getSession("session-absence-old")?.sync_axis, "source_absent");
+    assert.equal(storage.getTurnContext("turn-absence-old")?.turn_id, "turn-absence-old");
+
+    const after = new DatabaseSync(dbPath);
+    try {
+      const state = after.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM captured_blobs WHERE source_id = ? AND id = ?) AS captured_blob_count,
+          (SELECT COUNT(*) FROM raw_records WHERE source_id = ? AND blob_id = ?) AS raw_record_count,
+          (SELECT COUNT(*) FROM parsed_record_spans WHERE source_id = ? AND blob_id = ?) AS parsed_span_count,
+          (SELECT COUNT(*) FROM evidence_captures WHERE source_id = ? AND blob_id = ?) AS capture_count,
+          (SELECT COUNT(*) FROM evidence_blobs WHERE sha256 = ?) AS evidence_blob_count,
+          (SELECT sync_axis FROM source_file_ledger WHERE source_id = ? AND origin_path = ?) AS ledger_axis
+      `).get(
+        sourceId, absent.blobs[0]!.id,
+        sourceId, absent.blobs[0]!.id,
+        sourceId, absent.blobs[0]!.id,
+        sourceId, absent.blobs[0]!.id,
+        evidence.evidence_sha256,
+        sourceId, absentPath,
+      ) as {
+        captured_blob_count: number;
+        raw_record_count: number;
+        parsed_span_count: number;
+        capture_count: number;
+        evidence_blob_count: number;
+        ledger_axis: string;
+      };
+      assert.deepEqual({ ...state }, {
+        captured_blob_count: 1,
+        raw_record_count: 1,
+        parsed_span_count: 1,
+        capture_count: 1,
+        evidence_blob_count: 1,
+        ledger_axis: "source_absent",
+      });
+    } finally {
+      after.close();
+    }
+    await access(evidencePath);
+    storage.close();
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("source absence retains streaming evidence and projections through forced GC", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-absence-stream-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+    const absentPath = path.join(sourceRoot, "absent.jsonl");
+    const currentPath = path.join(sourceRoot, "current.jsonl");
+    const absentText = "{\"stream_absence\":\"retained\"}\n";
+    const currentText = "{\"stream_current\":true}\n";
+    await writeFile(absentPath, absentText, "utf8");
+    await writeFile(currentPath, currentText, "utf8");
+
+    const sourceId = "srcinst-codex-stream-absence-retention";
+    const absent = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: absentPath,
+      text: absentText,
+      canonicalText: "retain streaming absent projection",
+      stageRunId: "stage-stream-absence-old",
+      sessionId: "session-stream-absence-old",
+      turnId: "turn-stream-absence-old",
+    });
+    const current = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: currentPath,
+      text: currentText,
+      canonicalText: "keep streaming current projection",
+      stageRunId: "stage-stream-absence-current",
+      sessionId: "session-stream-absence-current",
+      turnId: "turn-stream-absence-current",
+    });
+
+    const storage = new CCHistoryStorage({ dbPath });
+    storage.replaceSourcePayload(absent);
+    const before = new DatabaseSync(dbPath);
+    const evidence = before.prepare(`
+      SELECT ec.evidence_sha256, eb.storage_path
+        FROM evidence_captures ec
+        JOIN evidence_blobs eb ON eb.sha256 = ec.evidence_sha256
+       WHERE ec.source_id = ? AND ec.blob_id = ?
+    `).get(sourceId, absent.blobs[0]!.id) as { evidence_sha256: string; storage_path: string };
+    before.close();
+    const evidencePath = path.join(storeDir, evidence.storage_path);
+    await access(evidencePath);
+
+    await rm(absentPath);
+    await storage.mergeSourcePayloadStreaming(current.source, {
+      chunks: (async function* () {
+        yield {
+          origin_path: currentPath,
+          stage_runs: current.stage_runs,
+          loss_audits: current.loss_audits,
+          blobs: current.blobs,
+          records: current.records,
+          fragments: current.fragments,
+          atoms: current.atoms,
+          edges: current.edges,
+          candidates: current.candidates,
+          sessions: current.sessions,
+          turns: current.turns,
+          contexts: current.contexts,
+          ask_user_question_turns: current.ask_user_question_turns,
+        };
+      })(),
+      preserve_origin_paths: new Set(),
+      observed_origin_paths: new Set([currentPath]),
+    });
+    storage.pruneEvidenceBlobsNow();
+
+    const retainedTurn = storage.getTurn("turn-stream-absence-old");
+    assert.ok(retainedTurn, "streaming source-absent UserTurn remains addressable");
+    assert.equal(retainedTurn.sync_axis, "source_absent");
+    assert.equal(storage.getSession("session-stream-absence-old")?.sync_axis, "source_absent");
+    assert.equal(storage.getTurnContext("turn-stream-absence-old")?.turn_id, "turn-stream-absence-old");
+
+    const after = new DatabaseSync(dbPath);
+    try {
+      const state = after.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM captured_blobs WHERE source_id = ? AND id = ?) AS captured_blob_count,
+          (SELECT COUNT(*) FROM raw_records WHERE source_id = ? AND blob_id = ?) AS raw_record_count,
+          (SELECT COUNT(*) FROM parsed_record_spans WHERE source_id = ? AND blob_id = ?) AS parsed_span_count,
+          (SELECT COUNT(*) FROM evidence_captures WHERE source_id = ? AND blob_id = ?) AS capture_count,
+          (SELECT COUNT(*) FROM evidence_blobs WHERE sha256 = ?) AS evidence_blob_count,
+          (SELECT sync_axis FROM source_file_ledger WHERE source_id = ? AND origin_path = ?) AS ledger_axis
+      `).get(
+        sourceId, absent.blobs[0]!.id,
+        sourceId, absent.blobs[0]!.id,
+        sourceId, absent.blobs[0]!.id,
+        sourceId, absent.blobs[0]!.id,
+        evidence.evidence_sha256,
+        sourceId, absentPath,
+      ) as {
+        captured_blob_count: number;
+        raw_record_count: number;
+        parsed_span_count: number;
+        capture_count: number;
+        evidence_blob_count: number;
+        ledger_axis: string;
+      };
+      assert.deepEqual({ ...state }, {
+        captured_blob_count: 1,
+        raw_record_count: 1,
+        parsed_span_count: 1,
+        capture_count: 1,
+        evidence_blob_count: 1,
+        ledger_axis: "source_absent",
+      });
+    } finally {
+      after.close();
+    }
+    await access(evidencePath);
+    storage.close();
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("source presence reconciliation keeps a cross-file session current and reactivates an unchanged origin", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-presence-cross-file-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+    const firstPath = path.join(sourceRoot, "first.jsonl");
+    const secondPath = path.join(sourceRoot, "second.jsonl");
+    const firstText = "{\"cross_file\":\"first\"}\n";
+    const secondText = "{\"cross_file\":\"second\"}\n";
+    await writeFile(firstPath, firstText, "utf8");
+    await writeFile(secondPath, secondText, "utf8");
+
+    const sourceId = "srcinst-claude-cross-file-presence";
+    const sessionId = "session-cross-file-presence";
+    const first = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: firstPath,
+      text: firstText,
+      canonicalText: "cross-file first turn",
+      stageRunId: "stage-cross-file-first",
+      sessionId,
+      turnId: "turn-cross-file-first",
+    });
+    const second = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: secondPath,
+      text: secondText,
+      canonicalText: "cross-file second turn",
+      stageRunId: "stage-cross-file-second",
+      sessionId,
+      turnId: "turn-cross-file-second",
+    });
+
+    const storage = new CCHistoryStorage(storeDir);
+    const combined = combineSourcePayloads(first, second);
+    combined.sessions = [first.sessions[0]!];
+    storage.replaceSourcePayload(combined);
+    storage.pruneSourcePayloadByObservedOriginPaths(sourceId, [secondPath], { refreshDerived: false });
+
+    assert.equal(storage.getSession(sessionId)?.sync_axis, "current");
+    assert.equal(storage.getTurn("turn-cross-file-first")?.sync_axis, "current");
+    assert.equal(storage.getTurn("turn-cross-file-second")?.sync_axis, "current");
+
+    const absentDb = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const axes = absentDb.prepare(`
+        SELECT origin_path, sync_axis
+          FROM source_file_ledger
+         WHERE source_id = ?
+         ORDER BY origin_path
+      `).all(sourceId) as Array<{ origin_path: string; sync_axis: string }>;
+      assert.deepEqual(axes.map((row) => ({ ...row })), [
+        { origin_path: firstPath, sync_axis: "source_absent" },
+        { origin_path: secondPath, sync_axis: "current" },
+      ]);
+    } finally {
+      absentDb.close();
+    }
+
+    storage.pruneSourcePayloadByObservedOriginPaths(sourceId, [firstPath, secondPath], { refreshDerived: false });
+    assert.equal(storage.getSession(sessionId)?.sync_axis, "current");
+    assert.equal(storage.getTurn("turn-cross-file-first")?.sync_axis, "current");
+
+    const currentDb = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const firstLedger = currentDb.prepare(`
+        SELECT sync_axis
+          FROM source_file_ledger
+         WHERE source_id = ? AND origin_path = ?
+      `).get(sourceId, firstPath) as { sync_axis: string };
+      assert.equal(firstLedger.sync_axis, "current");
+    } finally {
+      currentDb.close();
+    }
+    storage.close();
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("merge without a complete observed inventory never marks unvisited origins absent", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-source-presence-partial-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+    const visitedPath = path.join(sourceRoot, "visited.jsonl");
+    const unvisitedPath = path.join(sourceRoot, "unvisited.jsonl");
+    const oldVisitedText = "{\"partial\":\"old-visited\"}\n";
+    const newVisitedText = "{\"partial\":\"new-visited\"}\n";
+    const unvisitedText = "{\"partial\":\"unvisited\"}\n";
+    await writeFile(visitedPath, oldVisitedText, "utf8");
+    await writeFile(unvisitedPath, unvisitedText, "utf8");
+
+    const sourceId = "srcinst-claude-partial-presence";
+    const oldVisited = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: visitedPath,
+      text: oldVisitedText,
+      canonicalText: "old visited turn",
+      stageRunId: "stage-partial-old-visited",
+      sessionId: "session-partial-visited",
+      turnId: "turn-partial-old-visited",
+    });
+    const unvisited = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: unvisitedPath,
+      text: unvisitedText,
+      canonicalText: "unvisited retained turn",
+      stageRunId: "stage-partial-unvisited",
+      sessionId: "session-partial-unvisited",
+      turnId: "turn-partial-unvisited",
+    });
+
+    const storage = new CCHistoryStorage(storeDir);
+    storage.replaceSourcePayload(combineSourcePayloads(oldVisited, unvisited));
+    await writeFile(visitedPath, newVisitedText, "utf8");
+    const newVisited = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: visitedPath,
+      text: newVisitedText,
+      canonicalText: "new visited turn",
+      stageRunId: "stage-partial-new-visited",
+      sessionId: "session-partial-visited",
+      turnId: "turn-partial-new-visited",
+    });
+
+    storage.mergeSourcePayloadByOriginPath(newVisited, { refreshDerived: false });
+
+    assert.equal(storage.getTurn("turn-partial-old-visited"), undefined);
+    assert.equal(storage.getTurn("turn-partial-new-visited")?.sync_axis, "current");
+    assert.equal(storage.getTurn("turn-partial-unvisited")?.sync_axis, "current");
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const unvisitedLedger = db.prepare(`
+        SELECT sync_axis
+          FROM source_file_ledger
+         WHERE source_id = ? AND origin_path = ?
+      `).get(sourceId, unvisitedPath) as { sync_axis: string };
+      assert.equal(unvisitedLedger.sync_axis, "current");
+    } finally {
+      db.close();
+    }
+    storage.close();
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("non-authoritative captured bytes retain the prior projection and both evidence versions", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-nonauthoritative-capture-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+    const originPath = path.join(sourceRoot, "session.jsonl");
+    const oldText = "{\"parse\":\"valid\"}\n";
+    const failedText = "{\"parse\":\"captured-but-invalid";
+    await writeFile(originPath, oldText, "utf8");
+
+    const sourceId = "srcinst-claude-nonauthoritative-capture";
+    const oldPayload = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath,
+      text: oldText,
+      canonicalText: "last successful projection",
+      stageRunId: "stage-nonauthoritative-old",
+      sessionId: "session-nonauthoritative",
+      turnId: "turn-nonauthoritative-old",
+    });
+    const storage = new CCHistoryStorage({ dbPath });
+    storage.replaceSourcePayload(oldPayload);
+
+    await writeFile(originPath, failedText, "utf8");
+    const failedCapture = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath,
+      text: failedText,
+      canonicalText: "must not replace the old projection",
+      stageRunId: "stage-nonauthoritative-failed",
+      sessionId: "session-nonauthoritative",
+      turnId: "turn-nonauthoritative-failed",
+    });
+    failedCapture.loss_audits = [{
+      ...failedCapture.loss_audits[0]!,
+      stage_kind: "parse_source_fragments",
+      diagnostic_code: "record_json_parse_failed",
+      severity: "warning",
+      blob_ref: failedCapture.blobs[0]!.id,
+    }];
+    storage.mergeSourcePayloadByOriginPath(failedCapture, {
+      observed_origin_paths: [originPath],
+      refreshDerived: false,
+      skipPrune: true,
+    });
+    storage.pruneEvidenceBlobsNow();
+
+    assert.equal(storage.getTurn("turn-nonauthoritative-old")?.sync_axis, "current");
+    assert.equal(storage.getTurn("turn-nonauthoritative-failed"), undefined);
+    const db = new DatabaseSync(dbPath);
+    try {
+      const state = db.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM captured_blobs WHERE source_id = ?) AS captured_blob_count,
+          (SELECT COUNT(*) FROM evidence_captures WHERE source_id = ? AND capture_kind = 'source_blob') AS capture_count,
+          (SELECT current_evidence_sha256 FROM source_file_ledger WHERE source_id = ? AND origin_path = ?) AS current_evidence_sha256,
+          (SELECT COUNT(*) FROM evidence_blobs WHERE sha256 IN (?, ?)) AS source_evidence_count
+      `).get(
+        sourceId,
+        sourceId,
+        sourceId,
+        originPath,
+        sha256(oldText),
+        sha256(failedText),
+      ) as {
+        captured_blob_count: number;
+        capture_count: number;
+        current_evidence_sha256: string;
+        source_evidence_count: number;
+      };
+      assert.deepEqual({ ...state }, {
+        captured_blob_count: 2,
+        capture_count: 2,
+        current_evidence_sha256: sha256(oldText),
+        source_evidence_count: 2,
+      });
+    } finally {
+      db.close();
+    }
+    await access(path.join(storeDir, "evidence", "blobs", sha256(failedText).slice(0, 2), sha256(failedText)));
+    storage.close();
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("a failed cross-file contributor protects the shared prior projection during sibling replacement", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-nonauthoritative-cross-file-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+    const changedPath = path.join(sourceRoot, "changed.jsonl");
+    const failedPath = path.join(sourceRoot, "failed.jsonl");
+    const oldChangedText = "{\"shared\":\"old-changed\"}\n";
+    const oldFailedText = "{\"shared\":\"old-failed\"}\n";
+    const newChangedText = "{\"shared\":\"new-changed\"}\n";
+    const failedText = "{\"shared\":\"captured-but-invalid\"";
+    await writeFile(changedPath, oldChangedText, "utf8");
+    await writeFile(failedPath, oldFailedText, "utf8");
+
+    const sourceId = "srcinst-claude-nonauthoritative-cross-file";
+    const sessionId = "session-nonauthoritative-cross-file";
+    const oldChanged = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: changedPath,
+      text: oldChangedText,
+      canonicalText: "old successful sibling turn",
+      stageRunId: "stage-nonauthoritative-cross-file-old-changed",
+      sessionId,
+      turnId: "turn-nonauthoritative-cross-file-old-changed",
+    });
+    const oldFailed = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: failedPath,
+      text: oldFailedText,
+      canonicalText: "old protected sibling turn",
+      stageRunId: "stage-nonauthoritative-cross-file-old-failed",
+      sessionId,
+      turnId: "turn-nonauthoritative-cross-file-old-failed",
+    });
+    const initial = combineSourcePayloads(oldChanged, oldFailed);
+    initial.sessions = [oldChanged.sessions[0]!];
+
+    const storage = new CCHistoryStorage(storeDir);
+    storage.replaceSourcePayload(initial);
+
+    await writeFile(changedPath, newChangedText, "utf8");
+    await writeFile(failedPath, failedText, "utf8");
+    const newChanged = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: changedPath,
+      text: newChangedText,
+      canonicalText: "new sibling must wait for a complete shared projection",
+      stageRunId: "stage-nonauthoritative-cross-file-new-changed",
+      sessionId,
+      turnId: "turn-nonauthoritative-cross-file-new-changed",
+    });
+    const failed = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath: failedPath,
+      text: failedText,
+      canonicalText: "failed sibling must not replace the shared projection",
+      stageRunId: "stage-nonauthoritative-cross-file-failed",
+      sessionId,
+      turnId: "turn-nonauthoritative-cross-file-failed",
+    });
+    failed.loss_audits = [{
+      ...failed.loss_audits[0]!,
+      stage_kind: "parse_source_fragments",
+      diagnostic_code: "record_json_parse_failed",
+      severity: "warning",
+      blob_ref: failed.blobs[0]!.id,
+    }];
+
+    storage.mergeSourcePayloadByOriginPath(combineSourcePayloads(newChanged, failed), {
+      observed_origin_paths: [changedPath, failedPath],
+      refreshDerived: false,
+    });
+
+    assert.ok(storage.getSession(sessionId));
+    assert.equal(storage.getTurn("turn-nonauthoritative-cross-file-old-changed")?.sync_axis, "current");
+    assert.equal(storage.getTurn("turn-nonauthoritative-cross-file-old-failed")?.sync_axis, "current");
+    assert.equal(storage.getTurn("turn-nonauthoritative-cross-file-new-changed"), undefined);
+    assert.equal(storage.getTurn("turn-nonauthoritative-cross-file-failed"), undefined);
+    assert.ok(
+      storage.getTurnLineage("turn-nonauthoritative-cross-file-old-changed")?.blobs
+        .some((blob) => blob.id === oldChanged.blobs[0]!.id),
+      "the vetoed sibling turn keeps its original captured blob lineage",
+    );
+    const db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const retained = db.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM captured_blobs WHERE source_id = ? AND id = ?) AS blob_count,
+          (SELECT COUNT(*) FROM raw_records WHERE source_id = ? AND blob_id = ?) AS record_count
+      `).get(
+        sourceId,
+        oldChanged.blobs[0]!.id,
+        sourceId,
+        oldChanged.blobs[0]!.id,
+      ) as { blob_count: number; record_count: number };
+      assert.deepEqual({ ...retained }, { blob_count: 1, record_count: 1 });
+    } finally {
+      db.close();
+    }
+    storage.close();
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("streaming successful replacement retains superseded source evidence through forced GC", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-stream-replacement-evidence-"));
+  try {
+    const storeDir = path.join(tempRoot, "store");
+    const dbPath = path.join(storeDir, "cchistory.sqlite");
+    const sourceRoot = path.join(tempRoot, "source");
+    await mkdir(sourceRoot, { recursive: true });
+    const originPath = path.join(sourceRoot, "session.jsonl");
+    const oldText = "{\"replacement\":\"old\"}\n";
+    const newText = "{\"replacement\":\"new\"}\n";
+    await writeFile(originPath, oldText, "utf8");
+
+    const sourceId = "srcinst-codex-stream-replacement-evidence";
+    const oldPayload = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath,
+      text: oldText,
+      canonicalText: "superseded streaming turn",
+      stageRunId: "stage-stream-replacement-old",
+      sessionId: "session-stream-replacement",
+      turnId: "turn-stream-replacement-old",
+    });
+    const storage = new CCHistoryStorage({ dbPath });
+    storage.replaceSourcePayload(oldPayload);
+
+    const before = new DatabaseSync(dbPath);
+    const oldEvidence = before.prepare(`
+      SELECT ec.evidence_sha256, eb.storage_path
+        FROM evidence_captures ec
+        JOIN evidence_blobs eb ON eb.sha256 = ec.evidence_sha256
+       WHERE ec.source_id = ? AND ec.blob_id = ?
+    `).get(sourceId, oldPayload.blobs[0]!.id) as { evidence_sha256: string; storage_path: string };
+    before.close();
+    const oldEvidencePath = path.join(storeDir, oldEvidence.storage_path);
+
+    await writeFile(originPath, newText, "utf8");
+    const newPayload = createPayloadForSourceFile({
+      sourceId,
+      sourceRoot,
+      originPath,
+      text: newText,
+      canonicalText: "current streaming turn",
+      stageRunId: "stage-stream-replacement-new",
+      sessionId: "session-stream-replacement",
+      turnId: "turn-stream-replacement-new",
+    });
+    await storage.mergeSourcePayloadStreaming(newPayload.source, {
+      chunks: (async function* () {
+        yield {
+          origin_path: originPath,
+          stage_runs: newPayload.stage_runs,
+          loss_audits: newPayload.loss_audits,
+          blobs: newPayload.blobs,
+          records: newPayload.records,
+          fragments: newPayload.fragments,
+          atoms: newPayload.atoms,
+          edges: newPayload.edges,
+          candidates: newPayload.candidates,
+          sessions: newPayload.sessions,
+          turns: newPayload.turns,
+          contexts: newPayload.contexts,
+          ask_user_question_turns: newPayload.ask_user_question_turns,
+        };
+      })(),
+      preserve_origin_paths: new Set(),
+      observed_origin_paths: new Set([originPath]),
+    });
+    storage.pruneEvidenceBlobsNow();
+
+    assert.equal(storage.getTurn("turn-stream-replacement-old"), undefined);
+    assert.equal(storage.getTurn("turn-stream-replacement-new")?.sync_axis, "current");
+    const after = new DatabaseSync(dbPath);
+    try {
+      const captures = after.prepare(`
+        SELECT COUNT(*) AS count
+          FROM evidence_captures
+         WHERE source_id = ? AND capture_kind = 'source_blob'
+      `).get(sourceId) as { count: number };
+      assert.equal(captures.count, 2);
+      const oldBlob = after.prepare(
+        "SELECT COUNT(*) AS count FROM evidence_blobs WHERE sha256 = ?",
+      ).get(oldEvidence.evidence_sha256) as { count: number };
+      assert.equal(oldBlob.count, 1);
+    } finally {
+      after.close();
+    }
+    await access(oldEvidencePath);
+    storage.close();
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
@@ -1276,6 +2179,26 @@ function createPayloadForSourceFile(input: {
   return payload;
 }
 
+function retargetPayloadSession(
+  payload: SourceSyncPayload,
+  sessionId: string,
+  options: { omitSession?: boolean } = {},
+): SourceSyncPayload {
+  for (const record of payload.records) record.session_ref = sessionId;
+  for (const fragment of payload.fragments) fragment.session_ref = sessionId;
+  for (const atom of payload.atoms) atom.session_ref = sessionId;
+  for (const edge of payload.edges) edge.session_ref = sessionId;
+  for (const candidate of payload.candidates) candidate.session_ref = sessionId;
+  for (const turn of payload.turns) turn.session_id = sessionId;
+  for (const turn of payload.ask_user_question_turns) turn.session_id = sessionId;
+  if (options.omitSession) {
+    payload.sessions = [];
+  } else {
+    for (const session of payload.sessions) session.id = sessionId;
+  }
+  return payload;
+}
+
 function combineSourcePayloads(left: SourceSyncPayload, right: SourceSyncPayload): SourceSyncPayload {
   return {
     source: {
@@ -1489,19 +2412,10 @@ test("storage boundary v2 shrinkJsonToBudget keeps a single-oversized-element ar
   assert.ok(Array.isArray(tiny), "tiny budget still returns an array");
 });
 
-// C3 regression: pruneSourcePayloadByObservedOriginPaths must mirror its V1
-// session-scoped deletes into user_turns_v2 and turn_context_refs_v2. Before
-// the fix, only V1 rows were dropped; V2 sidecars for the dropped sessions
-// survived and continued to surface in every list/detail/search/bundle read
-// (production reads are V2-only post-B.5.2). Same defect class as the M4
-// rewriteStoredTurn fix — see [[dual-write-mutation-sync]].
-//
-// Test seeds a store with one source + one session + one turn, verifies the
-// V2 sidecars exist, then calls pruneSourcePayloadByObservedOriginPaths with
-// an empty observed list (forces retire of every session for the source).
-// The bug shape would leave user_turns_v2 / turn_context_refs_v2 rows
-// pointing at the now-deleted session.
-test("storage boundary v2 pruneSourcePayloadByObservedOriginPaths drops V2 sidecar rows for retired sessions (C3)", async () => {
+// Source inventory reconciliation is lifecycle-only. An upstream file that
+// disappears becomes source_absent; its V2 turn and context remain available
+// for explicit lifecycle recall and future parser rebuilds.
+test("storage boundary v2 pruneSourcePayloadByObservedOriginPaths retains source-absent V2 projections", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-c3-prune-v2-mirror-"));
   try {
     const storeDir = path.join(tempRoot, "store");
@@ -1541,19 +2455,20 @@ test("storage boundary v2 pruneSourcePayloadByObservedOriginPaths drops V2 sidec
       db.close();
     }
 
-    // Empty observed list → all sessions for the source are stale and dropped.
+    // Empty complete observed list → all sessions become source_absent.
     storage.pruneSourcePayloadByObservedOriginPaths(sourceId, []);
 
     const dbAfter = new DatabaseSync(dbPath);
     try {
-      const afterTurn = dbAfter.prepare("SELECT COUNT(*) AS count FROM user_turns_v2 WHERE source_id = ?").get(sourceId) as {
-        count: number;
-      };
+      const afterTurn = dbAfter.prepare(
+        "SELECT COUNT(*) AS count, MIN(sync_axis) AS sync_axis FROM user_turns_v2 WHERE source_id = ?",
+      ).get(sourceId) as { count: number; sync_axis: string };
       const afterContext = dbAfter
         .prepare("SELECT COUNT(*) AS count FROM turn_context_refs_v2 WHERE source_id = ?")
         .get(sourceId) as { count: number };
-      assert.equal(afterTurn.count, 0, "V2 turn sidecar dropped when session is retired");
-      assert.equal(afterContext.count, 0, "V2 context sidecar dropped when session is retired");
+      assert.equal(afterTurn.count, 1, "V2 turn sidecar is retained when its source file disappears");
+      assert.equal(afterTurn.sync_axis, "source_absent");
+      assert.equal(afterContext.count, 1, "V2 context sidecar is retained when its source file disappears");
     } finally {
       dbAfter.close();
     }

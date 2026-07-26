@@ -224,6 +224,7 @@ export function mergeSourcePayloadByOriginPath(
   payload: SourceSyncPayload,
   options: {
     preserve_origin_paths?: readonly string[];
+    non_authoritative_origin_paths?: readonly string[];
     observed_origin_paths?: readonly string[];
     on_progress?: (event: SourcePayloadWriteProgressEvent) => void;
   } = {},
@@ -238,47 +239,81 @@ export function mergeSourcePayloadByOriginPath(
   const normalizedPayload = normalizeSourcePayload(payload);
   const sourceId = normalizedPayload.source.id;
   const preserveOriginPaths = new Set((options.preserve_origin_paths ?? []).map((entry) => path.normalize(entry)));
-  const observedOriginPaths = options.observed_origin_paths
-    ? new Set(options.observed_origin_paths.map((entry) => path.normalize(entry)))
-    : undefined;
+  const nonAuthoritativeOriginPaths = new Set(
+    [
+      ...(options.non_authoritative_origin_paths ?? []),
+      ...inferNonAuthoritativeOriginPaths(normalizedPayload),
+    ].map((entry) => path.normalize(entry)),
+  );
   const incomingBlobs = dedupeByKey(normalizedPayload.blobs, (entry) => entry.id);
   const incomingBlobOriginById = new Map(incomingBlobs.map((blob) => [blob.id, path.normalize(blob.origin_path)] as const));
-  const incomingBlobOriginPaths = new Set<string>();
   const replaceOriginPaths = new Set<string>();
+  const unavailableContributorOriginPaths = new Set(nonAuthoritativeOriginPaths);
+  if (options.observed_origin_paths) {
+    const observedOriginPaths = new Set(options.observed_origin_paths.map((entry) => path.normalize(entry)));
+    for (const originPath of selectSourceOriginPaths(db, sourceId)) {
+      if (!observedOriginPaths.has(originPath)) {
+        unavailableContributorOriginPaths.add(originPath);
+      }
+    }
+  }
 
   for (const blob of incomingBlobs) {
     const originPath = path.normalize(blob.origin_path);
-    incomingBlobOriginPaths.add(originPath);
-    if (!preserveOriginPaths.has(originPath)) {
+    if (!preserveOriginPaths.has(originPath) && !nonAuthoritativeOriginPaths.has(originPath)) {
       replaceOriginPaths.add(originPath);
     }
   }
-  if (observedOriginPaths) {
-    for (const originPath of observedOriginPaths) {
-      if (!preserveOriginPaths.has(originPath) && !incomingBlobOriginPaths.has(originPath)) {
-        replaceOriginPaths.add(originPath);
-      }
-    }
-    for (const originPath of selectSourceOriginPaths(db, sourceId)) {
-      if (!observedOriginPaths.has(originPath)) {
-        replaceOriginPaths.add(originPath);
-      }
+  const nonAuthoritativeSessionRefs = new Set(
+    selectSessionRefsByBlobIds(
+      db,
+      sourceId,
+      selectBlobIdsByOriginPath(db, sourceId, nonAuthoritativeOriginPaths),
+    ),
+  );
+  for (const originPath of [...replaceOriginPaths]) {
+    const existingSessionRefs = selectSessionRefsByBlobIds(
+      db,
+      sourceId,
+      selectBlobIdsByOriginPath(db, sourceId, new Set([originPath])),
+    );
+    if (existingSessionRefs.some((sessionRef) => nonAuthoritativeSessionRefs.has(sessionRef))) {
+      // A failed sibling means the shared Session cannot be reconstructed
+      // coherently. Veto every contributor replacement for that Session,
+      // including blob deletion, until all contributors are authoritative.
+      replaceOriginPaths.delete(originPath);
+      preserveOriginPaths.add(originPath);
     }
   }
+  // Absence and capture/probe failure are lifecycle observations, not empty
+  // replacement payloads. Only a successfully captured and acceptably parsed
+  // incoming blob may replace parser-derived rows for its origin path. The V2
+  // evidence boundary reconciles complete observed inventories to
+  // current/source_absent after this V1-compatible merge finishes.
 
   const existingBlobIdsForReplace = selectBlobIdsByOriginPath(db, sourceId, replaceOriginPaths);
   const replacedSessionRefs = selectSessionRefsByBlobIds(db, sourceId, existingBlobIdsForReplace);
   const changedIncomingSessionRefs = new Set<string>(replacedSessionRefs);
   for (const record of normalizedPayload.records) {
     const originPath = incomingBlobOriginById.get(record.blob_id);
-    if (!originPath || !preserveOriginPaths.has(originPath)) {
+    if (!originPath || (!preserveOriginPaths.has(originPath) && !nonAuthoritativeOriginPaths.has(originPath))) {
       changedIncomingSessionRefs.add(record.session_ref);
     }
   }
+  const sessionsWithUnavailableContributors = new Set(
+    selectSessionRefsByBlobIds(
+      db,
+      sourceId,
+      selectBlobIdsByOriginPath(db, sourceId, unavailableContributorOriginPaths),
+    ),
+  );
 
   const includeRecord = (record: SourceSyncPayload["records"][number]): boolean => {
     const originPath = incomingBlobOriginById.get(record.blob_id);
-    return !originPath || !preserveOriginPaths.has(originPath) || changedIncomingSessionRefs.has(record.session_ref);
+    return !originPath || (
+      !nonAuthoritativeOriginPaths.has(originPath) &&
+      (!preserveOriginPaths.has(originPath) || changedIncomingSessionRefs.has(record.session_ref))
+    );
   };
   const recordsForWrite = normalizedPayload.records.filter(includeRecord);
   const recordIdsForWrite = new Set(recordsForWrite.map((record) => record.id));
@@ -302,11 +337,29 @@ export function mergeSourcePayloadByOriginPath(
       blobIdsAlreadyForWrite.add(blob.id);
     }
   }
+  const nonAuthoritativeRecordIds = new Set(
+    normalizedPayload.records
+      .filter((record) => {
+        const originPath = incomingBlobOriginById.get(record.blob_id);
+        return originPath !== undefined && nonAuthoritativeOriginPaths.has(originPath);
+      })
+      .map((record) => record.id),
+  );
   const fragmentsForWrite = normalizedPayload.fragments.filter((fragment) =>
-    recordIdsForWrite.has(fragment.record_id) || changedIncomingSessionRefs.has(fragment.session_ref),
+    !nonAuthoritativeRecordIds.has(fragment.record_id) && (
+      recordIdsForWrite.has(fragment.record_id) || changedIncomingSessionRefs.has(fragment.session_ref)
+    ),
   );
   const fragmentIdsForWrite = new Set(fragmentsForWrite.map((fragment) => fragment.id));
-  const atomsForWrite = normalizedPayload.atoms.filter((atom) => changedIncomingSessionRefs.has(atom.session_ref));
+  const nonAuthoritativeFragmentIds = new Set(
+    normalizedPayload.fragments
+      .filter((fragment) => nonAuthoritativeRecordIds.has(fragment.record_id))
+      .map((fragment) => fragment.id),
+  );
+  const atomsForWrite = normalizedPayload.atoms.filter((atom) =>
+    changedIncomingSessionRefs.has(atom.session_ref) &&
+    !atom.fragment_refs.some((fragmentRef) => nonAuthoritativeFragmentIds.has(fragmentRef)),
+  );
   const atomIdsForWrite = new Set(atomsForWrite.map((atom) => atom.id));
   const edgesForWrite = dedupeByKey(
     normalizedPayload.edges.filter((edge) => changedIncomingSessionRefs.has(edge.session_ref)),
@@ -329,21 +382,23 @@ export function mergeSourcePayloadByOriginPath(
     changedIncomingSessionRefs,
   });
 
-  const affectedSessionRefs = new Set<string>([
-    ...recordsForWrite.map((record) => record.session_ref),
-    ...sessionsForWrite.map((session) => session.id),
-    ...turnsForWrite.map((turn) => turn.session_id),
-    ...replacedSessionRefs,
-  ]);
+  // Shared sessions with an unavailable contributor remain affected, but the
+  // transaction below replaces only rows derived from the changed blobs.
+  // That retains the absent/failed sibling contribution while still accepting
+  // the authoritative contributor's new projection.
+  const affectedSessionRefs = new Set(changedIncomingSessionRefs);
   const projectionChanged = affectedSessionRefs.size > 0;
-  const incomingSessionRefs = new Set(recordsForWrite.map((record) => record.session_ref));
 
   db.exec("BEGIN IMMEDIATE;");
   try {
     db.prepare("DELETE FROM stage_runs WHERE source_id = ?").run(sourceId);
 
     for (const sessionRef of affectedSessionRefs) {
-      deleteSessionScopedRows(db, sourceId, sessionRef);
+      if (sessionsWithUnavailableContributors.has(sessionRef)) {
+        deleteOriginScopedRows(db, sourceId, sessionRef, existingBlobIdsForReplace);
+      } else {
+        deleteSessionScopedRows(db, sourceId, sessionRef);
+      }
     }
 
     for (const blobId of existingBlobIdsForReplace) {
@@ -452,12 +507,7 @@ export function mergeSourcePayloadByOriginPath(
       total_atoms: counts.atoms,
       total_sessions: counts.sessions,
       total_turns: counts.turns,
-      sync_status:
-        normalizedPayload.source.sync_status === "error"
-          ? "error"
-          : counts.sessions > 0 || counts.turns > 0 || incomingSessionRefs.size > 0
-            ? "healthy"
-            : normalizedPayload.source.sync_status,
+      sync_status: normalizedPayload.source.sync_status,
       error_message: normalizedPayload.source.sync_status === "error" ? normalizedPayload.source.error_message : undefined,
     };
     db.prepare("INSERT OR REPLACE INTO source_instances (id, payload_json) VALUES (?, ?)").run(sourceId, toJson(mergedSource));
@@ -506,12 +556,7 @@ export function updateSourceSyncMetadata(
       total_atoms: counts.atoms,
       total_sessions: counts.sessions,
       total_turns: counts.turns,
-      sync_status:
-        normalizedPayload.source.sync_status === "error"
-          ? "error"
-          : counts.sessions > 0 || counts.turns > 0
-            ? "healthy"
-            : normalizedPayload.source.sync_status,
+      sync_status: normalizedPayload.source.sync_status,
       error_message: normalizedPayload.source.sync_status === "error" ? normalizedPayload.source.error_message : undefined,
     };
     db.prepare("INSERT OR REPLACE INTO source_instances (id, payload_json) VALUES (?, ?)").run(sourceId, toJson(nextSource));
@@ -540,23 +585,13 @@ export function pruneSourcePayloadByObservedOriginPaths(
   atoms: number;
   blobs: number;
 } {
-  const observed = new Set(observedOriginPaths.map((entry) => path.normalize(entry)));
-  const staleOriginPaths = new Set(
-    selectSourceOriginPaths(db, sourceId).filter((originPath) => !observed.has(originPath)),
-  );
-  const staleBlobIds = selectBlobIdsByOriginPath(db, sourceId, staleOriginPaths);
-  const affectedSessionRefs = selectSessionRefsByBlobIds(db, sourceId, staleBlobIds);
-  const projectionChanged = affectedSessionRefs.length > 0;
-
   db.exec("BEGIN IMMEDIATE;");
   try {
-    for (const sessionRef of affectedSessionRefs) {
-      deleteSessionScopedRows(db, sourceId, sessionRef);
-    }
-    for (const blobId of staleBlobIds) {
-      deleteBlobScopedRows(db, sourceId, blobId);
-    }
-
+    // Compatibility entrypoint retained for callers that complete a bounded
+    // sync and then reconcile the authoritative observed-path inventory. A
+    // missing upstream path must not delete the last known raw or derived
+    // state. The storage facade performs the V2 lifecycle-axis reconciliation
+    // after this count/metadata refresh.
     const counts = countStoredSourcePayload(db, sourceId);
     const row = db.prepare("SELECT payload_json FROM source_instances WHERE id = ?").get(sourceId) as
       | { payload_json: string }
@@ -574,15 +609,15 @@ export function pruneSourcePayloadByObservedOriginPaths(
         sync_status:
           source.sync_status === "error"
             ? "error"
-            : counts.sessions > 0 || counts.turns > 0
-              ? "healthy"
-              : "stale",
+            : observedOriginPaths.length === 0
+              ? "stale"
+              : source.sync_status,
       };
       db.prepare("UPDATE source_instances SET payload_json = ? WHERE id = ?").run(toJson(nextSource), sourceId);
     }
 
     db.exec("COMMIT;");
-    options.on_progress?.({ stage: "write_store_done", source_id: sourceId, projection_changed: projectionChanged });
+    options.on_progress?.({ stage: "write_store_done", source_id: sourceId, projection_changed: false });
     return counts;
   } catch (error) {
     db.exec("ROLLBACK;");
@@ -672,6 +707,105 @@ export function shouldBackfillPreservedBlobIdentity(db: DatabaseSync, sourceId: 
   );
 }
 
+function deleteOriginScopedRows(
+  db: DatabaseSync,
+  sourceId: string,
+  sessionRef: string,
+  blobIds: readonly string[],
+): void {
+  const targetBlobIds = new Set(blobIds);
+  if (targetBlobIds.size === 0) {
+    return;
+  }
+
+  const recordIds = new Set<string>();
+  const selectRecords = db.prepare(
+    "SELECT id, blob_id FROM raw_records WHERE source_id = ? AND session_ref = ?",
+  );
+  for (const row of selectRecords.all(sourceId, sessionRef) as Array<{ id: string; blob_id: string }>) {
+    if (targetBlobIds.has(row.blob_id)) {
+      recordIds.add(row.id);
+    }
+  }
+
+  const fragmentIds = new Set<string>();
+  const fragmentRows = db.prepare(
+    "SELECT id, payload_json FROM source_fragments WHERE source_id = ? AND session_ref = ?",
+  ).all(sourceId, sessionRef) as Array<{ id: string; payload_json: string }>;
+  for (const row of fragmentRows) {
+    const fragment = fromJson<SourceSyncPayload["fragments"][number]>(row.payload_json);
+    if (recordIds.has(fragment.record_id)) {
+      fragmentIds.add(row.id);
+    }
+  }
+
+  const atomIds = new Set<string>();
+  const atomRows = db.prepare(
+    "SELECT id, payload_json FROM conversation_atoms WHERE source_id = ? AND session_ref = ?",
+  ).all(sourceId, sessionRef) as Array<{ id: string; payload_json: string }>;
+  for (const row of atomRows) {
+    const atom = fromJson<SourceSyncPayload["atoms"][number]>(row.payload_json);
+    if (atom.fragment_refs.some((fragmentRef) => fragmentIds.has(fragmentRef))) {
+      atomIds.add(row.id);
+    }
+  }
+
+  const deleteById = (tableName: string, ids: ReadonlySet<string>) => {
+    const remove = db.prepare(`DELETE FROM ${tableName} WHERE source_id = ? AND id = ?`);
+    for (const id of ids) {
+      remove.run(sourceId, id);
+    }
+  };
+
+  const edgeRows = db.prepare(
+    "SELECT id, from_atom_id, to_atom_id FROM atom_edges WHERE source_id = ? AND session_ref = ?",
+  ).all(sourceId, sessionRef) as Array<{ id: string; from_atom_id: string; to_atom_id: string }>;
+  deleteById(
+    "atom_edges",
+    new Set(
+      edgeRows
+        .filter((edge) => atomIds.has(edge.from_atom_id) || atomIds.has(edge.to_atom_id))
+        .map((edge) => edge.id),
+    ),
+  );
+
+  const candidateRows = db.prepare(
+    "SELECT id, payload_json FROM derived_candidates WHERE source_id = ? AND session_ref = ?",
+  ).all(sourceId, sessionRef) as Array<{ id: string; payload_json: string }>;
+  deleteById(
+    "derived_candidates",
+    new Set(
+      candidateRows
+        .filter((row) => {
+          const candidate = fromJson<SourceSyncPayload["candidates"][number]>(row.payload_json);
+          return candidate.input_atom_refs.some((atomRef) => atomIds.has(atomRef));
+        })
+        .map((row) => row.id),
+    ),
+  );
+
+  const removeAskUser = db.prepare(
+    "DELETE FROM ask_user_question_turns WHERE source_id = ? AND (call_atom_id = ? OR result_atom_id = ?)",
+  );
+  for (const atomId of atomIds) {
+    removeAskUser.run(sourceId, atomId, atomId);
+  }
+
+  deleteById("conversation_atoms", atomIds);
+  deleteById("source_fragments", fragmentIds);
+  deleteById("raw_records", recordIds);
+
+  const deleteAuditByRef = (column: string, refs: ReadonlySet<string>) => {
+    const remove = db.prepare(`DELETE FROM loss_audits WHERE source_id = ? AND ${column} = ?`);
+    for (const ref of refs) {
+      remove.run(sourceId, ref);
+    }
+  };
+  deleteAuditByRef("record_ref", recordIds);
+  deleteAuditByRef("fragment_ref", fragmentIds);
+  deleteAuditByRef("atom_ref", atomIds);
+}
+
 export function deleteSessionScopedRows(db: DatabaseSync, sourceId: string, sessionRef: string): void {
   // B.6: V1 user_turns / turn_contexts are dropped. V2 sidecar tables are
   // the source of truth. Delete V2 contexts first (the WHERE IN subquery
@@ -752,4 +886,32 @@ function deleteBySource(db: DatabaseSync, sourceId: string): void {
 
 export function normalizeOriginPath(originPath: string): string {
   return path.normalize(originPath);
+}
+
+export function inferNonAuthoritativeOriginPaths(payload: SourceSyncPayload): string[] {
+  const originByBlobId = new Map(
+    payload.blobs.map((blob) => [blob.id, normalizeOriginPath(blob.origin_path)] as const),
+  );
+  const paths = new Set<string>();
+  for (const audit of payload.loss_audits) {
+    const blocksReplacement =
+      audit.diagnostic_code === "record_json_parse_failed" ||
+      audit.diagnostic_code === "record_unparseable" ||
+      audit.diagnostic_code === "records_missing" ||
+      audit.diagnostic_code === "blob_processing_failed" ||
+      audit.diagnostic_code === "blob_capture_failed" ||
+      (audit.severity === "error" && (
+        audit.stage_kind === "capture" ||
+        audit.stage_kind === "extract_records" ||
+        audit.stage_kind === "parse_source_fragments"
+      ));
+    if (!blocksReplacement || !audit.blob_ref) {
+      continue;
+    }
+    const originPath = originByBlobId.get(audit.blob_ref);
+    if (originPath) {
+      paths.add(originPath);
+    }
+  }
+  return [...paths];
 }

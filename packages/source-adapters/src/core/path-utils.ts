@@ -48,12 +48,36 @@ export async function listSourceFiles(
   baseDir: string,
   limit?: number,
 ): Promise<string[]> {
+  return (await inspectSourceFileInventory(platform, baseDir, limit)).files;
+}
+
+export interface SourceFileInventory {
+  files: string[];
+  roots: string[];
+  missing_roots: string[];
+  complete: boolean;
+}
+
+export async function inspectSourceFileInventory(
+  platform: SourcePlatform,
+  baseDir: string,
+  limit?: number,
+): Promise<SourceFileInventory> {
   const adapter = getPlatformAdapter(platform);
-  const roots = [...(adapter?.getSourceRoots?.(baseDir) ?? [baseDir]), ...(adapter?.getSupplementalSourceRoots?.(baseDir) ?? [])];
+  const roots = [
+    ...new Set(
+      [
+        ...(adapter?.getSourceRoots?.(baseDir) ?? [baseDir]),
+        ...(adapter?.getSupplementalSourceRoots?.(baseDir) ?? []),
+      ].map((rootDir) => path.normalize(rootDir)),
+    ),
+  ];
   const fileSet = new Set<string>();
+  const missingRoots: string[] = [];
 
   for (const rootDir of roots) {
     if (!(await pathExists(rootDir))) {
+      missingRoots.push(rootDir);
       continue;
     }
     for (const filePath of await walkFiles(rootDir)) {
@@ -67,5 +91,10 @@ export async function listSourceFiles(
     const priorityDelta = getSourceFilePriority(platform, left) - getSourceFilePriority(platform, right);
     return priorityDelta !== 0 ? priorityDelta : left.localeCompare(right);
   });
-  return typeof limit === "number" ? filtered.slice(0, limit) : filtered;
+  return {
+    files: typeof limit === "number" ? filtered.slice(0, limit) : filtered,
+    roots,
+    missing_roots: missingRoots,
+    complete: missingRoots.length === 0,
+  };
 }

@@ -403,7 +403,7 @@ test("getSourceIncrementalPayload omits read projections while preserving reuse 
   }
 });
 
-test("mergeSourcePayloadByOriginPath preserves skipped files and removes absent files", async () => {
+test("mergeSourcePayloadByOriginPath preserves skipped, absent, and new file projections", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-partial-source-merge-"));
   try {
     const storage = new CCHistoryStorage(dataDir);
@@ -439,11 +439,15 @@ test("mergeSourcePayloadByOriginPath preserves skipped files and removes absent 
       observed_origin_paths: [keepPath, newPath],
     });
 
-    assert.equal(counts.turns, 2);
-    assert.equal(counts.blobs, 2);
-    assert.deepEqual(storage.listTurns().map((turn) => turn.canonical_text).sort(), ["Add new turn", "Keep old turn"]);
-    assert.deepEqual(storage.listBlobs().map((blob) => blob.origin_path).sort(), [keepPath, newPath].sort());
-    assert.equal(storage.listSources()[0]?.total_turns, 2);
+    assert.equal(counts.turns, 3);
+    assert.equal(counts.blobs, 3);
+    assert.deepEqual(storage.listTurns().map((turn) => turn.canonical_text).sort(), [
+      "Add new turn",
+      "Drop stale turn",
+      "Keep old turn",
+    ]);
+    assert.deepEqual(storage.listBlobs().map((blob) => blob.origin_path).sort(), [keepPath, newPath, stalePath].sort());
+    assert.equal(storage.listSources()[0]?.total_turns, 3);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }
@@ -497,7 +501,7 @@ test("mergeSourcePayloadByOriginPath does not rewrite preserved skipped file pay
   }
 });
 
-test("mergeSourcePayloadByOriginPath deletes observed paths that produced no blob", async () => {
+test("mergeSourcePayloadByOriginPath preserves observed paths when capture produces no blob", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-partial-source-blobless-"));
   try {
     const storage = new CCHistoryStorage(dataDir);
@@ -538,11 +542,14 @@ test("mergeSourcePayloadByOriginPath deletes observed paths that produced no blo
       observed_origin_paths: [keepPath, failedPath],
     });
 
-    assert.equal(counts.turns, 1);
-    assert.equal(counts.blobs, 1);
-    assert.deepEqual(storage.listTurns().map((turn) => turn.canonical_text), ["Keep skipped turn"]);
-    assert.deepEqual(storage.listBlobs().map((blob) => blob.origin_path), [keepPath]);
-    assert.equal(storage.listSources()[0]?.total_turns, 1);
+    assert.equal(counts.turns, 2);
+    assert.equal(counts.blobs, 2);
+    assert.deepEqual(storage.listTurns().map((turn) => turn.canonical_text).sort(), [
+      "Drop failed turn",
+      "Keep skipped turn",
+    ]);
+    assert.deepEqual(storage.listBlobs().map((blob) => blob.origin_path).sort(), [failedPath, keepPath].sort());
+    assert.equal(storage.listSources()[0]?.total_turns, 2);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

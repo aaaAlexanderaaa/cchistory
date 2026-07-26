@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import type { DerivedCandidate, LinkState, UserTurnProjection, ValueAxis } from "@cchistory/domain";
+import type { DerivedCandidate, LinkState, SyncAxis, UserTurnProjection, ValueAxis } from "@cchistory/domain";
 import {
   buildSearchPlan as buildBaseSearchPlan,
   computeRelevanceScore,
@@ -22,6 +22,7 @@ export interface SearchScanCandidate extends SearchCandidateFields {
   session_id: string;
   submission_started_at: string;
   link_state: LinkState;
+  sync_axis: SyncAxis;
   value_axis: ValueAxis;
   project_id?: string;
 }
@@ -226,6 +227,7 @@ export function scanSearchCandidateRows(input: {
              json_extract(s.payload_json, '$.resume_working_directory') AS session_resume_working_directory,
              json_extract(s.payload_json, '$.source_native_project_ref') AS session_source_native_project_ref,
              ut.link_state AS link_state,
+             ut.sync_axis AS sync_axis,
              ut.value_axis AS value_axis,
              ut.project_id AS project_id
         FROM user_turns_v2 ut
@@ -259,6 +261,7 @@ export function scanSearchCandidateRows(input: {
            json_extract(s.payload_json, '$.resume_working_directory') AS session_resume_working_directory,
            json_extract(s.payload_json, '$.source_native_project_ref') AS session_source_native_project_ref,
            ut.link_state AS link_state,
+           ut.sync_axis AS sync_axis,
            ut.value_axis AS value_axis,
            ut.project_id AS project_id
       FROM user_turns_v2 ut
@@ -328,6 +331,7 @@ interface SearchCandidateRow {
   session_resume_working_directory: unknown;
   session_source_native_project_ref: unknown;
   link_state: unknown;
+  sync_axis: unknown;
   value_axis: unknown;
   project_id: unknown;
 }
@@ -356,6 +360,7 @@ function hydrateSearchCandidateRow(
     canonical_text: candidate.canonical_text,
     path_text: candidate.path_text,
     link_state: asLinkState(row.link_state),
+    sync_axis: asSyncAxis(row.sync_axis),
     value_axis: asValueAxis(row.value_axis),
     project_id: asString(row.project_id),
   };
@@ -411,6 +416,12 @@ function asLinkState(value: unknown): LinkState {
 
 function asValueAxis(value: unknown): ValueAxis {
   return value === "covered" || value === "archived" || value === "suppressed" ? value : "active";
+}
+
+function asSyncAxis(value: unknown): SyncAxis {
+  return value === "superseded" || value === "source_absent" || value === "import_snapshot"
+    ? value
+    : "current";
 }
 
 function sanitizeFtsPhrase(query: string): string {

@@ -25,7 +25,7 @@ before starting non-trivial corrective work.
 
 ## Current Status
 
-**R17, R31, and R35 are blocked on operator-provided data or user-started
+**R45 is the active P0 evidence-preservation repair. R17, R31, and R35 are blocked on operator-provided data or user-started
 services. R43's 2026-07-25 technical corrections are complete; it remains open
 only for the mandatory independent three-lens review and synthesis.** R39 completed in-place on 2026-05-17 after the canonical-only
 default-search fix, focused local validation, and three successful independent
@@ -66,6 +66,7 @@ on 2026-05-17.
 
 | Objective | Status | Blocker |
 |-----------|--------|---------|
+| R45 - Source Absence Retention | verifying | Six independent review findings are remediated; post-fix confirmation and remaining lens synthesis are pending |
 | R44 - Contract Lifecycle And AI Governance Harness | active | Independent three-lens governance review and synthesis require separate contexts |
 | R17 - LobeChat Real-Sample Validation | active | Waiting for user-provided real LobeChat data |
 | R31 - Managed-Runtime Manual Review Diaries | active | Waiting for user to start canonical services |
@@ -76,6 +77,79 @@ on 2026-05-17.
 repository cleanup. Their unavailable content is a legacy exception recorded
 in `docs/archive/backlog/README.md`; this governance migration does not
 fabricate a reconstruction.
+
+---
+
+## Objective: R45 - Source Absence Retention
+Status: verifying
+Priority: P0
+Source: explicit user direction on 2026-07-26
+Contract: `docs/contracts/source-absence-retention.md`
+Plan: `docs/plans/2026-07-26-source-absence-retention.md`
+Issue: `docs/issues/2026-07-26-source-absence-evidence-loss.md`
+
+Repair the Full sync lifecycle so an upstream coding-agent file disappearing
+cannot delete either the captured parser input or its durable derived history.
+The retained history becomes `source_absent`, remains explicitly accessible,
+leaves default active recall, and can return to `current` when the source
+reappears.
+
+### KR: R45-KR1 Contract and independent lifecycle review
+Status: active
+Acceptance: the evidence-preservation contract and complete-end-state plan pass
+independent system-consistency, user/operator, and engineering-maintenance
+reviews plus fresh synthesis without unresolved frozen-invariant disagreement.
+
+- Task: record the class-wide bug, target contract, and implementation plan
+  Status: done
+  Acceptance: durable records name current behavior, complete end state,
+  failure/recovery, compatibility, GC liveness, and category-level guards.
+  Artifact: `docs/issues/2026-07-26-source-absence-evidence-loss.md`,
+  `docs/contracts/source-absence-retention.md`, and
+  `docs/plans/2026-07-26-source-absence-retention.md`
+
+- Task: complete independent lifecycle reviews and synthesis
+  Status: blocked
+  Blocker: one fresh-context reviewer supplied six P1/P2 findings and the user
+  directed that all be fixed. The remediated tree has not received post-fix
+  confirmation or the remaining independent lens reports; no same-context
+  substitute or named governance exception is claimed.
+  Acceptance: three fresh-context lens reports and a separate synthesis produce
+  a pass or identify a user decision required before implementation.
+  Artifact: `docs/evidence/2026-07-26-source-absence-retention-*-review.md`
+
+### KR: R45-KR2 Retention implementation and category guards
+Status: verifying
+Acceptance: streaming and non-streaming Full sync preserve evidence and
+projections across authoritative absence, reject partial/error absence
+inference, reactivate reappearing history, and keep absent turns out of default
+recall while explicit reads remain possible.
+
+- Task: add failing storage and CLI lifecycle tests
+  Status: done
+  Acceptance: category guards cover raw evidence, physical GC, derived rows,
+  cross-file sessions, partial inventories, reappearance, and default/explicit
+  recall before production code changes.
+
+- Task: implement storage-owned source-absence reconciliation
+  Status: done
+  Acceptance: one lifecycle rule is used by Codex streaming, non-streaming
+  merge, and complete-inventory pruning without schema migration.
+
+- Task: implement default and explicit sync-axis recall behavior
+  Status: done
+  Acceptance: storage/API search defaults to current/import snapshots and can
+  explicitly retrieve `source_absent` turns without deleting them.
+
+- Task: verify the repair and complete holistic evaluation
+  Status: blocked
+  Blocker: technical verification and remediation of all supplied review
+  findings are complete, but post-fix independent confirmation and the
+  remaining three-lens synthesis have not run. No governance exception was
+  granted.
+  Acceptance: affected package suites and governance gates pass, durable
+  verification is recorded, and a fresh-context evaluator passes the completed
+  change or leaves R45 truthfully verifying.
 
 ---
 

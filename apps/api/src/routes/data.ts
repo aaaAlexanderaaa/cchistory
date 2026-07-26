@@ -54,6 +54,7 @@ export function registerDataRoutes(app: FastifyInstance, context: DataRoutesCont
           project_id: { type: "string" },
           source_ids: { type: "string" },
           link_states: { type: "string" },
+          sync_axes: { type: "string" },
           value_axes: { type: "string" },
           limit: { type: "integer", minimum: 1 },
         },
@@ -65,6 +66,7 @@ export function registerDataRoutes(app: FastifyInstance, context: DataRoutesCont
       project_id?: string;
       source_ids?: string;
       link_states?: string;
+      sync_axes?: string;
       value_axes?: string;
       limit?: number;
     };
@@ -76,6 +78,7 @@ export function registerDataRoutes(app: FastifyInstance, context: DataRoutesCont
           project_id: query.project_id,
           source_ids: splitCsv(query.source_ids),
           link_states: splitCsv(query.link_states) as Array<"committed" | "candidate" | "unlinked">,
+          sync_axes: splitCsv(query.sync_axes) as Array<"current" | "superseded" | "source_absent" | "import_snapshot">,
           value_axes: splitCsv(query.value_axes) as Array<"active" | "covered" | "archived" | "suppressed">,
           limit: asLimit(query.limit) ?? 50,
         })

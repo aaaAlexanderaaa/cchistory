@@ -553,6 +553,41 @@ test("searchTurns filters by project_id, source_ids, link_states, and value_axes
   }
 });
 
+test("searchTurns excludes source-absent turns by default and supports explicit lifecycle recall", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-source-absent-"));
+  try {
+    const storage = new CCHistoryStorage(dataDir);
+    const current = createFixturePayload(
+      "src-search-sync-current",
+      "current lifecycle query",
+      "sr-search-sync-current",
+      { sessionId: "session-search-sync-current", turnId: "turn-search-sync-current" },
+    );
+    const absent = createFixturePayload(
+      "src-search-sync-absent",
+      "absent lifecycle query",
+      "sr-search-sync-absent",
+      { sessionId: "session-search-sync-absent", turnId: "turn-search-sync-absent" },
+    );
+    absent.sessions[0]!.sync_axis = "source_absent";
+    absent.turns[0]!.sync_axis = "source_absent";
+    storage.replaceSourcePayload(current);
+    storage.replaceSourcePayload(absent);
+
+    assert.equal(storage.searchTurns({ query: "lifecycle query" }).length, 1);
+    assert.equal(storage.searchTurns({ query: "absent lifecycle query" }).length, 0);
+    const explicitlyAbsent = storage.searchTurns({
+      query: "absent lifecycle query",
+      sync_axes: ["source_absent"],
+    });
+    assert.equal(explicitlyAbsent.length, 1);
+    assert.equal(explicitlyAbsent[0]?.turn.sync_axis, "source_absent");
+    assert.equal(storage.getTurn("turn-search-sync-absent")?.canonical_text, "absent lifecycle query");
+  } finally {
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("searchTurns highlight positions are correct at text boundaries", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-hl-"));
   try {

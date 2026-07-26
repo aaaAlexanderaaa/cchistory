@@ -22,6 +22,7 @@ import type {
   SessionProjection,
   SessionRelatedWorkProjection,
   SourceFragment,
+  SyncAxis,
   SourceStatus,
   SourceSyncPayload,
   StageRun,
@@ -234,17 +235,19 @@ export class CCHistoryStorage {
     options: {
       writeMode: "replace" | "merge";
       preserveOriginPaths?: readonly string[];
+      nonAuthoritativeOriginPaths?: readonly string[];
       observedOriginPaths?: readonly string[];
       skipGlobalScopes?: boolean;
       deferPrune?: boolean;
     },
-  ): { pruned_evidence_shas: string[] } {
+  ): { pruned_evidence_shas: string[]; projection_changed: boolean } {
     const result = writeStorageBoundaryV2Sidecars({
       db: this.db,
       payload,
       assetDir: this.assetDir,
       writeMode: options.writeMode,
       preserveOriginPaths: options.preserveOriginPaths,
+      nonAuthoritativeOriginPaths: options.nonAuthoritativeOriginPaths,
       observedOriginPaths: options.observedOriginPaths,
       skipGlobalScopes: options.skipGlobalScopes,
       deferPrune: options.deferPrune,
@@ -370,6 +373,7 @@ export class CCHistoryStorage {
     payload: SourceSyncPayload,
     options: {
       preserve_origin_paths?: readonly string[];
+      non_authoritative_origin_paths?: readonly string[];
       observed_origin_paths?: readonly string[];
       onProgress?: (event: StorageProgressEvent) => void;
       refreshDerived?: boolean;
@@ -384,17 +388,31 @@ export class CCHistoryStorage {
     atoms: number;
     blobs: number;
   } {
+    let mergeProjectionChanged = false;
     const result = mergePersistedSourcePayloadByOriginPath(this.db, payload, {
       preserve_origin_paths: options.preserve_origin_paths,
+      non_authoritative_origin_paths: options.non_authoritative_origin_paths,
       observed_origin_paths: options.observed_origin_paths,
-      on_progress: options.onProgress,
+      on_progress: (event) => {
+        if (event.stage === "write_store_done") {
+          mergeProjectionChanged ||= event.projection_changed;
+          return;
+        }
+        options.onProgress?.(event);
+      },
     });
-    this.writeStorageBoundaryV2Sidecars(payload, {
+    const sidecars = this.writeStorageBoundaryV2Sidecars(payload, {
       writeMode: "merge",
       preserveOriginPaths: options.preserve_origin_paths,
+      nonAuthoritativeOriginPaths: options.non_authoritative_origin_paths,
       observedOriginPaths: options.observed_origin_paths,
       skipGlobalScopes: options.skipGlobalScopes,
       deferPrune: options.skipPrune,
+    });
+    options.onProgress?.({
+      stage: "write_store_done",
+      source_id: payload.source.id,
+      projection_changed: mergeProjectionChanged || sidecars.projection_changed,
     });
 
     // B4: same ordering gap as replaceSourcePayload above — countStoredSourcePayload
@@ -497,12 +515,17 @@ export class CCHistoryStorage {
     blobs: number;
   } {
     const result = prunePersistedSourcePayloadByObservedOriginPaths(this.db, sourceId, observedOriginPaths, {
-      on_progress: options.onProgress,
+      on_progress: undefined,
     });
-    markStorageBoundaryV2SourceAbsentByObservedOrigins({
+    const reconciliation = markStorageBoundaryV2SourceAbsentByObservedOrigins({
       db: this.db,
       sourceId,
       observedOriginPaths,
+    });
+    options.onProgress?.({
+      stage: "write_store_done",
+      source_id: sourceId,
+      projection_changed: reconciliation.projection_changed,
     });
     this.invalidateProjectLinkSnapshot();
     if (options.refreshDerived === false) {
@@ -1647,6 +1670,7 @@ export class CCHistoryStorage {
     project_id?: string;
     source_ids?: string[];
     link_states?: LinkState[];
+    sync_axes?: SyncAxis[];
     value_axes?: ValueAxis[];
     limit?: number;
     offset?: number;
@@ -1659,6 +1683,7 @@ export class CCHistoryStorage {
     project_id?: string;
     source_ids?: string[];
     link_states?: LinkState[];
+    sync_axes?: SyncAxis[];
     value_axes?: ValueAxis[];
     limit?: number;
     offset?: number;
@@ -1668,6 +1693,9 @@ export class CCHistoryStorage {
     const query = options.query?.trim() ?? "";
     const sourceIds = options.source_ids && options.source_ids.length > 0 ? new Set(options.source_ids) : undefined;
     const linkStates = options.link_states && options.link_states.length > 0 ? new Set(options.link_states) : undefined;
+    const syncAxes = options.sync_axes && options.sync_axes.length > 0
+      ? new Set(options.sync_axes)
+      : new Set<SyncAxis>(["current", "import_snapshot"]);
     const valueAxes = options.value_axes && options.value_axes.length > 0 ? new Set(options.value_axes) : undefined;
     const needsResolvedLinkage = Boolean(options.project_id || linkStates);
     const resolvedTurnsById = needsResolvedLinkage ? this.getSearchLinkedTurnsById() : undefined;
@@ -1680,6 +1708,7 @@ export class CCHistoryStorage {
       const resolvedTurn = resolvedTurnsById?.get(candidate.id);
       const projectId = resolvedTurn?.project_id ?? candidate.project_id;
       const linkState = resolvedTurn?.link_state ?? candidate.link_state;
+      const syncAxis = resolvedTurn?.sync_axis ?? candidate.sync_axis;
       const valueAxis = resolvedTurn?.value_axis ?? candidate.value_axis;
 
       if (options.project_id && projectId !== options.project_id) {
@@ -1689,6 +1718,9 @@ export class CCHistoryStorage {
         continue;
       }
       if (linkStates && !linkStates.has(linkState)) {
+        continue;
+      }
+      if (!syncAxes.has(syncAxis)) {
         continue;
       }
       if (valueAxes && !valueAxes.has(valueAxis)) {

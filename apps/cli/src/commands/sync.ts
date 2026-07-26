@@ -11,6 +11,7 @@ import {
   runSourceProbe,
   streamSourceProbe,
   projectFileSessionInputs,
+  inspectSourceFileInventory,
   listSourceFiles,
   listPlatformAdapters,
   buildStageRuns,
@@ -578,9 +579,16 @@ export async function syncSelectedSources(input: {
     }
 
     let payload: SourceSyncPayload | undefined;
-    let useMergeByOriginPath = shouldUseMergeByOriginPath(source, input);
+    const sourceAlreadyStored = input.storage.listSources().some((entry) => entry.id === source.id);
+    const useMergeByOriginPath = sourceAlreadyStored;
+    const completeInventoryRequested =
+      useMergeByOriginPath &&
+      input.limitFiles === undefined &&
+      supportsAuthoritativeFileInventory(source.platform);
+    let completeInventoryIsAuthoritative = false;
     const timing = createSourceTiming();
     const preservedOriginPaths = new Set<string>();
+    const nonAuthoritativeOriginPaths = new Set<string>();
     const observedOriginPaths = new Set<string>();
     let selectedFilePaths: string[] | undefined;
     try {
@@ -594,7 +602,19 @@ export async function syncSelectedSources(input: {
       });
       const reuseLoadStartedAt = Date.now();
       let previousPayload: SourceSyncPayload | undefined;
-      if (useMergeByOriginPath) {
+      if (useMergeByOriginPath && (supportsIncrementalReuse(source.platform) || completeInventoryRequested)) {
+        const listStartedAt = Date.now();
+        const inventory = await inspectSourceFileInventory(source.platform, source.base_dir, input.limitFiles);
+        selectedFilePaths = inventory.files;
+        completeInventoryIsAuthoritative = completeInventoryRequested && inventory.complete;
+        timing.scanMs += Date.now() - listStartedAt;
+        if (completeInventoryIsAuthoritative) {
+          for (const filePath of selectedFilePaths) {
+            observedOriginPaths.add(filePath);
+          }
+        }
+      }
+      if (useMergeByOriginPath && supportsIncrementalReuse(source.platform)) {
         input.onProgress?.({
           stage: "incremental_reuse_load_start",
           source_id: source.id,
@@ -603,9 +623,6 @@ export async function syncSelectedSources(input: {
           display_name: source.display_name,
           message: `Loading previous ${source.display_name} reuse inputs for listed source files`,
         });
-        const listStartedAt = Date.now();
-        selectedFilePaths = await listSourceFiles(source.platform, source.base_dir, input.limitFiles);
-        timing.scanMs += Date.now() - listStartedAt;
         // Stage 2: adaptive reuse preload. The heavy preload
         // (getSourceIncrementalPayloadForOriginPaths) materializes every
         // record/fragment/atom/edge/session for the requested files into a
@@ -619,9 +636,7 @@ export async function syncSelectedSources(input: {
         // Below the threshold, keep the heavy preload so append detection
         // still kicks in for typical dev syncs.
         const metadataPayload = input.storage.getSourceIncrementalMetadataPayload(source.id);
-        if (!metadataPayload) {
-          useMergeByOriginPath = false;
-        } else if (selectedFilePaths.length > 0) {
+        if (metadataPayload && selectedFilePaths && selectedFilePaths.length > 0) {
           previousPayload = metadataPayload.source.total_blobs > MINIMAL_PRELOAD_BLOB_THRESHOLD
             ? buildTailBlobPayloadFromMetadata(metadataPayload, selectedFilePaths)
             : input.storage.getSourceIncrementalPayloadForOriginPaths(source.id, selectedFilePaths);
@@ -660,9 +675,11 @@ export async function syncSelectedSources(input: {
           on_progress: (event) => {
             recordProbeTiming(timing, event);
             if (useMergeByOriginPath && event.file_path) {
-              observedOriginPaths.add(event.file_path);
               if (event.stage === "file_skip") {
                 preservedOriginPaths.add(event.file_path);
+              }
+              if (event.stage === "file_error") {
+                nonAuthoritativeOriginPaths.add(event.file_path);
               }
             }
             input.onProgress?.(event);
@@ -671,6 +688,14 @@ export async function syncSelectedSources(input: {
         [source],
       );
       payload = result.sources[0];
+      if (payload) {
+        addNonAuthoritativeOriginPathsFromLossAudits(payload, nonAuthoritativeOriginPaths);
+      }
+      if (payload && completeInventoryIsAuthoritative) {
+        for (const blob of payload.blobs) {
+          observedOriginPaths.add(blob.origin_path);
+        }
+      }
     } catch (error) {
       payload = createFailedSourcePayload(source, hostProbe.host.id, formatError(error));
       input.onProgress?.({
@@ -723,7 +748,11 @@ export async function syncSelectedSources(input: {
         elapsed_ms: elapsedMs,
       });
     };
-    metadataOnlyPayload = isMetadataOnlySyncPayload(payload);
+    metadataOnlyPayload = isMetadataOnlySyncPayload(payload) && !(
+      useMergeByOriginPath &&
+      completeInventoryIsAuthoritative &&
+      payload.source.sync_status !== "error"
+    );
     const counts = metadataOnlyPayload
       ? input.storage.updateSourceSyncMetadata(payload, {
           onProgress: onStorageProgress,
@@ -731,7 +760,10 @@ export async function syncSelectedSources(input: {
       : useMergeByOriginPath
         ? input.storage.mergeSourcePayloadByOriginPath(payload, {
             preserve_origin_paths: [...preservedOriginPaths],
-            observed_origin_paths: [...observedOriginPaths],
+            non_authoritative_origin_paths: [...nonAuthoritativeOriginPaths],
+            ...(completeInventoryIsAuthoritative
+              ? { observed_origin_paths: [...observedOriginPaths] }
+              : {}),
             refreshDerived: false,
             skipGlobalScopes: true,
             skipPrune: true,
@@ -1010,13 +1042,17 @@ async function streamCodexMergeBatch(
         accumulatedSessions += projected.sessions.length;
         accumulatedTurns += projected.turns.length;
         accumulatedLossAudits.push(...projected.lossAudits);
-        // "unchanged"/"metadata_only" skips preserve the file's existing data.
-        // "oversized"/"capture_failed" skips mean the file is broken — its
-        // existing data should be removed (treated as a normal replace with
-        // no incoming records, so the per-chunk pre-pass deletes old rows).
+        // Unchanged/metadata-only skips reuse the prior projection. A failed
+        // capture or parse is also non-authoritative: any newly captured bytes
+        // are retained as evidence, but cannot replace the last successful
+        // projection or advance its ledger identity.
         const isPreservingSkip =
           event.kind === "file_skip" &&
           (event.reason === "unchanged" || event.reason === "metadata_only");
+        const replacementAuthorized =
+          event.kind !== "file_error" &&
+          !(event.kind === "file_skip" && (event.reason === "oversized" || event.reason === "capture_failed")) &&
+          !projected.lossAudits.some(lossAuditBlocksProjectionReplacement);
         yield {
           origin_path: eventChunk.origin_path,
           stage_runs: stageRunsEmitted ? [] : stageRunsForFirstChunk,
@@ -1033,6 +1069,7 @@ async function streamCodexMergeBatch(
           ask_user_question_turns: projected.askUserQuestionTurns,
           trusted_bytes_by_blob_id: eventChunk.trusted_bytes_by_blob_id,
           preserved: isPreservingSkip,
+          replacement_authorized: replacementAuthorized,
         };
         stageRunsEmitted = true;
       }
@@ -1669,6 +1706,41 @@ function isMetadataOnlySyncPayload(payload: SourceSyncPayload): boolean {
     payload.contexts.length === 0;
 }
 
+function lossAuditBlocksProjectionReplacement(audit: LossAuditRecord): boolean {
+  if (
+    audit.diagnostic_code === "record_json_parse_failed" ||
+    audit.diagnostic_code === "record_unparseable" ||
+    audit.diagnostic_code === "records_missing" ||
+    audit.diagnostic_code === "blob_processing_failed" ||
+    audit.diagnostic_code === "blob_capture_failed"
+  ) {
+    return true;
+  }
+  return audit.severity === "error" && (
+    audit.stage_kind === "capture" ||
+    audit.stage_kind === "extract_records" ||
+    audit.stage_kind === "parse_source_fragments"
+  );
+}
+
+function addNonAuthoritativeOriginPathsFromLossAudits(
+  payload: SourceSyncPayload,
+  target: Set<string>,
+): void {
+  const originByBlobId = new Map(
+    payload.blobs.map((blob) => [blob.id, blob.origin_path] as const),
+  );
+  for (const audit of payload.loss_audits) {
+    if (!lossAuditBlocksProjectionReplacement(audit) || !audit.blob_ref) {
+      continue;
+    }
+    const originPath = originByBlobId.get(audit.blob_ref);
+    if (originPath) {
+      target.add(originPath);
+    }
+  }
+}
+
 async function fileSizeOrZero(filePath: string): Promise<number> {
   try {
     return (await stat(filePath)).size;
@@ -1748,11 +1820,12 @@ function supportsIncrementalReuse(platform: SourceDefinition["platform"]): boole
   return platform === "codex" || platform === "claude_code" || platform === "factory_droid";
 }
 
-function shouldUseMergeByOriginPath(
-  source: SourceDefinition,
-  input: { limitFiles?: number },
-): boolean {
-  return supportsIncrementalReuse(source.platform) && input.limitFiles === undefined;
+function supportsAuthoritativeFileInventory(platform: SourceDefinition["platform"]): boolean {
+  // Antigravity combines native files with an optional live trajectory API.
+  // An unavailable live endpoint is not proof that a previously captured
+  // virtual origin disappeared, so its inventory is deliberately treated as
+  // non-authoritative until the adapter exposes explicit completeness.
+  return platform !== "antigravity";
 }
 
 function shouldUseBatchedCodexSync(

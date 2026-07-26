@@ -693,6 +693,7 @@ export function createCCHistoryApiClient(options: CCHistoryApiClientOptions = {}
       project_id?: string;
       source_ids?: string[];
       link_states?: string[];
+      sync_axes?: Array<"current" | "superseded" | "source_absent" | "import_snapshot">;
       value_axes?: string[];
       limit?: number;
     }): Promise<TurnSearchResultDto[]> {
@@ -701,6 +702,7 @@ export function createCCHistoryApiClient(options: CCHistoryApiClientOptions = {}
       if (params.project_id) searchParams.set("project_id", params.project_id);
       if (params.source_ids?.length) searchParams.set("source_ids", params.source_ids.join(","));
       if (params.link_states?.length) searchParams.set("link_states", params.link_states.join(","));
+      if (params.sync_axes?.length) searchParams.set("sync_axes", params.sync_axes.join(","));
       if (params.value_axes?.length) searchParams.set("value_axes", params.value_axes.join(","));
       if (params.limit) searchParams.set("limit", String(params.limit));
       return (

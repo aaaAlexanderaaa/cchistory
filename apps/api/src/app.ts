@@ -14,7 +14,13 @@ import {
   type SourceDefinition,
   type SourceSyncPayload,
 } from "@cchistory/domain";
-import { getDefaultSources, getDefaultSourcesForHost, runSourceProbe } from "@cchistory/source-adapters";
+import {
+  getDefaultSources,
+  getDefaultSourcesForHost,
+  inspectSourceFileInventory,
+  runSourceProbe,
+  type SourceFileInventory,
+} from "@cchistory/source-adapters";
 import { CCHistoryStorage } from "@cchistory/storage";
 import { resolveDefaultCchistoryDataDir } from "@cchistory/storage/store-layout";
 
@@ -28,6 +34,10 @@ export interface ApiRuntimeOptions {
   cwd?: string;
   homeDir?: string;
   probeRunner?: typeof runSourceProbe;
+  sourceFileInventoryRunner?: (
+    platform: SourceDefinition["platform"],
+    baseDir: string,
+  ) => Promise<SourceFileInventory>;
   sources?: readonly SourceDefinition[];
   storage?: CCHistoryStorage;
   agentPairingToken?: string;
@@ -59,6 +69,7 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   const sourceConfigPath = path.join(dataDir, "source-overrides.json");
   const remoteAgentStatePath = path.join(dataDir, "remote-agents.json");
   const probeRunner = options.probeRunner ?? runSourceProbe;
+  const sourceFileInventoryRunner = options.sourceFileInventoryRunner ?? inspectSourceFileInventory;
   const defaultSourceDefinitions = normalizeConfiguredSourceDefinitions(
     options.sources ?? getDefaultSourcesForHost({ includeMissing: true }),
     hostId,
@@ -182,10 +193,32 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     persist: boolean;
   }): Promise<{ host: Awaited<ReturnType<typeof runSourceProbe>>["host"]; sources: SourceSyncPayload[] }> {
     const sources = getConfiguredSources();
+    const completeInventories = new Map<string, string[]>();
+    const selectedFilePaths = new Map<string, string[]>();
+    if (options.limit_files_per_source === undefined) {
+      for (const source of selectSourceDefinitions(sources, options.source_ids)) {
+        if (source.platform === "antigravity") {
+          continue;
+        }
+        try {
+          const inventory = await sourceFileInventoryRunner(source.platform, source.base_dir);
+          selectedFilePaths.set(source.id, inventory.files);
+          if (inventory.complete) {
+            completeInventories.set(source.id, inventory.files);
+          }
+        } catch {
+          // Inventory failure is not absence authority. Let the probe report
+          // its operational error while preserving the prior lifecycle state.
+        }
+      }
+    }
     const result = await probeRunner(
       {
         source_ids: options.source_ids,
         limit_files_per_source: options.limit_files_per_source,
+        source_file_paths: selectedFilePaths.size > 0
+          ? Object.fromEntries(selectedFilePaths)
+          : undefined,
       },
       sources,
     );
@@ -193,7 +226,17 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
     if (options.persist) {
       for (const sourcePayload of result.sources) {
         await snapshotRawBlobs(rawStoreDir, sourcePayload);
-        storage.replaceSourcePayload(sourcePayload, { allow_host_rekey: true });
+        const alreadyStored = storage.listSources().some((entry) => entry.id === sourcePayload.source.id);
+        if (!alreadyStored) {
+          storage.replaceSourcePayload(sourcePayload, { allow_host_rekey: true });
+          continue;
+        }
+        const completeInventory = completeInventories.get(sourcePayload.source.id);
+        storage.mergeSourcePayloadByOriginPath(sourcePayload, {
+          ...(completeInventory && sourcePayload.source.sync_status !== "error"
+            ? { observed_origin_paths: [...new Set([...completeInventory, ...sourcePayload.blobs.map((blob) => blob.origin_path)])] }
+            : {}),
+        });
       }
     }
 
@@ -279,6 +322,17 @@ export async function createApiRuntime(options: ApiRuntimeOptions = {}): Promise
   await bootstrapStorage();
 
   return { app, dataDir, rawStoreDir, storage, agentExtensionEnabled };
+}
+
+function selectSourceDefinitions<T extends { id: string; slot_id: string }>(
+  sources: readonly T[],
+  selectedRefs: readonly string[] | undefined,
+): T[] {
+  if (!selectedRefs || selectedRefs.length === 0) {
+    return [...sources];
+  }
+  const selected = new Set(selectedRefs);
+  return sources.filter((source) => selected.has(source.id) || selected.has(source.slot_id));
 }
 
 function parseOptionalBoolean(value: string | undefined): boolean | undefined {

@@ -317,7 +317,7 @@ test("sync writes Codex full scans in bounded batches without dropping turns", a
   }
 });
 
-test("sync removes stale Codex rows for observed batch files that produce no blob", async () => {
+test("sync retains source-absent Codex evidence and projections while default search excludes them", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-codex-batch-blobless-"));
   const originalHome = process.env.HOME;
   const originalBatchTarget = process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES;
@@ -339,7 +339,7 @@ test("sync removes stale Codex rows for observed batch files that produce no blo
       sessionId: "codex-batch-z",
       cwd: "/workspace/cchistory",
       model: "gpt-5",
-      prompt: "Batch failed prompt should disappear.",
+      prompt: "Batch absent prompt should remain archived.",
       reply: "Batch failed reply.",
       startAt: "2026-03-09T01:00:00.000Z",
     });
@@ -350,17 +350,23 @@ test("sync removes stale Codex rows for observed batch files that produce no blo
     const firstPayload = JSON.parse(firstSync.stdout);
     assert.equal(firstPayload.sources[0].counts.turns, 2);
 
-    // Stage 3: oversized JSONL files now stream through captureBlobStreaming
-    // instead of being skipped, so truncating to >64 MiB no longer produces
-    // a blobless batch for codex. Deleting the file is the remaining way to
-    // make the second batch "produce no blob" for the stale-row cleanup
-    // assertion below.
+    const beforeDb = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    const retainedEvidence = beforeDb.prepare(`
+      SELECT sfl.current_evidence_sha256, eb.storage_path
+        FROM source_file_ledger sfl
+        JOIN evidence_blobs eb ON eb.sha256 = sfl.current_evidence_sha256
+       WHERE sfl.origin_path = ?
+    `).get(failedPath) as { current_evidence_sha256: string; storage_path: string };
+    beforeDb.close();
+
+    // A complete inventory now treats this as a reversible lifecycle change,
+    // not an empty replacement payload.
     await rm(failedPath);
 
     const secondSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--json", "--detail"], tempRoot);
     assert.equal(secondSync.exitCode, 0, secondSync.stderr);
     const secondPayload = JSON.parse(secondSync.stdout);
-    assert.equal(secondPayload.sources[0].counts.turns, 1);
+    assert.equal(secondPayload.sources[0].counts.turns, 2);
 
     const keepSearch = await runCliJson<{ results: Array<{ turn: { canonical_text: string } }> }>(
       ["search", "Batch keep prompt", "--store", storeDir],
@@ -369,10 +375,34 @@ test("sync removes stale Codex rows for observed batch files that produce no blo
     assert.ok(keepSearch.results.some((entry) => entry.turn.canonical_text.includes("Batch keep prompt")));
 
     const staleSearch = await runCliJson<{ results: Array<{ turn: { canonical_text: string } }> }>(
-      ["search", "Batch failed prompt", "--store", storeDir],
+      ["search", "Batch absent prompt", "--store", storeDir],
       tempRoot,
     );
     assert.equal(staleSearch.results.length, 0);
+
+    const afterDb = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const retained = afterDb.prepare(`
+        SELECT
+          (SELECT sync_axis FROM source_file_ledger WHERE origin_path = ?) AS ledger_axis,
+          (SELECT sync_axis FROM user_turns_v2 WHERE canonical_text_full LIKE '%Batch absent prompt%') AS turn_axis,
+          (SELECT COUNT(*) FROM evidence_captures WHERE evidence_sha256 = ?) AS capture_count,
+          (SELECT COUNT(*) FROM evidence_blobs WHERE sha256 = ?) AS evidence_count
+      `).get(
+        failedPath,
+        retainedEvidence.current_evidence_sha256,
+        retainedEvidence.current_evidence_sha256,
+      ) as { ledger_axis: string; turn_axis: string; capture_count: number; evidence_count: number };
+      assert.deepEqual({ ...retained }, {
+        ledger_axis: "source_absent",
+        turn_axis: "source_absent",
+        capture_count: 1,
+        evidence_count: 1,
+      });
+    } finally {
+      afterDb.close();
+    }
+    assert.equal(await fileExists(path.join(storeDir, retainedEvidence.storage_path)), true);
   } finally {
     process.env.HOME = originalHome;
     if (originalBatchTarget === undefined) {
@@ -380,6 +410,91 @@ test("sync removes stale Codex rows for observed batch files that produce no blo
     } else {
       process.env.CCHISTORY_CODEX_SYNC_BATCH_TARGET_BYTES = originalBatchTarget;
     }
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("limited Codex inventory and missing source root preserve prior lifecycle state", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-codex-incomplete-inventory-"));
+  const originalHome = process.env.HOME;
+
+  try {
+    process.env.HOME = tempRoot;
+    const sessionsDir = path.join(tempRoot, ".codex", "sessions");
+    await mkdir(sessionsDir, { recursive: true });
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-partial-a.jsonl", {
+      sessionId: "codex-partial-a",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Partial inventory first prompt.",
+      reply: "Partial inventory first reply.",
+      startAt: "2026-03-09T00:00:00.000Z",
+    });
+    await writeCodexSessionFixture(tempRoot, "rollout-codex-partial-b.jsonl", {
+      sessionId: "codex-partial-b",
+      cwd: "/workspace/cchistory",
+      model: "gpt-5",
+      prompt: "Partial inventory second prompt.",
+      reply: "Partial inventory second reply.",
+      startAt: "2026-03-09T01:00:00.000Z",
+    });
+
+    const storeDir = path.join(tempRoot, "store");
+    const firstSync = await runCliCapture(["sync", "--store", storeDir, "--source", "codex", "--json"], tempRoot);
+    assert.equal(firstSync.exitCode, 0, firstSync.stderr);
+
+    const limitedSync = await runCliCapture([
+      "sync",
+      "--store",
+      storeDir,
+      "--source",
+      "codex",
+      "--limit-files",
+      "1",
+      "--json",
+    ], tempRoot);
+    assert.equal(limitedSync.exitCode, 0, limitedSync.stderr);
+
+    let db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const axes = db.prepare(`
+        SELECT sync_axis, COUNT(*) AS count
+          FROM source_file_ledger
+         GROUP BY sync_axis
+      `).all() as Array<{ sync_axis: string; count: number }>;
+      assert.deepEqual(axes.map((row) => ({ ...row })), [{ sync_axis: "current", count: 2 }]);
+    } finally {
+      db.close();
+    }
+
+    await rm(path.join(tempRoot, ".codex"), { recursive: true, force: true });
+    const missingRootSync = await runCliCapture([
+      "sync",
+      "--store",
+      storeDir,
+      "--source",
+      "codex",
+      "--json",
+    ], tempRoot);
+    assert.equal(missingRootSync.exitCode, 0, missingRootSync.stderr);
+
+    db = new DatabaseSync(path.join(storeDir, "cchistory.sqlite"));
+    try {
+      const axes = db.prepare(`
+        SELECT sync_axis, COUNT(*) AS count
+          FROM source_file_ledger
+         GROUP BY sync_axis
+      `).all() as Array<{ sync_axis: string; count: number }>;
+      assert.deepEqual(axes.map((row) => ({ ...row })), [{ sync_axis: "current", count: 2 }]);
+      const turns = db.prepare("SELECT COUNT(*) AS count FROM user_turns_v2 WHERE sync_axis = 'current'").get() as {
+        count: number;
+      };
+      assert.equal(turns.count, 2);
+    } finally {
+      db.close();
+    }
+  } finally {
+    process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
@@ -1055,7 +1170,7 @@ test("sync preserves empty unchanged Codex file evidence across reuse", async ()
   }
 });
 
-test("sync reuses unchanged Claude Code files that share one session without duplicating rows", async () => {
+test("sync retains and reactivates source-absent Claude Code history", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-cli-sync-claude-multifile-"));
   const originalHome = process.env.HOME;
 
@@ -1063,8 +1178,13 @@ test("sync reuses unchanged Claude Code files that share one session without dup
     process.env.HOME = tempRoot;
     const claudeDir = path.join(tempRoot, ".claude", "projects");
     await mkdir(claudeDir, { recursive: true });
-    const makeClaudeLine = (timestamp: string, type: "user" | "assistant", text: string) => JSON.stringify({
-      sessionId: "claude-shared-session",
+    const makeClaudeLine = (
+      timestamp: string,
+      type: "user" | "assistant",
+      text: string,
+      sessionId = "claude-shared-session",
+    ) => JSON.stringify({
+      sessionId,
       timestamp,
       type,
       cwd: "/workspace/claude-project",
@@ -1092,8 +1212,8 @@ test("sync reuses unchanged Claude Code files that share one session without dup
     await writeFile(
       path.join(claudeDir, "stale.jsonl"),
       [
-        makeClaudeLine("2026-03-09T01:20:00.000Z", "user", "Stale asks should disappear."),
-        makeClaudeLine("2026-03-09T01:20:01.000Z", "assistant", "Stale detail complete."),
+        makeClaudeLine("2026-03-09T01:20:00.000Z", "user", "Absent Claude history remains archived.", "claude-absent-session"),
+        makeClaudeLine("2026-03-09T01:20:01.000Z", "assistant", "Stale detail complete.", "claude-absent-session"),
       ].join("\n"),
       "utf8",
     );
@@ -1108,9 +1228,31 @@ test("sync reuses unchanged Claude Code files that share one session without dup
     const secondSync = await runCliCapture(["sync", "--store", storeDir, "--source", "claude_code", "--json", "--detail"], tempRoot);
     assert.equal(secondSync.exitCode, 0, secondSync.stderr);
     const secondPayload = JSON.parse(secondSync.stdout);
-    assert.equal(secondPayload.sources[0].counts.turns, 2);
+    assert.equal(secondPayload.sources[0].counts.turns, 3);
     assert.match(secondSync.stderr, /Loaded previous Claude Code reuse inputs \(2 blob\(s\)\)/);
     assert.match(secondSync.stderr, /\[sync:claude_code:file_skip\]/);
+
+    const absentSearch = await runCliJson<{ results: Array<{ turn: { canonical_text: string } }> }>(
+      ["search", "Absent Claude history", "--store", storeDir],
+      tempRoot,
+    );
+    assert.equal(absentSearch.results.length, 0);
+
+    await writeFile(
+      path.join(claudeDir, "stale.jsonl"),
+      [
+        makeClaudeLine("2026-03-09T01:20:00.000Z", "user", "Absent Claude history remains archived.", "claude-absent-session"),
+        makeClaudeLine("2026-03-09T01:20:01.000Z", "assistant", "Stale detail complete.", "claude-absent-session"),
+      ].join("\n"),
+      "utf8",
+    );
+    const thirdSync = await runCliCapture(["sync", "--store", storeDir, "--source", "claude_code", "--json"], tempRoot);
+    assert.equal(thirdSync.exitCode, 0, thirdSync.stderr);
+    const reactivatedSearch = await runCliJson<{ results: Array<{ turn: { canonical_text: string } }> }>(
+      ["search", "Absent Claude history", "--store", storeDir],
+      tempRoot,
+    );
+    assert.equal(reactivatedSearch.results.length, 1);
   } finally {
     process.env.HOME = originalHome;
     await rm(tempRoot, { recursive: true, force: true });

@@ -128,18 +128,42 @@ async function createStorage(location: string | { dataDir?: string; dbPath?: str
 }
 
 async function syncSelectedSources(storage: CCHistoryStorage, sourceRefs: string[], limitFiles?: number): Promise<void> {
-  const { getDefaultSources, runSourceProbe } = await loadSourceAdaptersModule();
+  const { getDefaultSources, inspectSourceFileInventory, runSourceProbe } = await loadSourceAdaptersModule();
   const sources = applySourceSelection(getDefaultSources(), sourceRefs);
   for (const source of sources) {
+    let completeInventory: string[] | undefined;
+    let selectedFilePaths: string[] | undefined;
+    if (limitFiles === undefined && source.platform !== "antigravity") {
+      try {
+        const inventory = await inspectSourceFileInventory(source.platform, source.base_dir);
+        selectedFilePaths = inventory.files;
+        if (inventory.complete) {
+          completeInventory = inventory.files;
+        }
+      } catch {
+        // A failed inventory cannot prove absence; the probe still reports
+        // the source error without changing prior lifecycle axes.
+      }
+    }
     const result = await runSourceProbe(
       {
         source_ids: [source.id],
         limit_files_per_source: limitFiles,
+        source_file_paths: selectedFilePaths ? { [source.id]: selectedFilePaths } : undefined,
       },
       [source],
     );
     for (const payload of result.sources) {
-      storage.replaceSourcePayload(payload, { allow_host_rekey: true });
+      const alreadyStored = storage.listSources().some((entry) => entry.id === payload.source.id);
+      if (!alreadyStored) {
+        storage.replaceSourcePayload(payload, { allow_host_rekey: true });
+        continue;
+      }
+      storage.mergeSourcePayloadByOriginPath(payload, {
+        ...(completeInventory && payload.source.sync_status !== "error"
+          ? { observed_origin_paths: [...new Set([...completeInventory, ...payload.blobs.map((blob) => blob.origin_path)])] }
+          : {}),
+      });
     }
   }
 }

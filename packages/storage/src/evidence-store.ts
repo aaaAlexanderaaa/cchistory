@@ -36,10 +36,10 @@ import {
   deleteBlobScopedRows,
   deleteSessionScopedRows,
   filterLossAuditsForWrite,
+  inferNonAuthoritativeOriginPaths,
   normalizeOriginPath,
   selectBlobIdsByOriginPath,
   selectSessionRefsByBlobIds,
-  selectSourceOriginPaths,
   shouldBackfillPreservedBlobIdentity,
 } from "./ingest/source-payload.js";
 import type { SourcePayloadWriteProgressEvent } from "./ingest/source-payload.js";
@@ -73,10 +73,11 @@ export function writeStorageBoundaryV2Sidecars(input: {
   assetDir?: string;
   writeMode: "replace" | "merge";
   preserveOriginPaths?: readonly string[];
+  nonAuthoritativeOriginPaths?: readonly string[];
   observedOriginPaths?: readonly string[];
   skipGlobalScopes?: boolean;
   deferPrune?: boolean;
-}): { pruned_evidence_shas: string[] } {
+}): { pruned_evidence_shas: string[]; projection_changed: boolean } {
   const normalizedPayload = normalizeSourcePayload(input.payload);
   const now = nowIso();
   const parserProfileId = deriveParserProfileId(normalizedPayload);
@@ -86,19 +87,65 @@ export function writeStorageBoundaryV2Sidecars(input: {
   const lineSpansByBlobId = new Map<string, Map<number, JsonlLineSpan>>();
   const incomingOriginPaths = dedupeByKey(normalizedPayload.blobs, (entry) => entry.id)
     .map((blob) => normalizeOriginPath(blob.origin_path));
-
+  const nonAuthoritativeOriginPaths = new Set(
+    [
+      ...(input.nonAuthoritativeOriginPaths ?? []),
+      ...inferNonAuthoritativeOriginPaths(normalizedPayload),
+    ].map(normalizeOriginPath),
+  );
+  const effectivePreserveOriginPaths = new Set(
+    (input.preserveOriginPaths ?? []).map(normalizeOriginPath),
+  );
+  const nonAuthoritativeSessionRefs = selectLedgerSessionRefsByOriginPaths(
+    input.db,
+    normalizedPayload.source.id,
+    nonAuthoritativeOriginPaths,
+  );
+  for (const originPath of incomingOriginPaths) {
+    if (nonAuthoritativeOriginPaths.has(originPath) || effectivePreserveOriginPaths.has(originPath)) {
+      continue;
+    }
+    const existingSessionRefs = selectLedgerSessionRefsByOriginPaths(
+      input.db,
+      normalizedPayload.source.id,
+      new Set([originPath]),
+    );
+    if ([...existingSessionRefs].some((sessionRef) => nonAuthoritativeSessionRefs.has(sessionRef))) {
+      effectivePreserveOriginPaths.add(originPath);
+    }
+  }
+  const incomingBlobOriginById = new Map(
+    normalizedPayload.blobs.map((blob) => [blob.id, normalizeOriginPath(blob.origin_path)] as const),
+  );
+  const nonAuthoritativeIncomingTurnIds = new Set(
+    normalizedPayload.turns
+      .filter((turn) => turn.lineage.blob_refs.some((blobId) => {
+        const originPath = incomingBlobOriginById.get(blobId);
+        return originPath !== undefined && nonAuthoritativeOriginPaths.has(originPath);
+      }))
+      .map((turn) => turn.id),
+  );
+  const incomingTurnSessionById = new Map(
+    normalizedPayload.turns.map((turn) => [turn.id, turn.session_id] as const),
+  );
   let prunedShas: string[] = [];
+  let projectionChanged = false;
+  let protectedTurnIds = new Set<string>();
   dbTransaction(input.db, () => {
     if (input.writeMode === "replace") {
       prepareReplaceCurrentState(input.db, normalizedPayload.source.id, incomingOriginPaths, now);
     } else {
-      prepareMergeCurrentState(input.db, {
+      const prepared = prepareMergeCurrentState(input.db, {
         payload: normalizedPayload,
         incomingOriginPaths,
-        preserveOriginPaths: input.preserveOriginPaths,
+        preserveOriginPaths: [...effectivePreserveOriginPaths],
+        nonAuthoritativeOriginPaths: [...nonAuthoritativeOriginPaths],
         observedOriginPaths: input.observedOriginPaths,
+        assetDir: input.assetDir,
         now,
       });
+      projectionChanged = prepared.projectionChanged;
+      protectedTurnIds = prepared.protectedTurnIds;
     }
 
     for (const blob of dedupeByKey(normalizedPayload.blobs, (entry) => entry.id)) {
@@ -115,17 +162,32 @@ export function writeStorageBoundaryV2Sidecars(input: {
       }
       upsertEvidenceBlob(input.db, materialized);
       upsertEvidenceCapture(input.db, normalizedPayload.source.id, blob, materialized, now);
-      upsertSourceFileLedger(input.db, {
-        sourceId: normalizedPayload.source.id,
-        blob,
-        materialized,
-        records,
-        parserProfileId,
-        observedAt: now,
-      });
+      const originPath = normalizeOriginPath(blob.origin_path);
+      const preservePriorLedger = (
+        nonAuthoritativeOriginPaths.has(originPath) || effectivePreserveOriginPaths.has(originPath)
+      ) &&
+        sourceFileLedgerExists(input.db, normalizedPayload.source.id, originPath);
+      if (!preservePriorLedger) {
+        upsertSourceFileLedger(input.db, {
+          sourceId: normalizedPayload.source.id,
+          blob,
+          materialized,
+          records,
+          parserProfileId,
+          observedAt: now,
+        });
+      }
     }
 
     for (const record of normalizedPayload.records) {
+      const originPath = incomingBlobOriginById.get(record.blob_id);
+      if (
+        (originPath && (
+          nonAuthoritativeOriginPaths.has(originPath) || effectivePreserveOriginPaths.has(originPath)
+        )) || nonAuthoritativeSessionRefs.has(record.session_ref)
+      ) {
+        continue;
+      }
       const materialized = materializedByBlobId.get(record.blob_id);
       upsertParsedRecordSpan(input.db, {
         record,
@@ -137,14 +199,32 @@ export function writeStorageBoundaryV2Sidecars(input: {
     }
 
     for (const turn of normalizedPayload.turns) {
+      if (
+        nonAuthoritativeIncomingTurnIds.has(turn.id) ||
+        nonAuthoritativeSessionRefs.has(turn.session_id) ||
+        protectedTurnIds.has(turn.id)
+      ) {
+        continue;
+      }
       upsertBoundedUserTurn({ db: input.db, turn, boundedAt: now, assetDir: input.assetDir });
     }
 
     for (const aqq of normalizedPayload.ask_user_question_turns) {
+      if (nonAuthoritativeSessionRefs.has(aqq.session_id)) {
+        continue;
+      }
       upsertAskUserQuestionTurn(input.db, aqq);
     }
 
     for (const context of normalizedPayload.contexts) {
+      const sessionRef = incomingTurnSessionById.get(context.turn_id);
+      if (
+        nonAuthoritativeIncomingTurnIds.has(context.turn_id) ||
+        (sessionRef !== undefined && nonAuthoritativeSessionRefs.has(sessionRef)) ||
+        protectedTurnIds.has(context.turn_id)
+      ) {
+        continue;
+      }
       const materialized = materializeContextCache({
         assetDir: input.assetDir,
         context,
@@ -173,18 +253,24 @@ export function writeStorageBoundaryV2Sidecars(input: {
       force: !input.deferPrune,
     });
   });
-  return { pruned_evidence_shas: prunedShas };
+  return { pruned_evidence_shas: prunedShas, projection_changed: projectionChanged };
 }
 
 export function markStorageBoundaryV2SourceAbsentByObservedOrigins(input: {
   db: DatabaseSync;
   sourceId: string;
   observedOriginPaths: readonly string[];
-}): void {
-  const now = nowIso();
+}): { projection_changed: boolean } {
+  let projectionChanged = false;
   dbTransaction(input.db, () => {
-    markUnobservedLedgersSourceAbsent(input.db, input.sourceId, input.observedOriginPaths, now);
+    projectionChanged = reconcileSourcePresenceInTransaction(
+      input.db,
+      input.sourceId,
+      input.observedOriginPaths,
+      nowIso(),
+    );
   });
+  return { projection_changed: projectionChanged };
 }
 
 /**
@@ -464,6 +550,12 @@ export interface SourcePayloadStreamingChunk {
    * directly into the merge without buffering.
    */
   preserved?: boolean;
+  /**
+   * False when capture produced evidence but the file was not parsed
+   * successfully. The evidence capture is retained, while the previous
+   * ledger identity and derived projection remain authoritative.
+   */
+  replacement_authorized?: boolean;
 }
 
 /**
@@ -518,24 +610,12 @@ export async function mergeSourcePayloadStreaming(
   const preserveOriginPaths = new Set([...input.preserve_origin_paths].map(normalizeOriginPath));
   const observedOriginPaths = new Set([...input.observed_origin_paths].map(normalizeOriginPath));
 
-  // Source-wide pre-pass: paths stored in DB but not observed in this sync
-  // (deleted files). These get removed entirely. Observed-but-skipped paths
-  // are handled per-chunk via the `preserved` flag so the CLI can pipe probe
-  // events directly into the merge without buffering.
-  const deletedOriginPaths = new Set<string>();
-  for (const originPath of selectSourceOriginPaths(db, sourceId)) {
-    const normalized = normalizeOriginPath(originPath);
-    if (!observedOriginPaths.has(normalized) && !preserveOriginPaths.has(normalized)) {
-      deletedOriginPaths.add(normalized);
-    }
-  }
-
-  const deletedBlobIds = selectBlobIdsByOriginPath(db, sourceId, deletedOriginPaths);
-  const deletedSessionRefs = selectSessionRefsByBlobIds(db, sourceId, deletedBlobIds);
-  const changedIncomingSessionRefs = new Set<string>(deletedSessionRefs);
-  const incomingSessionRefs = new Set<string>();
-  const affectedSessionRefs = new Set<string>(deletedSessionRefs);
-  let projectionChanged = deletedSessionRefs.length > 0;
+  // A complete observed-path inventory reconciles upstream presence; it does
+  // not authorize empty replacement. Missing paths retain their raw and
+  // derived rows and transition to source_absent inside the transaction.
+  const changedIncomingSessionRefs = new Set<string>();
+  const affectedSessionRefs = new Set<string>();
+  let projectionChanged = false;
 
   const now = nowIso();
   let prunedShas: string[] = [];
@@ -557,25 +637,8 @@ export async function mergeSourcePayloadStreaming(
     const deleteParsedSpanForSession = db.prepare(
       "DELETE FROM parsed_record_spans WHERE source_id = ? AND session_ref = ?",
     );
-    const deleteLedgerForBlob = db.prepare(
-      "DELETE FROM source_file_ledger WHERE source_id = ? AND current_blob_id = ?",
-    );
-    const deleteEvidenceCaptureForBlob = db.prepare(
-      "DELETE FROM evidence_captures WHERE source_id = ? AND blob_id = ?",
-    );
-
-    for (const sessionRef of deletedSessionRefs) {
-      deleteSessionScopedRows(db, sourceId, sessionRef);
-      deleteParsedSpanForSession.run(sourceId, sessionRef);
-    }
-    for (const blobId of deletedBlobIds) {
-      deleteBlobScopedRows(db, sourceId, blobId);
-      deleteLedgerForBlob.run(sourceId, blobId);
-      deleteEvidenceCaptureForBlob.run(sourceId, blobId);
-    }
-
-    if (observedOriginPaths.size > 0) {
-      markUnobservedLedgersSourceAbsent(db, sourceId, [...observedOriginPaths], now);
+    if (reconcileSourcePresenceInTransaction(db, sourceId, [...observedOriginPaths], now)) {
+      projectionChanged = true;
     }
 
     const insertStageRun = db.prepare(
@@ -632,12 +695,13 @@ export async function mergeSourcePayloadStreaming(
       }
       const chunkOriginPathsToReplace = new Set<string>();
       const chunkOriginPath = normalizeOriginPath(chunk.origin_path);
-      if (!preserveOriginPaths.has(chunkOriginPath)) {
+      const replacementAuthorized = chunk.replacement_authorized !== false;
+      if (replacementAuthorized && chunkBlobs.length > 0 && !preserveOriginPaths.has(chunkOriginPath)) {
         chunkOriginPathsToReplace.add(chunkOriginPath);
       }
       for (const blob of chunkBlobs) {
         const originPath = normalizeOriginPath(blob.origin_path);
-        if (!preserveOriginPaths.has(originPath)) {
+        if (replacementAuthorized && !preserveOriginPaths.has(originPath)) {
           chunkOriginPathsToReplace.add(originPath);
         }
       }
@@ -655,15 +719,13 @@ export async function mergeSourcePayloadStreaming(
           }
           for (const blobId of existingBlobIds) {
             deleteBlobScopedRows(db, sourceId, blobId);
-            deleteLedgerForBlob.run(sourceId, blobId);
-            deleteEvidenceCaptureForBlob.run(sourceId, blobId);
           }
         }
       }
 
       for (const record of chunk.records) {
         const originPath = chunkBlobOriginById.get(record.blob_id);
-        if (!originPath || !preserveOriginPaths.has(originPath)) {
+        if (!originPath || (replacementAuthorized && !preserveOriginPaths.has(originPath))) {
           changedIncomingSessionRefs.add(record.session_ref);
         }
       }
@@ -724,7 +786,6 @@ export async function mergeSourcePayloadStreaming(
 
       for (const record of recordsForWrite) {
         affectedSessionRefs.add(record.session_ref);
-        incomingSessionRefs.add(record.session_ref);
       }
       for (const session of sessionsForWrite) {
         affectedSessionRefs.add(session.id);
@@ -844,14 +905,17 @@ export async function mergeSourcePayloadStreaming(
         }
         upsertEvidenceBlob(db, materialized);
         upsertEvidenceCapture(db, sourceId, blob, materialized, now);
-        upsertSourceFileLedger(db, {
-          sourceId,
-          blob,
-          materialized,
-          records,
-          parserProfileId,
-          observedAt: now,
-        });
+        const originPath = normalizeOriginPath(blob.origin_path);
+        if (replacementAuthorized || !sourceFileLedgerExists(db, sourceId, originPath)) {
+          upsertSourceFileLedger(db, {
+            sourceId,
+            blob,
+            materialized,
+            records,
+            parserProfileId,
+            observedAt: now,
+          });
+        }
       }
       for (const record of recordsForWrite) {
         const materialized = materializedByBlobId.get(record.blob_id);
@@ -907,12 +971,7 @@ export async function mergeSourcePayloadStreaming(
       total_atoms: counts.atoms,
       total_sessions: counts.sessions,
       total_turns: counts.turns,
-      sync_status:
-        source.sync_status === "error"
-          ? "error"
-          : counts.sessions > 0 || counts.turns > 0 || incomingSessionRefs.size > 0
-            ? "healthy"
-            : source.sync_status,
+      sync_status: source.sync_status,
       error_message: source.sync_status === "error" ? source.error_message : undefined,
     };
     db.prepare("INSERT OR REPLACE INTO source_instances (id, payload_json) VALUES (?, ?)").run(
@@ -1414,48 +1473,82 @@ function prepareMergeCurrentState(
     payload: SourceSyncPayload;
     incomingOriginPaths: readonly string[];
     preserveOriginPaths?: readonly string[];
+    nonAuthoritativeOriginPaths?: readonly string[];
     observedOriginPaths?: readonly string[];
+    assetDir?: string;
     now: string;
   },
-): void {
+): { projectionChanged: boolean; protectedTurnIds: Set<string> } {
   const sourceId = input.payload.source.id;
   const preserveOriginPaths = new Set((input.preserveOriginPaths ?? []).map(normalizeOriginPath));
+  const nonAuthoritativeOriginPaths = new Set(
+    (input.nonAuthoritativeOriginPaths ?? []).map(normalizeOriginPath),
+  );
   const incomingOriginPaths = new Set(input.incomingOriginPaths.map(normalizeOriginPath));
   const replaceOriginPaths = new Set<string>();
   for (const originPath of incomingOriginPaths) {
-    if (!preserveOriginPaths.has(originPath)) {
+    if (!preserveOriginPaths.has(originPath) && !nonAuthoritativeOriginPaths.has(originPath)) {
       replaceOriginPaths.add(originPath);
     }
   }
+  const unavailableContributorOriginPaths = new Set(nonAuthoritativeOriginPaths);
   if (input.observedOriginPaths) {
     const observedOriginPaths = new Set(input.observedOriginPaths.map(normalizeOriginPath));
-    for (const originPath of observedOriginPaths) {
-      if (!preserveOriginPaths.has(originPath) && !incomingOriginPaths.has(originPath)) {
-        replaceOriginPaths.add(originPath);
-      }
-    }
-    for (const originPath of selectCurrentLedgerOriginPaths(db, sourceId)) {
+    const ledgerRows = db.prepare(
+      "SELECT origin_path FROM source_file_ledger WHERE source_id = ?",
+    ).all(sourceId) as Array<{ origin_path: string }>;
+    for (const row of ledgerRows) {
+      const originPath = normalizeOriginPath(row.origin_path);
       if (!observedOriginPaths.has(originPath)) {
-        replaceOriginPaths.add(originPath);
+        unavailableContributorOriginPaths.add(originPath);
       }
     }
   }
+  const sessionsWithUnavailableContributors = selectLedgerSessionRefsByOriginPaths(
+    db,
+    sourceId,
+    unavailableContributorOriginPaths,
+  );
+  // A path without an incoming projection-authoritative parse is absent,
+  // skipped, or failed. None of those observations is an empty replacement.
+  // Lifecycle axes are reconciled below from the complete inventory.
 
-  const sessionRefs = new Set<string>();
+  const incomingBlobOriginById = new Map(
+    input.payload.blobs.map((blob) => [blob.id, normalizeOriginPath(blob.origin_path)] as const),
+  );
+  const sessionReplacementAuthority = new Map<string, boolean>();
   for (const record of input.payload.records) {
-    sessionRefs.add(record.session_ref);
+    const originPath = incomingBlobOriginById.get(record.blob_id);
+    const authorized = !originPath || (
+      !preserveOriginPaths.has(originPath) &&
+      !nonAuthoritativeOriginPaths.has(originPath)
+    );
+    sessionReplacementAuthority.set(
+      record.session_ref,
+      authorized || sessionReplacementAuthority.get(record.session_ref) === true,
+    );
   }
+  const sessionRefs = new Set<string>(
+    [...sessionReplacementAuthority]
+      .filter(([, authorized]) => authorized)
+      .map(([sessionRef]) => sessionRef),
+  );
   for (const session of input.payload.sessions) {
-    sessionRefs.add(session.id);
+    if (sessionReplacementAuthority.get(session.id) !== false) {
+      sessionRefs.add(session.id);
+    }
   }
   for (const turn of input.payload.turns) {
-    sessionRefs.add(turn.session_id);
+    if (sessionReplacementAuthority.get(turn.session_id) !== false) {
+      sessionRefs.add(turn.session_id);
+    }
   }
   for (const blobId of selectCurrentLedgerBlobIds(db, sourceId, replaceOriginPaths)) {
     for (const sessionRef of selectParsedSpanSessionRefsByBlobId(db, sourceId, blobId)) {
       sessionRefs.add(sessionRef);
     }
   }
+  const replacingBlobIds = new Set(selectCurrentLedgerBlobIds(db, sourceId, replaceOriginPaths));
 
   const selectTurnIds = db.prepare("SELECT turn_id FROM user_turns_v2 WHERE source_id = ? AND session_id = ?");
   const deleteContext = db.prepare("DELETE FROM turn_context_refs_v2 WHERE source_id = ? AND turn_id = ?");
@@ -1463,7 +1556,21 @@ function prepareMergeCurrentState(
   const deleteAskUser = db.prepare("DELETE FROM ask_user_question_turns WHERE source_id = ? AND session_id = ?");
   const deleteSpans = db.prepare("DELETE FROM parsed_record_spans WHERE source_id = ? AND session_ref = ?");
   const deleteCacheRef = db.prepare("DELETE FROM derived_cache_refs WHERE source_id = ? AND scope_kind = ? AND scope_ref = ?");
+  const protectedTurnIds = new Set<string>();
   for (const sessionRef of sessionRefs) {
+    if (sessionsWithUnavailableContributors.has(sessionRef)) {
+      const scoped = deleteV2RowsForReplacingBlobs({
+        db,
+        sourceId,
+        sessionRef,
+        replacingBlobIds,
+        assetDir: input.assetDir,
+      });
+      for (const turnId of scoped.protectedTurnIds) {
+        protectedTurnIds.add(turnId);
+      }
+      continue;
+    }
     for (const row of selectTurnIds.all(sourceId, sessionRef) as Array<{ turn_id: string }>) {
       deleteContext.run(sourceId, row.turn_id);
     }
@@ -1477,29 +1584,88 @@ function prepareMergeCurrentState(
     deleteCacheRef.run(sourceId, "origin_path", originPath);
   }
 
-  const markAbsent = db.prepare(`
-    UPDATE source_file_ledger
-       SET sync_axis = 'source_absent',
-           updated_at = ?
-     WHERE source_id = ?
-       AND origin_path = ?
-       AND sync_axis <> 'source_absent'
-  `);
-  for (const originPath of replaceOriginPaths) {
-    if (!incomingOriginPaths.has(originPath)) {
-      markAbsent.run(input.now, sourceId, originPath);
-    }
-  }
-
+  let projectionChanged = false;
   if (input.observedOriginPaths) {
-    markUnobservedLedgersSourceAbsent(db, sourceId, input.observedOriginPaths.map(normalizeOriginPath), input.now);
+    projectionChanged = reconcileSourcePresenceInTransaction(
+      db,
+      sourceId,
+      input.observedOriginPaths.map(normalizeOriginPath),
+      input.now,
+    );
   }
+  return { projectionChanged, protectedTurnIds };
 }
 
-function selectCurrentLedgerOriginPaths(db: DatabaseSync, sourceId: string): string[] {
-  return (db.prepare("SELECT origin_path FROM source_file_ledger WHERE source_id = ?").all(sourceId) as Array<{
-    origin_path: string;
-  }>).map((row) => normalizeOriginPath(row.origin_path));
+function deleteV2RowsForReplacingBlobs(input: {
+  db: DatabaseSync;
+  sourceId: string;
+  sessionRef: string;
+  replacingBlobIds: ReadonlySet<string>;
+  assetDir?: string;
+}): { protectedTurnIds: Set<string> } {
+  const protectedTurnIds = new Set<string>();
+  if (input.replacingBlobIds.size === 0) {
+    return { protectedTurnIds };
+  }
+
+  const turnRows = input.db.prepare(`
+    SELECT turn_id,
+           lineage_refs_json,
+           lineage_blob_sha256
+      FROM user_turns_v2
+     WHERE source_id = ?
+       AND session_id = ?
+  `).all(input.sourceId, input.sessionRef) as Array<{
+    turn_id: string;
+    lineage_refs_json: string;
+    lineage_blob_sha256: string;
+  }>;
+  const deleteContext = input.db.prepare(
+    "DELETE FROM turn_context_refs_v2 WHERE source_id = ? AND turn_id = ?",
+  );
+  const deleteTurn = input.db.prepare(
+    "DELETE FROM user_turns_v2 WHERE source_id = ? AND turn_id = ?",
+  );
+
+  for (const row of turnRows) {
+    const blobRefs = readStoredTurnBlobRefs(row, input.assetDir);
+    const referencesReplacingBlob = blobRefs.some((blobId) => input.replacingBlobIds.has(blobId));
+    if (!referencesReplacingBlob) {
+      continue;
+    }
+    if (blobRefs.some((blobId) => !input.replacingBlobIds.has(blobId))) {
+      protectedTurnIds.add(row.turn_id);
+      continue;
+    }
+    deleteContext.run(input.sourceId, row.turn_id);
+    deleteTurn.run(input.sourceId, row.turn_id);
+  }
+
+  const deleteSpan = input.db.prepare(
+    "DELETE FROM parsed_record_spans WHERE source_id = ? AND blob_id = ?",
+  );
+  for (const blobId of input.replacingBlobIds) {
+    deleteSpan.run(input.sourceId, blobId);
+  }
+  return { protectedTurnIds };
+}
+
+function readStoredTurnBlobRefs(
+  row: { lineage_refs_json: string; lineage_blob_sha256: string },
+  assetDir?: string,
+): string[] {
+  try {
+    const inline = fromJson<{ blob_refs?: unknown[] }>(row.lineage_refs_json || "{}");
+    if (Array.isArray(inline.blob_refs)) {
+      return inline.blob_refs.filter((entry): entry is string => typeof entry === "string" && entry.length > 0);
+    }
+  } catch {
+    // Fall through to the authoritative content-addressed lineage blob.
+  }
+  if (!assetDir || !row.lineage_blob_sha256) {
+    return [];
+  }
+  return readTurnLineageBlobBySha({ assetDir, sha: row.lineage_blob_sha256 })?.blob_refs ?? [];
 }
 
 function selectCurrentLedgerBlobIds(
@@ -1530,6 +1696,150 @@ function selectParsedSpanSessionRefsByBlobId(db: DatabaseSync, sourceId: string,
       }>).map((row) => row.session_ref).filter(Boolean),
     ),
   ];
+}
+
+function selectLedgerSessionRefsByOriginPaths(
+  db: DatabaseSync,
+  sourceId: string,
+  originPaths: ReadonlySet<string>,
+): Set<string> {
+  const sessionRefs = new Set<string>();
+  if (originPaths.size === 0) {
+    return sessionRefs;
+  }
+  const select = db.prepare(`
+    SELECT current_blob_id,
+           last_derived_session_refs
+      FROM source_file_ledger
+     WHERE source_id = ?
+       AND origin_path = ?
+  `);
+  for (const originPath of originPaths) {
+    const row = select.get(sourceId, normalizeOriginPath(originPath)) as
+      | { current_blob_id: string; last_derived_session_refs: string }
+      | undefined;
+    if (!row) {
+      continue;
+    }
+    try {
+      for (const sessionRef of fromJson<unknown[]>(row.last_derived_session_refs || "[]")) {
+        if (typeof sessionRef === "string" && sessionRef.length > 0) {
+          sessionRefs.add(sessionRef);
+        }
+      }
+    } catch {
+      // Structural rows below remain the fallback.
+    }
+    if (row.current_blob_id) {
+      for (const sessionRef of selectSessionRefsByBlobIds(db, sourceId, [row.current_blob_id])) {
+        sessionRefs.add(sessionRef);
+      }
+      for (const sessionRef of selectParsedSpanSessionRefsByBlobId(db, sourceId, row.current_blob_id)) {
+        sessionRefs.add(sessionRef);
+      }
+    }
+  }
+  return sessionRefs;
+}
+
+function reconcileSourcePresenceInTransaction(
+  db: DatabaseSync,
+  sourceId: string,
+  observedOriginPaths: readonly string[],
+  now: string,
+): boolean {
+  const observed = new Set(observedOriginPaths.map(normalizeOriginPath));
+  const ledgerRows = db.prepare(`
+    SELECT origin_path,
+           current_blob_id,
+           last_derived_session_refs,
+           sync_axis
+      FROM source_file_ledger
+     WHERE source_id = ?
+  `).all(sourceId) as Array<{
+    origin_path: string;
+    current_blob_id: string;
+    last_derived_session_refs: string;
+    sync_axis: string;
+  }>;
+
+  const sessionAxes = new Map<string, "current" | "source_absent">();
+  const updateLedger = db.prepare(`
+    UPDATE source_file_ledger
+       SET sync_axis = ?,
+           updated_at = ?
+     WHERE source_id = ?
+       AND origin_path = ?
+  `);
+  let projectionChanged = false;
+
+  for (const row of ledgerRows) {
+    const originPath = normalizeOriginPath(row.origin_path);
+    const nextAxis = observed.has(originPath) ? "current" : "source_absent";
+    if (row.sync_axis !== nextAxis) {
+      updateLedger.run(nextAxis, now, sourceId, originPath);
+      projectionChanged = true;
+    }
+
+    const sessionRefs = new Set<string>();
+    try {
+      for (const sessionRef of fromJson<unknown[]>(row.last_derived_session_refs || "[]")) {
+        if (typeof sessionRef === "string" && sessionRef.length > 0) {
+          sessionRefs.add(sessionRef);
+        }
+      }
+    } catch {
+      // Structural raw/parsed rows below remain the fallback for legacy or
+      // corrupt advisory ledger metadata.
+    }
+    if (row.current_blob_id) {
+      for (const sessionRef of selectSessionRefsByBlobIds(db, sourceId, [row.current_blob_id])) {
+        sessionRefs.add(sessionRef);
+      }
+      for (const sessionRef of selectParsedSpanSessionRefsByBlobId(db, sourceId, row.current_blob_id)) {
+        sessionRefs.add(sessionRef);
+      }
+    }
+
+    for (const sessionRef of sessionRefs) {
+      const existing = sessionAxes.get(sessionRef);
+      if (nextAxis === "current" || existing === undefined) {
+        sessionAxes.set(sessionRef, nextAxis);
+      }
+    }
+  }
+
+  const selectSession = db.prepare(
+    "SELECT payload_json FROM sessions WHERE source_id = ? AND id = ?",
+  );
+  const updateSession = db.prepare(
+    "UPDATE sessions SET payload_json = ? WHERE source_id = ? AND id = ?",
+  );
+  const selectTurnAxes = db.prepare(
+    "SELECT sync_axis FROM user_turns_v2 WHERE source_id = ? AND session_id = ?",
+  );
+  const updateTurnAxes = db.prepare(
+    "UPDATE user_turns_v2 SET sync_axis = ? WHERE source_id = ? AND session_id = ?",
+  );
+
+  for (const [sessionRef, nextAxis] of sessionAxes) {
+    const sessionRow = selectSession.get(sourceId, sessionRef) as { payload_json: string } | undefined;
+    if (sessionRow) {
+      const session = fromJson<SessionProjection>(sessionRow.payload_json);
+      if (session.sync_axis !== nextAxis) {
+        updateSession.run(toJson({ ...session, sync_axis: nextAxis }), sourceId, sessionRef);
+        projectionChanged = true;
+      }
+    }
+
+    const turnAxes = selectTurnAxes.all(sourceId, sessionRef) as Array<{ sync_axis: string }>;
+    if (turnAxes.some((row) => row.sync_axis !== nextAxis)) {
+      updateTurnAxes.run(nextAxis, sourceId, sessionRef);
+      projectionChanged = true;
+    }
+  }
+
+  return projectionChanged;
 }
 
 function markUnobservedLedgersSourceAbsent(
@@ -1944,6 +2254,16 @@ function upsertSourceFileLedger(
     input.observedAt,
     input.observedAt,
   );
+}
+
+function sourceFileLedgerExists(db: DatabaseSync, sourceId: string, originPath: string): boolean {
+  return db.prepare(`
+    SELECT 1
+      FROM source_file_ledger
+     WHERE source_id = ?
+       AND origin_path = ?
+     LIMIT 1
+  `).get(sourceId, normalizeOriginPath(originPath)) !== undefined;
 }
 
 function upsertParsedRecordSpan(

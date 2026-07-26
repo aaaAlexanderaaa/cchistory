@@ -9,6 +9,7 @@ import "./core/projections.test.js";
 import "./core/ask-user.test.js";
 import "./core/tokens.test.js";
 import "./core/utils.test.js";
+import "./core/path-utils.test.js";
 import "./core/jsonl-records.test.js";
 import "./core/session-grouping.test.js";
 import "./platforms/cursor.test.js";

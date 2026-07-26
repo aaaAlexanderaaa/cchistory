@@ -185,10 +185,15 @@ export async function applyRemoteAgentUpload(options: {
       options.request.bundle.checksums.raw_sha256_by_path,
       options.request.bundle.manifest.includes_raw_blobs,
     );
-    options.storage.replaceSourcePayload(preparedPayload, { allow_host_rekey: true });
     if (existingPayload) {
+      // Remote generations do not currently carry an authoritative complete
+      // origin inventory. Merge successful origins and retain any unmentioned
+      // history; absence may only be inferred by a producer that proves
+      // inventory completeness.
+      options.storage.mergeSourcePayloadByOriginPath(preparedPayload);
       replacedSourceIds.push(payload.source.id);
     } else {
+      options.storage.replaceSourcePayload(preparedPayload, { allow_host_rekey: true });
       importedSourceIds.push(payload.source.id);
     }
   }

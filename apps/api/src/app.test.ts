@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -211,6 +212,40 @@ test("probe and replay stay read-only when persist is false", async () => {
   }
 });
 
+test("API probe inventories only the requested source definitions", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-selected-inventory-"));
+  try {
+    const requested = await seedCodexSourceFixture(tempRoot, "requested-inventory");
+    const unrelated = await seedCodexSourceFixture(tempRoot, "unrelated-inventory");
+    const inventoriedBaseDirs: string[] = [];
+    const runtime = await createApiRuntime({
+      dataDir: path.join(tempRoot, "data"),
+      sources: [requested, unrelated],
+      sourceFileInventoryRunner: async (_platform, baseDir) => {
+        inventoriedBaseDirs.push(baseDir);
+        return { files: [], roots: [baseDir], missing_roots: [], complete: true };
+      },
+    });
+    try {
+      // Runtime bootstrap inventories configured sources once. The assertion
+      // below scopes specifically to the subsequent selected probe request.
+      inventoriedBaseDirs.length = 0;
+      const response = await runtime.app.inject({
+        method: "POST",
+        url: "/api/admin/probe/runs",
+        payload: { source_ids: [requested.id], persist: false },
+      });
+      assert.equal(response.statusCode, 200);
+      assert.deepEqual(inventoriedBaseDirs, [requested.base_dir]);
+    } finally {
+      await runtime.app.close();
+      runtime.storage.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("persisted probe snapshots raw blobs and seeds storage", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-"));
 
@@ -319,6 +354,98 @@ test("persisted probe snapshots raw blobs and seeds storage", async () => {
       });
       assert.equal(lineageResponse.statusCode, 200);
       assert.equal(JSON.parse(lineageResponse.body).lineage.turn.id, turns[0]!.id);
+    } finally {
+      await runtime.app.close();
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test("persisted probe retains source-absent evidence and supports explicit lifecycle recall", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-api-source-absence-"));
+
+  try {
+    const source = await seedCodexSourceFixture(tempRoot, "persisted-source-absence", {
+      userText: "Persist this API source-absence turn.",
+    });
+    const sourceFile = path.join(source.base_dir, `rollout-${"persisted-source-absence"}-session.jsonl`);
+    const dataDir = path.join(tempRoot, "data-persisted-source-absence");
+    const runtime = await createApiRuntime({ dataDir, sources: [source] });
+
+    try {
+      const first = await runtime.app.inject({
+        method: "POST",
+        url: "/api/admin/probe/runs",
+        payload: { source_ids: [source.id], persist: true },
+      });
+      assert.equal(first.statusCode, 200);
+      const active = await runtime.app.inject({
+        method: "GET",
+        url: "/api/turns/search?q=API%20source-absence%20turn",
+      });
+      const activeResults = JSON.parse(active.body).results as Array<{ turn: { id: string } }>;
+      assert.equal(activeResults.length, 1);
+      const turnId = activeResults[0]!.turn.id;
+
+      const beforeDb = new DatabaseSync(path.join(dataDir, "cchistory.sqlite"), { readOnly: true });
+      const evidence = beforeDb.prepare(`
+        SELECT sfl.current_evidence_sha256, eb.storage_path
+          FROM source_file_ledger sfl
+          JOIN evidence_blobs eb ON eb.sha256 = sfl.current_evidence_sha256
+         WHERE sfl.origin_path = ?
+      `).get(sourceFile) as { current_evidence_sha256: string; storage_path: string };
+      beforeDb.close();
+
+      await rm(sourceFile);
+      const second = await runtime.app.inject({
+        method: "POST",
+        url: "/api/admin/probe/runs",
+        payload: { source_ids: [source.id], persist: true },
+      });
+      assert.equal(second.statusCode, 200);
+
+      const defaultSearch = await runtime.app.inject({
+        method: "GET",
+        url: "/api/turns/search?q=API%20source-absence%20turn",
+      });
+      assert.equal(JSON.parse(defaultSearch.body).results.length, 0);
+      const absentSearch = await runtime.app.inject({
+        method: "GET",
+        url: "/api/turns/search?q=API%20source-absence%20turn&sync_axes=source_absent",
+      });
+      const absentResults = JSON.parse(absentSearch.body).results as Array<{
+        turn: { id: string; sync_axis: string };
+      }>;
+      assert.equal(absentResults.length, 1);
+      assert.equal(absentResults[0]?.turn.id, turnId);
+      assert.equal(absentResults[0]?.turn.sync_axis, "source_absent");
+
+      const detail = await runtime.app.inject({ method: "GET", url: `/api/turns/${turnId}` });
+      assert.equal(detail.statusCode, 200);
+      assert.equal(JSON.parse(detail.body).turn.sync_axis, "source_absent");
+
+      const afterDb = new DatabaseSync(path.join(dataDir, "cchistory.sqlite"), { readOnly: true });
+      try {
+        const state = afterDb.prepare(`
+          SELECT
+            (SELECT sync_axis FROM source_file_ledger WHERE origin_path = ?) AS ledger_axis,
+            (SELECT COUNT(*) FROM evidence_captures WHERE evidence_sha256 = ?) AS capture_count,
+            (SELECT COUNT(*) FROM evidence_blobs WHERE sha256 = ?) AS evidence_count
+        `).get(
+          sourceFile,
+          evidence.current_evidence_sha256,
+          evidence.current_evidence_sha256,
+        ) as { ledger_axis: string; capture_count: number; evidence_count: number };
+        assert.deepEqual({ ...state }, {
+          ledger_axis: "source_absent",
+          capture_count: 1,
+          evidence_count: 1,
+        });
+      } finally {
+        afterDb.close();
+      }
+      assert.equal(existsSync(path.join(dataDir, evidence.storage_path)), true);
     } finally {
       await runtime.app.close();
     }

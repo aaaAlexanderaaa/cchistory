@@ -20,3 +20,7 @@ Current inventory:
 
 - `repository-governance.md` — incremental documentation lifecycle,
   architecture ownership, AI review, and mechanical enforcement.
+- `source-absence-retention.md` — Full sync must retain raw evidence and
+  derived history when an upstream source path disappears, project
+  `source_absent`, and reserve deletion of that retained path history for
+  explicit purge.
