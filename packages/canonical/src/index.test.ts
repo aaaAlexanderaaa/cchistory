@@ -158,7 +158,7 @@ test("shared canonical related-work projection resolves delegated sessions and a
   );
 });
 
-test("shared search materialization matches the bounded Full candidate surface", () => {
+test("shared search materialization preserves complete canonical text while storage hints stay bounded", () => {
   const truncator = "...[truncated]";
   const utf8CutPrefix = "a".repeat(
     SEARCH_CANONICAL_TEXT_SCAN_BYTES - Buffer.byteLength(truncator, "utf8") - 1,
@@ -203,10 +203,8 @@ test("shared search materialization matches the bounded Full candidate surface",
     session,
     project_observation_candidates: [projectObservation],
   });
-  assert.equal(candidate.canonical_text, boundSearchCanonicalText(turn.canonical_text));
-  assert.ok(Buffer.byteLength(candidate.canonical_text ?? "", "utf8") <= SEARCH_CANONICAL_TEXT_SCAN_BYTES);
-  assert.ok(candidate.canonical_text?.endsWith(truncator));
-  assert.doesNotMatch(candidate.canonical_text ?? "", /tail-only-token/u);
+  assert.equal(candidate.canonical_text, turn.canonical_text);
+  assert.ok(Buffer.byteLength(candidate.canonical_text ?? "", "utf8") > SEARCH_CANONICAL_TEXT_SCAN_BYTES);
   const expectedPathParts = [
     "/turn/path",
     session.working_directory,
@@ -229,7 +227,7 @@ test("shared search materialization matches the bounded Full candidate surface",
     projects: [],
     candidates: [projectObservation],
     query: "tail-only-token",
-  }).total, 0);
+  }).total, 1);
   assert.equal(searchTurnsInMemory({
     turns: [turn],
     sessions: [session],

@@ -424,8 +424,15 @@ test("I13 (post-B.6): purgeTurn throws if the V2 sidecar is missing (transaction
     const turnId = "turn-1";
 
     const db = (storage as any).db as DatabaseSync;
-    db.prepare("DELETE FROM user_turns_v2 WHERE turn_id = ?").run(turnId);
-    db.prepare("DELETE FROM turn_context_refs_v2 WHERE turn_id = ?").run(turnId);
+    // Inject loss after lookup to exercise the purge guard despite fresh cache
+    // invalidation correctly hiding rows deleted before lookup.
+    const lookup = storage.getResolvedTurn.bind(storage);
+    storage.getResolvedTurn = (id) => {
+      const turn = lookup(id);
+      db.prepare("DELETE FROM user_turns_v2 WHERE turn_id = ?").run(id);
+      db.prepare("DELETE FROM turn_context_refs_v2 WHERE turn_id = ?").run(id);
+      return turn;
+    };
 
     assert.throws(
       () => storage.purgeTurn(turnId, "i13_test"),

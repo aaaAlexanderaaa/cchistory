@@ -724,7 +724,7 @@ test("B.5.0a: schema migration adds the seven full-content columns to user_turns
           | { value_text: string }
           | undefined
       )?.value_text;
-      assert.equal(schemaVersion, "2026-07-11.1");
+      assert.equal(schemaVersion, "2026-10-11.1");
     } finally {
       db.close();
     }

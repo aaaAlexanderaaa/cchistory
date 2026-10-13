@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream, openSync, writeSync, closeSync } from "node:fs";
-import { mkdir, readFile, readdir, stat, writeFile, copyFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat, writeFile, copyFile, rm } from "node:fs/promises";
 import path from "node:path";
 import type {
   BundleChecksums,
@@ -148,12 +148,14 @@ export async function exportBundle(options: {
 
     if (options.includeRawBlobs) {
       for (const [index, blob] of collectedBlobs.entries()) {
-        const sourcePath = blobSourcePaths[index]?.captured_path ?? blobSourcePaths[index]?.origin_path;
+        const archivePath = await options.storage.getVerifiedSourceBlobPath(blob.id);
+        const sourcePath = archivePath ??
+          blobSourcePaths[index]?.captured_path ?? blobSourcePaths[index]?.origin_path;
         const relativePath = bundleRawRelativePath(source.id, blob);
         const targetPath = path.join(bundleDir, relativePath);
         await mkdir(path.dirname(targetPath), { recursive: true });
-        await materializeBlobSnapshot(targetPath, blob, sourcePath, () => options.storage.getRecordsByBlobId(blob.id));
-        rawChecksums[relativePath] = sha256(await readFile(targetPath));
+        await materializeBlobSnapshot(targetPath, blob, sourcePath, () => options.storage.getRecordsByBlobId(blob.id), archivePath !== undefined);
+        rawChecksums[relativePath] = await sha256FileStream(targetPath);
       }
     }
   }
@@ -845,10 +847,21 @@ async function materializeBlobSnapshot(
   blob: CapturedBlob,
   sourcePath: string | undefined,
   getRecords: () => RawRecord[],
+  requiredSource = false,
 ): Promise<void> {
   if (sourcePath && !isVirtualBlobPath(sourcePath)) {
-    await copyFile(sourcePath, targetPath);
-    return;
+    try {
+      await copyFile(sourcePath, targetPath);
+      const hash = createHash(blob.checksum.length === 40 ? "sha1" : "sha256");
+      let size = 0;
+      for await (const chunk of createReadStream(targetPath)) { hash.update(chunk); size += chunk.length; }
+      if (size === blob.size_bytes && (!blob.checksum || hash.digest("hex") === blob.checksum.toLowerCase())) return;
+      await rm(targetPath, { force: true });
+      if (requiredSource) throw new Error(`Retained source evidence integrity mismatch during bundle export for ${blob.id}`);
+    } catch (error) {
+      if (requiredSource) throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
 
   const records = getRecords().sort((left, right) => left.ordinal - right.ordinal);

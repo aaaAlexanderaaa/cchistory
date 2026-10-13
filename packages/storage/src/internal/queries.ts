@@ -433,6 +433,7 @@ export function readUserTurnFromV2(input: {
   turnId: string;
   assetDir?: string;
   withLineage?: boolean;
+  strictLineage?: boolean;
 }): UserTurnProjection | undefined {
   const row = input.db
     .prepare(`SELECT ${USER_TURN_V2_COLUMNS} FROM user_turns_v2 WHERE turn_id = ?`)
@@ -457,6 +458,16 @@ export function readUserTurnFromV2(input: {
         turnId: input.turnId,
       })
     : undefined;
+  if (input.strictLineage && withLineage && (
+    (row.lineage_blob_sha256 && !lineage) ||
+    row.lineage_atom_count !== (lineage?.atom_refs.length ?? 0) ||
+    row.lineage_fragment_count !== (lineage?.fragment_refs.length ?? 0) ||
+    row.lineage_record_count !== (lineage?.record_refs.length ?? 0) ||
+    row.lineage_blob_count !== (lineage?.blob_refs.length ?? 0) ||
+    row.lineage_candidate_count !== (lineage?.candidate_refs.length ?? 0)
+  )) {
+    throw new Error(`Required lineage evidence unavailable or incomplete for ${input.turnId}; restore evidence or complete migration backfill.`);
+  }
   return userTurnFromV2Row({ row, lineage });
 }
 

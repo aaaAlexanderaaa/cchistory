@@ -1,8 +1,16 @@
 import { createHash } from "node:crypto";
+import { once } from "node:events";
+import { finished } from "node:stream/promises";
 import {
   existsSync,
+  closeSync,
+  fstatSync,
+  lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
@@ -44,6 +52,8 @@ import {
 } from "./ingest/source-payload.js";
 import type { SourcePayloadWriteProgressEvent } from "./ingest/source-payload.js";
 import { pruneUnreferencedEvidenceBlobsInTransaction } from "./internal/gc.js";
+import { readVerifiedSourceCapture, verifiedSourceCapturePath } from "./source-evidence.js";
+import { beginImmediateTransactionIfNeeded } from "./db/transaction.js";
 
 export const TURN_CONTEXT_INLINE_BUDGET_BYTES = 16 * 1024;
 export const USER_TURN_V2_INLINE_BUDGET_BYTES = 32 * 1024;
@@ -112,6 +122,10 @@ export function writeStorageBoundaryV2Sidecars(input: {
     );
     if ([...existingSessionRefs].some((sessionRef) => nonAuthoritativeSessionRefs.has(sessionRef))) {
       effectivePreserveOriginPaths.add(originPath);
+      // The incoming file may now claim another session. Its whole projection
+      // is still vetoed by the unavailable former contributor, not just turns
+      // whose incoming session ID happens to match the persisted session.
+      nonAuthoritativeOriginPaths.add(originPath);
     }
   }
   const incomingBlobOriginById = new Map(
@@ -151,6 +165,7 @@ export function writeStorageBoundaryV2Sidecars(input: {
     for (const blob of dedupeByKey(normalizedPayload.blobs, (entry) => entry.id)) {
       const records = recordsByBlobId.get(blob.id) ?? [];
       const materialized = materializeBlobEvidence({
+        db: input.db,
         assetDir: input.assetDir,
         blob,
         records,
@@ -410,7 +425,8 @@ export function streamV2SidecarsFromV1(input: {
     );
     for (const row of blobsStmt.iterate(sourceId) as Iterable<{ payload_json: string }>) {
       const blob = fromJson<CapturedBlob>(row.payload_json);
-      const trustedBytes = readTrustedBlobBytes(blob);
+      const archived = readVerifiedSourceCapture(db, input.assetDir, blob);
+      const trustedBytes = archived?.bytes ?? readTrustedBlobBytes(blob);
       if (trustedBytes) {
         const materialized = materializeBytes({
           assetDir: input.assetDir,
@@ -462,6 +478,7 @@ export function streamV2SidecarsFromV1(input: {
         records.push(fromJson<RawRecord>(r.payload_json));
       }
       const materialized = materializeBlobEvidence({
+        db,
         assetDir: input.assetDir,
         blob,
         records,
@@ -596,6 +613,7 @@ export async function mergeSourcePayloadStreaming(
     observed_origin_paths: ReadonlySet<string>;
     asset_dir?: string;
     on_progress?: (event: SourcePayloadWriteProgressEvent) => void;
+    validate_before_write?: () => void;
   },
 ): Promise<{
   sessions: number;
@@ -622,6 +640,7 @@ export async function mergeSourcePayloadStreaming(
 
   db.exec("BEGIN IMMEDIATE;");
   try {
+    input.validate_before_write?.();
     // NOTE: stage_runs are not deleted here. The streaming CLI orchestrates
     // one mergeSourcePayloadStreaming call per recency batch within a sync;
     // each batch's final chunk carries that batch's freshly-built stage_runs
@@ -883,16 +902,20 @@ export async function mergeSourcePayloadStreaming(
         // out. sourceBlobIsStreamable guards the path: only files we can
         // actually open via captured_path are eligible; everything else
         // (virtual paths, missing files) falls back to the snapshot path.
-        const useStreamingMaterialization = !trustedBytes && sourceBlobIsStreamable(blob);
+        const archivedPath = !trustedBytes && blob.size_bytes > STORAGE_STREAMING_THRESHOLD_BYTES
+          ? await verifiedSourceCapturePath(db, input.asset_dir, blob) : undefined;
+        const useStreamingMaterialization = !trustedBytes && (archivedPath || sourceBlobIsStreamable(blob));
         const materialized = useStreamingMaterialization
           ? await materializeBytesStream({
               assetDir: input.asset_dir,
-              chunks: createReadStream(blob.captured_path!),
+              chunks: createReadStream(archivedPath ?? blob.captured_path!),
               mediaType: "application/octet-stream",
               captureKind: "source_blob",
               createdAt: now,
+              expectedSource: blob,
             })
           : materializeBlobEvidence({
+              db,
               assetDir: input.asset_dir,
               blob,
               records,
@@ -1564,6 +1587,7 @@ function prepareMergeCurrentState(
         sourceId,
         sessionRef,
         replacingBlobIds,
+        incomingTurns: input.payload.turns,
         assetDir: input.assetDir,
       });
       for (const turnId of scoped.protectedTurnIds) {
@@ -1601,6 +1625,7 @@ function deleteV2RowsForReplacingBlobs(input: {
   sourceId: string;
   sessionRef: string;
   replacingBlobIds: ReadonlySet<string>;
+  incomingTurns: readonly UserTurnProjection[];
   assetDir?: string;
 }): { protectedTurnIds: Set<string> } {
   const protectedTurnIds = new Set<string>();
@@ -1634,6 +1659,13 @@ function deleteV2RowsForReplacingBlobs(input: {
       continue;
     }
     if (blobRefs.some((blobId) => !input.replacingBlobIds.has(blobId))) {
+      const incoming = input.incomingTurns.find((turn) => turn.id === row.turn_id);
+      if (incoming && blobRefs.filter((blobId) => !input.replacingBlobIds.has(blobId))
+        .every((blobId) => incoming.lineage.blob_refs.includes(blobId))) {
+        // A coherent reprojection includes every retained contributor. It can
+        // update the mixed-origin turn without discarding absent user input.
+        continue;
+      }
       protectedTurnIds.add(row.turn_id);
       continue;
     }
@@ -1742,7 +1774,7 @@ function selectLedgerSessionRefsByOriginPaths(
   return sessionRefs;
 }
 
-function reconcileSourcePresenceInTransaction(
+export function reconcileSourcePresenceInTransaction(
   db: DatabaseSync,
   sourceId: string,
   observedOriginPaths: readonly string[],
@@ -1869,6 +1901,7 @@ function markUnobservedLedgersSourceAbsent(
 }
 
 function materializeBlobEvidence(input: {
+  db?: DatabaseSync;
   assetDir?: string;
   blob: CapturedBlob;
   records: readonly RawRecord[];
@@ -1891,7 +1924,8 @@ function materializeBlobEvidence(input: {
       `trusted_bytes checksum mismatch for blob ${input.blob.id}: supplied bytes do not match blob.checksum`,
     );
   }
-  const trustedBytes = input.bytes ?? readTrustedBlobBytes(input.blob);
+  const archived = input.db ? readVerifiedSourceCapture(input.db, input.assetDir, input.blob) : undefined;
+  const trustedBytes = archived?.bytes ?? input.bytes ?? readTrustedBlobBytes(input.blob);
   if (trustedBytes) {
     return materializeBytes({
       assetDir: input.assetDir,
@@ -1965,12 +1999,14 @@ function materializeBytes(input: {
   if (input.assetDir) {
     const absolutePath = path.join(input.assetDir, storagePath);
     mkdirSync(path.dirname(absolutePath), { recursive: true });
+    assertContainedEvidenceParent(absolutePath, input.assetDir);
     try {
       writeFileSync(absolutePath, input.bytes, { flag: "wx" });
     } catch (error) {
       if (!isAlreadyExistsError(error)) {
         throw error;
       }
+      verifyExistingEvidenceFile(absolutePath, input.assetDir, sha256, input.bytes.byteLength);
     }
   }
   return {
@@ -2006,11 +2042,14 @@ export async function materializeBytesStream(input: {
   mediaType: string;
   captureKind: EvidenceMaterialization["captureKind"];
   createdAt: string;
+  expectedSource?: CapturedBlob;
 }): Promise<EvidenceMaterialization> {
   const hasher = createHash("sha256");
+  const sourceHasher = createHash(input.expectedSource?.checksum.length === 40 ? "sha1" : "sha256");
   let sizeBytes = 0;
 
   let writeStream: ReturnType<typeof createWriteStream> | undefined;
+  let writeCompletion: Promise<void> | undefined;
   let partialPath: string | undefined;
   if (input.assetDir) {
     // Stage 3: write to a stable .partial under evidence/blobs/.partial-<pid>-<rand>
@@ -2018,34 +2057,42 @@ export async function materializeBytesStream(input: {
     // path once the sha256 is known.
     partialPath = path.join(input.assetDir, "evidence", "blobs", `.partial-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     mkdirSync(path.dirname(partialPath), { recursive: true });
+    assertContainedEvidenceParent(partialPath, input.assetDir);
     rmSync(partialPath, { force: true });
     writeStream = createWriteStream(partialPath, { flags: "wx" });
+    writeCompletion = finished(writeStream);
+    // Observe asynchronous open/write errors even while the input iterator is
+    // producing a chunk. The original promise is awaited before publication.
+    void writeCompletion.catch(() => {});
   }
 
   try {
     for await (const chunk of input.chunks) {
       hasher.update(chunk);
+      sourceHasher.update(chunk);
       sizeBytes += chunk.byteLength;
       if (writeStream) {
         if (!writeStream.write(chunk)) {
-          await new Promise<void>((resolve) => writeStream!.once("drain", () => resolve()));
+          await once(writeStream, "drain");
         }
       }
     }
+    if (input.expectedSource && (sizeBytes !== input.expectedSource.size_bytes ||
+      (input.expectedSource.checksum && sourceHasher.digest("hex") !== input.expectedSource.checksum.toLowerCase()))) {
+      throw new Error(`Source capture integrity mismatch for ${input.expectedSource.id}`);
+    }
     if (writeStream) {
-      await new Promise<void>((resolve, reject) => {
-        writeStream!.end((error?: Error | null) => {
-          if (error) {
-            reject(error);
-          } else {
-            resolve();
-          }
-        });
-      });
+      writeStream.end();
+      await writeCompletion;
     }
   } catch (error) {
     if (writeStream) {
+      const closed = writeStream.closed ? Promise.resolve() : new Promise<void>((resolve) => writeStream!.once("close", resolve));
       writeStream.destroy();
+      // destroy() can precede the asynchronous open. Wait for close before
+      // unlinking so a late open cannot recreate an abandoned partial file.
+      await closed;
+      await writeCompletion?.catch(() => {});
     }
     if (partialPath) {
       rmSync(partialPath, { force: true });
@@ -2058,17 +2105,16 @@ export async function materializeBytesStream(input: {
 
   if (partialPath && input.assetDir) {
     const absolutePath = path.join(input.assetDir, storagePath);
-    mkdirSync(path.dirname(absolutePath), { recursive: true });
-    if (existsSync(absolutePath)) {
-      // Already materialized — discard our .partial.
-      rmSync(partialPath, { force: true });
-    } else {
-      try {
+    try {
+      mkdirSync(path.dirname(absolutePath), { recursive: true });
+      assertContainedEvidenceParent(absolutePath, input.assetDir);
+      if (existsSync(absolutePath)) {
+        verifyExistingEvidenceFile(absolutePath, input.assetDir, sha256, sizeBytes);
+      } else {
         renameSync(partialPath, absolutePath);
-      } catch (error) {
-        rmSync(partialPath, { force: true });
-        throw error;
       }
+    } finally {
+      rmSync(partialPath, { force: true });
     }
   }
 
@@ -2081,6 +2127,31 @@ export async function materializeBytesStream(input: {
     captureKind: input.captureKind,
     createdAt: input.createdAt,
   };
+}
+
+function assertContainedEvidenceParent(absolutePath: string, assetDir: string): void {
+  if (!realpathSync(path.dirname(absolutePath)).startsWith(realpathSync(assetDir) + path.sep)) {
+    throw new Error("Evidence path escapes the store through a symlink");
+  }
+}
+
+function verifyExistingEvidenceFile(absolutePath: string, assetDir: string, expectedSha: string, expectedSize: number): void {
+  if (!lstatSync(absolutePath).isFile() || !realpathSync(absolutePath).startsWith(realpathSync(assetDir) + path.sep)) {
+    throw new Error(`Existing evidence is not a regular contained file: ${expectedSha}`);
+  }
+  const fd = openSync(absolutePath, "r");
+  try {
+    if (fstatSync(fd).size !== expectedSize) throw new Error(`Existing evidence integrity mismatch: ${expectedSha}`);
+    const hasher = createHash("sha256");
+    const chunk = Buffer.allocUnsafe(64 * 1024);
+    let size = 0;
+    for (let count = readSync(fd, chunk); count > 0; count = readSync(fd, chunk)) {
+      size += count;
+      if (size > expectedSize) throw new Error(`Existing evidence integrity mismatch: ${expectedSha}`);
+      hasher.update(chunk.subarray(0, count));
+    }
+    if (size !== expectedSize || hasher.digest("hex") !== expectedSha) throw new Error(`Existing evidence integrity mismatch: ${expectedSha}`);
+  } finally { closeSync(fd); }
 }
 
 function readTrustedBlobBytes(blob: CapturedBlob): Buffer | undefined {
@@ -3029,12 +3100,12 @@ function isAlreadyExistsError(error: unknown): error is NodeJS.ErrnoException {
 }
 
 function dbTransaction(db: DatabaseSync, run: () => void): void {
-  db.exec("BEGIN IMMEDIATE;");
+  const ownsTransaction = beginImmediateTransactionIfNeeded(db);
   try {
     run();
-    db.exec("COMMIT;");
+    if (ownsTransaction) db.exec("COMMIT;");
   } catch (error) {
-    db.exec("ROLLBACK;");
+    if (ownsTransaction) db.exec("ROLLBACK;");
     throw error;
   }
 }

@@ -241,6 +241,15 @@ async function finalizeSourcePayload(
     message: `Deriving projections from ${state.sessionsById.size} session candidate(s)`,
   });
   const deriveStartedAt = Date.now();
+  const retainedOrigins = options.retained_contributor_origin_paths?.[state.source.id] ?? [];
+  if (retainedOrigins.length > 0) {
+    const previous = buildPreviousSourceIndex(options.previous_payloads?.[state.source.id], state.sourceFormatProfile);
+    for (const origin of retainedOrigins) {
+      const entry = previous?.byOriginPath.get(path.normalize(origin));
+      if (!entry || entry.metadataOnly) throw new Error(`Required retained session contributor unavailable for ${origin}; restore its input or complete replay before syncing this session.`);
+      mergePreviousFileEntry(state.sessionsById, state.orphanBlobs, state.lossAudits, entry);
+    }
+  }
   const processingCore = await processCollectedSessions(
     state.sessionsById,
     state.orphanBlobs,
@@ -611,7 +620,7 @@ async function* streamSingleFileInputs(
       const previousEntry = previousIndex?.byOriginPath.get(path.normalize(filePath));
       const isOlderThanSince = changedSinceMs !== undefined && fileStats.mtime.getTime() < changedSinceMs;
       if (previousEntry && canReuseBlobFromStats(previousEntry, fileStats)) {
-        if (!previousIndex?.metadataOnly) {
+        if (!previousEntry.metadataOnly) {
           const sessionsById = new Map<string, SessionBuildInput>();
           mergePreviousFileEntry(sessionsById, fileOrphanBlobs, fileLossAudits, previousEntry);
           fileSessionInputs.push(...sessionsById.values());
@@ -653,7 +662,7 @@ async function* streamSingleFileInputs(
         });
 
         if (previousEntry && canReuseCapturedBlob(previousEntry, capturedBlob.blob)) {
-          if (previousIndex?.metadataOnly) {
+          if (previousEntry.metadataOnly) {
             fileOrphanBlobs.push(capturedBlob.blob);
             // Stage 3: streaming variant has no fileBuffer — storage will
             // stream-read the bytes from captured_path if needed.
@@ -978,6 +987,7 @@ interface PreviousFileEntry {
   sessionInputs: SessionBuildInput[];
   orphanBlobs: CapturedBlob[];
   lossAudits: LossAuditRecord[];
+  metadataOnly: boolean;
 }
 
 function backfillReusableSessionResumeFields(
@@ -1005,7 +1015,6 @@ function backfillReusableSessionResumeFields(
 
 interface PreviousSourceIndex {
   byOriginPath: Map<string, PreviousFileEntry>;
-  metadataOnly: boolean;
 }
 
 function buildPreviousSourceIndex(
@@ -1119,17 +1128,12 @@ function buildPreviousSourceIndex(
       sessionInputs,
       orphanBlobs: blobs.filter((blob) => !recordBlobIds.has(blob.id)),
       lossAudits: dedupeById(fileLossAudits.filter((audit) => !sessionLossAuditIds.has(audit.id))),
+      metadataOnly: fileRecords.length === 0 && fileFragments.length === 0 && fileAtoms.length === 0 && sessionInputs.length === 0,
     });
   }
 
   return {
     byOriginPath,
-    metadataOnly:
-      previousPayload.records.length === 0 &&
-      previousPayload.fragments.length === 0 &&
-      previousPayload.atoms.length === 0 &&
-      previousPayload.edges.length === 0 &&
-      previousPayload.sessions.length === 0,
   };
 }
 

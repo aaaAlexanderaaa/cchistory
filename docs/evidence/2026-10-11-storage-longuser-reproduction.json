@@ -1,0 +1,1652 @@
+{
+  "generated_at": "2026-10-11T05:40:19.205Z",
+  "node": "v22.18.0",
+  "platform": "darwin",
+  "arch": "arm64",
+  "heap_limit_mib": 768,
+  "repeats": 1,
+  "profiles": {
+    "longuser": {
+      "fixture": {
+        "sessions": 1,
+        "turns": 2,
+        "toolBytes": 0,
+        "userBytes": 65536,
+        "platforms": [
+          "codex"
+        ]
+      },
+      "phases": {
+        "sync_first": [
+          {
+            "operation_ms": 129.881916,
+            "max_rss_bytes": 74514432,
+            "cpu_user_ms": 44.82,
+            "cpu_system_ms": 37.435,
+            "fs_read_operations": 0,
+            "fs_write_operations": 0,
+            "calls": {
+              "getSourceIncrementalMetadataPayload": {
+                "calls": 1,
+                "ms": 0.08783299999998917,
+                "sql_row_changes": 0
+              },
+              "getSourceIncrementalPayloadForOriginPaths": {
+                "calls": 1,
+                "ms": 0.02008299999999963,
+                "sql_row_changes": 0
+              },
+              "mergeSourcePayloadStreaming": {
+                "calls": 1,
+                "ms": 46.232042000000035,
+                "sql_row_changes": 65
+              },
+              "refreshGlobalDerivedCacheRefs": {
+                "calls": 1,
+                "ms": 0.3956670000000031,
+                "sql_row_changes": 8
+              },
+              "computeProjectLinkSnapshot": {
+                "calls": 1,
+                "ms": 2.041917000000012,
+                "sql_row_changes": 0
+              },
+              "refreshDerivedState": {
+                "calls": 1,
+                "ms": 2.346749999999986,
+                "sql_row_changes": 3
+              },
+              "pruneEvidenceBlobsNow": {
+                "calls": 1,
+                "ms": 0.0675839999999539,
+                "sql_row_changes": 0
+              }
+            },
+            "result": {
+              "sources": [
+                {
+                  "platform": "codex",
+                  "total_turns": 2,
+                  "counts": {
+                    "sessions": 1,
+                    "turns": 2,
+                    "records": 5,
+                    "fragments": 7,
+                    "atoms": 6,
+                    "blobs": 1
+                  }
+                }
+              ]
+            },
+            "process_ms": 316.259834,
+            "sampled_wal_peak_bytes": 7957912
+          }
+        ],
+        "sync_unchanged": [
+          {
+            "operation_ms": 68.04670799999998,
+            "max_rss_bytes": 68583424,
+            "cpu_user_ms": 29.053,
+            "cpu_system_ms": 18.156,
+            "fs_read_operations": 0,
+            "fs_write_operations": 0,
+            "calls": {
+              "getSourceIncrementalMetadataPayload": {
+                "calls": 1,
+                "ms": 9.18266700000001,
+                "sql_row_changes": 0
+              },
+              "getSourceIncrementalPayloadForOriginPaths": {
+                "calls": 1,
+                "ms": 0.7114159999999856,
+                "sql_row_changes": 0
+              },
+              "mergeSourcePayloadStreaming": {
+                "calls": 1,
+                "ms": 6.044250000000005,
+                "sql_row_changes": 34
+              },
+              "refreshGlobalDerivedCacheRefs": {
+                "calls": 1,
+                "ms": 0.42124999999998636,
+                "sql_row_changes": 8
+              },
+              "pruneEvidenceBlobsNow": {
+                "calls": 1,
+                "ms": 0.07479200000000219,
+                "sql_row_changes": 0
+              }
+            },
+            "result": {
+              "sources": [
+                {
+                  "platform": "codex",
+                  "total_turns": 2,
+                  "counts": {
+                    "sessions": 1,
+                    "turns": 2,
+                    "records": 5,
+                    "fragments": 7,
+                    "atoms": 6,
+                    "blobs": 1
+                  }
+                }
+              ]
+            },
+            "process_ms": 202.96224999999998,
+            "sampled_wal_peak_bytes": 180520
+          }
+        ],
+        "sync_reuse_full_scan": [
+          {
+            "operation_ms": 66.31295800000001,
+            "max_rss_bytes": 67977216,
+            "cpu_user_ms": 27.81,
+            "cpu_system_ms": 14.886,
+            "fs_read_operations": 0,
+            "fs_write_operations": 0,
+            "calls": {
+              "getSourceIncrementalMetadataPayload": {
+                "calls": 1,
+                "ms": 0.5030000000000143,
+                "sql_row_changes": 0
+              },
+              "getSourceIncrementalPayloadForOriginPaths": {
+                "calls": 1,
+                "ms": 0.902292000000017,
+                "sql_row_changes": 0
+              },
+              "mergeSourcePayloadStreaming": {
+                "calls": 1,
+                "ms": 13.936541000000005,
+                "sql_row_changes": 34
+              },
+              "refreshGlobalDerivedCacheRefs": {
+                "calls": 1,
+                "ms": 0.3617089999999905,
+                "sql_row_changes": 8
+              },
+              "pruneEvidenceBlobsNow": {
+                "calls": 1,
+                "ms": 0.08799999999999386,
+                "sql_row_changes": 0
+              }
+            },
+            "result": {
+              "sources": [
+                {
+                  "platform": "codex",
+                  "total_turns": 2,
+                  "counts": {
+                    "sessions": 1,
+                    "turns": 2,
+                    "records": 5,
+                    "fragments": 7,
+                    "atoms": 6,
+                    "blobs": 1
+                  }
+                }
+              ]
+            },
+            "process_ms": 210.1924170000001,
+            "sampled_wal_peak_bytes": 0
+          }
+        ],
+        "sync_append": [
+          {
+            "operation_ms": 100.257208,
+            "max_rss_bytes": 75415552,
+            "cpu_user_ms": 43.923,
+            "cpu_system_ms": 24.903,
+            "fs_read_operations": 0,
+            "fs_write_operations": 0,
+            "calls": {
+              "getSourceIncrementalMetadataPayload": {
+                "calls": 1,
+                "ms": 0.3015000000000043,
+                "sql_row_changes": 0
+              },
+              "getSourceIncrementalPayloadForOriginPaths": {
+                "calls": 1,
+                "ms": 0.7182080000000042,
+                "sql_row_changes": 0
+              },
+              "mergeSourcePayloadStreaming": {
+                "calls": 1,
+                "ms": 35.99266699999998,
+                "sql_row_changes": 188
+              },
+              "refreshGlobalDerivedCacheRefs": {
+                "calls": 1,
+                "ms": 0.28333299999999895,
+                "sql_row_changes": 8
+              },
+              "computeProjectLinkSnapshot": {
+                "calls": 1,
+                "ms": 7.952832999999998,
+                "sql_row_changes": 0
+              },
+              "refreshDerivedState": {
+                "calls": 1,
+                "ms": 8.897415999999993,
+                "sql_row_changes": 5
+              },
+              "pruneEvidenceBlobsNow": {
+                "calls": 1,
+                "ms": 0.08750000000000568,
+                "sql_row_changes": 0
+              }
+            },
+            "result": {
+              "sources": [
+                {
+                  "platform": "codex",
+                  "total_turns": 7,
+                  "counts": {
+                    "sessions": 1,
+                    "turns": 7,
+                    "records": 15,
+                    "fragments": 17,
+                    "atoms": 16,
+                    "blobs": 2
+                  }
+                }
+              ]
+            },
+            "process_ms": 235.65862499999992,
+            "sampled_wal_peak_bytes": 2001808
+          }
+        ],
+        "page": [
+          {
+            "operation_ms": 28.549458,
+            "max_rss_bytes": 64602112,
+            "cpu_user_ms": 9.793,
+            "cpu_system_ms": 6.768,
+            "fs_read_operations": 0,
+            "fs_write_operations": 0,
+            "calls": {
+              "computeProjectLinkSnapshot": {
+                "calls": 1,
+                "ms": 8.196874999999991,
+                "sql_row_changes": 0
+              }
+            },
+            "result": {
+              "total": 7,
+              "rows": 7,
+              "first_page_ms": 9.447291000000007,
+              "warm_page_ms": [
+                0.5710420000000056,
+                0.116375000000005,
+                0.020124999999978854,
+                0.037709000000006654,
+                0.15879200000000537
+              ]
+            },
+            "process_ms": 153.07200000000012,
+            "sampled_wal_peak_bytes": 0
+          }
+        ],
+        "session": [
+          {
+            "operation_ms": 26.037292000000008,
+            "max_rss_bytes": 65060864,
+            "cpu_user_ms": 8.023,
+            "cpu_system_ms": 6.821,
+            "fs_read_operations": 0,
+            "fs_write_operations": 0,
+            "calls": {},
+            "result": {
+              "rows": 7
+            },
+            "process_ms": 149.70749999999998,
+            "sampled_wal_peak_bytes": 0
+          }
+        ],
+        "search": [
+          {
+            "operation_ms": 25.4615,
+            "max_rss_bytes": 63782912,
+            "cpu_user_ms": 10.643,
+            "cpu_system_ms": 6.023,
+            "fs_read_operations": 0,
+            "fs_write_operations": 0,
+            "calls": {},
+            "result": {
+              "rows": 1,
+              "total": 1,
+              "expected_matches": 1,
+              "search_mode": "fallback"
+            },
+            "process_ms": 165.66649999999981,
+            "sampled_wal_peak_bytes": 0
+          }
+        ],
+        "search_project": [
+          {
+            "operation_ms": 28.897667000000013,
+            "max_rss_bytes": 65372160,
+            "cpu_user_ms": 11.513,
+            "cpu_system_ms": 7.557,
+            "fs_read_operations": 0,
+            "fs_write_operations": 0,
+            "calls": {
+              "computeProjectLinkSnapshot": {
+                "calls": 1,
+                "ms": 11.339291999999986,
+                "sql_row_changes": 0
+              }
+            },
+            "result": {
+              "rows": 1,
+              "total": 1,
+              "expected_matches": 1,
+              "search_mode": "fallback"
+            },
+            "process_ms": 152.25704199999996,
+            "sampled_wal_peak_bytes": 0
+          }
+        ],
+        "detail": [
+          {
+            "operation_ms": 21.47333300000001,
+            "max_rss_bytes": 65257472,
+            "cpu_user_ms": 11.172,
+            "cpu_system_ms": 4.383,
+            "fs_read_operations": 0,
+            "fs_write_operations": 0,
+            "calls": {
+              "computeProjectLinkSnapshot": {
+                "calls": 1,
+                "ms": 4.001166999999981,
+                "sql_row_changes": 0
+              }
+            },
+            "result": {
+              "raw_user_bytes": 65601,
+              "context_json_bytes": 513
+            },
+            "process_ms": 161.9860000000001,
+            "sampled_wal_peak_bytes": 0
+          }
+        ],
+        "detail_targeted_diagnostic": [
+          {
+            "operation_ms": 19.010333000000003,
+            "max_rss_bytes": 63602688,
+            "cpu_user_ms": 9.362,
+            "cpu_system_ms": 4.494,
+            "fs_read_operations": 0,
+            "fs_write_operations": 0,
+            "calls": {},
+            "result": {
+              "raw_user_bytes": 65601,
+              "context_json_bytes": 513
+            },
+            "process_ms": 154.52199999999993,
+            "sampled_wal_peak_bytes": 0
+          }
+        ],
+        "sql_page_diagnostic": [
+          {
+            "operation_ms": 8.676124999999999,
+            "max_rss_bytes": 58753024,
+            "cpu_user_ms": 0.474,
+            "cpu_system_ms": 2.972,
+            "fs_read_operations": 0,
+            "fs_write_operations": 0,
+            "calls": {},
+            "result": {
+              "rows": 7,
+              "sql_plan": [
+                {
+                  "id": 5,
+                  "parent": 0,
+                  "notused": 223,
+                  "detail": "SCAN user_turns_v2 USING INDEX idx_user_turns_v2_submission"
+                },
+                {
+                  "id": 29,
+                  "parent": 0,
+                  "notused": 0,
+                  "detail": "USE TEMP B-TREE FOR LAST TERM OF ORDER BY"
+                }
+              ]
+            },
+            "process_ms": 130.7802499999998,
+            "sampled_wal_peak_bytes": 0
+          }
+        ],
+        "search_tail": [
+          {
+            "operation_ms": 16.936624999999992,
+            "max_rss_bytes": 62160896,
+            "cpu_user_ms": 7.766,
+            "cpu_system_ms": 3.481,
+            "fs_read_operations": 0,
+            "fs_write_operations": 0,
+            "calls": {},
+            "result": {
+              "rows": 0,
+              "total": 0,
+              "expected_matches": 1,
+              "search_mode": "fallback"
+            },
+            "process_ms": 147.575875,
+            "sampled_wal_peak_bytes": 0
+          }
+        ],
+        "search_tail_project": [
+          {
+            "operation_ms": 27.928167000000002,
+            "max_rss_bytes": 65765376,
+            "cpu_user_ms": 10.598,
+            "cpu_system_ms": 7.441,
+            "fs_read_operations": 0,
+            "fs_write_operations": 0,
+            "calls": {
+              "computeProjectLinkSnapshot": {
+                "calls": 1,
+                "ms": 2.7927080000000046,
+                "sql_row_changes": 0
+              }
+            },
+            "result": {
+              "rows": 0,
+              "total": 0,
+              "expected_matches": 1,
+              "search_mode": "fallback"
+            },
+            "process_ms": 153.35149999999976,
+            "sampled_wal_peak_bytes": 0
+          }
+        ]
+      },
+      "source_bytes_initial": 66465,
+      "first_footprint": {
+        "sqlite_bytes": 2424832,
+        "evidence_disk_bytes": 68433,
+        "evidence_bytes_by_role": {
+          "source_blob": 66465,
+          "record_snapshot": 0,
+          "context_cache": 1028,
+          "lineage": 940
+        },
+        "raw_snapshot_disk_bytes": 0,
+        "page_size": 16384,
+        "free_pages": 0,
+        "tables": {
+          "schema_meta": {
+            "rows": 61
+          },
+          "schema_migrations": {
+            "rows": 12
+          },
+          "source_instances": {
+            "rows": 1,
+            "payload_bytes": 427
+          },
+          "stage_runs": {
+            "rows": 8,
+            "payload_bytes": 5898
+          },
+          "loss_audits": {
+            "rows": 0,
+            "payload_bytes": 0
+          },
+          "captured_blobs": {
+            "rows": 1,
+            "payload_bytes": 589
+          },
+          "raw_records": {
+            "rows": 5,
+            "payload_bytes": 68049
+          },
+          "source_fragments": {
+            "rows": 7,
+            "payload_bytes": 69000
+          },
+          "conversation_atoms": {
+            "rows": 6,
+            "payload_bytes": 68583
+          },
+          "atom_edges": {
+            "rows": 0,
+            "payload_bytes": 0
+          },
+          "derived_candidates": {
+            "rows": 7,
+            "payload_bytes": 3283
+          },
+          "sessions": {
+            "rows": 1,
+            "payload_bytes": 616
+          },
+          "project_current": {
+            "rows": 1,
+            "payload_bytes": 579
+          },
+          "project_link_revisions": {
+            "rows": 1,
+            "payload_bytes": 298
+          },
+          "project_lineage_events": {
+            "rows": 1,
+            "payload_bytes": 309
+          },
+          "project_manual_overrides": {
+            "rows": 0,
+            "payload_bytes": 0
+          },
+          "tombstones": {
+            "rows": 0,
+            "payload_bytes": 0
+          },
+          "knowledge_artifacts": {
+            "rows": 0,
+            "payload_bytes": 0
+          },
+          "artifact_coverage": {
+            "rows": 0,
+            "payload_bytes": 0
+          },
+          "import_bundles": {
+            "rows": 0,
+            "payload_bytes": 0
+          },
+          "evidence_blobs": {
+            "rows": 5
+          },
+          "evidence_captures": {
+            "rows": 1
+          },
+          "source_file_ledger": {
+            "rows": 1
+          },
+          "parsed_record_spans": {
+            "rows": 5
+          },
+          "user_turns_v2": {
+            "rows": 2
+          },
+          "turn_context_refs_v2": {
+            "rows": 2
+          },
+          "derived_cache_refs": {
+            "rows": 12
+          },
+          "migration_state": {
+            "rows": 0
+          },
+          "ask_user_question_turns": {
+            "rows": 0,
+            "payload_bytes": 0
+          }
+        },
+        "pages": [
+          {
+            "name": "user_turns_v2",
+            "page_bytes": 360448
+          },
+          {
+            "name": "source_fragments",
+            "page_bytes": 81920
+          },
+          {
+            "name": "raw_records",
+            "page_bytes": 81920
+          },
+          {
+            "name": "conversation_atoms",
+            "page_bytes": 81920
+          },
+          {
+            "name": "sqlite_schema",
+            "page_bytes": 49152
+          },
+          {
+            "name": "turn_context_refs_v2",
+            "page_bytes": 16384
+          },
+          {
+            "name": "tombstones",
+            "page_bytes": 16384
+          },
+          {
+            "name": "stage_runs",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_user_turns_v2_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_turn_context_refs_v2_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_tombstones_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_stage_runs_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_source_instances_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_source_fragments_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_source_file_ledger_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_sessions_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_schema_migrations_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_schema_meta_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_raw_records_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_project_manual_overrides_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_project_link_revisions_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_project_lineage_events_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_project_current_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_parsed_record_spans_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_migration_state_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_loss_audits_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_knowledge_artifacts_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_import_bundles_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_evidence_captures_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_evidence_blobs_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_derived_candidates_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_derived_cache_refs_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_conversation_atoms_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_captured_blobs_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_atom_edges_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_ask_user_question_turns_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_artifact_coverage_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "source_instances",
+            "page_bytes": 16384
+          },
+          {
+            "name": "source_file_ledger",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sessions",
+            "page_bytes": 16384
+          },
+          {
+            "name": "schema_migrations",
+            "page_bytes": 16384
+          },
+          {
+            "name": "schema_meta",
+            "page_bytes": 16384
+          },
+          {
+            "name": "project_manual_overrides",
+            "page_bytes": 16384
+          },
+          {
+            "name": "project_link_revisions",
+            "page_bytes": 16384
+          },
+          {
+            "name": "project_lineage_events",
+            "page_bytes": 16384
+          },
+          {
+            "name": "project_current",
+            "page_bytes": 16384
+          },
+          {
+            "name": "parsed_record_spans",
+            "page_bytes": 16384
+          },
+          {
+            "name": "migration_state",
+            "page_bytes": 16384
+          },
+          {
+            "name": "loss_audits",
+            "page_bytes": 16384
+          },
+          {
+            "name": "knowledge_artifacts",
+            "page_bytes": 16384
+          },
+          {
+            "name": "import_bundles",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_user_turns_v2_submission",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_user_turns_v2_source_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_user_turns_v2_lineage_sha_full",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_user_turns_v2_lineage_sha",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_turn_context_refs_v2_source",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_turn_context_refs_v2_sha_full",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_turn_context_refs_v2_sha",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_stage_runs_source",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_source_fragments_source_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_source_file_ledger_source_origin",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_source_file_ledger_source_checksum",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_source_file_ledger_parser_profile",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_source_file_ledger_current_evidence",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_sessions_source",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_raw_records_source_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_raw_records_source_blob_ordinal",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_raw_records_blob",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_project_link_revisions_project",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_project_lineage_events_project",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_parsed_record_spans_source_blob",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_parsed_record_spans_sha",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_parsed_record_spans_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_parsed_record_spans_parser_profile",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_migration_state_phase_status",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_stage",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_severity_stage",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_record",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_fragment",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_failure_stage",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_diagnostic",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_candidate",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_blob",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_atom",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_evidence_captures_source_origin",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_evidence_captures_source_blob",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_evidence_captures_sha",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_derived_candidates_source_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_derived_candidates_source",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_derived_cache_refs_scope",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_derived_cache_refs_parser_profile",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_derived_cache_refs_kind_scope",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_derived_cache_refs_evidence_sha",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_conversation_atoms_source_session_order",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_captured_blobs_source_origin",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_captured_blobs_source",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_atom_edges_to",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_atom_edges_source_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_atom_edges_from",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_ask_user_question_turns_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_ask_user_question_turns_created",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_artifact_coverage_turn",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_artifact_coverage_artifact",
+            "page_bytes": 16384
+          },
+          {
+            "name": "evidence_captures",
+            "page_bytes": 16384
+          },
+          {
+            "name": "evidence_blobs",
+            "page_bytes": 16384
+          },
+          {
+            "name": "derived_candidates",
+            "page_bytes": 16384
+          },
+          {
+            "name": "derived_cache_refs",
+            "page_bytes": 16384
+          },
+          {
+            "name": "captured_blobs",
+            "page_bytes": 16384
+          },
+          {
+            "name": "atom_edges",
+            "page_bytes": 16384
+          },
+          {
+            "name": "ask_user_question_turns",
+            "page_bytes": 16384
+          },
+          {
+            "name": "artifact_coverage",
+            "page_bytes": 16384
+          }
+        ],
+        "captures": [
+          {
+            "capture_kind": "source_blob",
+            "n": 1
+          }
+        ],
+        "verified_input_captures": [
+          {
+            "source_basename": "codex-session-0.jsonl",
+            "bytes": 66465,
+            "evidence_sha256": "b9be72f669afc77f06ef06286e9de8e2e7ac937dfefcc080141f7d941c5a9070"
+          }
+        ]
+      },
+      "final_footprint": {
+        "sqlite_bytes": 2457600,
+        "evidence_disk_bytes": 210825,
+        "evidence_bytes_by_role": {
+          "source_blob": 134775,
+          "record_snapshot": 69162,
+          "context_cache": 3598,
+          "lineage": 3290
+        },
+        "raw_snapshot_disk_bytes": 0,
+        "page_size": 16384,
+        "free_pages": 0,
+        "tables": {
+          "schema_meta": {
+            "rows": 61
+          },
+          "schema_migrations": {
+            "rows": 12
+          },
+          "source_instances": {
+            "rows": 1,
+            "payload_bytes": 430
+          },
+          "stage_runs": {
+            "rows": 8,
+            "payload_bytes": 5906
+          },
+          "loss_audits": {
+            "rows": 0,
+            "payload_bytes": 0
+          },
+          "captured_blobs": {
+            "rows": 2,
+            "payload_bytes": 1178
+          },
+          "raw_records": {
+            "rows": 15,
+            "payload_bytes": 73084
+          },
+          "source_fragments": {
+            "rows": 17,
+            "payload_bytes": 74395
+          },
+          "conversation_atoms": {
+            "rows": 16,
+            "payload_bytes": 73714
+          },
+          "atom_edges": {
+            "rows": 0,
+            "payload_bytes": 0
+          },
+          "derived_candidates": {
+            "rows": 22,
+            "payload_bytes": 10023
+          },
+          "sessions": {
+            "rows": 1,
+            "payload_bytes": 616
+          },
+          "project_current": {
+            "rows": 1,
+            "payload_bytes": 579
+          },
+          "project_link_revisions": {
+            "rows": 2,
+            "payload_bytes": 655
+          },
+          "project_lineage_events": {
+            "rows": 3,
+            "payload_bytes": 1137
+          },
+          "project_manual_overrides": {
+            "rows": 0,
+            "payload_bytes": 0
+          },
+          "tombstones": {
+            "rows": 0,
+            "payload_bytes": 0
+          },
+          "knowledge_artifacts": {
+            "rows": 0,
+            "payload_bytes": 0
+          },
+          "artifact_coverage": {
+            "rows": 0,
+            "payload_bytes": 0
+          },
+          "import_bundles": {
+            "rows": 0,
+            "payload_bytes": 0
+          },
+          "evidence_blobs": {
+            "rows": 17
+          },
+          "evidence_captures": {
+            "rows": 3
+          },
+          "source_file_ledger": {
+            "rows": 1
+          },
+          "parsed_record_spans": {
+            "rows": 15
+          },
+          "user_turns_v2": {
+            "rows": 7
+          },
+          "turn_context_refs_v2": {
+            "rows": 7
+          },
+          "derived_cache_refs": {
+            "rows": 12
+          },
+          "migration_state": {
+            "rows": 0
+          },
+          "ask_user_question_turns": {
+            "rows": 0,
+            "payload_bytes": 0
+          }
+        },
+        "pages": [
+          {
+            "name": "user_turns_v2",
+            "page_bytes": 393216
+          },
+          {
+            "name": "source_fragments",
+            "page_bytes": 81920
+          },
+          {
+            "name": "raw_records",
+            "page_bytes": 81920
+          },
+          {
+            "name": "conversation_atoms",
+            "page_bytes": 81920
+          },
+          {
+            "name": "sqlite_schema",
+            "page_bytes": 49152
+          },
+          {
+            "name": "turn_context_refs_v2",
+            "page_bytes": 16384
+          },
+          {
+            "name": "tombstones",
+            "page_bytes": 16384
+          },
+          {
+            "name": "stage_runs",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_user_turns_v2_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_turn_context_refs_v2_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_tombstones_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_stage_runs_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_source_instances_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_source_fragments_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_source_file_ledger_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_sessions_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_schema_migrations_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_schema_meta_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_raw_records_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_project_manual_overrides_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_project_link_revisions_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_project_lineage_events_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_project_current_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_parsed_record_spans_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_migration_state_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_loss_audits_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_knowledge_artifacts_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_import_bundles_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_evidence_captures_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_evidence_blobs_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_derived_candidates_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_derived_cache_refs_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_conversation_atoms_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_captured_blobs_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_atom_edges_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_ask_user_question_turns_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sqlite_autoindex_artifact_coverage_1",
+            "page_bytes": 16384
+          },
+          {
+            "name": "source_instances",
+            "page_bytes": 16384
+          },
+          {
+            "name": "source_file_ledger",
+            "page_bytes": 16384
+          },
+          {
+            "name": "sessions",
+            "page_bytes": 16384
+          },
+          {
+            "name": "schema_migrations",
+            "page_bytes": 16384
+          },
+          {
+            "name": "schema_meta",
+            "page_bytes": 16384
+          },
+          {
+            "name": "project_manual_overrides",
+            "page_bytes": 16384
+          },
+          {
+            "name": "project_link_revisions",
+            "page_bytes": 16384
+          },
+          {
+            "name": "project_lineage_events",
+            "page_bytes": 16384
+          },
+          {
+            "name": "project_current",
+            "page_bytes": 16384
+          },
+          {
+            "name": "parsed_record_spans",
+            "page_bytes": 16384
+          },
+          {
+            "name": "migration_state",
+            "page_bytes": 16384
+          },
+          {
+            "name": "loss_audits",
+            "page_bytes": 16384
+          },
+          {
+            "name": "knowledge_artifacts",
+            "page_bytes": 16384
+          },
+          {
+            "name": "import_bundles",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_user_turns_v2_submission",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_user_turns_v2_source_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_user_turns_v2_lineage_sha_full",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_user_turns_v2_lineage_sha",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_turn_context_refs_v2_source",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_turn_context_refs_v2_sha_full",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_turn_context_refs_v2_sha",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_stage_runs_source",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_source_fragments_source_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_source_file_ledger_source_origin",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_source_file_ledger_source_checksum",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_source_file_ledger_parser_profile",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_source_file_ledger_current_evidence",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_sessions_source",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_raw_records_source_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_raw_records_source_blob_ordinal",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_raw_records_blob",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_project_link_revisions_project",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_project_lineage_events_project",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_parsed_record_spans_source_blob",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_parsed_record_spans_sha",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_parsed_record_spans_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_parsed_record_spans_parser_profile",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_migration_state_phase_status",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_stage",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_severity_stage",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_record",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_fragment",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_failure_stage",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_diagnostic",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_candidate",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_blob",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source_atom",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_loss_audits_source",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_evidence_captures_source_origin",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_evidence_captures_source_blob",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_evidence_captures_sha",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_derived_candidates_source_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_derived_candidates_source",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_derived_cache_refs_scope",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_derived_cache_refs_parser_profile",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_derived_cache_refs_kind_scope",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_derived_cache_refs_evidence_sha",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_conversation_atoms_source_session_order",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_captured_blobs_source_origin",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_captured_blobs_source",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_atom_edges_to",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_atom_edges_source_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_atom_edges_from",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_ask_user_question_turns_session",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_ask_user_question_turns_created",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_artifact_coverage_turn",
+            "page_bytes": 16384
+          },
+          {
+            "name": "idx_artifact_coverage_artifact",
+            "page_bytes": 16384
+          },
+          {
+            "name": "evidence_captures",
+            "page_bytes": 16384
+          },
+          {
+            "name": "evidence_blobs",
+            "page_bytes": 16384
+          },
+          {
+            "name": "derived_candidates",
+            "page_bytes": 16384
+          },
+          {
+            "name": "derived_cache_refs",
+            "page_bytes": 16384
+          },
+          {
+            "name": "captured_blobs",
+            "page_bytes": 16384
+          },
+          {
+            "name": "atom_edges",
+            "page_bytes": 16384
+          },
+          {
+            "name": "ask_user_question_turns",
+            "page_bytes": 16384
+          },
+          {
+            "name": "artifact_coverage",
+            "page_bytes": 16384
+          }
+        ],
+        "captures": [
+          {
+            "capture_kind": "record_snapshot",
+            "n": 1
+          },
+          {
+            "capture_kind": "source_blob",
+            "n": 2
+          }
+        ],
+        "verified_input_captures": [
+          {
+            "source_basename": "codex-session-0.jsonl",
+            "bytes": 68310,
+            "evidence_sha256": "40e978967cbf6735725385f7745b70c1b668acdb5f1cec9a725237c4dde72e73"
+          }
+        ]
+      },
+      "source_bytes_final": 68310,
+      "superseded_input_integrity": "all initial capture hashes retained and verified after append and end-of-sync GC"
+    }
+  },
+  "method": "Sequential fresh workers; kernel maxRSS in KiB; sampled WAL peak, not cumulative write bytes. Source roots isolated through a worker-local os.homedir stub. No OS cache flush."
+}

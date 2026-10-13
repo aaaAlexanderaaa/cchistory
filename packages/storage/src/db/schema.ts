@@ -2,8 +2,9 @@ import process from "node:process";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { nowIso } from "@cchistory/domain";
+import { initializeResolvedReadIndex } from "./resolved-read-index.js";
 
-export const STORAGE_SCHEMA_VERSION = "2026-07-11.1";
+export const STORAGE_SCHEMA_VERSION = "2026-10-11.1";
 
 export interface StorageSchemaMigration {
   id: string;
@@ -97,6 +98,11 @@ const STORAGE_SCHEMA_MIGRATIONS: ReadonlyArray<{
     to_version: STORAGE_SCHEMA_VERSION,
     summary:
       "Add ask_user_question_turns table for synthesized question/answer pairs (Claude AskUserQuestion, Codex request_user_input). Stores full payload JSON keyed by (source_id, id); source-scoped replace is the only write path. No evidence blob ref or project linkage yet — these are derived from atom/edge pairs at projection time.",
+  },
+  {
+    id: "2026-10-11.1/resolved-read-index",
+    to_version: STORAGE_SCHEMA_VERSION,
+    summary: "Add reconstructible canonical link/order indexes and durable dependency invalidation for bounded resolved reads; no user or evidence body duplication.",
   },
 ];
 
@@ -535,6 +541,8 @@ export function initializeStorageSchema(db: DatabaseSync): StorageSchemaInitiali
   ensureSourceFileLedgerContentMaxTimestamp(db);
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[11]!);
   recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[12]!);
+  initializeResolvedReadIndex(db);
+  recordSchemaMigration(db, STORAGE_SCHEMA_MIGRATIONS[13]!);
   setSchemaMeta(db, "schema_version", STORAGE_SCHEMA_VERSION);
 
   ensureStorageIndexes(db);

@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { CCHistoryStorage } from "@cchistory/storage";
 import { runCliCapture, runCliJson, seedCliFixtures } from "./helpers.js";
 
 // Auto-resume marker: cchistory sync writes `sync.started_at.<source_id>`
@@ -194,25 +195,26 @@ test("default second sync auto-resumes from marker (metadata-only fast path acti
   }, "cchistory-sync-marker-resume-");
 });
 
-test("--force-full-resync bypasses marker derivation (no metadata-only fast path)", async () => {
+test("--force-full-resync bypasses marker derivation while retaining verified stat reuse", async () => {
   await withSeededHome(async (_tempRoot, storeDir) => {
     // First sync to establish state and write the marker.
     const first = await runCliCapture(["sync", "--store", storeDir, "--source", "codex"]);
     assert.equal(first.exitCode, 0, first.stderr);
 
-    // Second sync with --force-full-resync must NOT derive changedSince, so the
-    // metadata-only fast path stays inactive even though the marker exists.
-    const second = await runCliCapture([
-      "sync", "--store", storeDir, "--source", "codex", "--force-full-resync", "--json", "--detail",
-    ]);
-    assert.equal(second.exitCode, 0, second.stderr);
+    const readMarker = CCHistoryStorage.prototype.getSourceSyncStartedAt;
+    CCHistoryStorage.prototype.getSourceSyncStartedAt = () => { throw new Error("force resync must not read marker"); };
+    try {
+      const second = await runCliCapture([
+        "sync", "--store", storeDir, "--source", "codex", "--force-full-resync", "--json", "--detail",
+      ]);
+      assert.equal(second.exitCode, 0, second.stderr);
+    } finally { CCHistoryStorage.prototype.getSourceSyncStartedAt = readMarker; }
 
     const dbPath = path.join(storeDir, "cchistory.sqlite");
     const stats = readCaptureStats(dbPath);
-    assert.equal(
-      stats.sync_metadata_only_reuse_batch_count ?? 0,
-      0,
-      "--force-full-resync must skip marker-derived changedSince",
+    assert.ok(
+      (stats.sync_metadata_only_reuse_batch_count ?? 0) > 0,
+      "verified stat reuse is independent of marker derivation",
     );
   }, "cchistory-sync-marker-force-skip-");
 });

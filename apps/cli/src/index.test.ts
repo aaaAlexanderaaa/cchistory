@@ -2,6 +2,7 @@ import "./test/commands-core.test.js";
 import "./test/commands-query.test.js";
 import "./test/commands-context.test.js";
 import "./test/commands-diagnostics.test.js";
+import "./test/sync-reuse.test.js";
 import "./test/commands-portability.test.js";
 import "./test/commands-agent-mode.test.js";
 import "./test/commands-completions.test.js";

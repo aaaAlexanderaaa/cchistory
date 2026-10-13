@@ -143,7 +143,7 @@ export function materializeSearchCandidate(input: MaterializeSearchCandidateInpu
   }
 
   return {
-    canonical_text: boundSearchCanonicalText(input.turn.canonical_text ?? ""),
+    canonical_text: input.turn.canonical_text ?? "",
     path_text: pathParts.filter((value): value is string => Boolean(value)).join(" ") || undefined,
   };
 }

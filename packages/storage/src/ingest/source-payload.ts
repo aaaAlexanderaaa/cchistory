@@ -8,6 +8,7 @@ import {
   normalizeSourceStatus,
 } from "../internal/source-identity.js";
 import { dedupeByKey, fromJson, toJson } from "../internal/utils.js";
+import { beginImmediateTransactionIfNeeded } from "../db/transaction.js";
 
 export interface SourcePayloadWriteProgressEvent {
   stage: "write_store_done";
@@ -97,7 +98,7 @@ export function replaceSourcePayloadWithOptions(
   blobs: number;
 } {
   const normalizedPayload = normalizeSourcePayload(payload);
-  db.exec("BEGIN IMMEDIATE;");
+  const ownsTransaction = beginImmediateTransactionIfNeeded(db);
   try {
     for (const sourceId of resolveReplaceSourceIds(db, normalizedPayload.source, options)) {
       deleteBySource(db, sourceId);
@@ -202,7 +203,7 @@ export function replaceSourcePayloadWithOptions(
     // after this function returns. This loop is intentionally omitted — it
     // would throw "no such table" against a post-compact store.
 
-    db.exec("COMMIT;");
+    if (ownsTransaction) db.exec("COMMIT;");
     options.on_progress?.({ stage: "write_store_done", source_id: normalizedPayload.source.id, projection_changed: true });
 
     return {
@@ -214,7 +215,7 @@ export function replaceSourcePayloadWithOptions(
       blobs: normalizedPayload.blobs.length,
     };
   } catch (error) {
-    db.exec("ROLLBACK;");
+    if (ownsTransaction) db.exec("ROLLBACK;");
     throw error;
   }
 }
@@ -389,7 +390,7 @@ export function mergeSourcePayloadByOriginPath(
   const affectedSessionRefs = new Set(changedIncomingSessionRefs);
   const projectionChanged = affectedSessionRefs.size > 0;
 
-  db.exec("BEGIN IMMEDIATE;");
+  const ownsTransaction = beginImmediateTransactionIfNeeded(db);
   try {
     db.prepare("DELETE FROM stage_runs WHERE source_id = ?").run(sourceId);
 
@@ -512,11 +513,11 @@ export function mergeSourcePayloadByOriginPath(
     };
     db.prepare("INSERT OR REPLACE INTO source_instances (id, payload_json) VALUES (?, ?)").run(sourceId, toJson(mergedSource));
 
-    db.exec("COMMIT;");
+    if (ownsTransaction) db.exec("COMMIT;");
     options.on_progress?.({ stage: "write_store_done", source_id: sourceId, projection_changed: projectionChanged });
     return counts;
   } catch (error) {
-    db.exec("ROLLBACK;");
+    if (ownsTransaction) db.exec("ROLLBACK;");
     throw error;
   }
 }
@@ -526,6 +527,7 @@ export function updateSourceSyncMetadata(
   payload: SourceSyncPayload,
   options: {
     on_progress?: (event: SourcePayloadWriteProgressEvent) => void;
+    reconcile_presence?: () => boolean;
   } = {},
 ): {
   sessions: number;
@@ -540,6 +542,7 @@ export function updateSourceSyncMetadata(
 
   db.exec("BEGIN IMMEDIATE;");
   try {
+    const projectionChanged = options.reconcile_presence?.() ?? false;
     db.prepare("DELETE FROM stage_runs WHERE source_id = ?").run(sourceId);
 
     const insertStageRun = db.prepare("INSERT OR REPLACE INTO stage_runs (id, source_id, payload_json) VALUES (?, ?, ?)");
@@ -559,10 +562,11 @@ export function updateSourceSyncMetadata(
       sync_status: normalizedPayload.source.sync_status,
       error_message: normalizedPayload.source.sync_status === "error" ? normalizedPayload.source.error_message : undefined,
     };
-    db.prepare("INSERT OR REPLACE INTO source_instances (id, payload_json) VALUES (?, ?)").run(sourceId, toJson(nextSource));
+    db.prepare("INSERT INTO source_instances (id, payload_json) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET payload_json = excluded.payload_json")
+      .run(sourceId, toJson(nextSource));
 
     db.exec("COMMIT;");
-    options.on_progress?.({ stage: "write_store_done", source_id: sourceId, projection_changed: false });
+    options.on_progress?.({ stage: "write_store_done", source_id: sourceId, projection_changed: projectionChanged });
     return counts;
   } catch (error) {
     db.exec("ROLLBACK;");

@@ -68,6 +68,8 @@ export interface ProbeOptions {
   changed_since?: string;
   source_file_paths?: Record<string, readonly string[] | undefined>;
   previous_payloads?: Record<string, SourceSyncPayload | undefined>;
+  /** Collector-only retained contributors; never stat/capture or count as observed. */
+  retained_contributor_origin_paths?: Record<string, readonly string[] | undefined>;
   on_progress?: (event: SourceProbeProgressEvent) => void;
 }
 

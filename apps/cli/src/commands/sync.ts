@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   getDefaultSources,
   getDefaultSourcesForHost,
+  getSourceFormatProfiles,
   discoverDefaultSourcesForHost,
   discoverHostToolsForHost,
   runSourceProbe,
@@ -77,21 +78,13 @@ import {
 
 const DEFAULT_CODEX_SYNC_BATCH_TARGET_BYTES = 24 * 1024 * 1024;
 
-// Stage 2: above this blob count, the non-batch reuse preload drops to a
-// metadata-only payload (no records/fragments/atoms) to avoid OOM on operator-
-// scale stores. Tuned for a 4 GB host where ~1000 blobs * ~600 KiB parsed
-// records each (~600 MiB) is the practical ceiling before the preload
-// competes with the streaming probe for heap. Override via env for tuning.
 const DEFAULT_MINIMAL_PRELOAD_BLOB_THRESHOLD = 1000;
 function resolveMinimalPreloadBlobThreshold(): number {
   const override = process.env.CCHISTORY_MINIMAL_PRELOAD_BLOB_THRESHOLD;
-  if (!override) {
-    return DEFAULT_MINIMAL_PRELOAD_BLOB_THRESHOLD;
-  }
-  const parsed = Number(override);
-  return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : DEFAULT_MINIMAL_PRELOAD_BLOB_THRESHOLD;
+  if (!override) return DEFAULT_MINIMAL_PRELOAD_BLOB_THRESHOLD;
+  const value = Number(override);
+  return Number.isFinite(value) && value >= 0 ? Math.floor(value) : DEFAULT_MINIMAL_PRELOAD_BLOB_THRESHOLD;
 }
-const MINIMAL_PRELOAD_BLOB_THRESHOLD = resolveMinimalPreloadBlobThreshold();
 
 export async function handleSync(context: CommandContext): Promise<CommandOutput> {
   if (context.globals.dryRun) {
@@ -623,23 +616,11 @@ export async function syncSelectedSources(input: {
           display_name: source.display_name,
           message: `Loading previous ${source.display_name} reuse inputs for listed source files`,
         });
-        // Stage 2: adaptive reuse preload. The heavy preload
-        // (getSourceIncrementalPayloadForOriginPaths) materializes every
-        // record/fragment/atom/edge/session for the requested files into a
-        // single SourceSyncPayload — needed for processAppendedJsonlBlob's
-        // sessionInputs.length === 1 check, but it blows the heap on
-        // operator-scale stores (~800 MiB / 1319 files for claude_code on a
-        // 4 GB host). For sources above the blob threshold we drop down to a
-        // metadata-only preload (source + stage_runs + per-originPath tail
-        // blobs). That preserves L0 stats-reuse and L2 checksum-reuse but
-        // loses append detection — append-sized re-parses become full parses.
-        // Below the threshold, keep the heavy preload so append detection
-        // still kicks in for typical dev syncs.
+        // Stable independent files need only tail identity. Shared contributors
+        // are added after the probe identifies its affected session IDs.
         const metadataPayload = input.storage.getSourceIncrementalMetadataPayload(source.id);
         if (metadataPayload && selectedFilePaths && selectedFilePaths.length > 0) {
-          previousPayload = metadataPayload.source.total_blobs > MINIMAL_PRELOAD_BLOB_THRESHOLD
-            ? buildTailBlobPayloadFromMetadata(metadataPayload, selectedFilePaths)
-            : input.storage.getSourceIncrementalPayloadForOriginPaths(source.id, selectedFilePaths);
+          previousPayload = await buildIncrementalReusePayload(input.storage, metadataPayload, selectedFilePaths);
         }
         const reuseLoadElapsedMs = Date.now() - reuseLoadStartedAt;
         timing.reuseLoadMs += reuseLoadElapsedMs;
@@ -664,14 +645,16 @@ export async function syncSelectedSources(input: {
         display_name: source.display_name,
         message: `Prepared ${source.display_name} (${source.slot_id})`,
       });
-      const result = await runSourceProbe(
+      const retainedContributorOrigins = new Set<string>();
+      const probe = async (previous: SourceSyncPayload | undefined) => runSourceProbe(
         {
           source_ids: [source.id],
           limit_files_per_source: input.limitFiles,
           safe_mode: input.safeMode,
           changed_since: effectiveChangedSince,
           source_file_paths: selectedFilePaths ? { [source.id]: selectedFilePaths } : undefined,
-          previous_payloads: previousPayload ? { [source.id]: previousPayload } : undefined,
+          previous_payloads: previous ? { [source.id]: previous } : undefined,
+          retained_contributor_origin_paths: { [source.id]: [...retainedContributorOrigins] },
           on_progress: (event) => {
             recordProbeTiming(timing, event);
             if (useMergeByOriginPath && event.file_path) {
@@ -687,13 +670,95 @@ export async function syncSelectedSources(input: {
         },
         [source],
       );
-      payload = result.sources[0];
+      payload = (await probe(previousPayload)).sources[0];
+      if (payload && selectedFilePaths) {
+        const selected = new Set(selectedFilePaths.map((filePath) => path.normalize(filePath)));
+        const affectedOriginPaths = payload.blobs
+          .map((blob) => path.normalize(blob.origin_path))
+          .filter((origin) => !preservedOriginPaths.has(origin));
+        let loaded = new Set(previousPayload?.records.map((record) => record.blob_id));
+        let loadedOrigins = new Set(previousPayload?.blobs.filter((blob) => loaded.has(blob.id)).map((blob) => path.normalize(blob.origin_path)));
+        const unvisited = new Set<string>();
+        for (let expansion = 0; expansion < 3 && payload; expansion++) {
+          const contributors = input.storage.getSourceSessionContributorOriginPaths(source.id,
+            [...new Set(payload.records.map((record) => record.session_ref))], affectedOriginPaths);
+          for (const origin of contributors) {
+            if (!completeInventoryIsAuthoritative && !selected.has(origin)) {
+              nonAuthoritativeOriginPaths.add(origin); unvisited.add(origin);
+            }
+            if (completeInventoryIsAuthoritative && !selected.has(origin)) {
+              if (previousPayload && reuseProfileMatches(previousPayload)) {
+                retainedContributorOrigins.add(origin);
+                preservedOriginPaths.add(origin);
+              } else {
+                // A missing contributor cannot be interpreted by a new
+                // parser using old derived inputs. Keep the coherent unit.
+                nonAuthoritativeOriginPaths.add(origin); unvisited.add(origin);
+              }
+            }
+          }
+          // Partial-inventory protection is independent of parser reuse.
+          // A complete inventory proves missing origins absent; those follow
+          // observed_origin_paths rather than the failed/unvisited veto.
+          if (!previousPayload || !reuseProfileMatches(previousPayload)) break;
+          const representedBlobIds = new Set(payload.records.map((record) => record.blob_id));
+          const represented = new Set(payload.blobs.filter((blob) => representedBlobIds.has(blob.id)).map((blob) => path.normalize(blob.origin_path)));
+          const missing = contributors.filter((origin) => (selected.has(origin) || retainedContributorOrigins.has(origin)) && !loadedOrigins.has(origin) && !represented.has(origin));
+          if (missing.length === 0) break;
+          const origins = expansion === 2 ? [...selectedFilePaths, ...retainedContributorOrigins] : [...new Set([...loadedOrigins, ...missing])];
+          const heavy = input.storage.getSourceIncrementalPayloadForOriginPaths(source.id, origins);
+          if (!heavy) break;
+          const covered = new Set(heavy.blobs.map((blob) => path.normalize(blob.origin_path)));
+          previousPayload = { ...heavy, stage_runs: previousPayload.stage_runs,
+            blobs: [...heavy.blobs, ...previousPayload.blobs.filter((blob) => !covered.has(path.normalize(blob.origin_path)))] };
+          loaded = new Set(heavy.records.map((record) => record.blob_id));
+          loadedOrigins = new Set(heavy.blobs.filter((blob) => loaded.has(blob.id)).map((blob) => path.normalize(blob.origin_path)));
+          preservedOriginPaths.clear();
+          for (const origin of retainedContributorOrigins) preservedOriginPaths.add(origin);
+          nonAuthoritativeOriginPaths.clear();
+          for (const origin of unvisited) nonAuthoritativeOriginPaths.add(origin);
+          payload = (await probe(previousPayload)).sources[0];
+        }
+        if (payload && unvisited.size > 0 && payload.records.length > 0) {
+          // These stages certify the retained interpretation, not an attempted
+          // parse whose shared projection could not be applied. Publishing the
+          // new profile here would let the next sync reuse obsolete siblings.
+          payload.stage_runs = previousPayload?.stage_runs ?? [];
+          payload.source.sync_status = "error";
+          payload.source.error_message = "Shared session update retained its last coherent projection: a contributor was unvisited or requires replay. Retry a complete scan without --limit-files; an obsolete retained parser profile requires replay.";
+          input.onProgress?.({ stage: "source_error", source_id: source.id, slot_id: source.slot_id,
+            platform: source.platform, display_name: source.display_name, message: payload.source.error_message });
+        }
+      }
       if (payload) {
         addNonAuthoritativeOriginPathsFromLossAudits(payload, nonAuthoritativeOriginPaths);
       }
+      if (payload?.source.sync_status === "stale") {
+        const selected = new Set(selectedFilePaths?.map((origin) => path.normalize(origin)));
+        const currentReusedOrigins = [...preservedOriginPaths].filter((origin) =>
+          selected.has(path.normalize(origin)) && !nonAuthoritativeOriginPaths.has(origin));
+        // Thin reuse intentionally has no parser bodies. Health still follows
+        // a verified current session contributor, never an absent archive alone.
+        if (hasVerifiedReusedSession(input.storage, source.id, previousPayload, currentReusedOrigins)) {
+          payload.source.sync_status = "healthy";
+        }
+      }
+      if (payload && useMergeByOriginPath && supportsIncrementalReuse(source.platform) &&
+        (!completeInventoryIsAuthoritative || payload.source.sync_status === "error" || nonAuthoritativeOriginPaths.size > 0)) {
+        const retained = previousPayload ?? input.storage.getSourceIncrementalMetadataPayload(source.id);
+        if (retained) {
+          payload.stage_runs = retained.stage_runs;
+          if (retained.source.error_message?.startsWith("Shared session update retained")) {
+            payload.source.sync_status = "error";
+            payload.source.error_message = retained.source.error_message;
+            input.onProgress?.({ stage: "source_error", source_id: source.id, slot_id: source.slot_id,
+              platform: source.platform, display_name: source.display_name, message: payload.source.error_message });
+          }
+        }
+      }
       if (payload && completeInventoryIsAuthoritative) {
         for (const blob of payload.blobs) {
-          observedOriginPaths.add(blob.origin_path);
+          if (!retainedContributorOrigins.has(path.normalize(blob.origin_path))) observedOriginPaths.add(blob.origin_path);
         }
       }
     } catch (error) {
@@ -748,14 +813,13 @@ export async function syncSelectedSources(input: {
         elapsed_ms: elapsedMs,
       });
     };
-    metadataOnlyPayload = isMetadataOnlySyncPayload(payload) && !(
-      useMergeByOriginPath &&
-      completeInventoryIsAuthoritative &&
-      payload.source.sync_status !== "error"
-    );
+    metadataOnlyPayload = isMetadataOnlySyncPayload(payload);
     const counts = metadataOnlyPayload
       ? input.storage.updateSourceSyncMetadata(payload, {
           onProgress: onStorageProgress,
+          ...(completeInventoryIsAuthoritative && payload.source.sync_status !== "error"
+            ? { observed_origin_paths: [...observedOriginPaths] }
+            : {}),
         })
       : useMergeByOriginPath
         ? input.storage.mergeSourcePayloadByOriginPath(payload, {
@@ -883,7 +947,7 @@ interface StreamMergeBatchInput {
 
 async function streamCodexMergeBatch(
   input: StreamMergeBatchInput,
-): Promise<{ counts: SyncedSourceSummary["counts"]; projectionChanged: boolean }> {
+): Promise<{ counts: SyncedSourceSummary["counts"]; projectionChanged: boolean; hasCurrentSession: boolean }> {
   const { storage, source, hostId } = input;
   const preservedOriginPaths = new Set<string>(input.outsideBatchOriginPaths);
   const observedOriginPaths = new Set(input.observedOriginPaths);
@@ -920,6 +984,8 @@ async function streamCodexMergeBatch(
   let encounteredFileError = false;
   let firstFileErrorMessage: string | undefined;
   let filesObserved = 0;
+  let hasCurrentSession = false;
+  const reusedOriginPaths = new Set<string>();
   let writeStartedAt = 0;
 
   const onStorageProgress = (event: StorageProgressEvent) => {
@@ -1053,6 +1119,10 @@ async function streamCodexMergeBatch(
           event.kind !== "file_error" &&
           !(event.kind === "file_skip" && (event.reason === "oversized" || event.reason === "capture_failed")) &&
           !projected.lossAudits.some(lossAuditBlocksProjectionReplacement);
+        if (replacementAuthorized) {
+          hasCurrentSession ||= projected.sessions.length > 0 || projected.turns.length > 0;
+          if (isPreservingSkip) reusedOriginPaths.add(eventChunk.origin_path);
+        }
         yield {
           origin_path: eventChunk.origin_path,
           stage_runs: stageRunsEmitted ? [] : stageRunsForFirstChunk,
@@ -1150,6 +1220,9 @@ async function streamCodexMergeBatch(
       blobs: mergeResult.blobs,
     },
     projectionChanged,
+    hasCurrentSession: hasCurrentSession || hasVerifiedReusedSession(
+      storage, source.id, input.previousPayload, [...reusedOriginPaths],
+    ),
   };
 }
 
@@ -1241,6 +1314,7 @@ async function syncCodexSourceInBatches(
   const replaceFirstBatch = !input.storage.listSources().some((entry) => entry.id === source.id);
   let lastPayload: SourceSyncPayload | undefined;
   let projectionChanged = replaceFirstBatch;
+  let hasCurrentSession = false;
   let pendingMetadataWrite: {
     payload: SourceSyncPayload;
     batchIndex: number;
@@ -1321,16 +1395,17 @@ async function syncCodexSourceInBatches(
     const outsideBatchOriginPaths = files.filter((entry) => !batchOriginPaths.has(path.normalize(entry)));
     const batchStartedAt = Date.now();
     const batchReuseLoadStartedAt = Date.now();
-    const metadataOnlyPreviousPayload = await buildCodexMetadataOnlyReusePayloadForStableOldBatch(
+    const metadataOnlyPreviousPayload = await buildCodexMetadataOnlyReusePayloadForStableBatch(
       previousMetadataPayload,
       fileBatch,
-      input.changedSince,
     );
     if (metadataOnlyPreviousPayload) {
       timing.metadataOnlyReuseBatchCount += 1;
     }
     const filePreviousPayload = fileBatch.length > 0
-      ? metadataOnlyPreviousPayload ?? input.storage.getSourceIncrementalPayloadForOriginPaths(source.id, fileBatch)
+      ? metadataOnlyPreviousPayload ?? (previousMetadataPayload
+          ? await buildIncrementalReusePayload(input.storage, previousMetadataPayload, fileBatch)
+          : input.storage.getSourceIncrementalPayloadForOriginPaths(source.id, fileBatch))
       : undefined;
     timing.reuseLoadMs += Date.now() - batchReuseLoadStartedAt;
     const previousPayload = filePreviousPayload && preSyncStageRuns
@@ -1366,6 +1441,7 @@ async function syncCodexSourceInBatches(
         batchCount: batches.length,
       });
       counts = streamResult.counts;
+      hasCurrentSession ||= streamResult.hasCurrentSession;
       if (streamResult.projectionChanged) {
         projectionChanged = true;
       }
@@ -1404,8 +1480,20 @@ async function syncCodexSourceInBatches(
       continue;
     }
     lastPayload = payload;
+    hasCurrentSession ||= payload.sessions.length > 0 || payload.turns.length > 0 ||
+      hasVerifiedReusedSession(input.storage, source.id, previousPayload, [...preservedOriginPaths]);
+    // Health describes the complete source inventory, including earlier
+    // batches. A trailing reused orphan/empty file must not erase a verified
+    // current session; absent retained sessions never enter this accumulator.
+    if (payload.source.sync_status === "stale" && hasCurrentSession) {
+      payload.source.sync_status = "healthy";
+    }
 
-    const writeKind = upfrontWriteKind;
+    // A reuse hint is not write authority. Profile changes or a file changing
+    // between stat and capture can make the probe produce genuine new evidence.
+    const writeKind = upfrontWriteKind === "metadata" && !isMetadataOnlySyncPayload(payload)
+      ? "merge"
+      : upfrontWriteKind;
 
     if (writeKind === "metadata") {
       pendingMetadataWrite = { payload, batchIndex, fileCount: fileBatch.length };
@@ -1612,25 +1700,13 @@ function buildTailBlobPayloadFromMetadata(
   };
 }
 
-async function buildCodexMetadataOnlyReusePayloadForStableOldBatch(
+async function buildCodexMetadataOnlyReusePayloadForStableBatch(
   previousMetadataPayload: SourceSyncPayload | undefined,
   fileBatch: readonly string[],
-  changedSince: string | undefined,
 ): Promise<SourceSyncPayload | undefined> {
-  // Fast negative gate for the metadata-only batch path. This runs BEFORE
-  // captureBlob and avoids file I/O entirely; its purpose is to skip the
-  // streaming probe for batches of files that are obviously old and stable
-  // (mtime+ctime+size+identity all match the ledger). When external touches
-  // bump mtime forward (backup tools, `touch`, rsync), this gate fails and
-  // the batch falls through to streamCodexMergeBatch → streamSourceProbe,
-  // where captureBlob + canReuseCapturedBlob (the L2 size+checksum+watermark
-  // path in probe.ts) catches the reuse correctly. So an external touch
-  // costs one extra file read per file but does NOT force reparse.
-  if (!previousMetadataPayload || fileBatch.length === 0 || !changedSince) {
-    return undefined;
-  }
-  const changedSinceMs = Date.parse(changedSince);
-  if (Number.isNaN(changedSinceMs)) {
+  // Recent and old files share the same identity/profile guard. A touch or
+  // concurrent append falls through to the probe's checksum/capture decision.
+  if (!previousMetadataPayload || fileBatch.length === 0 || !reuseProfileMatches(previousMetadataPayload)) {
     return undefined;
   }
 
@@ -1656,7 +1732,7 @@ async function buildCodexMetadataOnlyReusePayloadForStableOldBatch(
     } catch {
       return undefined;
     }
-    if (fileStats.mtime.getTime() >= changedSinceMs || !canReuseBlobFromStats(tailBlob, fileStats)) {
+    if (!canReuseBlobFromStats(tailBlob, fileStats)) {
       return undefined;
     }
     if (!seenBlobIds.has(tailBlob.id)) {
@@ -1679,6 +1755,53 @@ async function buildCodexMetadataOnlyReusePayloadForStableOldBatch(
     turns: [],
     contexts: [],
     ask_user_question_turns: [],
+  };
+}
+
+function reuseProfileMatches(payload: SourceSyncPayload): boolean {
+  const profile = getSourceFormatProfiles().find((entry) => entry.platform === payload.source.platform);
+  return Boolean(profile && payload.stage_runs.some((entry) =>
+    entry.parser_version === profile.parser_version && entry.source_format_profile_ids?.includes(profile.id)));
+}
+
+function hasVerifiedReusedSession(
+  storage: CCHistoryStorage,
+  sourceId: string,
+  previous: SourceSyncPayload | undefined,
+  originPaths: readonly string[],
+): boolean {
+  return Boolean(previous && reuseProfileMatches(previous) &&
+    storage.hasSourceSessionForOriginPaths(sourceId, originPaths));
+}
+
+async function buildIncrementalReusePayload(
+  storage: CCHistoryStorage,
+  metadata: SourceSyncPayload,
+  filePaths: readonly string[],
+): Promise<SourceSyncPayload> {
+  const thin = buildTailBlobPayloadFromMetadata(metadata, filePaths);
+  if (!reuseProfileMatches(metadata) || metadata.source.total_blobs > resolveMinimalPreloadBlobThreshold()) {
+    return thin;
+  }
+  const tails = new Map(thin.blobs.map((blob) => [path.normalize(blob.origin_path), blob]));
+  const changedPaths: string[] = [];
+  for (const filePath of filePaths) {
+    const tail = tails.get(path.normalize(filePath));
+    try {
+      if (tail && canReuseBlobFromStats(tail, await stat(filePath))) continue;
+    } catch {
+      // Let the probe report capture/stat errors with its normal loss audits.
+    }
+    changedPaths.push(filePath);
+  }
+  if (changedPaths.length === 0) return thin;
+  const heavy = storage.getSourceIncrementalPayloadForOriginPaths(metadata.source.id, changedPaths);
+  if (!heavy) return thin;
+  const changed = new Set(changedPaths.map((filePath) => path.normalize(filePath)));
+  return {
+    ...heavy,
+    stage_runs: metadata.stage_runs,
+    blobs: [...heavy.blobs, ...thin.blobs.filter((blob) => !changed.has(path.normalize(blob.origin_path)))],
   };
 }
 

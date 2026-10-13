@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -74,6 +74,49 @@ test("materializeBytesStream is idempotent when the target blob already exists",
   } finally {
     await rm(assetDir, { recursive: true, force: true });
   }
+});
+
+test("materializeBytesStream rejects an existing corrupt SHA target and cleans its partial before recovery", async () => {
+  const assetDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-stream-existing-integrity-"));
+  try {
+    const payload = Buffer.from("authoritative original bytes\n");
+    const materialize = () => materializeBytesStream({ assetDir, chunks: chunksFromBuffer(payload, 7),
+      mediaType: "application/octet-stream", captureKind: "source_blob", createdAt: "2026-10-11T00:00:00Z" });
+    const first = await materialize();
+    const target = path.join(assetDir, first.storagePath);
+    await writeFile(target, Buffer.alloc(payload.length, 120));
+    await assert.rejects(materialize(), /integrity mismatch/i);
+    assert.deepEqual((await readdir(path.join(assetDir, "evidence", "blobs"))).filter((name) => name.startsWith(".partial")), []);
+    await writeFile(target, payload);
+    assert.equal((await materialize()).sha256, first.sha256);
+  } finally { await rm(assetDir, { recursive: true, force: true }); }
+});
+
+test("materializers reject a symlink target or parent without publishing outside the store", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-stream-contained-"));
+  const assetDir = path.join(root, "store");
+  try {
+    const payload = Buffer.from("contained original bytes\n");
+    const materialize = () => materializeBytesStream({ assetDir, chunks: chunksFromBuffer(payload, 7),
+      mediaType: "application/octet-stream", captureKind: "source_blob", createdAt: "2026-10-11T00:00:00Z" });
+    const first = await materialize();
+    const target = path.join(assetDir, first.storagePath);
+    const outside = path.join(root, "outside");
+    await mkdir(outside);
+    const outsideFile = path.join(outside, first.sha256);
+    await writeFile(outsideFile, payload);
+    await rm(target);
+    await symlink(outsideFile, target);
+    await assert.rejects(materialize(), /regular contained file/i);
+    await rm(path.dirname(target), { recursive: true });
+    await symlink(outside, path.dirname(target));
+    await assert.rejects(materialize(), /escapes.*symlink/i);
+    await rm(path.join(assetDir, "evidence", "blobs"), { recursive: true });
+    await symlink(outside, path.join(assetDir, "evidence", "blobs"));
+    await assert.rejects(materialize(), /escapes.*symlink/i);
+    assert.deepEqual(await readdir(outside), [first.sha256], "no partial or new target outside the store");
+    assert.deepEqual(await readFile(outsideFile), payload);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test("materializeBytesStream computes sha256 correctly when chunks span boundaries mid-UTF8", async () => {

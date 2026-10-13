@@ -6,9 +6,50 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { CCHistoryStorage, matchesSearchCandidateQuery } from "../index.js";
 import { combineFixturePayloads, createFixturePayload } from "./helpers.js";
+import { scanSearchCandidateRows } from "../queries/search.js";
 
 // Edge-case tests: search
 // ---------------------------------------------------------------------------
+
+test("search recalls complete canonical tails without exposing masked raw-only content", async () => {
+  const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-full-tail-"));
+  const storage = new CCHistoryStorage(dataDir);
+  try {
+    const tail = "尾部召回词 tail-recall-unique";
+    const canonical = `${"前文 abc ".repeat(5000)}\n${tail}`;
+    const payload = createFixturePayload("src-full-tail", canonical, "sr-full-tail", {
+      includeProjectObservation: true,
+    });
+    const rawOnly = "masked-raw-only-secret";
+    payload.turns[0]!.raw_text += `\n${rawOnly}`;
+    payload.turns[0]!.user_messages[0]!.raw_text += `\n${rawOnly}`;
+    storage.replaceSourcePayload(payload);
+    const project = storage.listProjects()[0]!;
+    for (const query of ["tail-recall-unique", "尾部召回词"]) {
+      for (const options of [{}, { project_id: project.project_id }]) {
+        const page = storage.searchTurnsPaginated({ query, ...options, limit: 1 });
+        assert.equal(page.total, 1, `a retained canonical tail must be recalled: ${query}, ${JSON.stringify(options)}`);
+        assert.equal(page.results[0]?.turn.canonical_text, canonical);
+        assert.ok(page.results[0]!.highlights.length > 0);
+      }
+      const page = storage.searchTurnsReadSurfacePage({ query, limit: 1 });
+      assert.equal(page.total, 1);
+      assert.equal(page.results[0]?.turn.id, payload.turns[0]!.id);
+      const db = new DatabaseSync(storage.dbPath, { readOnly: true });
+      try {
+        assert.equal([...scanSearchCandidateRows({ db, query, candidateTurnIds: [payload.turns[0]!.id] })].length, 1);
+      } finally {
+        db.close();
+      }
+    }
+    assert.equal(storage.searchTurnsPaginated({ query: rawOnly }).total, 0);
+    assert.equal(storage.searchTurnsReadSurfacePage({ query: rawOnly }).total, 0);
+    assert.equal(storage.getTurn(payload.turns[0]!.id)?.raw_text, payload.turns[0]!.raw_text);
+  } finally {
+    storage.close();
+    await rm(dataDir, { recursive: true, force: true });
+  }
+});
 
 test("searchTurns with empty query returns all turns sorted by recency", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-empty-"));
@@ -303,7 +344,7 @@ test("searchTurns does not match raw-only turn text", async () => {
   }
 });
 
-test("searchTurns uses the bounded canonical scan hint rather than full long turn text", async () => {
+test("searchTurns recalls complete long canonical text beyond the bounded scan hint", async () => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), "cchistory-search-bounded-canonical-"));
   try {
     const storage = new CCHistoryStorage(dataDir);
@@ -316,7 +357,7 @@ test("searchTurns uses the bounded canonical scan hint rather than full long tur
     );
 
     assert.match(storage.getTurn("turn-bounded-canonical")?.canonical_text ?? "", /beyond-boundary-token/u);
-    assert.deepEqual(storage.searchTurns({ query: "beyond-boundary-token" }), []);
+    assert.deepEqual(storage.searchTurns({ query: "beyond-boundary-token" }).map((result) => result.turn.id), ["turn-bounded-canonical"]);
   } finally {
     await rm(dataDir, { recursive: true, force: true });
   }

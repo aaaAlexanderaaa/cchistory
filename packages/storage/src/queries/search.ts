@@ -209,19 +209,16 @@ export function scanSearchCandidateRows(input: {
 }): Generator<SearchScanCandidate> {
   const plan = buildSearchPlan(input.query);
   const observationCandidatesFor = makeObservationCandidateLookup(input.db);
-  // B.5.1: V2 read path. canonical_text reads the bounded 16 KiB scan hint
-  // (per V2 contract — that is the column's purpose). Searches for terms
-  // that appear only past 16 KiB in canonical_text will not match; this is
-  // the accepted tradeoff for keeping the scan fast. link_state, value_axis,
-  // project_id come from native V2 columns; path_text from V2.path_text plus
-  // the session/candidate joins (sessions remain V1 payload_json until B.6).
+  // Recall uses the complete canonical text, just like the V2 turn reader.
+  // The bounded hint cannot decide match eligibility. Raw text is deliberately
+  // excluded: masking may remove captured content from canonical recall.
   if (input.candidateTurnIds) {
     const select = input.db.prepare(`
       SELECT ut.turn_id AS id,
              ut.source_id,
              ut.session_id,
              ut.submission_started_at,
-             ut.canonical_text AS canonical_text,
+             ut.canonical_text_full AS canonical_text,
              ut.path_text AS path_text,
              json_extract(s.payload_json, '$.working_directory') AS session_working_directory,
              json_extract(s.payload_json, '$.resume_working_directory') AS session_resume_working_directory,
@@ -255,7 +252,7 @@ export function scanSearchCandidateRows(input: {
            ut.source_id,
            ut.session_id,
            ut.submission_started_at,
-           ut.canonical_text AS canonical_text,
+           ut.canonical_text_full AS canonical_text,
            ut.path_text AS path_text,
            json_extract(s.payload_json, '$.working_directory') AS session_working_directory,
            json_extract(s.payload_json, '$.resume_working_directory') AS session_resume_working_directory,

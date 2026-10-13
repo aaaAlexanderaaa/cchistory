@@ -3,6 +3,8 @@ import { mkdirSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { DatabaseSync } from "node:sqlite";
+import { verifiedSourceCapturePath } from "../source-evidence.js";
+import { beginImmediateTransactionIfNeeded } from "../db/transaction.js";
 import type {
   ArtifactCoverageRecord,
   AtomEdge,
@@ -44,6 +46,10 @@ import {
   type StorageSchemaInitialization,
 } from "../db/schema.js";
 import {
+  applyTurnDecoration, ensureLegacyTurnInvalidation, normalizeSliceIndex, readResolvedIndexState,
+  RESOLVED_READ_INDEX_VERSION, writeResolvedReadIndex,
+} from "../db/resolved-read-index.js";
+import {
   mergeSourcePayloadByOriginPath as mergePersistedSourcePayloadByOriginPath,
   pruneSourcePayloadByObservedOriginPaths as prunePersistedSourcePayloadByObservedOriginPaths,
   replaceSourcePayloadWithOptions as replacePersistedSourcePayloadWithOptions,
@@ -53,6 +59,7 @@ import {
 import {
   loadLineageBlobsBySha,
   markStorageBoundaryV2SourceAbsentByObservedOrigins,
+  reconcileSourcePresenceInTransaction,
   readTurnContextFromV2Cache,
   refreshGlobalDerivedCacheRefsForSource,
   retireStorageBoundaryV2Sources,
@@ -129,7 +136,15 @@ interface MutableReadSurfaceSearchGroup extends ReadSurfaceSearchGroup {
 const UNLINKED_SEARCH_PROJECT_ID = "__unlinked__";
 
 export class CCHistoryStorage {
-  private readonly db: DatabaseSync;
+  private readonly dbConnection: DatabaseSync;
+  private streamingWriteInFlight = false;
+
+  private get db(): DatabaseSync {
+    if (this.streamingWriteInFlight) {
+      throw new Error("Storage busy: streaming write in progress; retry after it completes.");
+    }
+    return this.dbConnection;
+  }
   private readonly assetDir?: string;
   private readonly searchIndexAvailable: boolean;
   private searchIndexUsable: boolean;
@@ -141,6 +156,8 @@ export class CCHistoryStorage {
   private warnedCorruptDerivedCandidateRow = false;
   private cachedSearchLinkedTurnsById?: Map<string, UserTurnProjection>;
   private cachedReadSurfaceSearchProjectResolver?: ReadSurfaceSearchProjectResolver;
+  private cachedDataVersion?: number;
+  private cachedLinkGeneration?: number;
   readonly dbPath: string;
 
   constructor(location: string | { dataDir?: string; dbPath?: string; assetDir?: string }) {
@@ -157,7 +174,7 @@ export class CCHistoryStorage {
     }
     this.assetDir = assetDir;
     this.dbPath = dbPath;
-    this.db = new DatabaseSync(dbPath);
+    this.dbConnection = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA busy_timeout = 5000;");
     // A.4: pragma tuning for multi-GB stores. page_size must be set BEFORE
     // journal_mode = WAL — SQLite rejects page_size changes on a WAL-mode
@@ -265,7 +282,7 @@ export class CCHistoryStorage {
    * has populated the V2 rows for incoming turns. The other axes (sessions,
    * records, fragments, atoms, blobs) are written inside the V1 merge/replace
    * transaction itself, so their pre-sidecar counts are already correct. Only
-   * `turns` is racy because V2 sidecars are written in a follow-up transaction.
+   * `turns` must be recounted after V2 sidecars within the owning transaction.
    *
    * Also refreshes source_instances.total_turns so listSources() reflects the
    * post-sidecar state. See [[dual-write-mutation-sync]].
@@ -310,63 +327,65 @@ export class CCHistoryStorage {
     atoms: number;
     blobs: number;
   } {
-    let result: {
-      sessions: number;
-      turns: number;
-      records: number;
-      fragments: number;
-      atoms: number;
-      blobs: number;
-    };
-    const sourceIdsBeforeReplace = this.listSources().map((source) => source.id);
-    if (options.allow_host_rekey) {
-      result = replacePersistedSourcePayloadWithOptions(this.db, payload, {
-        allow_host_rekey: true,
-        on_progress: options.onProgress,
+    return this.withSourceWriteTransaction(() => {
+      let result: {
+        sessions: number;
+        turns: number;
+        records: number;
+        fragments: number;
+        atoms: number;
+        blobs: number;
+      };
+      const sourceIdsBeforeReplace = this.listSources().map((source) => source.id);
+      if (options.allow_host_rekey) {
+        result = replacePersistedSourcePayloadWithOptions(this.db, payload, {
+          allow_host_rekey: true,
+          on_progress: options.onProgress,
+        });
+      } else {
+        result = replacePersistedSourcePayloadWithOptions(this.db, payload, {
+          allow_host_rekey: false,
+          on_progress: options.onProgress,
+        });
+      }
+      const sourceIdsAfterReplace = new Set(this.listSources().map((source) => source.id));
+      const retirement = retireStorageBoundaryV2Sources({
+        db: this.db,
+        sourceIds: sourceIdsBeforeReplace.filter((sourceId) => !sourceIdsAfterReplace.has(sourceId)),
       });
-    } else {
-      result = replacePersistedSourcePayloadWithOptions(this.db, payload, {
-        allow_host_rekey: false,
-        on_progress: options.onProgress,
+      // A.2: unlink content-addressed evidence files whose rows were dropped.
+      this.unlinkEvidenceBlobFiles(retirement.pruned_evidence_shas);
+      this.writeStorageBoundaryV2Sidecars(payload, {
+        writeMode: "replace",
+        deferPrune: options.skipPrune,
+        skipGlobalScopes: options.skipGlobalScopes,
       });
-    }
-    const sourceIdsAfterReplace = new Set(this.listSources().map((source) => source.id));
-    const retirement = retireStorageBoundaryV2Sources({
-      db: this.db,
-      sourceIds: sourceIdsBeforeReplace.filter((sourceId) => !sourceIdsAfterReplace.has(sourceId)),
-    });
-    // A.2: unlink content-addressed evidence files whose rows were dropped.
-    this.unlinkEvidenceBlobFiles(retirement.pruned_evidence_shas);
-    this.writeStorageBoundaryV2Sidecars(payload, {
-      writeMode: "replace",
-      deferPrune: options.skipPrune,
-      skipGlobalScopes: options.skipGlobalScopes,
-    });
 
-    // B4: countStoredSourcePayload (inside replacePersistedSourcePayloadWithOptions)
-    // counts turns from user_turns_v2, but writeStorageBoundaryV2Sidecars runs
-    // AFTER that count and is what actually populates V2 rows for the incoming
-    // turns. Pre-B4 the count read V1 and was correct by accident; B4 switched
-    // to V2 so the count survives the B.6 V1 drop, which exposed the ordering
-    // gap. Refresh source_instances.total_turns from V2 and patch the return
-    // value so callers (and tests) see the post-sidecar count. See
-    // [[dual-write-mutation-sync]].
-    //
-    // Use the normalized source id (host-identity re-keying inside
-    // replacePersistedSourcePayloadWithOptions may differ from payload.source.id;
-    // V1/V2 rows are written under the normalized id, so the recount must use
-    // it too or WHERE source_id = ? returns zero rows).
-    const normalizedSourceId = normalizeSourcePayload(payload).source.id;
-    result = this.recountSourcePayloadAfterV2Sidecars(normalizedSourceId, result);
+      // B4: countStoredSourcePayload (inside replacePersistedSourcePayloadWithOptions)
+      // counts turns from user_turns_v2, but writeStorageBoundaryV2Sidecars runs
+      // AFTER that count and is what actually populates V2 rows for the incoming
+      // turns. Pre-B4 the count read V1 and was correct by accident; B4 switched
+      // to V2 so the count survives the B.6 V1 drop, which exposed the ordering
+      // gap. Refresh source_instances.total_turns from V2 and patch the return
+      // value so callers (and tests) see the post-sidecar count. See
+      // [[dual-write-mutation-sync]].
+      //
+      // Use the normalized source id (host-identity re-keying inside
+      // replacePersistedSourcePayloadWithOptions may differ from payload.source.id;
+      // V1/V2 rows are written under the normalized id, so the recount must use
+      // it too or WHERE source_id = ? returns zero rows).
+      const normalizedSourceId = normalizeSourcePayload(payload).source.id;
+      result = this.recountSourcePayloadAfterV2Sidecars(normalizedSourceId, result);
 
-    this.invalidateProjectLinkSnapshot();
-    if (options.refreshDerived === false) {
+      this.invalidateProjectLinkSnapshot();
+      if (options.refreshDerived === false) {
+        return result;
+      }
+      options.onProgress?.({ stage: "reindex_start", source_id: payload.source.id });
+      this.refreshDerivedState();
+      options.onProgress?.({ stage: "reindex_done", source_id: payload.source.id });
       return result;
-    }
-    options.onProgress?.({ stage: "reindex_start", source_id: payload.source.id });
-    this.refreshDerivedState();
-    options.onProgress?.({ stage: "reindex_done", source_id: payload.source.id });
-    return result;
+    });
   }
 
   mergeSourcePayloadByOriginPath(
@@ -388,48 +407,73 @@ export class CCHistoryStorage {
     atoms: number;
     blobs: number;
   } {
-    let mergeProjectionChanged = false;
-    const result = mergePersistedSourcePayloadByOriginPath(this.db, payload, {
-      preserve_origin_paths: options.preserve_origin_paths,
-      non_authoritative_origin_paths: options.non_authoritative_origin_paths,
-      observed_origin_paths: options.observed_origin_paths,
-      on_progress: (event) => {
-        if (event.stage === "write_store_done") {
-          mergeProjectionChanged ||= event.projection_changed;
-          return;
-        }
-        options.onProgress?.(event);
-      },
-    });
-    const sidecars = this.writeStorageBoundaryV2Sidecars(payload, {
-      writeMode: "merge",
-      preserveOriginPaths: options.preserve_origin_paths,
-      nonAuthoritativeOriginPaths: options.non_authoritative_origin_paths,
-      observedOriginPaths: options.observed_origin_paths,
-      skipGlobalScopes: options.skipGlobalScopes,
-      deferPrune: options.skipPrune,
-    });
-    options.onProgress?.({
-      stage: "write_store_done",
-      source_id: payload.source.id,
-      projection_changed: mergeProjectionChanged || sidecars.projection_changed,
-    });
+    return this.withSourceWriteTransaction(() => {
+      let mergeProjectionChanged = false;
+      const result = mergePersistedSourcePayloadByOriginPath(this.db, payload, {
+        preserve_origin_paths: options.preserve_origin_paths,
+        non_authoritative_origin_paths: options.non_authoritative_origin_paths,
+        observed_origin_paths: options.observed_origin_paths,
+        on_progress: (event) => {
+          if (event.stage === "write_store_done") {
+            mergeProjectionChanged ||= event.projection_changed;
+            return;
+          }
+          options.onProgress?.(event);
+        },
+      });
+      const sidecars = this.writeStorageBoundaryV2Sidecars(payload, {
+        writeMode: "merge",
+        preserveOriginPaths: options.preserve_origin_paths,
+        nonAuthoritativeOriginPaths: options.non_authoritative_origin_paths,
+        observedOriginPaths: options.observed_origin_paths,
+        skipGlobalScopes: options.skipGlobalScopes,
+        deferPrune: options.skipPrune,
+      });
+      options.onProgress?.({
+        stage: "write_store_done",
+        source_id: payload.source.id,
+        projection_changed: mergeProjectionChanged || sidecars.projection_changed,
+      });
 
-    // B4: same ordering gap as replaceSourcePayload above — countStoredSourcePayload
-    // ran before V2 sidecars were written, so its `turns` field omits incoming
-    // turns whose V2 rows don't exist yet. Recount from V2 now. Use the
-    // normalized source id for the same host-identity re-keying reason.
-    const normalizedSourceId = normalizeSourcePayload(payload).source.id;
-    const recounted = this.recountSourcePayloadAfterV2Sidecars(normalizedSourceId, result);
+      // B4: same ordering gap as replaceSourcePayload above — countStoredSourcePayload
+      // ran before V2 sidecars were written, so its `turns` field omits incoming
+      // turns whose V2 rows don't exist yet. Recount from V2 now. Use the
+      // normalized source id for the same host-identity re-keying reason.
+      const normalizedSourceId = normalizeSourcePayload(payload).source.id;
+      const recounted = this.recountSourcePayloadAfterV2Sidecars(normalizedSourceId, result);
 
-    this.invalidateProjectLinkSnapshot();
-    if (options.refreshDerived === false) {
+      this.invalidateProjectLinkSnapshot();
+      if (options.refreshDerived === false) {
+        return recounted;
+      }
+      options.onProgress?.({ stage: "reindex_start", source_id: payload.source.id });
+      this.refreshDerivedState();
+      options.onProgress?.({ stage: "reindex_done", source_id: payload.source.id });
       return recounted;
+    });
+  }
+
+  private pendingSourceEvidenceUnlinks?: Set<string>;
+
+  private withSourceWriteTransaction<T>(write: () => T): T {
+    this.db.exec("BEGIN IMMEDIATE");
+    this.pendingSourceEvidenceUnlinks = new Set();
+    let result: T;
+    let unlinks: string[];
+    try {
+      this.assertCompleteV2ForResolvedReads();
+      result = write();
+      unlinks = [...this.pendingSourceEvidenceUnlinks];
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      this.invalidateProjectLinkSnapshot();
+      throw error;
+    } finally {
+      this.pendingSourceEvidenceUnlinks = undefined;
     }
-    options.onProgress?.({ stage: "reindex_start", source_id: payload.source.id });
-    this.refreshDerivedState();
-    options.onProgress?.({ stage: "reindex_done", source_id: payload.source.id });
-    return recounted;
+    this.unlinkEvidenceBlobFiles(unlinks);
+    return result;
   }
 
   /**
@@ -460,13 +504,24 @@ export class CCHistoryStorage {
     blobs: number;
     pruned_evidence_shas: string[];
   }> {
-    const result = await mergeSourcePayloadStreaming(this.db, source, {
-      chunks: input.chunks,
-      preserve_origin_paths: input.preserve_origin_paths,
-      observed_origin_paths: input.observed_origin_paths,
-      asset_dir: this.assetDir,
-      on_progress: input.onProgress,
-    });
+    // The helper owns this connection across async iterator suspension. Other
+    // facade operations must not join its transaction or expose pending rows.
+    const db = this.db;
+    this.streamingWriteInFlight = true;
+    let result: Awaited<ReturnType<typeof mergeSourcePayloadStreaming>>;
+    try {
+      result = await mergeSourcePayloadStreaming(db, source, {
+        chunks: input.chunks,
+        preserve_origin_paths: input.preserve_origin_paths,
+        observed_origin_paths: input.observed_origin_paths,
+        asset_dir: this.assetDir,
+        on_progress: input.onProgress,
+        validate_before_write: () => this.assertCompleteV2ForResolvedReads(db),
+      });
+    } finally {
+      this.streamingWriteInFlight = false;
+      this.invalidateProjectLinkSnapshot();
+    }
     this.unlinkEvidenceBlobFiles(result.pruned_evidence_shas);
     this.invalidateProjectLinkSnapshot();
     return result;
@@ -485,6 +540,7 @@ export class CCHistoryStorage {
     payload: SourceSyncPayload,
     options: {
       onProgress?: (event: StorageProgressEvent) => void;
+      observed_origin_paths?: readonly string[];
     } = {},
   ): {
     sessions: number;
@@ -494,9 +550,18 @@ export class CCHistoryStorage {
     atoms: number;
     blobs: number;
   } {
-    return updatePersistedSourceSyncMetadata(this.db, payload, {
-      on_progress: options.onProgress,
+    let projectionChanged = false;
+    const result = updatePersistedSourceSyncMetadata(this.db, payload, {
+      reconcile_presence: options.observed_origin_paths !== undefined
+        ? () => reconcileSourcePresenceInTransaction(this.db, normalizeSourcePayload(payload).source.id, options.observed_origin_paths!, nowIso())
+        : undefined,
+      on_progress: (event) => {
+        projectionChanged ||= event.projection_changed;
+        options.onProgress?.(event);
+      },
     });
+    if (projectionChanged) this.invalidateProjectLinkSnapshot();
+    return result;
   }
 
   pruneSourcePayloadByObservedOriginPaths(
@@ -659,6 +724,46 @@ export class CCHistoryStorage {
   ): SourceSyncPayload | undefined {
     const source = this.listSources().find((entry) => entry.id === sourceId);
     return source ? this.buildSourceIncrementalPayloadForOriginPaths(source.id, originPaths) : undefined;
+  }
+
+  /** Small indexed inventory; no parser bodies are hydrated here. */
+  getSourceSessionContributorOriginPaths(
+    sourceId: string,
+    sessionRefs: readonly string[],
+    affectedOriginPaths: readonly string[] = [],
+  ): string[] {
+    // A rewritten origin can leave its former session entirely. Its persisted
+    // siblings still belong to the replacement scope, including thin preloads.
+    const selectPreviousSessions = this.db.prepare(`
+      SELECT DISTINCT r.session_ref FROM captured_blobs b
+      JOIN raw_records r ON r.blob_id = b.id AND r.source_id = b.source_id
+      WHERE b.source_id = ? AND b.origin_path = ?
+    `);
+    const affectedSessionRefs = uniqueStrings([
+      ...sessionRefs,
+      ...uniqueStrings(affectedOriginPaths.map((origin) => path.normalize(origin))).flatMap((origin) =>
+        (selectPreviousSessions.all(sourceId, origin) as Array<{ session_ref: string }>).map((row) => row.session_ref),
+      ),
+    ]);
+    const select = this.db.prepare(`
+      SELECT DISTINCT b.origin_path FROM raw_records r
+      JOIN captured_blobs b ON b.id = r.blob_id AND b.source_id = r.source_id
+      WHERE r.source_id = ? AND r.session_ref = ?
+    `);
+    return uniqueStrings(affectedSessionRefs.flatMap((sessionRef) =>
+      (select.all(sourceId, sessionRef) as Array<{ origin_path: string }>).map((row) => path.normalize(row.origin_path)),
+    ));
+  }
+
+  /** Whether a current reused origin contributed to a persisted session. */
+  hasSourceSessionForOriginPaths(sourceId: string, originPaths: readonly string[]): boolean {
+    const select = this.db.prepare(`
+      SELECT 1 FROM captured_blobs b
+      JOIN raw_records r ON r.blob_id = b.id AND r.source_id = b.source_id
+      JOIN sessions s ON s.id = r.session_ref AND s.source_id = r.source_id
+      WHERE b.source_id = ? AND b.origin_path = ? LIMIT 1
+    `);
+    return originPaths.some((origin) => Boolean(select.get(sourceId, path.normalize(origin))));
   }
 
   /**
@@ -874,6 +979,11 @@ export class CCHistoryStorage {
     return Queries.selectRecordsByBlobId(this.db, blobId);
   }
 
+  async getVerifiedSourceBlobPath(blobId: string): Promise<string | undefined> {
+    const blob = Queries.selectJsonByIds<CapturedBlob>(this.db, "captured_blobs", [blobId])[0];
+    return blob ? verifiedSourceCapturePath(this.db, this.assetDir, blob) : undefined;
+  }
+
   listImportedBundles(): ImportedBundleRecord[] {
     return Queries.listImportedBundles(this.db);
   }
@@ -908,9 +1018,16 @@ export class CCHistoryStorage {
    * map/serialize the entire turn list when only a slice is needed.
    */
   listResolvedTurnsPage(offset: number, limit?: number): { turns: UserTurnProjection[]; total: number } {
-    const all = this.buildProjectLinkSnapshot().turns;
-    const sliced = limit != null ? all.slice(offset, offset + limit) : all.slice(offset);
-    return { turns: sliced, total: all.length };
+    return this.withResolvedRead(() => {
+      const total = readResolvedIndexState(this.db)!.total;
+      const start = normalizeSliceIndex(offset, total);
+      const end = limit != null ? normalizeSliceIndex(offset + limit, total) : total;
+      const rows = this.db.prepare(`SELECT turn_id, decoration_json FROM resolved_turn_links
+        WHERE ordinal >= ? AND ordinal < ? ORDER BY ordinal`).all(start, end) as
+        Array<{ turn_id: string; decoration_json: string }>;
+      const turns = rows.map((row) => applyTurnDecoration(this.getTurn(row.turn_id, { strictLineage: true })!, row.decoration_json));
+      return { turns, total };
+    });
   }
 
   listResolvedSessions(): SessionProjection[] {
@@ -998,13 +1115,24 @@ export class CCHistoryStorage {
     });
   }
 
-  getTurn(turnId: string): UserTurnProjection | undefined {
+  getTurn(turnId: string, options: { strictLineage?: boolean } = {}): UserTurnProjection | undefined {
     // B.5.2: V2 read path. Queries.getTurn (V1) is retained for the validator.
-    return Queries.readUserTurnFromV2({ db: this.db, turnId, assetDir: this.assetDir });
+    // Live --full scans have no archive directory and retain the existing
+    // counts-only lineage projection. File integrity checks belong to stores
+    // that actually materialize those files.
+    return Queries.readUserTurnFromV2({
+      db: this.db, turnId, assetDir: this.assetDir,
+      strictLineage: options.strictLineage && this.assetDir !== undefined,
+    });
   }
 
   getResolvedTurn(turnId: string): UserTurnProjection | undefined {
-    return this.buildProjectLinkSnapshot().turns.find((turn) => turn.id === turnId);
+    return this.withResolvedRead(() => {
+      const row = this.db.prepare("SELECT decoration_json FROM resolved_turn_links WHERE turn_id = ?")
+        .get(turnId) as { decoration_json: string } | undefined;
+      const turn = row ? this.getTurn(turnId, { strictLineage: true }) : undefined;
+      return turn && row ? applyTurnDecoration(turn, row.decoration_json) : undefined;
+    });
   }
 
   getTurnContext(turnId: string): TurnContextProjection | undefined {
@@ -1028,7 +1156,12 @@ export class CCHistoryStorage {
   }
 
   getResolvedSession(sessionId: string): SessionProjection | undefined {
-    return this.buildProjectLinkSnapshot().sessions.find((session) => session.id === sessionId);
+    return this.withResolvedRead(() => {
+      const row = this.db.prepare("SELECT primary_project_id FROM resolved_session_links WHERE session_id = ?")
+        .get(sessionId) as { primary_project_id: string | null } | undefined;
+      const session = row ? this.getSession(sessionId) : undefined;
+      return session && row ? (row.primary_project_id === null ? session : { ...session, primary_project_id: row.primary_project_id }) : undefined;
+    });
   }
 
   getSessionRelatedWork(sessionId: string): SessionRelatedWorkProjection[] {
@@ -1203,9 +1336,18 @@ export class CCHistoryStorage {
    * fs condition resolves.
    */
   private unlinkEvidenceBlobFiles(shas: readonly string[]): void {
+    if (this.pendingSourceEvidenceUnlinks) {
+      for (const sha of shas) this.pendingSourceEvidenceUnlinks.add(sha);
+      return;
+    }
     if (!this.assetDir || shas.length === 0) return;
-    for (const sha of shas) {
+    // A retired hash may be reintroduced by this source write or another writer.
+    // Serialize row recheck + unlink with all mutations and ready lineage reads.
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+    for (const sha of new Set(shas)) {
       if (!/^[a-f0-9]{64}$/u.test(sha)) continue;
+      if (this.db.prepare("SELECT 1 FROM evidence_blobs WHERE sha256 = ?").get(sha)) continue;
       const file = path.join(this.assetDir, "evidence", "blobs", sha.slice(0, 2), sha);
       try {
         unlinkSync(file);
@@ -1224,6 +1366,11 @@ export class CCHistoryStorage {
           },
         );
       }
+    }
+    this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
     }
   }
 
@@ -2181,8 +2328,14 @@ export class CCHistoryStorage {
   }
 
   private buildProjectLinkSnapshot() {
+    this.checkResolvedCacheValidity();
     if (!this.cachedProjectLinkSnapshot) {
-      this.cachedProjectLinkSnapshot = this.computeProjectLinkSnapshot();
+      const publication = this.withResolvedRead(() => ({
+        snapshot: this.computeProjectLinkSnapshot(), ...this.resolvedCacheVersion(),
+      }));
+      this.cachedProjectLinkSnapshot = publication.snapshot;
+      this.cachedDataVersion = publication.dataVersion;
+      this.cachedLinkGeneration = publication.generation;
     }
     return this.cachedProjectLinkSnapshot;
   }
@@ -2198,6 +2351,7 @@ export class CCHistoryStorage {
   }
 
   private getTurnsById(): Map<string, UserTurnProjection> {
+    this.checkResolvedCacheValidity();
     if (!this.cachedTurnsById) {
       this.cachedTurnsById = new Map(this.listResolvedTurns().map((turn) => [turn.id, turn]));
     }
@@ -2205,6 +2359,7 @@ export class CCHistoryStorage {
   }
 
   private getProjectsById(): Map<string, ProjectIdentity> {
+    this.checkResolvedCacheValidity();
     if (!this.cachedProjectsById) {
       this.cachedProjectsById = new Map(this.listProjects().map((project) => [project.project_id, project]));
     }
@@ -2212,6 +2367,7 @@ export class CCHistoryStorage {
   }
 
   private getSessionsById(): Map<string, SessionProjection> {
+    this.checkResolvedCacheValidity();
     if (!this.cachedSessionsById) {
       this.cachedSessionsById = new Map(this.listSessions().map((session) => [session.id, session]));
     }
@@ -2219,6 +2375,7 @@ export class CCHistoryStorage {
   }
 
   private getSearchLinkedTurnsById(): Map<string, UserTurnProjection> {
+    this.checkResolvedCacheValidity();
     if (!this.cachedSearchLinkedTurnsById) {
       this.cachedSearchLinkedTurnsById = new Map(this.listResolvedTurns().map((turn) => [turn.id, turn]));
     }
@@ -2226,6 +2383,7 @@ export class CCHistoryStorage {
   }
 
   private getReadSurfaceSearchProjectResolver(): ReadSurfaceSearchProjectResolver {
+    this.checkResolvedCacheValidity();
     if (this.cachedReadSurfaceSearchProjectResolver) {
       return this.cachedReadSurfaceSearchProjectResolver;
     }
@@ -2343,6 +2501,7 @@ export class CCHistoryStorage {
   }
 
   private buildSessionRelatedWorkIndex(): Map<string, SessionRelatedWorkProjection[]> {
+    this.checkResolvedCacheValidity();
     if (!this.cachedRelatedWorkBySessionId) {
       const sessions = this.listSessions();
       const fragments = this.listSessionRelationFragments();
@@ -2417,6 +2576,16 @@ export class CCHistoryStorage {
     const sessions = this.listSessions();
     const turns = this.listTurns();
     const candidates = Queries.selectAllPayloads<DerivedCandidate>(this.db, "derived_candidates");
+    // Fallback project observations depend on full blob lineage. A transient
+    // missing/corrupt blob must not become a durable ready interpretation.
+    const observedSessions = new Set(candidates.filter((entry) => entry.candidate_kind === "project_observation").map((entry) => entry.session_ref));
+    const blobCounts = new Map((this.db.prepare("SELECT turn_id, lineage_blob_count FROM user_turns_v2").all() as
+      Array<{ turn_id: string; lineage_blob_count: number }>).map((row) => [row.turn_id, row.lineage_blob_count]));
+    for (const turn of turns) {
+      if (this.assetDir && !observedSessions.has(turn.session_id) && turn.lineage.blob_refs.length !== (blobCounts.get(turn.id) ?? 0)) {
+        throw new Error(`Cannot prepare resolved read index: required lineage evidence unavailable for ${turn.id}; restore evidence or complete migration backfill.`);
+      }
+    }
     return deriveProjectLinkSnapshot({
       sessions,
       turns,
@@ -2435,13 +2604,12 @@ export class CCHistoryStorage {
   }
 
   private refreshDerivedState(): void {
-    const existingProjects = this.listCurrentProjects();
-    const snapshot = this.computeProjectLinkSnapshot();
-    this.cachedProjectLinkSnapshot = snapshot;
-    const persistedProjects = assignProjectRevisions(snapshot.projects, existingProjects);
-
-    this.db.exec("BEGIN IMMEDIATE;");
+    const ownsTransaction = beginImmediateTransactionIfNeeded(this.db);
     try {
+      this.assertCompleteV2ForResolvedReads();
+      const existingProjects = this.listCurrentProjects();
+      const snapshot = this.computeProjectLinkSnapshot();
+      const persistedProjects = assignProjectRevisions(snapshot.projects, existingProjects);
       this.db.exec("DELETE FROM project_current");
       const insertProject = this.db.prepare("INSERT INTO project_current (project_id, payload_json) VALUES (?, ?)");
       for (const project of persistedProjects.projects) {
@@ -2472,9 +2640,100 @@ export class CCHistoryStorage {
       // the FTS5 schema entries remain inert on disk so a future read-path
       // switch is a one-line change. To repopulate FTS5 explicitly, call
       // `rebuildSearchIndex()` via the maintenance command.
-      this.db.exec("COMMIT;");
+      writeResolvedReadIndex(this.db, snapshot);
+      if (ownsTransaction) {
+        const publication = this.resolvedCacheVersion();
+        this.db.exec("COMMIT;");
+        this.invalidateProjectLinkSnapshot();
+        this.cachedProjectLinkSnapshot = snapshot;
+        this.cachedDataVersion = publication.dataVersion;
+        this.cachedLinkGeneration = publication.generation;
+      }
     } catch (error) {
-      this.db.exec("ROLLBACK;");
+      if (ownsTransaction) this.db.exec("ROLLBACK;");
+      this.invalidateProjectLinkSnapshot();
+      throw error;
+    }
+  }
+
+  private resolvedIndexReady(): boolean {
+    const state = readResolvedIndexState(this.db);
+    return state?.ready === 1 && state.version === RESOLVED_READ_INDEX_VERSION;
+  }
+
+  private resolvedCacheVersion(): { dataVersion: number; generation?: number } {
+    return {
+      dataVersion: (this.db.prepare("PRAGMA data_version").get() as { data_version: number }).data_version,
+      generation: readResolvedIndexState(this.db)?.generation,
+    };
+  }
+
+  private checkResolvedCacheValidity(): void {
+    const dataVersion = (this.db.prepare("PRAGMA data_version").get() as { data_version: number }).data_version;
+    const state = readResolvedIndexState(this.db);
+    if (dataVersion !== this.cachedDataVersion || state?.generation !== this.cachedLinkGeneration || !this.resolvedIndexReady()) {
+      this.invalidateProjectLinkSnapshot();
+      this.cachedDataVersion = dataVersion;
+      this.cachedLinkGeneration = state?.generation;
+    }
+  }
+
+  private assertCompleteV2ForResolvedReads(db: DatabaseSync = this.db): void {
+    const legacy = ensureLegacyTurnInvalidation(db);
+    if (!legacy) return;
+    db.exec("INSERT OR IGNORE INTO resolved_read_index_state (id, version) VALUES (1, '')");
+    const state = readResolvedIndexState(db);
+    if (state && state.validated_legacy_generation === state.legacy_generation) return;
+    const columns = db.prepare("PRAGMA table_info(user_turns)").all() as Array<{ name: string }>;
+    const hasPayload = columns.some((row) => row.name === "payload_json");
+    const mismatch = hasPayload ? `OR
+      current.canonical_text_full IS NOT COALESCE(json_extract(old.payload_json, '$.canonical_text'), '') OR
+      current.raw_text_full IS NOT COALESCE(json_extract(old.payload_json, '$.raw_text'), '') OR
+      json(current.user_messages_json) IS NOT json(COALESCE(json_extract(old.payload_json, '$.user_messages'), '[]')) OR
+      current.lineage_blob_count IS NOT COALESCE(json_array_length(old.payload_json, '$.lineage.blob_refs'), 0) OR
+      current.lineage_atom_count IS NOT COALESCE(json_array_length(old.payload_json, '$.lineage.atom_refs'), 0) OR
+      current.lineage_fragment_count IS NOT COALESCE(json_array_length(old.payload_json, '$.lineage.fragment_refs'), 0) OR
+      current.lineage_record_count IS NOT COALESCE(json_array_length(old.payload_json, '$.lineage.record_refs'), 0) OR
+      current.lineage_candidate_count IS NOT COALESCE(json_array_length(old.payload_json, '$.lineage.candidate_refs'), 0)` : "OR 1 = 1";
+    const liveLegacy = hasPayload ? `NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.logical_id = old.id AND json_extract(t.payload_json, '$.object_kind') = 'turn')
+      AND EXISTS (SELECT 1 FROM source_instances source WHERE source.id = json_extract(old.payload_json, '$.source_id'))` : "1 = 1";
+    if (db.prepare(`SELECT 1 FROM user_turns old
+      LEFT JOIN user_turns_v2 current ON current.turn_id = old.id WHERE (${liveLegacy}) AND (current.turn_id IS NULL ${mismatch}) LIMIT 1`).get()) {
+      throw new Error("Storage migration required: complete V1→V2 write and validation before resolved reads; read-index preparation does not migrate history.");
+    }
+    // Counts alone cannot distinguish a stale same-sized lineage from a
+    // complete backfill. Legacy writer triggers make this a cold check only.
+    if (hasPayload) for (const row of db.prepare(`SELECT id, payload_json FROM user_turns old WHERE ${liveLegacy}`).iterate() as Iterable<{ id: string; payload_json: string }>) {
+      const old = fromJson<UserTurnProjection>(row.payload_json);
+      const current = Queries.readUserTurnFromV2({
+        db, turnId: row.id, assetDir: this.assetDir, strictLineage: this.assetDir !== undefined,
+      });
+      for (const field of ["blob_refs", "atom_refs", "fragment_refs", "record_refs", "candidate_refs"] as const) {
+        if (JSON.stringify(current?.lineage[field] ?? []) !== JSON.stringify(old.lineage?.[field] ?? [])) {
+          throw new Error(`Storage migration required: complete and validate V1→V2 lineage for ${row.id} before resolved reads.`);
+        }
+      }
+    }
+    db.exec("UPDATE resolved_read_index_state SET validated_legacy_generation = legacy_generation WHERE id = 1");
+  }
+
+  private withResolvedRead<T>(read: () => T): T {
+    this.checkResolvedCacheValidity();
+    // Reserve mutation while hydrating lineage files as well as SQLite rows:
+    // an ordinary read snapshot alone cannot keep files live through concurrent
+    // GC. Ready pages hold this reservation only for their requested bodies.
+    const ownsTransaction = beginImmediateTransactionIfNeeded(this.db);
+    try {
+      this.assertCompleteV2ForResolvedReads();
+      if (!this.resolvedIndexReady()) {
+        this.refreshDerivedState();
+      }
+      const result = read();
+      if (ownsTransaction) this.db.exec("COMMIT");
+      return result;
+    } catch (error) {
+      if (ownsTransaction) this.db.exec("ROLLBACK");
+      this.invalidateProjectLinkSnapshot();
       throw error;
     }
   }

@@ -934,7 +934,7 @@ test("sync --since skips projection refresh for unchanged old Factory Droid file
       assert.equal(parseRun?.stats.sync_parse_ms, 0);
       const finalizeRun = stageRuns.find((run) => run.stage_kind === "finalize_projections");
       assert.equal(finalizeRun?.stats.sqlite_replace_ms, 0);
-      assert.equal(finalizeRun?.stats.sqlite_metadata_write_count, 0);
+      assert.equal(finalizeRun?.stats.sqlite_metadata_write_count, 1);
       const indexRun = stageRuns.find((run) => run.stage_kind === "index_projections");
       assert.equal(indexRun?.stats.projection_refresh_skipped, 1);
       assert.equal(indexRun?.stats.projection_refresh_ms, 0);

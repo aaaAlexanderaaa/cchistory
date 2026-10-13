@@ -7,6 +7,48 @@ import type { SourceSyncPayload } from "@cchistory/domain";
 import { CCHistoryStorage } from "@cchistory/storage";
 import { exportBundle, importBundleIntoStore } from "../bundle.js";
 import { createLegacySchemaFixturePayload } from "./helpers.js";
+import { createHash } from "node:crypto";
+
+test("raw bundle export preserves a historical capture after its native file changes or disappears", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-bundle-historical-"));
+  const source = new CCHistoryStorage(path.join(root, "store"));
+  const target = new CCHistoryStorage(path.join(root, "import"));
+  try {
+    const raw = "{\"original\":true}\n";
+    const origin = path.join(root, "source.jsonl");
+    await writeFile(origin, raw);
+    const payload = createLegacySchemaFixturePayload();
+    payload.blobs.push({ id: "blob-historical", source_id: payload.source.id, host_id: payload.source.host_id,
+      origin_path: origin, captured_path: origin, captured_at: "2026-01-01T00:00:00Z", capture_run_id: "capture-historical",
+      checksum: createHash("sha1").update(raw).digest("hex"), size_bytes: Buffer.byteLength(raw) });
+    source.replaceSourcePayload(payload);
+    const sourceId = source.listSources()[0]!.id;
+    await writeFile(origin, raw + "{\"changed\":true}\n");
+    for (const [i, nativePresent] of [true, false].entries()) {
+      if (!nativePresent) await rm(origin);
+      const bundleDir = path.join(root, `bundle-${i}`);
+      await exportBundle({ storage: source, bundleDir, includeRawBlobs: true });
+      const rawPath = path.join(bundleDir, "raw", sourceId, `${payload.blobs[0]!.id}.jsonl`);
+      assert.equal(await readFile(rawPath, "utf8"), raw);
+      await importBundleIntoStore({ storage: target, bundleDir, rawDir: path.join(root, `raw-${i}`), onConflict: "replace" });
+      const imported = target.getSourcePayload(sourceId)!;
+      assert.equal(imported.blobs[0]!.checksum, payload.blobs[0]!.checksum);
+      assert.equal(await readFile(imported.blobs[0]!.captured_path!, "utf8"), raw);
+    }
+    const verify = source.getVerifiedSourceBlobPath.bind(source);
+    source.getVerifiedSourceBlobPath = async (id) => {
+      const archived = await verify(id);
+      if (archived) await writeFile(archived, "changed after verification");
+      return archived;
+    };
+    await assert.rejects(exportBundle({ storage: source, bundleDir: path.join(root, "bundle-corrupt"), includeRawBlobs: true }),
+      /integrity mismatch during bundle export/i, "copy-time corruption must not become a parser-output fallback");
+    source.getVerifiedSourceBlobPath = verify;
+  } finally {
+    source.close(); target.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 function rewritePayloadIds(payload: SourceSyncPayload, replacements: Record<string, string>): SourceSyncPayload {
   let serialized = JSON.stringify(payload);

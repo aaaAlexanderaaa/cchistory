@@ -1,15 +1,171 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, appendFile, mkdir, mkdtemp, open, readFile, readdir, rm, statfs, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { SourceSyncPayload, UserTurnProjection } from "@cchistory/domain";
 import { CCHistoryStorage } from "../index.js";
-import { retireStorageBoundaryV2Sources, shrinkJsonToBudget } from "../evidence-store.js";
+import { materializeBytesStream, retireStorageBoundaryV2Sources, shrinkJsonToBudget } from "../evidence-store.js";
 import { selectOrphanedBlobIds } from "../internal/gc.js";
 import { createFixturePayload } from "./helpers.js";
+
+test("historical raw capture reuse survives native append and absence without a new record snapshot", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-capture-reuse-"));
+  const storage = new CCHistoryStorage(path.join(root, "store"));
+  try {
+    const origin = path.join(root, "session.jsonl");
+    const raw = "{\"fixture\":true}\n";
+    await writeFile(origin, raw);
+    const payload = createFixturePayload("src-capture-reuse", "capture reuse", "stage-capture-reuse");
+    Object.assign(payload.blobs[0]!, { origin_path: origin, captured_path: origin,
+      checksum: sha1(raw), size_bytes: Buffer.byteLength(raw) });
+    storage.replaceSourcePayload(payload);
+    for (const nativePresent of [true, false]) {
+      if (nativePresent) await writeFile(origin, `${raw}{\"appended\":true}\n`);
+      else await rm(origin);
+      storage.mergeSourcePayloadByOriginPath(payload);
+      const db = new DatabaseSync(storage.dbPath, { readOnly: true });
+      try {
+        const captures = db.prepare("SELECT evidence_sha256, capture_kind FROM evidence_captures WHERE blob_id = ?")
+          .all(payload.blobs[0]!.id);
+        assert.deepEqual(captures.map((row) => ({ ...row })), [{ evidence_sha256: sha256(raw), capture_kind: "source_blob" }]);
+      } finally { db.close(); }
+      storage.pruneEvidenceBlobsNow();
+      assert.equal(await readFile(path.join(root, "store", "evidence", "blobs", sha256(raw).slice(0, 2), sha256(raw)), "utf8"), raw);
+    }
+  } finally {
+    storage.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("known retained capture corruption and absence fail instead of substituting derived bytes", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-capture-integrity-"));
+  const storage = new CCHistoryStorage(path.join(root, "store"));
+  try {
+    const origin = path.join(root, "session.jsonl");
+    const raw = "{\"fixture\":true}\n";
+    await writeFile(origin, raw);
+    const payload = createFixturePayload("src-capture-integrity", "input", "stage-capture-integrity");
+    const blob = payload.blobs[0]!;
+    Object.assign(blob, { origin_path: origin, captured_path: origin, checksum: sha1(raw), size_bytes: Buffer.byteLength(raw) });
+    storage.replaceSourcePayload(payload);
+    const archived = (await storage.getVerifiedSourceBlobPath(blob.id))!;
+    await writeFile(archived, "corruption");
+    await assert.rejects(storage.getVerifiedSourceBlobPath(blob.id), /integrity/i);
+    assert.throws(() => storage.mergeSourcePayloadByOriginPath(payload), /integrity/i);
+    assert.throws(() => storage.replaceSourcePayload(payload), /integrity/i);
+    assert.equal(storage.getTurn("turn-1")?.canonical_text, "input", "failed source writes retain the previous projection");
+    await rm(archived);
+    await assert.rejects(storage.getVerifiedSourceBlobPath(blob.id), /unavailable/i);
+    assert.throws(() => storage.mergeSourcePayloadByOriginPath(payload), /unavailable/i);
+    await writeFile(archived, raw);
+    assert.equal(await storage.getVerifiedSourceBlobPath(blob.id), archived);
+    assert.equal(storage.getTurn("turn-1")?.canonical_text, "input");
+  } finally {
+    storage.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("host rekey retains files whose retired SHA is reintroduced by the same source transaction", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-rekey-evidence-"));
+  const storage = new CCHistoryStorage(path.join(root, "store"));
+  try {
+    const origin = path.join(root, "session.jsonl");
+    const raw = "{\"same-input\":true}\n";
+    await writeFile(origin, raw);
+    const payload = createFixturePayload("src-rekey-evidence", "same user input", "stage-a", { hostId: "host-a", baseDir: root });
+    Object.assign(payload.blobs[0]!, { origin_path: origin, captured_path: origin, checksum: sha1(raw), size_bytes: Buffer.byteLength(raw) });
+    storage.replaceSourcePayload(payload);
+    const expectedContext = storage.getTurnContext("turn-1");
+    const next = createFixturePayload("src-rekey-evidence-next", "same user input", "stage-b", { hostId: "host-b", baseDir: root });
+    Object.assign(next.blobs[0]!, { origin_path: origin, captured_path: origin, checksum: sha1(raw), size_bytes: Buffer.byteLength(raw) });
+    const archived = (await storage.getVerifiedSourceBlobPath(payload.blobs[0]!.id))!;
+    await writeFile(archived, "x".repeat(Buffer.byteLength(raw)));
+    assert.throws(() => storage.replaceSourcePayload(next, { allow_host_rekey: true }), /integrity mismatch/i,
+      "host retirement must not bless an already-existing corrupt SHA target");
+    assert.equal(storage.listSources()[0]!.host_id, "host-a");
+    assert.equal(storage.getTurn("turn-1")?.canonical_text, "same user input");
+    assert.deepEqual(storage.getTurnContext("turn-1"), expectedContext);
+    await writeFile(archived, raw);
+    storage.replaceSourcePayload(next, { allow_host_rekey: true });
+    assert.equal(storage.listSources().length, 1);
+    assert.equal(storage.listSources()[0]!.host_id, "host-b");
+    assert.equal(storage.getResolvedTurn("turn-1")?.lineage.blob_refs.length, 1);
+    assert.deepEqual(storage.getTurnContext("turn-1"), expectedContext);
+    assert.equal(await readFile((await storage.getVerifiedSourceBlobPath(next.blobs[0]!.id))!, "utf8"), raw);
+  } finally { storage.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("oversized streaming merge reuses verified historical captures after native append and removal", async () => {
+  // 65 MiB input + retained archive + streaming partial < 200 MiB.
+  const disk = await statfs(os.tmpdir());
+  assert.ok(Number(disk.bavail) * Number(disk.bsize) >= 400 * 1024 * 1024, "large capture test requires 2x disk headroom");
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-capture-large-"));
+  const storage = new CCHistoryStorage(path.join(root, "store"));
+  try {
+    const origin = path.join(root, "large.jsonl");
+    const sourceSha1 = createHash("sha1");
+    const archiveSha256 = createHash("sha256");
+    const block = Buffer.alloc(1024 * 1024, 32);
+    block[block.length - 1] = 10;
+    const file = await open(origin, "w");
+    try {
+      for (let i = 0; i < 65; i++) {
+        await file.write(block);
+        sourceSha1.update(block); archiveSha256.update(block);
+      }
+    } finally { await file.close(); }
+    const payload = createFixturePayload("srcinst-codex-capture-large", "large input", "stage-capture-large");
+    const blob = payload.blobs[0]!;
+    Object.assign(blob, { origin_path: origin, captured_path: origin,
+      checksum: sourceSha1.digest("hex"), size_bytes: 65 * block.length });
+    const expectedSha = archiveSha256.digest("hex");
+    const merge = () => storage.mergeSourcePayloadStreaming(payload.source, {
+      chunks: (async function* () { yield { ...payload, origin_path: origin }; })(),
+      preserve_origin_paths: new Set<string>(), observed_origin_paths: new Set([origin]),
+    });
+    await merge();
+    await appendFile(origin, "appended bytes\n");
+    await merge();
+    await rm(origin);
+    await merge();
+    const db = new DatabaseSync(storage.dbPath, { readOnly: true });
+    try {
+      assert.deepEqual(db.prepare("SELECT evidence_sha256, capture_kind FROM evidence_captures WHERE blob_id = ?")
+        .all(blob.id).map((row) => ({ ...row })), [{ evidence_sha256: expectedSha, capture_kind: "source_blob" }]);
+    } finally { db.close(); }
+    storage.pruneEvidenceBlobsNow();
+    assert.ok(await storage.getVerifiedSourceBlobPath(blob.id));
+  } finally {
+    storage.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("streaming source checksum failure removes its partial output", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-capture-partial-"));
+  try {
+    const blob = createFixturePayload("src-partial", "input", "stage-partial").blobs[0]!;
+    Object.assign(blob, { checksum: sha1("expected"), size_bytes: 8 });
+    await assert.rejects(materializeBytesStream({ assetDir: root, chunks: (async function* () { yield Buffer.from("wrong!!!"); })(),
+      mediaType: "application/octet-stream", captureKind: "source_blob", createdAt: new Date().toISOString(), expectedSource: blob }), /integrity/i);
+    assert.deepEqual(await readdir(path.join(root, "evidence", "blobs")), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("streaming iterator failure closes the writer before removing its partial output", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-capture-interrupted-"));
+  try {
+    await assert.rejects(materializeBytesStream({ assetDir: root,
+      chunks: (async function* () { yield Buffer.alloc(128 * 1024); throw new Error("interrupted input"); })(),
+      mediaType: "application/octet-stream", captureKind: "source_blob", createdAt: new Date().toISOString() }), /interrupted input/);
+    assert.deepEqual(await readdir(path.join(root, "evidence", "blobs")), []);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
 
 test("storage boundary v2 writes evidence, ledger, spans, and bounded context sidecars without changing v1 reads", async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "cchistory-storage-boundary-v2-"));
