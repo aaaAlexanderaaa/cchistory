@@ -176,6 +176,7 @@ export class CCHistoryStorage {
     this.dbPath = dbPath;
     this.dbConnection = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA busy_timeout = 5000;");
+    if (dbPath === ":memory:") this.db.exec("PRAGMA temp_store = MEMORY;");
     // A.4: pragma tuning for multi-GB stores. page_size must be set BEFORE
     // journal_mode = WAL — SQLite rejects page_size changes on a WAL-mode
     // database. On an existing DB page_size is silently ignored until VACUUM

@@ -27,6 +27,9 @@ jobs:
         with:
           node-version: 22
 
+      - name: Install governance dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts --filter cchistory
+
       - name: Verify governance harness
         run: pnpm run verify:governance
 
@@ -55,6 +58,9 @@ jobs:
 
       - name: Test Full profile
         run: pnpm run test:full
+
+      - name: Verify standalone Full CLI artifact
+        run: pnpm run verify:cli-artifact -- --skip-build
 
       - name: Verify support status
         run: pnpm run verify:support-status

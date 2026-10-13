@@ -57,18 +57,43 @@ for (const includeProjectObservation of [false, true]) {
   test(`live in-memory resolved reads need no archive files (project observation=${includeProjectObservation})`, () => {
     const storage = new CCHistoryStorage({ dbPath: ":memory:" });
     try {
-      storage.replaceSourcePayload(createFixturePayload("src-live-memory", "live memory prompt", "stage-live-memory", {
+      const payload = createFixturePayload("src-live-memory", "live memory prompt", "stage-live-memory", {
         includeProjectObservation,
-      }));
+      });
+      storage.replaceSourcePayload(payload);
       const expected = storage.listResolvedTurns();
       assert.equal(expected.length, 1);
       assert.equal(expected[0]!.canonical_text, "live memory prompt");
       assert.deepEqual(storage.listResolvedTurnsPage(0, 10), { turns: expected, total: 1 });
       assert.deepEqual(storage.getResolvedTurn("turn-1"), expected[0]);
+      assert.deepEqual(storage.getTurnContext("turn-1"), payload.contexts[0]);
       assert.equal(storage.getResolvedTurn("missing"), undefined);
+      assert.equal(storage.getTurnContext("missing"), undefined);
     } finally { storage.close(); }
   });
 }
+
+test("live in-memory context follows merge, rollback and purge", () => {
+  const storage = new CCHistoryStorage({ dbPath: ":memory:" });
+  const payload = createFixturePayload("src-live-context", "live context prompt", "stage-live-context");
+  try {
+    storage.replaceSourcePayload(payload);
+    const updated = structuredClone(payload);
+    updated.contexts[0]!.assistant_replies[0]!.content = "updated live reply";
+    updated.contexts[0]!.tool_calls[0]!.output = "updated live tool output";
+    storage.mergeSourcePayloadByOriginPath(updated);
+    assert.deepEqual(storage.getTurnContext("turn-1"), updated.contexts[0]);
+
+    assert.throws(() => storage.replaceSourcePayload(payload, {
+      onProgress: (event) => {
+        if (event.stage === "reindex_done") throw new Error("injected live context rollback");
+      },
+    }), /injected live context rollback/);
+    assert.deepEqual(storage.getTurnContext("turn-1"), updated.contexts[0]);
+    storage.purgeTurn("turn-1");
+    assert.equal(storage.getTurnContext("turn-1"), undefined);
+  } finally { storage.close(); }
+});
 
 test("streaming facade excludes reads and mutations until commit or rollback releases ownership", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "cchistory-resolved-stream-owner-"));

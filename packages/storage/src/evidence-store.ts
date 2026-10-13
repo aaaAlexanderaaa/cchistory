@@ -241,6 +241,7 @@ export function writeStorageBoundaryV2Sidecars(input: {
         continue;
       }
       const materialized = materializeContextCache({
+        db: input.db,
         assetDir: input.assetDir,
         context,
         createdAt: now,
@@ -524,7 +525,7 @@ export function streamV2SidecarsFromV1(input: {
     );
     for (const row of contextsStmt.iterate(sourceId) as Iterable<{ payload_json: string }>) {
       const context = fromJson<TurnContextProjection>(row.payload_json);
-      const materialized = materializeContextCache({ assetDir: input.assetDir, context, createdAt: now });
+      const materialized = materializeContextCache({ db, assetDir: input.assetDir, context, createdAt: now });
       upsertEvidenceBlob(db, materialized);
       upsertTurnContextRef(db, context, sourceId, materialized, now);
     }
@@ -964,6 +965,7 @@ export async function mergeSourcePayloadStreaming(
       }
       for (const context of contextsForWrite) {
         const materialized = materializeContextCache({
+          db,
           assetDir: input.asset_dir,
           context,
           createdAt: now,
@@ -1304,7 +1306,19 @@ export function readTurnContextFromV2Cache(input: {
   turnId: string;
 }): TurnContextProjection | undefined {
   if (!input.assetDir) {
-    return undefined;
+    const hasMemoryCache = input.db.prepare(
+      "SELECT 1 FROM sqlite_temp_master WHERE type = 'table' AND name = 'memory_turn_context_cache'",
+    ).get();
+    if (!hasMemoryCache) return undefined;
+    const row = input.db.prepare(`
+      SELECT cache.payload_json, refs.context_evidence_sha256 AS sha256
+        FROM temp.memory_turn_context_cache cache
+        JOIN turn_context_refs_v2 refs ON refs.context_evidence_sha256 = cache.sha256
+       WHERE refs.turn_id = ?
+    `).get(input.turnId) as { payload_json: string; sha256: string } | undefined;
+    if (!row || hashBytes("sha256", Buffer.from(row.payload_json, "utf8")) !== row.sha256) return undefined;
+    const context = fromJson<TurnContextProjection>(row.payload_json);
+    return context.turn_id === input.turnId ? context : undefined;
   }
   const row = input.db.prepare(`
     SELECT context_evidence_sha256,
@@ -1960,17 +1974,36 @@ function materializeBlobEvidence(input: {
 }
 
 function materializeContextCache(input: {
+  db: DatabaseSync;
   assetDir?: string;
   context: TurnContextProjection;
   createdAt: string;
 }): EvidenceMaterialization {
-  return materializeBytes({
+  const bytes = Buffer.from(`${JSON.stringify(input.context)}\n`, "utf8");
+  const materialized = materializeBytes({
     assetDir: input.assetDir,
-    bytes: Buffer.from(`${JSON.stringify(input.context)}\n`, "utf8"),
+    bytes,
     mediaType: "application/vnd.cchistory.turn-context+json",
     captureKind: "context_cache",
     createdAt: input.createdAt,
   });
+  if (!input.assetDir) {
+    // Live scans have V2 refs but no archive. SQLite TEMP storage keeps the
+    // same content-addressed cache transactional and releases it on close.
+    input.db.exec(`
+      CREATE TEMP TABLE IF NOT EXISTS memory_turn_context_cache (
+        sha256 TEXT PRIMARY KEY,
+        payload_json TEXT NOT NULL
+      );
+      CREATE TEMP TRIGGER IF NOT EXISTS prune_memory_turn_context_cache
+      AFTER DELETE ON main.evidence_blobs BEGIN
+        DELETE FROM memory_turn_context_cache WHERE sha256 = OLD.sha256;
+      END;
+    `);
+    input.db.prepare("INSERT OR REPLACE INTO temp.memory_turn_context_cache (sha256, payload_json) VALUES (?, ?)")
+      .run(materialized.sha256, bytes.toString("utf8"));
+  }
+  return materialized;
 }
 
 function materializeTurnLineage(input: {

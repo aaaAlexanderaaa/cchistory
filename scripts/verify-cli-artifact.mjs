@@ -89,7 +89,7 @@ async function main() {
       || !/OpenClaw/.test(discoverResult.stdout)
       || !/supplemental \(supplemental 1\)/.test(discoverResult.stdout)
       || !/OpenCode/.test(discoverResult.stdout)
-      || !/Gemini CLI\s+tool\s+discover-only/.test(discoverResult.stdout)
+      || !/Gemini CLI\s+tool\s+discover_only/.test(discoverResult.stdout)
     ) {
       throw new Error(`Installed CLI discover output was unexpected: ${discoverResult.stdout}`);
     }
@@ -133,7 +133,7 @@ async function main() {
       throw new Error(`Installed CLI indexed sessions before full scan were unexpected: ${JSON.stringify(indexedSessionsBeforeFull)}`);
     }
 
-    await writeCodexSessionFixture(skepticalHome, 'session-2.jsonl', {
+    await writeCodexSessionFixture(skepticalHome, 'rollout-artifact-2.jsonl', {
       sessionId: 'codex-artifact-session-2',
       cwd: '/workspace/artifact-review',
       model: 'gpt-5',
@@ -197,7 +197,7 @@ async function main() {
     if (
       !/Source\s+: Codex \(codex\)/.test(fullShowTurn.stdout)
       || !/Count the newly scanned session\./.test(fullShowTurn.stdout)
-      || !/assistant replies: 1/.test(fullShowTurn.stdout)
+      || !/\nResponse\n[-]+\nThe extra session is present\./.test(fullShowTurn.stdout)
     ) {
       throw new Error(`Installed CLI full show turn output was unexpected: ${fullShowTurn.stdout}`);
     }
@@ -223,9 +223,9 @@ async function main() {
     assertQuietResult(fullShowSession, 'full show session');
     if (
       !/Title\s+: Count the newly scanned session\./.test(fullShowSession.stdout)
-      || !/Project\s+: artifact-review \[active\]/.test(fullShowSession.stdout)
-      || !/Source\s+: Codex \(codex\)/.test(fullShowSession.stdout)
-      || !/Turns\s+: 1/.test(fullShowSession.stdout)
+      || !/Project\s+: artifact-review/.test(fullShowSession.stdout)
+      || !/Source\s+: Codex\s*\n/.test(fullShowSession.stdout)
+      || !/Asks\s+: 1/.test(fullShowSession.stdout)
       || !/Count the newly scanned session\./.test(fullShowSession.stdout)
     ) {
       throw new Error(`Installed CLI full show session output was unexpected: ${fullShowSession.stdout}`);
@@ -248,7 +248,7 @@ async function main() {
     if (
       !/Session sess:codex:codex-artifact-session-2/.test(fullTreeSession.stdout)
       || !/source=Codex \(codex\)/.test(fullTreeSession.stdout)
-      || !/Turns/.test(fullTreeSession.stdout)
+      || !/Asks/.test(fullTreeSession.stdout)
       || !/Count the newly scanned session\./.test(fullTreeSession.stdout)
       || !/Related Work/.test(fullTreeSession.stdout)
     ) {
@@ -618,7 +618,7 @@ async function main() {
 
     const showSession = await runInstalledCli(installedCli, ['show', 'session', chosenHit.session.id, '--store', browseStoreDir], browseEnv);
     assertQuietResult(showSession, 'browse show session');
-    if (!/Project\s*:\s*chat-ui-kit/.test(showSession.stdout) || !/Source\s*:\s*Claude Code \(claude_code\)/.test(showSession.stdout)) {
+    if (!/Project\s*:\s*chat-ui-kit/.test(showSession.stdout) || !/Source\s*:\s*Claude Code\s*\n/.test(showSession.stdout)) {
       throw new Error(`Installed CLI browse show session output was unexpected: ${showSession.stdout}`);
     }
 
@@ -742,7 +742,7 @@ async function main() {
 
     const sourcesList = await runInstalledCli(installedCli, ['ls', 'sources', '--store', browseStoreDir], browseEnv);
     assertQuietResult(sourcesList, 'ls sources');
-    if (!/Source\s+Handle\s+Platform/.test(sourcesList.stdout) || !/claude_code/.test(sourcesList.stdout) || !/openclaw/.test(sourcesList.stdout)) {
+    if (!/Source\s+Platform\s+Sessions\s+Turns/.test(sourcesList.stdout) || !/claude_code/.test(sourcesList.stdout) || !/openclaw/.test(sourcesList.stdout)) {
       throw new Error(`Installed CLI ls sources output was unexpected: ${sourcesList.stdout}`);
     }
 
@@ -932,7 +932,7 @@ async function seedArtifactBrowseHome(tempRoot) {
 }
 
 async function overwriteArtifactWorkflowPrompt(tempRoot, prompt) {
-  await writeCodexSessionFixture(tempRoot, 'session.jsonl', {
+  await writeCodexSessionFixture(tempRoot, 'rollout-artifact-1.jsonl', {
     sessionId: 'codex-artifact-session-1',
     cwd: '/workspace/artifact-review',
     model: 'gpt-5',
@@ -944,7 +944,7 @@ async function overwriteArtifactWorkflowPrompt(tempRoot, prompt) {
 
 async function seedArtifactWorkflowHome(tempRoot) {
   await mkdir(path.join(tempRoot, '.codex', 'sessions'), { recursive: true });
-  await writeCodexSessionFixture(tempRoot, 'session.jsonl', {
+  await writeCodexSessionFixture(tempRoot, 'rollout-artifact-1.jsonl', {
     sessionId: 'codex-artifact-session-1',
     cwd: '/workspace/artifact-review',
     model: 'gpt-5',

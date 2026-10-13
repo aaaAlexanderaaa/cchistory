@@ -13,8 +13,11 @@ const defaultOutputRootRelative = path.join('dist', 'cli-artifacts');
 const artifactPackageName = 'cchistory-cli-standalone';
 const vendoredPackages = [
   { sourceDir: path.join('packages', 'domain'), packageName: '@cchistory/domain' },
+  { sourceDir: path.join('packages', 'canonical'), packageName: '@cchistory/canonical' },
   { sourceDir: path.join('packages', 'source-adapters'), packageName: '@cchistory/source-adapters' },
   { sourceDir: path.join('packages', 'storage'), packageName: '@cchistory/storage' },
+  { sourceDir: path.join('packages', 'api-client'), packageName: '@cchistory/api-client' },
+  { sourceDir: path.join('packages', 'presentation'), packageName: '@cchistory/presentation' },
 ];
 
 export async function buildCliArtifact(options = {}) {

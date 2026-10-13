@@ -154,19 +154,24 @@ test("Lite materializer matches Full canonical readback across the fixture-backe
         fullSearch.results.map((result) => ({ id: result.turn.id, highlights: result.highlights })),
       );
       for (const [query, expectedTotal] of [
-        ["lite-full-tail-only-token", 0],
+        ["lite-full-tail-only-token", 1],
         ["fingerprint-lite-full-search-parity", undefined],
       ] as const) {
         const liteParitySearch = lite.search({ query, limit: 10_000 });
         const fullParitySearch = full.searchTurnsPaginated({ query, limit: 10_000 });
         assert.equal(liteParitySearch.total, fullParitySearch.total, `search total parity for ${query}`);
         assert.deepEqual(
-          liteParitySearch.results.map((result) => result.turn.id),
-          fullParitySearch.results.map((result) => result.turn.id),
+          liteParitySearch.results.map((result) => ({ id: result.turn.id, highlights: result.highlights })),
+          fullParitySearch.results.map((result) => ({ id: result.turn.id, highlights: result.highlights })),
           `search result parity for ${query}`,
         );
         if (expectedTotal !== undefined) {
           assert.equal(liteParitySearch.total, expectedTotal);
+          assert.equal(liteParitySearch.results[0]?.turn.id, longTurn.id);
+          assert.equal(liteParitySearch.results[0]?.turn.canonical_text, longTurn.canonical_text);
+          assert.ok(liteParitySearch.results[0]?.highlights.some((highlight) =>
+            highlight.start >= 16 * 1024 &&
+            longTurn.canonical_text.slice(highlight.start, highlight.end) === query));
         } else {
           assert.ok(liteParitySearch.total > 0);
         }
@@ -239,7 +244,8 @@ test("Lite scans explicit roots without creating or reading a Full store", async
     await assert.rejects(assertLiteSourceRoot(fullBundleRoot), /Full bundle paths are not Lite sources/);
 
     const canonicalFullRoot = path.join(tempHome, ".cchistory");
-    await mkdir(canonicalFullRoot);
+    // The earlier .CCHistory fixture is this same directory on macOS/Windows.
+    await mkdir(canonicalFullRoot, { recursive: true });
     await writeFile(path.join(canonicalFullRoot, "cchistory.sqlite"), "not opened by Lite");
     await assert.rejects(
       assertLiteSourceRoot(tempHome, { homeDir: tempHome }),

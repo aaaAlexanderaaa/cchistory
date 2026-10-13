@@ -15,6 +15,7 @@ const keepTemp = process.argv.includes('--keep-temp');
 const skipBuild = process.argv.includes('--skip-build');
 
 async function main() {
+  const cliPackage = JSON.parse(await readFile(path.join(repoRoot, 'apps', 'lite-cli', 'package.json'), 'utf8'));
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'cchistory-lite-artifact-verify-'));
   try {
     const manifest = await buildLiteArtifact({
@@ -33,7 +34,9 @@ async function main() {
     const cli = path.join(installedRoot, 'bin', 'cchistory-lite');
     const tui = path.join(installedRoot, 'bin', 'cchistory-lite-tui');
     const version = await execFile(cli, ['--version'], { cwd: extractRoot });
-    if (version.stdout.trim() !== '0.3.0') throw new Error(`Unexpected installed Lite version: ${version.stdout}`);
+    if (version.stdout.trim() !== cliPackage.version) {
+      throw new Error(`Expected installed Lite version ${cliPackage.version}, got ${version.stdout.trim()}`);
+    }
     const tuiHelp = await execFile(tui, ['--help'], { cwd: extractRoot });
     if (!/CC History Lite TUI/u.test(tuiHelp.stdout)) throw new Error('Installed Lite TUI help was unavailable.');
 
