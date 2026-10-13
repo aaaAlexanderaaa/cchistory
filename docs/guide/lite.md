@@ -100,32 +100,54 @@ canonical logical session at a time and release full assistant/tool context
 after deriving the turn and session projections. Commands that return complete
 context (`show session`, `show turn`, JSON/JSONL export) retain that context for
 the command lifetime and therefore have a larger memory envelope. The TUI
-startup and refresh snapshots are context-light; `turn <ref>` performs a
-targeted full-context scan for only that logical session.
+startup and refresh snapshots are context-light; Enter on a turn's Detail pane
+performs a targeted full-context scan for only that logical session.
 
 Lite entrypoints calculate the default Node old-space ceiling as
 `min(host memory / 2, 4096 MiB)`. This replaces the former fixed 1024 MiB cap
 that caused large local TUI launches to fail before the canonical scan finished.
 
-## Lite TUI Commands
+## Lite TUI Navigation
 
-```text
-p / projects                       list projects
-s / sessions                       list sessions
-u / turns                          list UserTurns
-/<query> or search <query>          search canonical turn text and paths
-n / next                            next page of the active list, search, or detail
-b / prev                            previous page of the active view
-page <n>                            jump to a page of the active view
-project|session|turn|source <ref>   inspect detail
-t / stats                           usage overview
-stats source|project|model|day      usage rollup
-r / refresh                         replace snapshot after a successful rescan
-q / quit                            release the snapshot
+The TUI opens a full-screen keyboard browser after its initial scan completes.
+It uses project/session selection, a turn list, and a detail pane; Enter on
+Detail loads and opens the full session conversation.
+
+| Key | Action |
+|---|---|
+| `↑/↓` or `j/k` | Move selection, or scroll the focused detail/conversation/overlay |
+| `Tab` / `Shift+Tab` | Next / previous pane |
+| `Enter` / `Esc` | Drill in / return or close an overlay |
+| `PgUp/PgDn`, `g/G`, `Home/End` | Page or move to the first/last item or line |
+| `p` / `S` | Browse by project / session, including sessions with no UserTurn |
+| `t` / `d` | Focus turns / detail |
+| `/` | Edit a search query; short queries require Enter, queries of four or more characters run automatically |
+| `i` / `s` / `?` | Statistics / source health / help overlay |
+| `Tab` in statistics | Cycle source, project, model, and day rollups |
+| `r` | Refresh the snapshot |
+| `q` or `Ctrl+C` | Exit and restore the terminal |
+
+While editing a search query, printable keys enter text. Use Esc to return
+through the panes to browsing, or Ctrl+C to exit immediately.
+
+Open a specific view at startup:
+
+```bash
+cchistory-lite-tui --project <ref>
+cchistory-lite-tui --session <ref>
+cchistory-lite-tui --turn <ref>
+cchistory-lite-tui --search "parser regression"
 ```
 
+Use at most one of `--project`, `--session`, and `--turn`. Source selection flags
+work as described above. `--color` / `--no-color` control styling. Frames support
+terminals from 40 columns and 14 rows; narrow terminals show the focused pane at
+full width. Piped output renders one snapshot frame and exits.
+
 Refresh is transactional at the process level: if the replacement scan fails,
-the previous complete snapshot remains available.
+the previous complete snapshot remains available. Navigation remains available
+while conversation context loads; a completed load does not change a newer
+selection or reopen a pane the user has left.
 
 ## One-Way Export
 

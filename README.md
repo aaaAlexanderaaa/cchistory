@@ -1,6 +1,6 @@
 <p align="center">
   <strong>CCHistory</strong><br>
-  <em>Evidence-preserving history for AI coding assistants</em>
+  <em>Find your AI coding conversations, organized by project</em>
 </p>
 
 <p align="center">
@@ -17,12 +17,16 @@
 
 ---
 
-CCHistory `0.3.0` is a local-first, evidence-preserving memory layer for AI coding assistant history. It collects local session data from **14 AI coding assistant platforms including Claude Code, Cursor, Codex, AMP, Gemini CLI, Kimi Code, Accio Work, ZCode, and more** (see [Supported Platforms](#supported-platforms)), then organizes it by project identity so you can search, review, and analyze what you asked across tools.
+CCHistory brings your local AI coding history together so you can find an old
+ask, reopen its conversation, and review work across tools by project. It reads
+history from **14 AI coding assistant platforms including Claude Code, Cursor,
+Codex, AMP, Gemini CLI, Kimi Code, Accio Work, ZCode, and more**. Ten adapters are
+stable and four are experimental; see [Supported Platforms](#supported-platforms).
 
-The primary recall object is the project-scoped `UserTurn`: a user-authored ask,
-linked to its project, session context, source evidence, and derived lifecycle
-state. CLI, TUI, Web, and API surfaces are projections of the same canonical
-store rather than separate interpretations.
+Each user-authored ask is a `UserTurn`, connected to its project, session,
+assistant replies, tool calls, and source evidence. Full preserves an archive
+you can sync and back up; Lite reads native history into an in-memory snapshot.
+Both use the same adapters and canonical project, search, and usage semantics.
 
 <p align="center">
   <img src="docs/screenshots/web-all-turns.webp" alt="CCHistory Web — All Turns view" width="800" />
@@ -33,12 +37,25 @@ store rather than separate interpretations.
 | Goal | Use |
 |------|-----|
 | Sync local AI-tool history and inspect health | [`cchistory sync`](docs/guide/cli.md#sync), [`cchistory health`](docs/guide/cli.md#health) |
-| Find an old ask and inspect the surrounding session | [`cchistory search`](docs/guide/cli.md#search), [`cchistory show`](docs/guide/cli.md#show), [`cchistory tree`](docs/guide/cli.md#tree) |
+| Find an old ask and inspect its conversation | [Full TUI](docs/guide/tui.md), [Web](docs/guide/web.md), or [Lite TUI](docs/guide/lite.md#lite-tui-navigation) |
 | Give an AI agent project context before it continues work | [`cchistory context project <ref>`](docs/guide/cli.md#context) |
 | Browse history interactively | [TUI guide](docs/guide/tui.md) or [Web guide](docs/guide/web.md) |
 | Inspect native local history without creating or reading a CCHistory store | [CC History Lite guide](docs/guide/lite.md), `cchistory-lite`, `cchistory-lite-tui` |
 | Backup, restore, or move a store | [CLI backup/import/restore guide](docs/guide/cli.md#backup-and-restore) |
 | Understand support status and parser coverage | [Documentation map](docs/README.md), [runtime surface](docs/design/CURRENT_RUNTIME_SURFACE.md), [source notes](docs/sources/README.md) |
+
+### Choose Full or Lite
+
+| | Full | Lite |
+|---|---|---|
+| Best for | A lasting archive across syncs and imported histories | Browsing history already on one machine |
+| Data | Saved SQLite store with independently retained source evidence | Native sources read in place; snapshot released on exit |
+| Reading | Full TUI; optional Web/API | Lite TUI and one-shot Lite CLI |
+| Operations | Sync, backup, import, merge, and explicit cleanup | Browse, search, stats, and one-way normalized export |
+| Build | `pnpm run build` | `pnpm run build:lite` |
+
+Full TUI and both Lite entrypoints run without API or Web services. Add the
+Managed Web/API profile when you want browser access.
 
 ## Key Features
 
@@ -47,16 +64,34 @@ store rather than separate interpretations.
 - **Project-based linking** — Turns are linked to projects via repo fingerprints, workspace paths, and manual overrides
 - **AI-ready project context** — `cchistory context project <ref>` gives an agent recent asks, session threads, and next inspection commands across sessions
 - **Full-text search** — Search across all canonical turn text with project and source filters
-- **Four aligned surfaces** — TUI and Web are end-user read surfaces; CLI and API are admin, automation, and integration surfaces
+- **Four aligned Full surfaces** — TUI and Web are end-user read surfaces; CLI and API are admin, automation, and integration surfaces
 - **Zero-store Lite profile** — Reuses the same adapters, `UserTurn`/context derivation, project linking, search, and stats in an ephemeral single-machine CLI/TUI with one-way export
 - **Token usage analytics** — Track tokens across models, projects, sources, and time periods
 - **Export / Import / Merge** — Portable bundles for backup, migration, and multi-host merging
 - **Data health monitoring** — Drift and consistency metrics with source-level health matrix
 
+## Changes Since v0.3.0
+
+The development branch includes:
+
+- **CC History Lite** — Browse native history through an independent CLI or
+  keyboard-driven TUI, with project/session/turn panes, search, stats, and
+  on-demand conversation context.
+- **Complete canonical recall** — Long prompts remain searchable beyond the
+  former 16 KiB scan boundary; masked raw-only content stays outside recall.
+- **Less repeated work** — Stable files reuse prior interpretations, and ready
+  page/detail reads hydrate the requested turns instead of the whole history.
+- **Safer retained history** — Complete scans mark missing source files absent while
+  retaining their evidence; raw bundle export can use verified archived captures.
+- **CLI workflow improvements** — Path-first project lookup, preview-first
+  writes, and captured question/answer interactions. See the [CLI guide](docs/guide/cli.md).
+
 ## Release Scope
 
-`0.3.0` is the current repository package, API, and Web UI release marker. The
-`self-host v1` wording in design documents describes the supported deployment
+[`v0.3.0`](https://github.com/aaaAlexanderaaa/cchistory/releases/tag/v0.3.0) is the
+latest tagged release. `master` contains the development changes above; package,
+API, and UI version markers still read `0.3.0` until the next version bump.
+The `self-host v1` wording in design documents describes the supported deployment
 scope: a single-user, local-first, localhost-or-trusted-LAN installation backed
 by SQLite. It is not a package version.
 
@@ -94,44 +129,25 @@ and checked by `pnpm run verify:support-status`.
 
 ## Architecture
 
+```mermaid
+flowchart TD
+  Sources["Native AI-tool history"] --> Adapters["Shared source adapters"]
+  Canonical["Shared project, search and usage semantics"] --> Full["Full: durable SQLite archive"]
+  Canonical --> Lite["Lite: in-memory snapshot"]
+  Adapters --> Full
+  Adapters --> Lite
+  Full --> FullTui["Full TUI"]
+  Full --> FullCli["Full CLI"]
+  Full --> Api["Managed API"]
+  Api --> Web["Web UI"]
+  Lite --> LiteCli["Lite CLI"]
+  Lite --> LiteTui["Lite TUI"]
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                         Local Source Files                            │
-│  ~/.codex  ~/.claude  ~/.cursor  ~/.factory  ~/.local/share/amp ...  │
-└──────────────┬───────────────────────────────────────────────────────┘
-               │
-               ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                     Source Adapters (packages/source-adapters)        │
-│  Platform-specific parsers: capture → extract → parse → atomize      │
-│  Blobs → Records → Fragments → Atoms → Candidates                   │
-└──────────────┬───────────────────────────────────────────────────────┘
-               │
-               ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                     Storage (packages/storage)                       │
-│  SQLite via Node.js built-in node:sqlite (DatabaseSync)              │
-│  Ingestion, linking, projection, search index, lineage tracking      │
-└──────────┬──────────────────────┬───────────────────┬────────────────┘
-           │                      │                   │
-           ▼                      ▼                   ▼
-                         End-user surfaces
-           ┌───────────────────┐  ┌─────────────────────┐
-           │  TUI (apps/tui)   │  │   Web (apps/web)    │
-           │  Terminal browser  │  │   Next.js 16        │
-           │  Browse, search,  │  │   React 19 on :8085 │
-           │  drill into full  │  │   SWR, Tailwind,    │
-           │  conversations    │  │   Recharts           │
-           └───────────────────┘  └─────────────────────┘
-                    Admin / AI agent surfaces
-┌──────────────────┐  ┌───────────────────┐
-│  CLI (apps/cli)  │  │  API (apps/api)   │
-│  Sync, health,   │  │  Fastify REST     │
-│  export/import,  │  │  server on :8040  │
-│  backup, GC,     │  │  CORS, auth,      │
-│  agent ops       │  │  probe, replay    │
-└──────────────────┘  └───────────────────┘
-```
+
+Adapters own source capture and parsing. The canonical package owns shared
+project linking, search, ordering, and usage semantics; Full storage and Lite
+runtime materialize those semantics for their respective profiles. See
+[structural architecture](ARCHITECTURE.md) for ownership and dependency rules.
 
 ### Surface Roles
 
@@ -141,6 +157,7 @@ and checked by `pnpm run verify:support-status`.
 | **Web** | End-user (developer) | Same as TUI but richer — charts, filters, inbox triage, mouse-first |
 | **CLI** | Admin / AI agent | Data management — sync, export/import, backup, health check, GC, remote agent ops, scriptable `--json` output |
 | **API** | Programmatic access | REST endpoints powering Web UI and external integrations |
+| **Lite CLI/TUI** | Single-machine readers | Native history browse, search, stats, and one-way export without a Full store |
 
 > **Canonical vs alias commands:** `export` / `import` are the canonical backup primitives. `backup`, `restore-check`, and `merge` are operator-facing aliases — `backup --write` produces the same bundle as `export`, `restore-check` runs `stats` + `ls sources`, and `merge` chains `export` then `import` between two stores.
 
@@ -240,6 +257,11 @@ pnpm lite ls projects
 pnpm lite search "parser regression"
 pnpm lite:tui
 ```
+
+In Lite TUI, use `↑/↓` or `j/k` to move, `Tab` to switch panes, and `Enter` to
+drill into a turn and its conversation. `/` searches, `S` lists sessions,
+`i` opens stats, `s` shows sources, `r` refreshes, and `q` exits. It also supports
+`--project`, `--session`, `--turn`, and `--search` entry points.
 
 Override and optionally select one registered adapter:
 
@@ -369,6 +391,15 @@ cchistory stats
 ```
 
 > To sync Antigravity with full turn coverage, start the Antigravity desktop app on the same machine before running `cchistory sync`.
+
+### Upgrade an existing Full store
+
+Create a pre-upgrade backup with the version that currently operates your store;
+see [upgrade safety](docs/guide/cli.md#upgrade-safety). The development branch adds
+rebuildable resolved-read indexes to V2-complete stores. If a legacy store reports
+that migration is required, inspect it with `cchistory migration preview` and
+follow the existing migration workflow before sync or resolved reads. Rollback
+uses the pre-upgrade backup; keep store writers on the same schema-compatible version.
 
 ## Screenshots
 

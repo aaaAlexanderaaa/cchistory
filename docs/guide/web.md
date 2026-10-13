@@ -18,7 +18,7 @@ The web server listens on port **8085** and expects the API to be available at p
 
 Use this flow when you want to inspect the canonical seeded self-host acceptance journey through the web UI without mutating the repository's default `.cchistory/` store.
 
-The script names still contain `v1` because they validate the self-host support gate. That label is not the package version; the current release marker is `0.2.0`.
+The script names still contain `v1` because they validate the self-host support gate. That label is separate from the package version; see the [README release scope](../../README.md#release-scope) for current version information.
 
 The seeded web review checklist is documented inline below. Use the Setup and Review Checks sections for runtime steps, and the Evidence Capture section for required observations, evidence capture, and friction logging.
 

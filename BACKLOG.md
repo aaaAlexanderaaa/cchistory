@@ -240,6 +240,13 @@ CLI/TUI read-side gate passes. The existing plan records the real-runtime versus
 simulated-interface evidence and limitations. Later R46 and unrelated review
 gates remain open.
 
+**2026-10-13 README/release preparation — bounded work done:** bilingual README
+and Lite navigation/upgrade guidance are refreshed. Release probes repaired
+standalone CLI dependency closure and live Full V2 context caching; storage,
+Lite, both artifacts, read-side and governance checks pass locally. The existing
+plan records proof and limits. Version markers remain `0.3.0`; remote CI and
+release/independent-review gates remain unclaimed. Later R46 work stays open.
+
 ### KR: R46-KR2 Bounded append and versioned interpretation
 Status: open
 Acceptance: parser/canonical/mask version identity invalidates affected outputs;

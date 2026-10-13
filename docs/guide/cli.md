@@ -502,6 +502,13 @@ Upgrade notes:
 
 - `cchistory stats` now shows the current `Schema Version`, `Schema Migrations`, and `Search Mode`.
 - Stores created before schema-ledger support will backfill migration records on first open under the newer build.
+- The current development schema (`2026-10-11.1`) adds reconstructible resolved
+  link/order indexes. Preparing those indexes requires a V2-complete store; it
+  does not perform the V1→V2 migration. If reads or sync report migration is
+  required, inspect the store with `cchistory migration preview --store <dir>`
+  and follow the existing `migration run` / `migration validate` workflow before
+  continuing. Keep the pre-upgrade backup for rollback and use compatible writer
+  versions for all processes accessing the store.
 - If the upgraded store does not look correct, restore into a clean directory from the pre-upgrade bundle and compare with `restore-check` plus a targeted `search`.
 
 ### gc

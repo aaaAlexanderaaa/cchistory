@@ -220,6 +220,12 @@ remaining cost, not advertised as constant-time startup.
 
 ## Authorization and capability boundary
 
+Full's live `:memory:` scans retain their freshly derived conversation context
+in process and must expose it without an archive directory. Durable stores
+continue to read verified V2 context caches; retained V1 rows are not a fallback
+for a missing or invalid durable cache. This preserves the existing live-read
+contract without changing the persistent migration boundary.
+
 Existing admin authorization owns mutations; reads cannot change user lifecycle,
 project overrides or knowledge coverage. A derived read-index repair may create
 only reconstructible internal state. Purge and irreversible loss of parser

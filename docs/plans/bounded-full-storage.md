@@ -130,6 +130,47 @@ rollback boundary. Each producer owns large temp cleanup in `finally`.
 
 ## Progress and completion record
 
+- **2026-10-13 README and release assessment (bounded preparation completed):**
+  the user asked whether README wording should be refreshed and a new version
+  prepared after the thematic commits. Baseline is `b06c6c1`; the latest GitHub
+  release remains `v0.3.0` (July 2). English/Chinese README now explain reader
+  entrypoints, Full/Lite selection, post-tag changes and upgrade safety. Lite's
+  guide replaces the retired command menu with actual keys and entry flags.
+  These are routine corrections under freeze §§4.1, 9.3, 10.4 and 16.1;
+  product semantics, persistent schema, DTOs and support tiers are unchanged.
+  [CI run 38337108839](https://github.com/aaaAlexanderaaa/cchistory/actions/runs/38337108839)
+  exposed the governance job's missing TypeScript install and Lite's stale
+  tail-search expectation. Both are repaired; the parity guard also compares
+  exact text and highlights past 16 KiB. A case-insensitive fixture mkdir is
+  corrected without removing its source-isolation scenarios.
+  Standalone Full CLI verification reproduced missing canonical/presentation
+  dependencies; its closure now includes those packages and API-client types.
+  Obsolete artifact fixture names/output assertions are reconciled with the
+  current adapter and human output, retaining all workflow checks. That gate
+  also reproduced missing live Full conversation context. V2 refs now address
+  a checksummed SQLite TEMP context cache for no-archive scans, sharing the
+  write transaction and evidence-GC cleanup. In-memory connections keep TEMP
+  storage in memory. Two context guards failed before repair; complete content,
+  merge, rollback and purge pass afterward, alongside the existing durable
+  invalid-cache/no-V1-fallback guard. CI now runs the Full CLI artifact gate;
+  Lite artifact version checks use package metadata instead of a fixed string.
+  Local proof: storage 150 pass/4 existing skips; all Lite gate slices pass
+  (canonical 6, adapters 157, live runtime 13, Lite CLI 6, Lite TUI 89, boundaries);
+  both standalone artifact gates pass, including installed Full upgrade,
+  restore/conflict and query workflows. CLI/TUI read-side slices pass (CLI 205,
+  state/layout 31/26, API build, HTTP E2E 53 and both fixture verifiers). The
+  temporary HTTP listener needed automatic sandbox approval. Governance passes
+  49 guards/38 documents/10 templates/5 rules; support, inventory, profiles,
+  mock-data validation (120 files), syntax and whitespace pass. Missing/stale
+  local dependency links were repaired with package-filtered installs using the
+  existing store; no root full install or persistent service was run.
+  This recommends preparing `v0.4.0`; the user's earlier thematic commit/push
+  instruction also authorizes committing these follow-up docs and fixes in
+  separate batches. Version markers, tags and releases remain unchanged.
+  Fresh remote CI, clean-install/offline-Web
+  release checks and the existing R43/R44/R45 independent-review gates are not
+  claimed complete. Later R46 work remains open. Test-owned temp directories
+  and task logs are cleaned up; the operator store is untouched.
 - **2026-10-13 commit preparation (completed):** the user requested thematic
   commits and a push of the reviewed uncommitted work. The review's Node
   compatibility defect was repaired within the existing storage transaction

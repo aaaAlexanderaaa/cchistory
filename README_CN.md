@@ -1,6 +1,6 @@
 <p align="center">
   <strong>CCHistory</strong><br>
-  <em>AI 编程助手的证据保全历史记录工具</em>
+  <em>按项目找回你的 AI 编程对话</em>
 </p>
 
 <p align="center">
@@ -17,15 +17,42 @@
 
 ---
 
-CCHistory `0.3.0` 是面向 AI 编程助手历史记录的本地优先、证据保全记忆层。它从 **14 个 AI 编程助手平台（包括 Claude Code、Cursor、Codex、AMP、Gemini CLI、Kimi Code、Accio Work、ZCode 等）** 的本地会话数据中收集信息（详见[支持平台](#支持平台)），然后按照项目身份进行组织，让你能够跨工具搜索、回顾和分析自己提出过的问题。
+CCHistory 把本机不同工具中的 AI 编程历史按项目整理，帮助你找回以前的提问、
+查看完整对话，并回顾跨工具的工作过程。它从 **14 个 AI 编程助手平台（包括
+Claude Code、Cursor、Codex、AMP、Gemini CLI、Kimi Code、Accio Work、ZCode 等）**
+读取本地历史，其中 10 个适配器为稳定支持，4 个为实验性支持，详见[支持平台](#支持平台)。
 
-它的核心召回对象是项目范围内的 `UserTurn`：一个用户真实提出的问题，
-并且保留项目关联、会话上下文、源证据和派生生命周期状态。CLI、TUI、Web
-和 API 都是同一份 canonical store 的投影，而不是四套互相分叉的解释。
+每次用户提问对应一个 `UserTurn`，关联项目、会话、助手回复、工具调用和源证据。
+Full 保存可持续同步、备份的历史归档；Lite 直接读取原生历史，只在进程内保留快照。
+两者共用适配器，以及规范化的项目关联、搜索和用量统计语义。
 
 <p align="center">
   <img src="docs/screenshots/web-all-turns.webp" alt="CCHistory Web — 所有对话轮次视图" width="800" />
 </p>
+
+## 从这里开始
+
+| 目标 | 使用入口 |
+|------|----------|
+| 同步本地工具历史、检查数据健康 | [`cchistory sync`](docs/guide/cli.md#sync)、[`cchistory health`](docs/guide/cli.md#health) |
+| 找回以前的提问、查看对应对话 | [Full TUI](docs/guide/tui.md)、[Web](docs/guide/web.md) 或 [Lite TUI](docs/guide/lite.md#lite-tui-navigation) |
+| 给 AI agent 提供项目上下文 | [`cchistory context project <ref>`](docs/guide/cli.md#context) |
+| 直接浏览原生历史，不创建或读取 Full store | [Lite 指南](docs/guide/lite.md)、`cchistory-lite`、`cchistory-lite-tui` |
+| 备份、恢复或迁移归档 | [CLI 备份与恢复指南](docs/guide/cli.md#backup-and-restore) |
+| 了解平台支持与解析覆盖 | [文档地图](docs/README.md)、[运行时清单](docs/design/CURRENT_RUNTIME_SURFACE.md)、[数据源说明](docs/sources/README.md) |
+
+### 选择 Full 还是 Lite
+
+| | Full | Lite |
+|---|---|---|
+| 适合场景 | 持续保存、同步历史，或合并导入的归档 | 浏览一台机器上已有的原生历史 |
+| 数据保存 | SQLite store，独立保留原始源证据 | 就地读取原生数据，退出后释放内存快照 |
+| 阅读入口 | Full TUI；可选 Web/API | Lite TUI 和单次运行的 Lite CLI |
+| 管理能力 | 同步、备份、导入、合并和显式清理 | 浏览、搜索、统计和单向规范化导出 |
+| 构建命令 | `pnpm run build` | `pnpm run build:lite` |
+
+Full TUI 和两个 Lite 入口均可独立运行，无需启动 API 或 Web。
+需要浏览器访问时，再构建和启动 Managed Web/API profile。
 
 ## 核心特性
 
@@ -34,15 +61,32 @@ CCHistory `0.3.0` 是面向 AI 编程助手历史记录的本地优先、证据�
 - **基于项目的关联** — 通过仓库指纹、工作空间路径和手动覆盖将对话轮次关联到项目
 - **面向 AI 的项目上下文** — `cchistory context project <ref>` 可跨会话给出近期提问、会话线程和下一步检查命令
 - **全文搜索** — 在所有规范化对话文本中搜索，支持按项目和数据源过滤
-- **四个一致的入口** — TUI 和 Web 是面向用户的读取入口；CLI 和 API 是管理、自动化与集成入口
+- **四个一致的 Full 入口** — TUI 和 Web 是面向用户的读取入口；CLI 和 API 是管理、自动化与集成入口
 - **零存储 Lite profile** — 与 Full 共用 adapter、`UserTurn`/context 推导、项目关联、搜索和统计，只在单机进程内保留快照，并提供独立 CLI/TUI 与单向导出
 - **Token 用量分析** — 跨模型、项目、数据源和时间维度追踪 Token 用量
 - **导出 / 导入 / 合并** — 可移植的数据包，用于备份、迁移和多主机合并
 - **数据健康监控** — 漂移和一致性指标，配有数据源级别的健康矩阵
 
+## v0.3.0 之后的开发进展
+
+开发分支已加入：
+
+- **CC History Lite** — 独立 CLI 和键盘操作 TUI，支持项目、会话、提问浏览，
+  搜索、统计，以及按需加载完整会话上下文。
+- **完整规范化文本召回** — 长提问超过原来的 16 KiB 扫描边界后仍可搜索；
+  仅存在于原始文本中的已屏蔽内容不进入召回。
+- **减少重复工作** — 未变化的文件复用已有解析结果；读取索引就绪后，
+  分页和单条详情只加载所需轮次。
+- **保留已消失源的历史** — 完整扫描把缺失源文件标记为 absent，同时保留证据；
+  原始数据包导出可使用经过校验的归档捕获。
+- **改进 CLI 工作流** — 按路径定位项目、写操作先预览，并捕获问答工具交互。
+  详见 [CLI 指南](docs/guide/cli.md)。
+
 ## 发布范围
 
-`0.3.0` 是当前仓库 package、API 和 Web UI 的发布版本标记。设计文档中的
+[`v0.3.0`](https://github.com/aaaAlexanderaaa/cchistory/releases/tag/v0.3.0) 是最新已打标签的版本。
+`master` 包含上述后续开发改动；正式升级版本号前，package、API 和 UI 版本标记仍为 `0.3.0`。
+设计文档中的
 `self-host v1` 指的是支持和部署范围：单用户、本地优先、SQLite 存储、
 localhost 或可信 LAN 部署。它不是 package semver。
 
@@ -80,36 +124,24 @@ localhost 或可信 LAN 部署。它不是 package semver。
 
 ## 系统架构
 
+```mermaid
+flowchart TD
+  Sources["原生 AI 工具历史"] --> Adapters["共享数据源适配器"]
+  Canonical["共享项目、搜索和用量语义"] --> Full["Full：持久化 SQLite 归档"]
+  Canonical --> Lite["Lite：进程内存快照"]
+  Adapters --> Full
+  Adapters --> Lite
+  Full --> FullTui["Full TUI"]
+  Full --> FullCli["Full CLI"]
+  Full --> Api["Managed API"]
+  Api --> Web["Web UI"]
+  Lite --> LiteCli["Lite CLI"]
+  Lite --> LiteTui["Lite TUI"]
 ```
-┌──────────────────────────────────────────────────────────────────────┐
-│                          本地源文件                                    │
-│  ~/.codex  ~/.claude  ~/.cursor  ~/.factory  ~/.local/share/amp ...  │
-└──────────────┬───────────────────────────────────────────────────────┘
-               │
-               ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                    数据源适配器 (packages/source-adapters)             │
-│  平台特定解析器: 捕获 → 提取 → 解析 → 原子化                           │
-│  Blobs → Records → Fragments → Atoms → Candidates                   │
-└──────────────┬───────────────────────────────────────────────────────┘
-               │
-               ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│                      存储层 (packages/storage)                        │
-│  SQLite (通过 Node.js 内置 node:sqlite 的 DatabaseSync)               │
-│  数据采集、关联、投射、搜索索引、血缘追踪                                │
-└──────────┬──────────────────────┬───────────────────┬────────────────┘
-           │                      │                   │
-           ▼                      ▼                   ▼
-┌──────────────────┐  ┌───────────────────┐  ┌─────────────────────┐  ┌──────────────────┐
-│  CLI (apps/cli)  │  │  API (apps/api)   │  │   Web (apps/web)    │  │  TUI (apps/tui)  │
-│  本地操作工具:    │  │  Fastify REST     │  │   Next.js 16        │  │  Ink 本地浏览器   │
-│  同步、搜索、     │  │  服务 端口 :8040   │  │   React 19 端口     │  │  用于浏览、搜索   │
-│  统计、导出/导入  │  │  CORS, 认证,       │  │   :8085             │  │  与 source health │
-│                  │  │  探测, 回放        │  │   SWR, Tailwind     │  │  摘要查看         │
-│                  │  │                   │  │                     │  │                  │
-└──────────────────┘  └───────────────────┘  └─────────────────────┘  └──────────────────┘
-```
+
+适配器负责源数据捕获和解析；canonical 包负责共享的项目关联、搜索、排序和用量语义。
+Full storage 和 Lite runtime 分别将这些语义用于持久化归档与内存快照。
+所有权和依赖方向详见[结构架构](ARCHITECTURE.md)。
 
 ### 入口职责
 
@@ -119,6 +151,7 @@ localhost 或可信 LAN 部署。它不是 package semver。
 | **Web** | 终端用户 | 更丰富的鼠标优先界面：图表、筛选、inbox triage、source 管理和数据健康 |
 | **CLI** | 管理者 / AI agent | 同步、导出/导入、备份、健康检查、GC、remote-agent 操作和脚本化 `--json` 输出 |
 | **API** | 程序化集成 | 为 Web UI 和外部系统提供受管 REST 访问 |
+| **Lite CLI/TUI** | 单机历史阅读者 | 不依赖 Full store，直接浏览、搜索、统计原生历史，并提供单向导出 |
 
 CC History Lite 在共享 adapter 与 canonical derivation 之后分流：Full 把
 证据和投影持久化到 SQLite，Lite 只把最终快照放在内存里，并且不会读取 Full
@@ -229,6 +262,10 @@ pnpm lite ls projects
 pnpm lite search "parser regression"
 pnpm lite:tui
 ```
+
+Lite TUI 中，用 `↑/↓` 或 `j/k` 移动，`Tab` 切换面板，`Enter` 进入提问详情和
+完整对话；`/` 搜索，`S` 浏览会话，`i` 查看统计，`s` 查看数据源，`r` 刷新，`q` 退出。
+也可用 `--project`、`--session`、`--turn`、`--search` 直接进入对应视图。
 
 也可以覆盖并只选择一个已注册 adapter：
 
@@ -357,6 +394,13 @@ cchistory stats
 ```
 
 > 如果要完整同步 Antigravity 的 turn，请先在同一台机器上启动 Antigravity 桌面应用，再运行 `cchistory sync`。
+
+### 升级已有 Full store
+
+先使用当前能够操作该 store 的版本生成升级前备份，详见 [升级安全说明](docs/guide/cli.md#upgrade-safety)。
+开发分支会为已完成 V2 迁移的 store 添加可重建的读取索引。旧 store 如果提示需要迁移，
+应先用 `cchistory migration preview` 检查，并按现有迁移流程完成验证，再运行同步或规范化读取。
+回退时使用升级前备份；操作同一个 store 的各入口应使用兼容其 schema 的版本。
 
 ## 截图
 
