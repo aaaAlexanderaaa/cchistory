@@ -36,6 +36,9 @@ Thumbs.db
 # Logs
 *.log
 
+# CC History Lite lives in its own repository (nested checkout, not a submodule)
+cchistory-lite/
+
 # Repo-local non-code content
 archive/
 !docs/design/archive/

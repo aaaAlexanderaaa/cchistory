@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "pnpm --filter @cchistory/live-runtime build && tsc -p tsconfig.json && chmod +x dist/index.js",
-    "test": "pnpm run build && tsc -p tsconfig.test.json && node --test dist/index.test.js"
+    "test": "pnpm run build && tsc -p tsconfig.test.json && node --test dist/*.test.js"
   },
   "dependencies": {
     "@cchistory/domain": "workspace:*",

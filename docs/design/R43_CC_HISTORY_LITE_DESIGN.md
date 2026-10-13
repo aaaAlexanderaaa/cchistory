@@ -279,6 +279,21 @@ During an active scan, progress may be displayed, but incomplete data must be
 labelled as partial. Final browse/search/stats claims are shown only after the
 canonical scan completes.
 
+Terminal interaction supports frames from 40 columns and 14 rows. Below 57
+columns, the focused project/session/search, turn, or detail pane uses the full
+width; Tab/Shift+Tab and the existing focus keys still reach each pane. Wider
+frames retain the two-column layout. Prompt wrapping uses the visible pane
+width and clipping preserves complete Unicode code points. Help, source health,
+and stats overlays scroll with the navigation keys while retaining their close
+hint. Quit, Ctrl+C, and termination signals restore the terminal and stop the
+session's stdin read so an open terminal does not keep the process alive.
+The renderer reports actual scroll bounds to keyboard state; End/G, repeated
+Down, resizing and subsequent Up/PageUp cannot accumulate invisible overscroll.
+Search backspace removes complete Unicode code points. Wrapping long unbroken
+prompts consumes text in linear time without truncation. Conversation rendering
+includes tool calls with synthetic/unmatched reply IDs as well as tools attached
+to assistant text replies, each once.
+
 ## Export Contract
 
 Lite export is deliberately one-way. It emits canonical read objects for users

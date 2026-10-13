@@ -2,13 +2,14 @@
 doc_type: backlog
 status: active
 authority: planning
-last_reconciled: 2026-07-26
+last_reconciled: 2026-10-13
 supersedes: []
 ---
 
 # Backlog
 
-This is the living work surface for CCHistory and the active backlog. Agents must read this file at the start of every session.
+This is CCHistory's active work surface. Read relevant state on task entry and
+the declared portfolio before authorized ongoing work selection.
 
 For the operational workflow that governs how objectives and tasks are executed,
 see `PIPELINE.md`.
@@ -18,12 +19,24 @@ Completed objectives remain here until an intentional compaction moves them to
 a dated file indexed by `docs/archive/backlog/README.md`, with stable objective
 ids and acceptance-evidence links. Do not silently delete completed history.
 
-When there is no executable task, agents must run the KR review sweep defined in
-`PIPELINE.md` across the whole project's open work, not only the currently
-blocked or pending task, and add any resulting tasks, KRs, or objectives here
-before starting non-trivial corrective work.
+Within authorized ongoing work, use `PIPELINE.md`'s read-only KR sweep when no
+truthful task is executable. Record candidate work and consume declared scope
+and priority before material corrections. Completing a bounded task grants no
+unsolicited portfolio scan or new product direction.
 
 ## Current Status
+
+**R47 completed on October 12:** scoped template discipline adoption reconciles
+live owners, templates and the dependency guard. Three design lenses, separate
+synthesis and fresh completion evaluation pass; governance 49/49 and focused
+domain checks pass. Evidence and limitations are linked under R47 below.
+
+**R46 is active after the user authorized implementation on October 11. Its
+cost measurements are complete; contract/plan and independent design review
+govern the first storage delivery.**
+The report identifies bounded reads, unchanged sync, long-session append,
+derived-content duplication, and complete long-text recall as the first work.
+Existing objectives and their independent-review blockers remain unchanged.
 
 **R45 is the active P0 evidence-preservation repair. R17, R31, and R35 are blocked on operator-provided data or user-started
 services. R43's 2026-07-25 technical corrections are complete; it remains open
@@ -66,6 +79,8 @@ on 2026-05-17.
 
 | Objective | Status | Blocker |
 |-----------|--------|---------|
+| R47 - Project Discipline Refresh | done | Independent design/synthesis/completion PASS; 49 governance guards and focused domain checks pass |
+| R46 - Bounded Full Storage And Lite Convergence | active | First delivery independently verified and closed; append/cache/archive and Lite convergence remain later gated work |
 | R45 - Source Absence Retention | verifying | Six independent review findings are remediated; post-fix confirmation and remaining lens synthesis are pending |
 | R44 - Contract Lifecycle And AI Governance Harness | active | Independent three-lens governance review and synthesis require separate contexts |
 | R17 - LobeChat Real-Sample Validation | active | Waiting for user-provided real LobeChat data |
@@ -77,6 +92,174 @@ on 2026-05-17.
 repository cleanup. Their unavailable content is a legacy exception recorded
 in `docs/archive/backlog/README.md`; this governance migration does not
 fabricate a reconstruction.
+
+---
+
+## Objective: R47 - Project Discipline Refresh
+Status: done
+Priority: P0
+Source: explicit user request on 2026-10-11 to update project discipline using
+`../template-project`
+Contract: `docs/contracts/development-discipline.md`
+Plan: `docs/plans/2026-10-11-project-discipline-refresh.md`
+
+Adopt applicable current collaboration/execution rules at CCHistory's owners,
+preserving the product freeze and existing domain gates. Complete the entry,
+workflow, template and checker cutover together. Do not copy the template
+repository, change product behavior or grant ongoing portfolio authority.
+
+### KR: R47-KR1 Coherent project discipline and checks
+Status: done
+Acceptance: independent design and fresh consumer review confirm routine,
+experiment, material/high-risk and bounded/ongoing routes; meaningful governance
+fixtures and existing domain checks pass; comment-only references no longer
+break the dependency guard while actual forbidden imports remain blocked.
+
+| Task | Status | Acceptance/evidence |
+|---|---|---|
+| R47-KR1-T1 Compare owners and reconcile target contract/plan | done | Source HEAD recorded; applicability/gaps and coherent scope documented |
+| R47-KR1-T2 Independent lenses and separate synthesis | done | Three lenses PASS after bounded corrections; separate synthesis PASS; scope R47 only |
+| R47-KR1-T3 Update live owners, entrypoints and templates | done | Original intent, effects and proportional routes reconciled together |
+| R47-KR1-T4 Syntax-aware dependency guard and regression | done | 31 architecture / 49 governance cases pass; domain and link checks pass |
+| R47-KR1-T5 Fresh evaluation and lifecycle closure | done | Fresh consumer PASS after bounded provenance correction; current contract/completed plan; unrelated gates preserved |
+
+Verification: `docs/evidence/2026-10-12-project-discipline-verification.md`.
+Fresh completion: `docs/evidence/2026-10-12-discipline-completion-evaluation.md`.
+Design synthesis: `docs/evidence/2026-10-11-discipline-design-synthesis.md`.
+No sustained-use, production-performance, release or unrelated objective closure
+is inferred from this bounded delivery.
+
+---
+
+## Objective: R46 - Bounded Full Storage And Lite Convergence
+Status: active
+Priority: P0
+Source: explicit user request on 2026-10-11 to assess Full against cchistory-lite,
+then measure storage cost before choosing optimization scope
+Contract: `docs/contracts/bounded-full-storage.md`
+Plan: `docs/plans/bounded-full-storage.md`
+Evidence: `docs/evidence/2026-10-11-storage-cost-assessment.md`
+Issue: `docs/issues/2026-10-11-long-canonical-text-recall.md`
+
+Retain complete verifiable parser input and stable user/domain state while
+bounding ordinary reads, unchanged sync, append processing, and derived
+content retention. Converge on Lite's corrected shared interpretation and
+evidence semantics after reconciling Full persistence, DTOs, migration, and
+source-shaped parity.
+
+The requested assessment is complete: six generated source-shaped profiles
+measure initial/unchanged/append sync, pagination, search, detail, RSS, retained
+file growth, and sampled WAL. Original and superseded capture hashes are
+verified. A full-text tail recall defect is recorded separately. The benchmark
+is task-scoped under `scripts/oneoff/measure-storage-cost.mjs`.
+
+The user authorized starting implementation on October 11. The governing target
+and complete-end-state plan separate the first delivery from later retention and
+archive transitions. Independent lenses and synthesis follow `PIPELINE.md`;
+the current absence contract remains authoritative until explicitly reconciled.
+The local V1 store is not a mutable benchmark or automatic migration target.
+
+### KR: R46-KR1 First storage delivery
+Status: done
+Acceptance: complete canonical tail recall; unchanged files avoid heavy preload
+and derived-row churn while preserving lifecycle/health; bounded resolved pages
+and detail equal canonical snapshots; retained capture reuse passes integrity
+guards. Generated-store benchmarks and fresh independent evaluation required.
+
+| Task | Status | Acceptance/evidence |
+|---|---|---|
+| R46-KR1-T1 Contract, complete plan, three lenses and fresh synthesis | done | Three independent lenses plus separate fresh design synthesis PASS |
+| R46-KR1-T2 Complete canonical recall | done | Tail/Unicode/masked guards and global/project long-user benchmark pass |
+| R46-KR1-T3 Thin stable-file reuse and metadata/lifecycle sync | done | Partial/profile/absence/shared-contributor and high-roster fallback guards pass; incomplete shared updates report actionable error |
+| R46-KR1-T4 Durable resolved read index and bounded page/detail | done | Ready-lineage, exact V1 handoff, V2 purge/replace, prior-connection and compatible-backup guards pass |
+| R46-KR1-T5 Verified archived capture reuse | done | Historical/streaming/bundle, atomic rollback, resurrected SHA and corrupt existing target guards pass |
+| R46-KR1-T6 Regression, measurement and fresh evaluation | done | Storage 144 pass/4 existing skips, CLI 194 and adapters 157 pass; CLI/TUI gate passes; six-profile costs and fresh independent first-delivery evaluation PASS recorded |
+
+Closure evidence: `docs/evidence/2026-10-11-bounded-storage-first-delivery-verification.md`
+and `docs/evidence/2026-10-11-bounded-storage-first-delivery-evaluation.md`.
+The measured initial-write and long-append latency regressions remain explicit
+limitations; this closure does not close the later KRs or approve V1 rollout.
+
+Fresh first-delivery review findings are corrective work within T6: preserve
+unvisited shared contributors during partial scans, retain high-roster thin
+fallback, reject missing/corrupt selected lineage after readiness, invalidate
+same-connection project presentation caches, and verify compatible backup
+restore plus writers opened before upgrade. Further combinations add durable
+V1 handoff (normal V2 replacement/purge cannot restore dormant V1 authority),
+coherent retained absent contributors, post-commit SHA liveness recheck, and
+existing materialization target integrity/containment, durable replay certification
+across failed/partial retries, and same-instance async stream exclusion through
+commit/rollback. No cache eviction is involved.
+
+**2026-10-12 bounded review repair — done:** the user requested fixing
+the five uncommitted-change review findings. The storage correction restores
+Full CLI/TUI in-memory `--full` page/detail and fallback reads without requiring
+an evidence archive; durable-store missing/corrupt-lineage checks stay active.
+Focused guards reproduce both in-memory failures before repair. Storage now
+passes 146 tests with 4 existing skips, and the full CLI/TUI read-side gate
+passes, including the source-shaped live `show turn --full` guard (CLI 195,
+TUI state 31/layout 26, API build, HTTP E2E 53 and both fixture verifiers).
+The exact October 11 evaluation remains historical evidence for its
+recorded snapshot; no new all-product or operator-migration claim is made.
+
+**2026-10-12 second bounded review repair — done:** origin-to-session changes
+now expand both previous and incoming contributor scopes, including thin reuse.
+Partial/obsolete attempts preserve the former sibling and cannot publish a new
+session's turn/context; complete retry recovers. Six source-shaped guards failed
+before the repair and pass afterward. Storage remains 146 pass / 4 existing skips,
+CLI passes 201, and all read-side validation slices pass after the sandboxed HTTP
+listener is rerun with automatic approval. Details and evidence limits live in
+`docs/plans/bounded-full-storage.md`; other R46 stages remain open.
+
+**2026-10-12 third bounded review repair — done:** the user requested
+fixing six reviewed defects. Streaming writes now validate dormant V1 handoff
+inside their transaction before consuming input; missing backfill rejects
+without mutation and releases the facade for recovery. Thin reuse preserves
+healthy status for current session contributors while reused orphan inputs and
+absent retained history alone remain stale. Three new storage/CLI guards failed
+before repair. Storage passes 148 / 4 existing skips and CLI passes 202; all
+read-side components pass after the sandboxed HTTP listener is rerun with
+automatic approval. Lite repairs/evidence remain with R43 below. Governance,
+Lite boundaries and whitespace pass; test-owned artifacts are cleaned up. The
+existing plan owns the integrated record; later R46 gates remain open.
+
+**2026-10-13 fifth review correction — done:** Codex metadata sync now derives
+health from verified current session contributors across batches, including a
+changed batch followed by a reused empty file. Retained absent sessions alone
+stay stale. Three source-shaped guards failed before repair and now pass;
+CLI passes 205 and all read-side gate components pass, with only the temporary
+HTTP listener requiring an automatically approved outside-sandbox rerun.
+The existing plan records the full correction and evidence limits; later R46
+stages remain open.
+
+**2026-10-13 commit-preparation correction — done:** transaction joining works
+on supported SQLite runtimes without Node's `isTransaction` accessor, preserving
+the existing runtime range and caller-owned transactions. The new regression
+failed before repair; storage passes 149 / 4 existing skips and the complete
+CLI/TUI read-side gate passes. The existing plan records the real-runtime versus
+simulated-interface evidence and limitations. Later R46 and unrelated review
+gates remain open.
+
+### KR: R46-KR2 Bounded append and versioned interpretation
+Status: open
+Acceptance: parser/canonical/mask version identity invalidates affected outputs;
+long-session append uses validated terminal state and bounded reconstruction with
+partial-tail/error recovery. Concrete checkpoint/compatibility contract and
+independent review required before implementation.
+
+### KR: R46-KR3 Derived cache budgets and compact source archive
+Status: open
+Acceptance: versioned dedup/rebuild and cache budgets preserve complete input and
+bundle/debug/lineage behavior; compression/chunk manifests preserve logical capture
+checksums across all refs, prune sites, import/export and interrupted migration.
+Current absence-retention contract must be reconciled before any eviction.
+
+### KR: R46-KR4 Lite semantic convergence
+Status: open
+Acceptance: shared interpretation/evidence semantics, coherent DTO and version
+cutover, source capture companion policy, fixture union and Full/Lite parity.
+Adapter enums alone do not establish live support. Detailed tasks follow the
+first storage delivery and shared-pipeline contract.
 
 ---
 
@@ -182,8 +365,12 @@ plus synthesis, or an explicit operator governance exception.
 
 - Task: complete independent governance review and synthesis
   Status: blocked
-  Blocker: current execution policy does not authorize spawning independent
-  sub-agents, and same-context analysis is not independent evidence.
+  Closure blocker: R44-specific reviews and synthesis for the July migration
+  have not been acquired. The July execution context restricted independent
+  sub-agents; that historical restriction is not evidence of present capability.
+  Required contexts are now permitted by the governing execution route, but R47
+  reviews do not satisfy R44's own acceptance. Same-context analysis remains
+  non-independent; preserve this task's state until its own gate is reconciled.
   Acceptance: three independent reports and a synthesis review the frozen
   semantics, contributor/operator UX, and engineering/maintenance cost, or the
   operator records a named governance exception.
@@ -344,6 +531,73 @@ Lite surface passes parity, no-write, and adjacent Full regression checks.
   context-light startup/detail behavior. The reproduced 1 GiB local launch OOM
   no longer occurs under the adaptive default.
   Artifact: shared launcher/runtime tests and `pnpm --filter @cchistory/lite-tui test`
+
+**2026-10-12 Lite TUI review repair — done:** within the existing terminal
+surface owner, fix final-line conversation scrolling, stale completion changing
+focus after context loading, and session detail using an unrelated project
+selection. Turnless session entry intentionally focuses its related-work detail;
+the integration guard asserts that scope/focus, rather than an active Sessions
+heading. Full context stays on demand and process-local. All 72 package tests
+pass after four newly added guards fail on the baseline. Rendered output at
+80×14 shows the final reply line; structural checks cover heights 14/24/34,
+and delayed-scan stdin simulation verifies retreat/selection and cache reuse.
+Normal package checks run after restoring missing local workspace links, without
+a dependency install. These checks do not
+substitute for R43's outstanding independent review.
+
+**2026-10-12 second Lite TUI review repair — done:** retain split UTF-8 stdin
+characters with a process-local decoder and make the scrolling Detail tail
+reachable, reserving its real minimum height when focused. Both new guards
+failed before implementation and all 74 package tests now pass. Rendered frame
+inspection at 80×14 confirms the conversation-entry hint and turnless-session
+explanation; structure/tail checks cover widths 80/130 and heights 14/24/34.
+Input evidence uses simulated Buffer chunks, not a manual real-TTY session.
+This bounded correction does not close the outstanding R43 review gate.
+
+**2026-10-12 third Lite TUI review repair — done:** the user requested
+fixing four reviewed defects: an active stdin handle after quit, narrow detail
+text clipping, UTF-16 clipping of astral characters, and unreachable short-screen
+help. This routine repair stays within the existing Lite terminal owner and
+freeze §§ 4.4 and 9.3. Cleanup pauses stdin; frames below 57 columns give the
+focused pane the full width; clipping advances by code point; help uses the
+overlay scroll window. Five new guards failed on the baseline, including two
+subprocesses with open kernel stdin pipes. All 80 Lite TUI tests pass after
+extending keyboard navigation through the layout breakpoint; prompt access and
+geometry cover widths 40/46/56/57/80 and heights 14/24/34. Real PTY runs confirm
+that quit and Ctrl+C both exit with code 0 without closing stdin or a second
+interrupt; 46×20 frame inspection confirms focus navigation, wrapped detail,
+and help paging. The read-side gate components pass (CLI 201, Full TUI state
+31/layout 26, API build, HTTP E2E 53, browse/search and real-layout verifiers).
+The aggregate command stopped at the sandbox's EPERM localhost bind; its E2E
+slice passed after an auto-approved outside-sandbox retry, and remaining
+verifiers ran separately. Lite boundaries, governance and whitespace checks
+pass; test-owned roots and logs are cleaned up. No canonical data, Full store,
+source fixtures or schema changes; R43's independent-review gate remains open.
+
+**2026-10-12 fourth Lite TUI review repair — done:** within the same
+six-finding correction, fix quadratic long-prompt wrapping, hidden tool-only
+interactions, tail scroll debt and split-code-point search backspace. Six new
+Lite guards failed before repair; all 86 package tests now pass. The renderer
+supplies actual scroll bounds to keyboard state without a second wrapping pass.
+Matched and synthetic/unmatched tool calls each render once. A separate 256 KiB
+prompt probe retains all text and wraps in 34 ms (6.7 s before); rendered
+80×14/46×24 help frames confirm tail access and Up after resize. Keyboard guards
+use simulated stdin; no new PTY or manual review claim. Existing geometry,
+source-shaped read-side, package, governance, Lite boundary and whitespace checks
+pass; test-owned artifacts are cleaned up. Full input/evidence and zero-store
+boundaries are preserved. R43's
+independent-review gate remains open.
+
+**2026-10-13 fifth review correction — done:** Lite preserves literal XML in
+canonical prompts and assistant replies; injection/masking stays with the
+producer. Shared width/wrap/clip/pad helpers handle emoji, combining characters
+and whole grapheme sequences. Three new guards failed before repair and now
+pass; 89 Lite tests pass, with the long-prompt guard subsequently strengthened
+and rerun for composed emoji. Independent expected-cell assertions cover frame
+widths 40/46/57/80/120. Built-entrypoint PTYs at 80×24 and 46×24 confirm readable
+detail/conversation output, wrapping and clean exit using generated input.
+Governance, Lite boundaries and whitespace pass. No real operator history was
+used or modified; R43's independent-review gate remains open.
 
 ### KR: R43-KR4 Independent product profiles and gates
 Status: done

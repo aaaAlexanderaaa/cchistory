@@ -3,16 +3,8 @@
 import { realpathSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { createInterface } from "node:readline/promises";
+import { StringDecoder } from "node:string_decoder";
 import { pathToFileURL } from "node:url";
-import type {
-  ProjectIdentity,
-  SessionProjection,
-  SourceStatus,
-  TurnContextProjection,
-  UsageStatsDimension,
-  UserTurnProjection,
-} from "@cchistory/domain";
 import {
   runWithAdaptiveNodeMemory,
   scanLiteHistory,
@@ -20,12 +12,37 @@ import {
   type LiveHistorySnapshot,
   type ScanLiteHistoryOptions,
 } from "@cchistory/live-runtime";
+import { configureColorPolicy } from "./colors.js";
+import { KeyDecoder, type LiteKey } from "./keys.js";
+import { resolveLiteInputEffect } from "./input.js";
+import { LiteBrowserModel } from "./model.js";
+import { BANNER_TITLE, DEFAULT_HEIGHT, DEFAULT_WIDTH, renderLiteFrame, renderLiteFrameLayout } from "./render.js";
+import {
+  createLiteBrowserState,
+  clampLiteScrollState,
+  getSelectedTurn,
+  reduceLiteBrowserState,
+  type LiteBrowserAction,
+  type LiteBrowserState,
+  type LiteScrollLimits,
+} from "./state.js";
+import { VERSION } from "./version.js";
 
-const VERSION = "0.3.0";
-const PROJECT_PAGE_SIZE = 50;
-const SESSION_PAGE_SIZE = 100;
-const TURN_PAGE_SIZE = 100;
-const SEARCH_PAGE_SIZE = 50;
+export { VERSION } from "./version.js";
+
+/** How long a lone `ESC` waits before it stops looking like a cursor sequence. */
+const ESCAPE_FLUSH_MS = 40;
+
+const ENTER_ALTERNATE_SCREEN = "\x1b[?1049h";
+const LEAVE_ALTERNATE_SCREEN = "\x1b[?1049l";
+const ENTER_ALTERNATE_SCROLL = "\x1b[?1007h";
+const LEAVE_ALTERNATE_SCROLL = "\x1b[?1007l";
+const HIDE_CURSOR = "\x1b[?25l";
+const SHOW_CURSOR = "\x1b[?25h";
+const CURSOR_HOME = "\x1b[H";
+const ERASE_LINE_RIGHT = "\x1b[K";
+const ERASE_BELOW = "\x1b[J";
+const ERASE_SCREEN = "\x1b[2J";
 
 export interface LiteTuiIo {
   cwd: string;
@@ -36,7 +53,10 @@ export interface LiteTuiIo {
   isInteractiveTerminal: boolean;
   input?: NodeJS.ReadableStream;
   output?: NodeJS.WritableStream;
-  readLine?: (prompt: string) => Promise<string | undefined>;
+  /** Terminal size overrides; used by tests and by non-TTY snapshot rendering. */
+  columns?: number;
+  rows?: number;
+  now?: () => number;
   scan?: (options: ScanLiteHistoryOptions) => Promise<LiveHistorySnapshot>;
 }
 
@@ -45,40 +65,40 @@ interface ParsedArgs {
   sourceRefs: string[];
   safeMode: boolean;
   limitFiles?: number;
+  projectRef?: string;
+  sessionRef?: string;
+  turnRef?: string;
+  searchQuery?: string;
+  color?: boolean;
   help: boolean;
+  version: boolean;
 }
 
 class TuiUsageError extends Error {}
 
-type PagedView =
-  | { kind: "projects"; pageIndex: number }
-  | { kind: "sessions"; pageIndex: number }
-  | { kind: "turns"; pageIndex: number }
-  | { kind: "search"; query: string; pageIndex: number }
-  | { kind: "project"; projectId: string; pageIndex: number }
-  | { kind: "session"; sessionId: string; pageIndex: number }
-  | { kind: "source"; sourceId: string; pageIndex: number };
-
-interface PagingState {
-  current?: {
-    view: PagedView;
-    pageCount: number;
-  };
-}
-
-interface PagedRender {
-  output: string;
-  pageCount: number;
-}
-
 export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): Promise<number> {
+  let parsed: ParsedArgs;
   try {
-    const parsed = parseArgs(argv, io.cwd);
-    if (parsed.help) {
-      io.stdout(renderHelp());
-      return 0;
-    }
+    parsed = parseArgs(argv, io.cwd);
+  } catch (error) {
+    io.stderr(`${errorMessage(error)}\n`);
+    return error instanceof TuiUsageError ? 2 : 1;
+  }
 
+  if (parsed.help) {
+    io.stdout(renderHelp());
+    return 0;
+  }
+  if (parsed.version) {
+    io.stdout(`${VERSION}\n`);
+    return 0;
+  }
+
+  // Piped output never gets escape codes; an interactive terminal does unless
+  // NO_COLOR or --no-color says otherwise.
+  configureColorPolicy({ color: parsed.color ?? io.isInteractiveTerminal });
+
+  try {
     const scan = io.scan ?? scanLiteHistory;
     const scanOptions: ScanLiteHistoryOptions = {
       homeDir: io.homeDir,
@@ -90,582 +110,341 @@ export async function runLiteTui(argv: string[], io: LiteTuiIo = defaultIo()): P
       contextMode: "none",
       onProgress: io.isInteractiveTerminal
         ? (event) => {
-            if (event.stage === "source_start") {
-              io.stderr(`Scanning ${event.display_name} (${event.slot_id})…\n`);
-            } else if (event.stage === "source_missing") {
-              io.stderr(`Source missing: ${event.display_name} (${event.slot_id})\n`);
-            } else if (event.stage === "file_error") {
-              io.stderr(`Read error in ${event.display_name}: ${event.message ?? event.file_path ?? "unknown file"}\n`);
-            }
+            const line = formatProgress(event);
+            if (line) io.stderr(line);
           }
         : undefined,
     };
 
-    let snapshot = await scan(scanOptions);
-    const loadTurnContext = async (turn: UserTurnProjection): Promise<TurnContextProjection | undefined> => {
-      const existing = snapshot.getTurnContext(turn.id);
-      if (existing) return existing;
-      const session = snapshot.getSession(turn.session_id);
-      const source = snapshot.getSource(turn.source_id);
-      if (!session || !source) return undefined;
-      const detailed = await scan({
-        ...scanOptions,
-        sourceRoots: [{ sourceRef: source.slot_id, baseDir: source.base_dir }],
-        sourceRefs: [source.slot_id],
-        contextMode: "full",
-        sessionRefs: [session.source_session_id ?? session.id],
-      });
-      return detailed.getTurnContext(turn.id);
-    };
-    const paging: PagingState = {};
-    io.stdout(renderSnapshot(snapshot));
+    const snapshot = await scan(scanOptions);
+    const model = new LiteBrowserModel(snapshot);
+    const state = applyEntryPoints(model, createLiteBrowserState(model), parsed);
+
     if (!io.isInteractiveTerminal) {
+      io.stdout(`${renderLiteFrame(model, state, resolveDimensions(io))}\n`);
       return 0;
     }
 
-    io.stdout(renderCommandHelp());
-    const readline = io.readLine
-      ? undefined
-      : createInterface({
-          input: io.input ?? process.stdin,
-          output: io.output ?? process.stdout,
-          terminal: true,
-        });
-    const readLine = io.readLine ?? (async (prompt: string) => readline!.question(prompt));
-    // readline/promises never settles a pending question() once the interface
-    // closes, so Ctrl+C and EOF need a close sentinel to unblock the loop.
-    const readlineClosed = readline
-      ? new Promise<undefined>((resolve) => {
-          readline.once("close", () => resolve(undefined));
-        })
-      : undefined;
-    if (readline) {
-      readline.on("SIGINT", () => {
-        io.stdout("\nInterrupted; releasing snapshot.\n");
-        readline.close();
-      });
-    }
-    const terminalInput = (io.input ?? process.stdin) as NodeJS.ReadableStream & {
-      isRaw?: boolean;
-      setRawMode?(mode: boolean): void;
-    };
-    const restoreTerminal = () => {
-      if (typeof terminalInput.setRawMode === "function" && terminalInput.isRaw) {
-        terminalInput.setRawMode(false);
-      }
-    };
-    if (readline) process.once("exit", restoreTerminal);
-    // readline only emits SIGINT internally; cover SIGTERM/SIGHUP so an
-    // outer supervisor signal still restores the terminal before exit.
-    const signalShutdown = (signal: NodeJS.Signals) => {
-      io.stdout(`\nReceived ${signal}; releasing snapshot.\n`);
-      restoreTerminal();
-      readline?.close();
-    };
-    const sigtermListener = () => signalShutdown("SIGTERM");
-    const sighupListener = () => signalShutdown("SIGHUP");
-    process.once("SIGTERM", sigtermListener);
-    process.once("SIGHUP", sighupListener);
-
-    try {
-      while (true) {
-        const input = readlineClosed
-          ? await Promise.race([readLine("lite> "), readlineClosed])
-          : await readLine("lite> ");
-        if (input === undefined) break;
-        const command = input.trim();
-        if (!command) continue;
-        if (command === "q" || command === "quit" || command === "exit") break;
-        if (command === "h" || command === "help" || command === "?") {
-          io.stdout(renderCommandHelp());
-          continue;
-        }
-        if (command === "r" || command === "refresh") {
-          io.stdout("Refreshing from native source data…\n");
-          try {
-            const replacement = await scan(scanOptions);
-            snapshot = replacement;
-            delete paging.current;
-            io.stdout(renderSnapshot(snapshot));
-          } catch (error) {
-            io.stderr(`Refresh failed; previous snapshot retained: ${errorMessage(error)}\n`);
-          }
-          continue;
-        }
-        try {
-          await runSnapshotCommand(command, snapshot, io, paging, loadTurnContext);
-        } catch (error) {
-          io.stderr(`${errorMessage(error)}\n`);
-        }
-      }
-    } finally {
-      readline?.close();
-      if (readline) process.removeListener("exit", restoreTerminal);
-      process.removeListener("SIGTERM", sigtermListener);
-      process.removeListener("SIGHUP", sighupListener);
-    }
-    io.stdout("CC History Lite snapshot released.\n");
-    return 0;
+    return await runInteractive({ io, scan, scanOptions, model, state });
   } catch (error) {
     io.stderr(`${errorMessage(error)}\n`);
     return error instanceof TuiUsageError ? 2 : 1;
   }
 }
 
-async function runSnapshotCommand(
-  command: string,
-  snapshot: LiveHistorySnapshot,
-  io: LiteTuiIo,
-  paging: PagingState,
-  loadTurnContext: (turn: UserTurnProjection) => Promise<TurnContextProjection | undefined>,
-): Promise<void> {
-  if (command === "p" || command === "projects") {
-    showPagedView({ kind: "projects", pageIndex: 0 }, snapshot, io, paging);
-    return;
-  }
-  if (command === "s" || command === "sessions") {
-    showPagedView({ kind: "sessions", pageIndex: 0 }, snapshot, io, paging);
-    return;
-  }
-  if (command === "u" || command === "turns") {
-    showPagedView({ kind: "turns", pageIndex: 0 }, snapshot, io, paging);
-    return;
-  }
-  if (command === "n" || command === "next") {
-    movePage(1, snapshot, io, paging);
-    return;
-  }
-  if (command === "b" || command === "prev" || command === "previous") {
-    movePage(-1, snapshot, io, paging);
-    return;
-  }
-  if (command.startsWith("page ")) {
-    jumpToPage(command.slice("page ".length).trim(), snapshot, io, paging);
-    return;
-  }
-  if (command === "o" || command === "sources") {
-    io.stdout(renderSources(snapshot.listSources()));
-    return;
-  }
-  if (command === "t" || command === "stats") {
-    io.stdout(renderStats(snapshot));
-    return;
-  }
-  if (command.startsWith("stats ")) {
-    const dimension = parseStatsDimension(command.slice("stats ".length).trim());
-    io.stdout(renderStats(snapshot, dimension));
-    return;
-  }
-  if (command.startsWith("/")) {
-    startSearch(command.slice(1), snapshot, io, paging);
-    return;
-  }
-  if (command.startsWith("search ")) {
-    startSearch(command.slice("search ".length), snapshot, io, paging);
-    return;
-  }
-  if (command.startsWith("project ")) {
-    const ref = command.slice("project ".length).trim();
-    const project = snapshot.getProject(ref);
-    if (!project) throw new TuiUsageError(`Project not found: ${ref}.`);
-    showPagedView({ kind: "project", projectId: project.project_id, pageIndex: 0 }, snapshot, io, paging);
-    return;
-  }
-  if (command.startsWith("session ")) {
-    const ref = command.slice("session ".length).trim();
-    const session = snapshot.getSession(ref);
-    if (!session) throw new TuiUsageError(`Session not found: ${ref}.`);
-    showPagedView({ kind: "session", sessionId: session.id, pageIndex: 0 }, snapshot, io, paging);
-    return;
-  }
-  if (command.startsWith("turn ")) {
-    const ref = command.slice("turn ".length).trim();
-    const turn = snapshot.getTurn(ref);
-    if (!turn) throw new TuiUsageError(`UserTurn not found: ${ref}.`);
-    io.stdout(renderTurnDetail(snapshot, turn, await loadTurnContext(turn)));
-    return;
-  }
-  if (command.startsWith("source ")) {
-    const ref = command.slice("source ".length).trim();
-    const source = snapshot.getSource(ref);
-    if (!source) throw new TuiUsageError(`Source not found: ${ref}.`);
-    showPagedView({ kind: "source", sourceId: source.id, pageIndex: 0 }, snapshot, io, paging);
-    return;
-  }
-  throw new TuiUsageError(`Unknown command: ${command}. Type help for available commands.`);
+// ── Interactive session ──
+
+interface InteractiveOptions {
+  io: LiteTuiIo;
+  scan: (options: ScanLiteHistoryOptions) => Promise<LiveHistorySnapshot>;
+  scanOptions: ScanLiteHistoryOptions;
+  model: LiteBrowserModel;
+  state: LiteBrowserState;
 }
 
-function startSearch(
-  queryInput: string,
-  snapshot: LiveHistorySnapshot,
-  io: LiteTuiIo,
-  paging: PagingState,
-): void {
-  const query = queryInput.trim();
-  if (!query) throw new TuiUsageError("Search query cannot be empty.");
-  showPagedView({ kind: "search", query, pageIndex: 0 }, snapshot, io, paging);
-}
+async function runInteractive(options: InteractiveOptions): Promise<number> {
+  const { io, scan, scanOptions } = options;
+  let model = options.model;
+  let state = options.state;
 
-function movePage(delta: -1 | 1, snapshot: LiveHistorySnapshot, io: LiteTuiIo, paging: PagingState): void {
-  const current = paging.current;
-  if (!current) {
-    throw new TuiUsageError("No pageable view is active. Run projects, sessions, turns, search, or a detail command first.");
-  }
-  const nextPageIndex = current.view.pageIndex + delta;
-  if (nextPageIndex < 0) {
-    throw new TuiUsageError(`Already on the first page of ${pagedViewLabel(current.view)}.`);
-  }
-  if (nextPageIndex >= current.pageCount) {
-    throw new TuiUsageError(`Already on the last page of ${pagedViewLabel(current.view)}.`);
-  }
-  showPagedView({ ...current.view, pageIndex: nextPageIndex }, snapshot, io, paging);
-}
+  const input = io.input ?? process.stdin;
+  const output = io.output ?? process.stdout;
+  const rawInput = input as NodeJS.ReadableStream & {
+    isRaw?: boolean;
+    setRawMode?(mode: boolean): void;
+  };
+  const resizable = output as NodeJS.WritableStream & {
+    on?(event: "resize", listener: () => void): unknown;
+    off?(event: "resize", listener: () => void): unknown;
+  };
 
-function jumpToPage(pageInput: string, snapshot: LiveHistorySnapshot, io: LiteTuiIo, paging: PagingState): void {
-  const current = paging.current;
-  if (!current) {
-    throw new TuiUsageError("No pageable view is active. Run projects, sessions, turns, search, or a detail command first.");
-  }
-  const page = Number(pageInput);
-  if (!Number.isSafeInteger(page) || page < 1) {
-    throw new TuiUsageError(`Page must be an integer >= 1; received ${JSON.stringify(pageInput)}.`);
-  }
-  if (page > current.pageCount) {
-    throw new TuiUsageError(`Page ${page} is out of range for ${pagedViewLabel(current.view)} (1-${current.pageCount}).`);
-  }
-  showPagedView({ ...current.view, pageIndex: page - 1 }, snapshot, io, paging);
-}
+  let previousFrame = "";
+  let scrollLimits: LiteScrollLimits = { overlay: 0, detail: 0, conversation: 0 };
+  let interrupted = false;
+  let finished = false;
+  let resolveExit: (() => void) | undefined;
+  const exited = new Promise<void>((resolve) => {
+    resolveExit = resolve;
+  });
 
-function showPagedView(
-  view: PagedView,
-  snapshot: LiveHistorySnapshot,
-  io: LiteTuiIo,
-  paging: PagingState,
-): void {
-  const rendered = renderPagedView(view, snapshot);
-  if (view.pageIndex >= rendered.pageCount) {
-    throw new TuiUsageError(
-      `Page ${view.pageIndex + 1} is out of range for ${pagedViewLabel(view)} (1-${rendered.pageCount}).`,
-    );
-  }
-  paging.current = { view, pageCount: rendered.pageCount };
-  io.stdout(rendered.output);
-}
+  const paint = (force = false) => {
+    if (finished) return;
+    const rendered = renderLiteFrameLayout(model, state, resolveDimensions(io));
+    scrollLimits = rendered.scrollLimits;
+    state = clampLiteScrollState(state, scrollLimits);
+    const frame = rendered.frame;
+    if (!force && frame === previousFrame) return;
+    previousFrame = frame;
+    const painted = frame
+      .split("\n")
+      .map((line) => `${line}${ERASE_LINE_RIGHT}`)
+      .join("\r\n");
+    io.stdout(`${CURSOR_HOME}${painted}${ERASE_BELOW}`);
+  };
 
-function renderPagedView(view: PagedView, snapshot: LiveHistorySnapshot): PagedRender {
-  if (view.kind === "projects") return renderProjects(snapshot.listProjects(), view.pageIndex);
-  if (view.kind === "sessions") return renderSessions(snapshot.listResolvedSessions(), view.pageIndex);
-  if (view.kind === "turns") return renderTurns(snapshot.listResolvedTurns(), view.pageIndex);
-  if (view.kind === "search") return renderSearchPage(view.query, snapshot, view.pageIndex);
-  if (view.kind === "project") {
-    const project = snapshot.getProject(view.projectId);
-    if (!project) throw new TuiUsageError(`Project not found: ${view.projectId}.`);
-    return renderProjectDetail(snapshot, project, view.pageIndex);
-  }
-  if (view.kind === "session") {
-    const session = snapshot.getSession(view.sessionId);
-    if (!session) throw new TuiUsageError(`Session not found: ${view.sessionId}.`);
-    return renderSessionDetail(snapshot, session, view.pageIndex);
-  }
-  const source = snapshot.getSource(view.sourceId);
-  if (!source) throw new TuiUsageError(`Source not found: ${view.sourceId}.`);
-  return renderSourceDetail(snapshot, source, view.pageIndex);
-}
+  const dispatch = (action: LiteBrowserAction) => {
+    state = reduceLiteBrowserState(model, state, action, scrollLimits);
+    paint();
+  };
 
-function renderSearchPage(query: string, snapshot: LiveHistorySnapshot, pageIndex: number): PagedRender {
-  const offset = pageIndex * SEARCH_PAGE_SIZE;
-  const result = snapshot.search({ query, limit: SEARCH_PAGE_SIZE, offset });
-  const pageCount = collectionPageCount(result.total, SEARCH_PAGE_SIZE);
-  const range = collectionRange(result.total, pageIndex, SEARCH_PAGE_SIZE);
-  const matchLabel = result.total === 0 ? "0 matches" : `${range.start}-${range.end} of ${result.total} matches`;
-  const lines = [`Search ${JSON.stringify(query)} (${matchLabel})`];
-  for (const entry of result.results) {
-    const label = entry.project?.display_name ?? entry.session?.title ?? entry.turn.session_id;
-    lines.push(
-      `- ${entry.turn.submission_started_at} · ${label}`,
-      `  ${singleLine(entry.turn.canonical_text, 160)}`,
-      `  turn ${entry.turn.id}`,
-    );
-  }
-  lines.push(renderPageNavigation(pageIndex, pageCount));
-  return { output: `${lines.join("\n")}\n`, pageCount };
-}
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    resolveExit?.();
+  };
 
-function renderSnapshot(snapshot: LiveHistorySnapshot): string {
-  return `CC History Lite TUI ${VERSION}
-Ephemeral live snapshot · single machine · no Full store
+  // ── Async work: refresh and on-demand context ──
 
-Sources   ${snapshot.listSources().length}
-Projects  ${snapshot.listProjects().length}
-Sessions  ${snapshot.listResolvedSessions().length}
-Turns     ${snapshot.listResolvedTurns().length}
+  let busy = false;
 
-${renderProjectPreview(snapshot.listProjects(), 8)}${renderRecentTurns(snapshot.listResolvedTurns(), 8)}`;
-}
-
-function renderProjectPreview(projects: ProjectIdentity[], limit: number): string {
-  const lines = [`Projects (${projects.length})`];
-  for (const project of projects.slice(0, limit)) {
-    lines.push(
-      `- ${project.display_name} [${project.linkage_state}] · ${project.committed_turn_count + project.candidate_turn_count} turns`,
-      `  project ${project.project_id}`,
-    );
-  }
-  if (projects.length > limit) lines.push(`Browse all ${projects.length} projects: projects`);
-  return `${lines.join("\n")}\n\n`;
-}
-
-function renderProjects(projects: ProjectIdentity[], pageIndex: number): PagedRender {
-  const pageCount = collectionPageCount(projects.length, PROJECT_PAGE_SIZE);
-  const lines = renderProjectLines(projects, pageIndex, PROJECT_PAGE_SIZE);
-  lines.push(renderPageNavigation(pageIndex, pageCount));
-  return { output: `${lines.join("\n")}\n`, pageCount };
-}
-
-function renderProjectLines(projects: ProjectIdentity[], pageIndex: number, pageSize: number): string[] {
-  const lines = [collectionHeading("Projects", projects.length, pageIndex, pageSize)];
-  for (const project of pageSlice(projects, pageIndex, pageSize)) {
-    lines.push(
-      `- ${project.display_name} [${project.linkage_state}] · ${project.committed_turn_count + project.candidate_turn_count} turns`,
-      `  project ${project.project_id}`,
-    );
-  }
-  return lines;
-}
-
-function renderRecentTurns(turns: UserTurnProjection[], limit: number): string {
-  const lines = [`Recent Turns (${turns.length})`];
-  for (const turn of turns.slice(0, limit)) {
-    lines.push(
-      `- ${turn.submission_started_at} · ${singleLine(turn.canonical_text, 110)}`,
-      `  turn ${turn.id}`,
-    );
-  }
-  if (turns.length > limit) lines.push(`Browse all ${turns.length} turns: turns`);
-  return `${lines.join("\n")}\n`;
-}
-
-function renderSessions(sessions: SessionProjection[], pageIndex: number): PagedRender {
-  const pageCount = collectionPageCount(sessions.length, SESSION_PAGE_SIZE);
-  const lines = renderSessionLines(sessions, pageIndex, SESSION_PAGE_SIZE);
-  lines.push(renderPageNavigation(pageIndex, pageCount));
-  return { output: `${lines.join("\n")}\n`, pageCount };
-}
-
-function renderSessionLines(sessions: SessionProjection[], pageIndex: number, pageSize: number): string[] {
-  const lines = [collectionHeading("Sessions", sessions.length, pageIndex, pageSize)];
-  for (const session of pageSlice(sessions, pageIndex, pageSize)) {
-    lines.push(
-      `- ${session.title ?? session.source_session_id ?? session.id} · ${session.source_platform} · ${session.turn_count} turns`,
-      `  session ${session.id}`,
-    );
-  }
-  return lines;
-}
-
-function renderTurns(turns: UserTurnProjection[], pageIndex: number): PagedRender {
-  const pageCount = collectionPageCount(turns.length, TURN_PAGE_SIZE);
-  const lines = renderTurnLines(turns, pageIndex, TURN_PAGE_SIZE);
-  lines.push(renderPageNavigation(pageIndex, pageCount));
-  return { output: `${lines.join("\n")}\n`, pageCount };
-}
-
-function renderTurnLines(turns: UserTurnProjection[], pageIndex: number, pageSize: number): string[] {
-  const lines = [collectionHeading("Turns", turns.length, pageIndex, pageSize)];
-  for (const turn of pageSlice(turns, pageIndex, pageSize)) {
-    lines.push(
-      `- ${turn.submission_started_at} · ${singleLine(turn.canonical_text, 140)}`,
-      `  turn ${turn.id}`,
-    );
-  }
-  return lines;
-}
-
-function renderSources(sources: SourceStatus[]): string {
-  const lines = [`Sources (${sources.length})`];
-  for (const source of sources) {
-    lines.push(
-      `- ${source.display_name} [${source.slot_id}] ${source.sync_status} · ${source.total_sessions} sessions · ${source.total_turns} turns`,
-      `  source ${source.id}`,
-      `  ${source.base_dir}`,
-    );
-    if (source.error_message) lines.push(`  error: ${source.error_message}`);
-  }
-  return `${lines.join("\n")}\n`;
-}
-
-function renderStats(snapshot: LiveHistorySnapshot, dimension?: UsageStatsDimension): string {
-  const overview = snapshot.getUsageOverview();
-  const lines = [
-    "Stats",
-    `- Turns: ${overview.total_turns}`,
-    `- Token coverage: ${overview.turns_with_token_usage}/${overview.total_turns} (${formatPercent(overview.turn_coverage_ratio)})`,
-    `- Input tokens: ${formatNumber(overview.total_input_tokens)}`,
-    `- Cached input tokens: ${formatNumber(overview.total_cached_input_tokens)}`,
-    `- Output tokens: ${formatNumber(overview.total_output_tokens)}`,
-    `- Reasoning output tokens: ${formatNumber(overview.total_reasoning_output_tokens)}`,
-    `- Total tokens: ${formatNumber(overview.total_tokens)}`,
-  ];
-  if (dimension) {
-    const rollup = snapshot.getUsageRollup(dimension);
-    lines.push("", `By ${dimension}`);
-    for (const row of rollup.rows) {
-      lines.push(`- ${row.label}: ${row.turn_count} turns · ${formatNumber(row.total_tokens)} tokens`);
+  const refresh = async () => {
+    if (busy) return;
+    busy = true;
+    dispatch({ type: "set-status", status: { kind: "busy", text: "Refreshing from native source data…" } });
+    try {
+      const replacement = await scan({ ...scanOptions, onProgress: undefined });
+      // Assign only after the rescan resolves: a failed refresh must leave the
+      // previous complete snapshot in place.
+      model = new LiteBrowserModel(replacement);
+      state = createLiteBrowserState(model);
+      dispatch({ type: "set-status", status: { kind: "info", text: "Snapshot refreshed." } });
+    } catch (error) {
+      dispatch({
+        type: "set-status",
+        status: { kind: "error", text: `Refresh failed; previous snapshot retained: ${errorMessage(error)}` },
+      });
+    } finally {
+      busy = false;
     }
+  };
+
+  const loadContext = async () => {
+    const entry = getSelectedTurn(model, state);
+    if (!entry) return;
+    if (model.hasContext(entry.turn.id)) {
+      dispatch({ type: "drill" });
+      return;
+    }
+    if (busy) return;
+    busy = true;
+    dispatch({ type: "set-status", status: { kind: "busy", text: "Loading full session context…" } });
+    try {
+      const session = model.getSession(entry.turn.session_id);
+      const source = model.snapshot.getSource(entry.turn.source_id);
+      if (!session || !source) {
+        dispatch({ type: "set-status", status: { kind: "error", text: "Context unavailable for this turn." } });
+        return;
+      }
+      const detailed = await scan({
+        ...scanOptions,
+        // A targeted rescan is already narrowed by source and session; keeping
+        // --limit-files here would truncate the very files it needs.
+        limitFiles: undefined,
+        sourceRoots: [{ sourceRef: source.slot_id, baseDir: source.base_dir }],
+        sourceRefs: [source.slot_id],
+        contextMode: "full",
+        sessionRefs: [session.source_session_id ?? session.id],
+        onProgress: undefined,
+      });
+      if (finished) return;
+      model.putContexts(detailed.data.contexts);
+      dispatch({ type: "clear-status" });
+      // The user can navigate while the scan is pending. Keep the completed
+      // context in the cache, but only open the view that requested it.
+      if (state.focusPane === "detail" && state.overlay === "none" &&
+        getSelectedTurn(model, state)?.turn.id === entry.turn.id) {
+        dispatch({ type: "drill" });
+      }
+    } catch (error) {
+      dispatch({ type: "set-status", status: { kind: "error", text: `Context load failed: ${errorMessage(error)}` } });
+    } finally {
+      busy = false;
+    }
+  };
+
+  // ── Terminal setup ──
+
+  const setRawMode = (enabled: boolean) => {
+    if (typeof rawInput.setRawMode === "function") rawInput.setRawMode(enabled);
+  };
+
+  const restoreTerminal = () => {
+    setRawMode(false);
+    io.stdout(`${LEAVE_ALTERNATE_SCROLL}${SHOW_CURSOR}${LEAVE_ALTERNATE_SCREEN}`);
+  };
+
+  const decoder = new KeyDecoder();
+  const inputDecoder = new StringDecoder("utf8");
+  let escapeTimer: NodeJS.Timeout | undefined;
+
+  const handleKey = (key: LiteKey) => {
+    const effect = resolveLiteInputEffect(state, key);
+    if (effect.type === "exit") {
+      finish();
+      return;
+    }
+    if (effect.type === "action") {
+      dispatch(effect.action);
+      return;
+    }
+    if (effect.type === "refresh") {
+      void refresh();
+      return;
+    }
+    if (effect.type === "load-context") {
+      void loadContext();
+    }
+  };
+
+  const onData = (chunk: Buffer | string) => {
+    if (escapeTimer) {
+      clearTimeout(escapeTimer);
+      escapeTimer = undefined;
+    }
+    for (const key of decoder.push(typeof chunk === "string" ? chunk : inputDecoder.write(chunk))) {
+      handleKey(key);
+      if (finished) return;
+    }
+    if (decoder.pending === "\x1b") {
+      escapeTimer = setTimeout(() => {
+        const pending = decoder.flushPendingEscape();
+        if (pending) handleKey(pending);
+      }, ESCAPE_FLUSH_MS);
+      escapeTimer.unref?.();
+    }
+  };
+
+  const onResize = () => {
+    io.stdout(ERASE_SCREEN);
+    paint(true);
+  };
+
+  const onSignal = (signal: NodeJS.Signals) => {
+    if (signal === "SIGINT") interrupted = true;
+    finish();
+  };
+  const onSigint = () => onSignal("SIGINT");
+  const onSigterm = () => onSignal("SIGTERM");
+  const onSighup = () => onSignal("SIGHUP");
+  // Last-resort restore: an unexpected exit must not leave the user staring at
+  // the alternate screen with echo disabled.
+  const onProcessExit = () => restoreTerminal();
+
+  io.stdout(`${ENTER_ALTERNATE_SCREEN}${ENTER_ALTERNATE_SCROLL}${HIDE_CURSOR}${ERASE_SCREEN}`);
+  setRawMode(true);
+  input.on("data", onData);
+  input.once("end", finish);
+  input.once("close", finish);
+  resizable.on?.("resize", onResize);
+  process.on("SIGINT", onSigint);
+  process.on("SIGTERM", onSigterm);
+  process.on("SIGHUP", onSighup);
+  process.once("exit", onProcessExit);
+
+  try {
+    paint(true);
+    await exited;
+  } finally {
+    if (escapeTimer) clearTimeout(escapeTimer);
+    input.off?.("data", onData);
+    input.off?.("end", finish);
+    input.off?.("close", finish);
+    // Removing listeners leaves a terminal/pipe read handle active. Stop the
+    // session's input read so Node can exit with stdin still open.
+    input.pause();
+    resizable.off?.("resize", onResize);
+    process.off("SIGINT", onSigint);
+    process.off("SIGTERM", onSigterm);
+    process.off("SIGHUP", onSighup);
+    process.off("exit", onProcessExit);
+    restoreTerminal();
   }
-  return `${lines.join("\n")}\n`;
+
+  if (interrupted) io.stdout("Interrupted; releasing snapshot.\n");
+  io.stdout("CC History Lite snapshot released.\n");
+  return 0;
 }
 
-function renderProjectDetail(snapshot: LiveHistorySnapshot, project: ProjectIdentity, pageIndex: number): PagedRender {
-  const turns = snapshot.listProjectTurns(project.project_id);
-  const sessionIds = new Set(turns.map((turn) => turn.session_id));
-  const sessions = snapshot.listResolvedSessions().filter((session) => sessionIds.has(session.id));
-  const pageCount = Math.max(
-    collectionPageCount(sessions.length, SESSION_PAGE_SIZE),
-    collectionPageCount(turns.length, TURN_PAGE_SIZE),
-  );
-  const sections = [
-    renderSessionLines(sessions, pageIndex, SESSION_PAGE_SIZE).join("\n"),
-    renderTurnLines(turns, pageIndex, TURN_PAGE_SIZE).join("\n"),
-  ];
-  return { output: `Project · ${project.display_name}
-ID: ${project.project_id}
-Link: ${project.linkage_state} (${project.link_reason}, ${project.confidence})
-Workspace: ${project.primary_workspace_path ?? project.repo_root ?? "—"}
-Sessions: ${sessions.length}
-Turns: ${turns.length}
+// ── Entry points and helpers ──
 
-${sections.join("\n\n")}
-${renderPageNavigation(pageIndex, pageCount)}
-`, pageCount };
+function applyEntryPoints(
+  model: LiteBrowserModel,
+  initial: LiteBrowserState,
+  parsed: ParsedArgs,
+): LiteBrowserState {
+  let state = initial;
+  if (parsed.projectRef) state = reduceLiteBrowserState(model, state, { type: "open-project-ref", ref: parsed.projectRef });
+  if (parsed.sessionRef) state = reduceLiteBrowserState(model, state, { type: "open-session-ref", ref: parsed.sessionRef });
+  if (parsed.turnRef) state = reduceLiteBrowserState(model, state, { type: "open-turn-ref", ref: parsed.turnRef });
+  if (parsed.searchQuery) state = reduceLiteBrowserState(model, state, { type: "open-search", query: parsed.searchQuery });
+  return state;
 }
 
-function renderSessionDetail(snapshot: LiveHistorySnapshot, session: SessionProjection, pageIndex: number): PagedRender {
-  const turns = snapshot.listSessionTurns(session.id);
-  const relatedWork = snapshot.listSessionRelatedWork(session.id);
-  const pageCount = collectionPageCount(turns.length, TURN_PAGE_SIZE);
-  const relatedLines = relatedWork.length === 0
-    ? ["Related work (0)"]
-    : [
-        `Related work (${relatedWork.length})`,
-        ...relatedWork.map((entry) => {
-          const kind = entry.relation_kind === "automation_run" ? "automation run" : "delegated session";
-          const target = entry.title ?? entry.target_session_ref ?? entry.target_run_ref ?? entry.id;
-          return `- ${kind} · ${entry.direction ?? "unknown"} · ${target}`;
-        }),
-      ];
-  return { output: `Session · ${session.title ?? session.source_session_id ?? session.id}
-ID: ${session.id}
-Source: ${session.source_platform}
-Workspace: ${session.working_directory ?? "—"}
-Updated: ${session.updated_at}
-Resume: ${session.resume_command ?? "—"}
-
-${relatedLines.join("\n")}
-
-${renderTurnLines(turns, pageIndex, TURN_PAGE_SIZE).join("\n")}
-${renderPageNavigation(pageIndex, pageCount)}
-`, pageCount };
+function resolveDimensions(io: LiteTuiIo): { width: number; height: number; now: number } {
+  const output = (io.output ?? process.stdout) as NodeJS.WritableStream & {
+    columns?: number;
+    rows?: number;
+  };
+  const width = io.columns ?? output.columns ?? numericEnv("COLUMNS") ?? DEFAULT_WIDTH;
+  const height = io.rows ?? output.rows ?? numericEnv("LINES") ?? DEFAULT_HEIGHT;
+  return { width, height, now: io.now?.() ?? Date.now() };
 }
 
-function renderTurnDetail(
-  snapshot: LiveHistorySnapshot,
-  turn: UserTurnProjection,
-  loadedContext?: TurnContextProjection,
-): string {
-  const context = loadedContext ?? snapshot.getTurnContext(turn.id);
-  return `UserTurn · ${turn.id}
-Time: ${turn.submission_started_at}
-Session: ${turn.session_id}
-Project: ${turn.project_id ?? turn.link_state}
-
-${turn.canonical_text}
-
-Context
-- Assistant replies: ${context?.assistant_replies.length ?? 0}
-- Tool calls: ${context?.tool_calls.length ?? 0}
-
-${context ? JSON.stringify(context, null, 2) : "No context"}
-`;
+function numericEnv(name: string): number | undefined {
+  const raw = process.env[name];
+  if (!raw) return undefined;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
 }
 
-function renderSourceDetail(snapshot: LiveHistorySnapshot, source: SourceStatus, pageIndex: number): PagedRender {
-  const sessions = snapshot.listResolvedSessions().filter((session) => session.source_id === source.id);
-  const audits = snapshot.listLossAudits().filter((audit) => audit.source_id === source.id);
-  const pageCount = collectionPageCount(sessions.length, SESSION_PAGE_SIZE);
-  return { output: `Source · ${source.display_name}
-ID: ${source.id}
-Adapter: ${source.platform} [${source.slot_id}]
-Root: ${source.base_dir}
-Status: ${source.sync_status}${source.error_message ? ` · ${source.error_message}` : ""}
-Sessions: ${source.total_sessions}
-Turns: ${source.total_turns}
-Loss audits: ${audits.length}
-
-${renderSessionLines(sessions, pageIndex, SESSION_PAGE_SIZE).join("\n")}
-${renderPageNavigation(pageIndex, pageCount)}
-`, pageCount };
+function formatProgress(event: {
+  stage: string;
+  display_name?: string;
+  slot_id?: string;
+  message?: string;
+  file_path?: string;
+}): string {
+  if (event.stage === "source_start") return `Scanning ${event.display_name} (${event.slot_id})…\n`;
+  if (event.stage === "source_missing") return `Source missing: ${event.display_name} (${event.slot_id})\n`;
+  if (event.stage === "file_error") {
+    return `Read error in ${event.display_name}: ${event.message ?? event.file_path ?? "unknown file"}\n`;
+  }
+  return "";
 }
 
-function collectionPageCount(total: number, pageSize: number): number {
-  return Math.max(1, Math.ceil(total / pageSize));
-}
+// ── Argument parsing ──
 
-function collectionRange(
-  total: number,
-  pageIndex: number,
-  pageSize: number,
-): { start: number; end: number } {
-  const offset = pageIndex * pageSize;
-  if (total === 0 || offset >= total) return { start: 0, end: 0 };
-  return { start: offset + 1, end: Math.min(total, offset + pageSize) };
-}
-
-function collectionHeading(label: string, total: number, pageIndex: number, pageSize: number): string {
-  const range = collectionRange(total, pageIndex, pageSize);
-  if (total === 0) return `${label} (0)`;
-  if (range.start === 0) return `${label} (${total} total · no entries on this page)`;
-  return `${label} (${range.start}-${range.end} of ${total})`;
-}
-
-function pageSlice<T>(values: readonly T[], pageIndex: number, pageSize: number): T[] {
-  const offset = pageIndex * pageSize;
-  return values.slice(offset, offset + pageSize);
-}
-
-function renderPageNavigation(pageIndex: number, pageCount: number): string {
-  const controls = [`Page ${pageIndex + 1}/${pageCount}`];
-  if (pageIndex > 0) controls.push("previous: b | prev");
-  if (pageIndex + 1 < pageCount) controls.push("next: n | next");
-  if (pageCount > 1) controls.push("jump: page <n>");
-  return controls.join(" · ");
-}
-
-function pagedViewLabel(view: PagedView): string {
-  if (view.kind === "projects") return "projects";
-  if (view.kind === "sessions") return "sessions";
-  if (view.kind === "turns") return "turns";
-  if (view.kind === "search") return `search ${JSON.stringify(view.query)}`;
-  if (view.kind === "project") return `project ${view.projectId}`;
-  if (view.kind === "session") return `session ${view.sessionId}`;
-  return `source ${view.sourceId}`;
-}
+const REF_FLAGS = new Set(["project", "session", "turn", "search"]);
 
 function parseArgs(argv: string[], cwd: string): ParsedArgs {
-  const sourceRoots: LiteSourceRoot[] = [];
-  const sourceRefs: string[] = [];
-  let safeMode = false;
-  let limitFiles: number | undefined;
-  let help = false;
+  const parsed: ParsedArgs = {
+    sourceRoots: [],
+    sourceRefs: [],
+    safeMode: false,
+    help: false,
+    version: false,
+  };
 
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!;
     if (argument === "--safe") {
-      safeMode = true;
+      parsed.safeMode = true;
       continue;
     }
     if (argument === "--help" || argument === "-h") {
-      help = true;
+      parsed.help = true;
+      continue;
+    }
+    if (argument === "--version" || argument === "-V") {
+      parsed.version = true;
+      continue;
+    }
+    if (argument === "--no-color") {
+      parsed.color = false;
+      continue;
+    }
+    if (argument === "--color") {
+      parsed.color = true;
       continue;
     }
     if (argument === "--store" || argument.startsWith("--store=") || argument === "--db" || argument.startsWith("--db=")) {
@@ -674,26 +453,48 @@ function parseArgs(argv: string[], cwd: string): ParsedArgs {
     if (argument === "--source-root" || argument.startsWith("--source-root=")) {
       const raw = readOptionValue(argv, index, argument, "source-root");
       if (argument === "--source-root") index += 1;
-      sourceRoots.push(parseSourceRoot(raw, cwd));
+      parsed.sourceRoots.push(parseSourceRoot(raw, cwd));
       continue;
     }
     if (argument === "--source" || argument.startsWith("--source=")) {
       const raw = readOptionValue(argv, index, argument, "source");
       if (argument === "--source") index += 1;
-      sourceRefs.push(raw);
+      parsed.sourceRefs.push(raw);
       continue;
     }
     if (argument === "--limit-files" || argument.startsWith("--limit-files=")) {
       const raw = readOptionValue(argv, index, argument, "limit-files");
       if (argument === "--limit-files") index += 1;
-      const parsed = Number(raw);
-      if (!Number.isSafeInteger(parsed) || parsed < 1) throw new TuiUsageError("--limit-files must be an integer >= 1.");
-      limitFiles = parsed;
+      const value = Number(raw);
+      if (!Number.isSafeInteger(value) || value < 1) throw new TuiUsageError("--limit-files must be an integer >= 1.");
+      parsed.limitFiles = value;
       continue;
     }
-    throw new TuiUsageError(`Unknown Lite TUI argument: ${argument}.`);
+    const refFlag = matchRefFlag(argument);
+    if (refFlag) {
+      const raw = readOptionValue(argv, index, argument, refFlag);
+      if (argument === `--${refFlag}`) index += 1;
+      if (refFlag === "project") parsed.projectRef = raw;
+      else if (refFlag === "session") parsed.sessionRef = raw;
+      else if (refFlag === "turn") parsed.turnRef = raw;
+      else parsed.searchQuery = raw;
+      continue;
+    }
+    throw new TuiUsageError(`Unknown Lite TUI argument: ${argument}. Run cchistory-lite-tui --help.`);
   }
-  return { sourceRoots, sourceRefs, safeMode, limitFiles, help };
+
+  const entryPoints = [parsed.projectRef, parsed.sessionRef, parsed.turnRef].filter(Boolean);
+  if (entryPoints.length > 1) {
+    throw new TuiUsageError("Use at most one of --project / --session / --turn; they select the same initial focus.");
+  }
+  return parsed;
+}
+
+function matchRefFlag(argument: string): string | undefined {
+  for (const name of REF_FLAGS) {
+    if (argument === `--${name}` || argument.startsWith(`--${name}=`)) return name;
+  }
+  return undefined;
 }
 
 function readOptionValue(argv: string[], index: number, argument: string, name: string): string {
@@ -716,42 +517,45 @@ function parseSourceRoot(value: string, cwd: string): LiteSourceRoot {
   };
 }
 
-function parseStatsDimension(value: string): UsageStatsDimension {
-  if (value === "source" || value === "project" || value === "model" || value === "day") return value;
-  throw new TuiUsageError(`Stats dimension must be source, project, model, or day; received ${JSON.stringify(value)}.`);
-}
+export function renderHelp(): string {
+  return `${BANNER_TITLE}
 
-function renderCommandHelp(): string {
-  return `
-Commands
-  p | projects             list projects
-  s | sessions             list sessions
-  u | turns                list UserTurns
-  /<query> | search <q>    search canonical turn text and paths
-  n | next                 next page of the active list, search, or detail
-  b | prev                 previous page of the active view
-  page <n>                 jump to a page of the active view
-  project <ref>            project detail
-  session <ref>            session and turn detail
-  turn <ref>               UserTurn and full context detail
-  o | sources              source status
-  t | stats                usage overview
-  stats source|project|model|day
-  r | refresh              rescan; old snapshot remains if refresh fails
-  h | help                 show commands
-  q | quit                 release the in-memory snapshot
-
-`;
-}
-
-function renderHelp(): string {
-  return `CC History Lite TUI ${VERSION}
+A full-screen, keyboard-driven browser over one ephemeral snapshot of the AI
+coding history already on this machine. It never reads or creates a CC History
+Full store, and it writes no files.
 
 Usage:
-  cchistory-lite-tui [--source-root <slot-or-id>=<path>] [--source <slot-or-id>] [--safe]
+  cchistory-lite-tui [options]
 
-The TUI reads registered native source adapters into one process-lifetime snapshot.
-It never reads or creates a CC History Full store. There is no import surface.
+Source options:
+  --source-root <slot-or-id>=<path>  Override one registered adapter root; repeatable
+  --source <slot-or-id>              Scan only the named adapters; repeatable
+  --limit-files <n>                  Limit source files scanned per adapter
+  --safe                             Enable adapter safe mode
+
+Entry points (at most one of --project/--session/--turn):
+  --project <ref>                    Open focused on a project's turns
+  --session <ref>                    Open at the first turn of a session
+  --turn <ref>                       Open at a turn's detail
+  --search <query>                   Open in search mode with this query
+
+Output options:
+  --color / --no-color               Force or suppress ANSI styling
+  -h, --help                         Show this help
+  -V, --version                      Show version
+
+Keys:
+  ↑/↓ or j/k   move          Tab / Shift+Tab   next / previous pane
+  PgUp/PgDn    page          Enter             drill in
+  g / G        first / last  Esc               back or close overlay
+  p / S        browse by project / by session
+  t / d        focus turns / detail pane
+  /            search        i  stats    s  sources    ? help
+  r            refresh the snapshot from disk
+  q            quit and release the snapshot
+
+Refs accept a full id, a slug or display name, a workspace path, or a unique
+id prefix. Piping the TUI renders one non-interactive snapshot frame and exits.
 `;
 }
 
@@ -764,19 +568,6 @@ function defaultIo(): LiteTuiIo {
     input: process.stdin,
     output: process.stdout,
   };
-}
-
-function singleLine(value: string, maxLength: number): string {
-  const normalized = value.replace(/\s+/gu, " ").trim();
-  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, Math.max(0, maxLength - 1))}…`;
-}
-
-function formatNumber(value: number): string {
-  return new Intl.NumberFormat("en-US").format(value);
-}
-
-function formatPercent(value: number): string {
-  return `${Math.round(value * 1000) / 10}%`;
 }
 
 function errorMessage(error: unknown): string {
