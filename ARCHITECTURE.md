@@ -2,7 +2,7 @@
 doc_type: architecture
 status: current
 authority: normative
-last_reconciled: 2026-07-26
+last_reconciled: 2026-10-12
 supersedes: []
 ---
 
@@ -104,12 +104,31 @@ geometry that belongs to a surface contract.
 ## Architecture enforcement
 
 `architecture-rules.json` and `pnpm run verify:architecture-boundaries` provide
-a small repository-wide literal-import guard. Every declared rule must match
-production files, so an empty or misspelled boundary cannot pass vacuously.
+a declared static module-reference guard. Manifest version 1 supports explicit
+`match: "module-specifier"` and legacy `literal` whole-text matching (also the
+default when omitted). Current dependency rules all select module mode. Owner
+patterns match a module/package or repository path plus its slash-delimited
+subpaths; comments, ordinary content and similarly prefixed names are ignored.
+
+Using the installed TypeScript SourceFile parser, module mode decodes static
+imports, re-exports, import-equals/import-type references and literal `import()`,
+`require()`, `module.require()` and `require.resolve()`. Relative paths normalize
+from the importer to declared repository owner roots. Recognized nonliteral
+loads, malformed syntax, bad modes, scan symlinks and repository escapes fail
+explicitly. Every rule must match production files; a vacuous rule cannot pass.
+Each source is read/parsed once per invocation, without a compiler Program.
+
+This is syntactic checking, without symbol binding or module resolution. Loader
+aliases/computed loader properties, eval, compiler path aliases, symlinked module
+targets and transitive runtime resolution are outside its proof. A lexical
+`require` may be shadowed; no typechecker is claimed. Include-root containment
+does not establish dependency-target resolution.
 
 That generic guard deliberately complements rather than reimplements:
 
-- `pnpm run verify:lite` for the complete zero-store production graph;
+- `pnpm run verify:lite` for Lite package tests and its workspace manifest graph/
+  quoted-import boundary check (the node-only boundary entry is
+  `node scripts/verify-lite-boundaries.mjs`);
 - `pnpm run verify:product-profiles` for build/test/release membership;
 - `pnpm run verify:support-status` for registered support truth;
 - `pnpm run verify:runtime-inventory` for entrypoint and route inventory.

@@ -13,7 +13,8 @@
       "includeRoots": ["packages/canonical/src"],
       "extensions": [".ts", ".tsx", ".js", ".mjs"],
       "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
-      "forbiddenPatterns": ["@cchistory/storage"]
+      "match": "module-specifier",
+      "forbiddenPatterns": ["@cchistory/storage", "packages/storage"]
     },
     {
       "id": "source-adapters-stop-at-parse-boundary",
@@ -21,7 +22,8 @@
       "includeRoots": ["packages/source-adapters/src"],
       "extensions": [".ts", ".tsx", ".js", ".mjs"],
       "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
-      "forbiddenPatterns": ["@cchistory/storage", "@cchistory/live-runtime"]
+      "match": "module-specifier",
+      "forbiddenPatterns": ["@cchistory/storage", "packages/storage", "@cchistory/live-runtime", "packages/live-runtime"]
     },
     {
       "id": "lite-materializer-stays-zero-store",
@@ -29,7 +31,8 @@
       "includeRoots": ["packages/live-runtime/src"],
       "extensions": [".ts", ".tsx", ".js", ".mjs"],
       "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
-      "forbiddenPatterns": ["@cchistory/storage", "apps/cli", "apps/tui", "apps/api"]
+      "match": "module-specifier",
+      "forbiddenPatterns": ["@cchistory/storage", "packages/storage", "@cchistory/cli", "@cchistory/tui", "@cchistory/api", "apps/cli", "apps/tui", "apps/api"]
     },
     {
       "id": "client-contract-stays-storage-independent",
@@ -37,7 +40,8 @@
       "includeRoots": ["packages/api-client/src", "packages/presentation/src"],
       "extensions": [".ts", ".tsx", ".js", ".mjs"],
       "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
-      "forbiddenPatterns": ["@cchistory/storage"]
+      "match": "module-specifier",
+      "forbiddenPatterns": ["@cchistory/storage", "packages/storage"]
     },
     {
       "id": "lite-surfaces-do-not-reach-full",
@@ -45,7 +49,8 @@
       "includeRoots": ["apps/lite-cli/src", "apps/lite-tui/src"],
       "extensions": [".ts", ".tsx", ".js", ".mjs"],
       "excludeSuffixes": [".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx"],
-      "forbiddenPatterns": ["@cchistory/storage", "apps/cli", "apps/tui", "apps/api"]
+      "match": "module-specifier",
+      "forbiddenPatterns": ["@cchistory/storage", "packages/storage", "@cchistory/cli", "@cchistory/tui", "@cchistory/api", "apps/cli", "apps/tui", "apps/api"]
     }
   ]
 }

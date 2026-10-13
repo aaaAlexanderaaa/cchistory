@@ -3,16 +3,67 @@
 import { readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import ts from "typescript";
+
+function outsideRepository(relative) {
+  return relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative);
+}
+
+function moduleReferences(file, text) {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true);
+  const references = [];
+  const problems = [];
+  const lineAt = (position) => source.getLineAndCharacterOfPosition(position).line + 1;
+  for (const diagnostic of source.parseDiagnostics) {
+    problems.push(`line ${lineAt(diagnostic.start ?? 0)}: cannot parse module references: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, " ")}`);
+  }
+  const unwrap = (node) => {
+    while (node && ts.isParenthesizedExpression(node)) node = node.expression;
+    return node;
+  };
+  const addReference = (argument, owner) => {
+    argument = unwrap(argument);
+    const line = lineAt(owner.getStart(source));
+    if (argument && ts.isStringLiteralLike(argument)) references.push({ specifier: argument.text, line });
+    else problems.push(`line ${line}: nonliteral module reference cannot be checked`);
+  };
+  const isLoader = (expression) => {
+    expression = unwrap(expression);
+    if (expression.kind === ts.SyntaxKind.ImportKeyword) return true;
+    if (ts.isIdentifier(expression)) return expression.text === "require";
+    return ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression)
+      && ((expression.expression.text === "require" && expression.name.text === "resolve")
+        || (expression.expression.text === "module" && expression.name.text === "require"));
+  };
+  const visit = (node) => {
+    if (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) {
+      if (node.moduleSpecifier) addReference(node.moduleSpecifier, node);
+    } else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference)) {
+      addReference(node.moduleReference.expression, node);
+    } else if (ts.isImportTypeNode(node)) {
+      addReference(ts.isLiteralTypeNode(node.argument) ? node.argument.literal : node.argument, node);
+    } else if (ts.isCallExpression(node) && isLoader(node.expression)) {
+      addReference(node.arguments[0], node);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return { references, problems };
+}
+
+function ownerMatches(reference, forbidden) {
+  return reference === forbidden || reference.startsWith(`${forbidden}/`);
+}
 
 async function repositoryPath(root, relativePath) {
-  if (!relativePath || path.isAbsolute(relativePath)) return null;
+  if (typeof relativePath !== "string" || !relativePath || path.isAbsolute(relativePath)) return null;
   const resolved = path.resolve(root, relativePath);
   const relative = path.relative(root, resolved);
-  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return null;
+  if (outsideRepository(relative)) return null;
   try {
     const canonical = await realpath(resolved);
     const canonicalRelative = path.relative(root, canonical);
-    if (canonicalRelative === ".." || canonicalRelative.startsWith(`..${path.sep}`) || path.isAbsolute(canonicalRelative)) return null;
+    if (outsideRepository(canonicalRelative)) return null;
     return canonical;
   } catch {
     // Let the caller report a more specific missing/unreadable-path error.
@@ -51,8 +102,13 @@ export async function verifyArchitectureBoundaries({ root = process.cwd() } = {}
     add("architecture-rules.json", "manifest requires at least one rule");
   }
   const seen = new Set();
+  const sources = new Map();
   let fileCount = 0;
-  for (const [index, rule] of (manifest.rules ?? []).entries()) {
+  for (const [index, rule] of (Array.isArray(manifest.rules) ? manifest.rules : []).entries()) {
+    if (!rule || typeof rule !== "object") {
+      add("architecture-rules.json", `rule ${index + 1} must be an object`);
+      continue;
+    }
     const label = rule.id || `rule-${index + 1}`;
     if (!rule.id || !/^[a-z0-9][a-z0-9-]*$/.test(rule.id)) add("architecture-rules.json", `rule ${index + 1} has invalid id`);
     else if (seen.has(rule.id)) add("architecture-rules.json", `duplicate rule id: ${rule.id}`);
@@ -60,8 +116,13 @@ export async function verifyArchitectureBoundaries({ root = process.cwd() } = {}
     if (!rule.description) add("architecture-rules.json", `rule ${label} requires a description`);
     if (!Array.isArray(rule.includeRoots) || rule.includeRoots.length === 0) add("architecture-rules.json", `rule ${label} requires includeRoots`);
     if (!Array.isArray(rule.forbiddenPatterns) || rule.forbiddenPatterns.length === 0) add("architecture-rules.json", `rule ${label} requires forbiddenPatterns`);
+    const mode = rule.match === undefined ? "literal" : rule.match;
+    if (mode !== "literal" && mode !== "module-specifier") {
+      add("architecture-rules.json", `rule ${label} has invalid match mode: ${JSON.stringify(mode)}`);
+      continue;
+    }
     const matched = new Set();
-    for (const relativeRoot of rule.includeRoots ?? []) {
+    for (const relativeRoot of Array.isArray(rule.includeRoots) ? rule.includeRoots : []) {
       const includeRoot = await repositoryPath(root, relativeRoot);
       if (!includeRoot) {
         add("architecture-rules.json", `rule ${label} include root must stay inside repository: ${relativeRoot}`);
@@ -79,20 +140,49 @@ export async function verifyArchitectureBoundaries({ root = process.cwd() } = {}
     }
     if (matched.size === 0) add("architecture-rules.json", `rule ${label} matches no production files (vacuous rule)`);
     fileCount += matched.size;
-    for (const forbidden of rule.forbiddenPatterns ?? []) {
+    const patterns = [];
+    for (const forbidden of Array.isArray(rule.forbiddenPatterns) ? rule.forbiddenPatterns : []) {
       if (typeof forbidden !== "string" || forbidden.length === 0) {
         add("architecture-rules.json", `rule ${label} has an invalid forbidden pattern`);
         continue;
       }
-      for (const file of matched) {
-        const text = await readFile(file, "utf8");
-        const lineIndex = text.split("\n").findIndex((line) => line.includes(forbidden));
-        if (lineIndex >= 0) add(path.relative(root, file), `line ${lineIndex + 1}: rule ${label} forbids ${JSON.stringify(forbidden)}`);
+      patterns.push(forbidden);
+    }
+    for (const file of matched) {
+      const relativeFile = path.relative(root, file);
+      try {
+        if (!sources.has(file)) sources.set(file, { text: await readFile(file, "utf8") });
+        const source = sources.get(file);
+        if (mode === "literal") {
+          for (const forbidden of patterns) {
+            const lineIndex = source.text.split("\n").findIndex((line) => line.includes(forbidden));
+            if (lineIndex >= 0) add(relativeFile, `line ${lineIndex + 1}: rule ${label} forbids ${JSON.stringify(forbidden)}`);
+          }
+          continue;
+        }
+        source.modules ??= moduleReferences(file, source.text);
+        for (const problem of source.modules.problems) add(relativeFile, `rule ${label}: ${problem}`);
+        for (const { specifier, line } of source.modules.references) {
+          let reference = specifier;
+          if (specifier.startsWith(".") || path.isAbsolute(specifier)) {
+            const relative = path.relative(root, path.resolve(path.dirname(file), specifier));
+            if (outsideRepository(relative)) {
+              add(relativeFile, `line ${line}: rule ${label}: module reference must stay inside repository: ${JSON.stringify(specifier)}`);
+              continue;
+            }
+            reference = relative.split(path.sep).join("/");
+          }
+          for (const forbidden of patterns) {
+            if (ownerMatches(reference, forbidden)) add(relativeFile, `line ${line}: rule ${label} forbids ${JSON.stringify(forbidden)} (module ${JSON.stringify(specifier)})`);
+          }
+        }
+      } catch (error) {
+        add(relativeFile, `rule ${label} cannot inspect source: ${error.message}`);
       }
     }
   }
   errors.sort((a, b) => a.path.localeCompare(b.path) || a.message.localeCompare(b.message));
-  return { ok: errors.length === 0, errors, ruleCount: manifest.rules?.length ?? 0, fileCount };
+  return { ok: errors.length === 0, errors, ruleCount: Array.isArray(manifest.rules) ? manifest.rules.length : 0, fileCount };
 }
 
 async function runCli() {

@@ -9,10 +9,13 @@ supersedes: []
 
 # {{Initiative}} implementation plan
 
+Use for material/high-risk delivery under `PIPELINE.md`; routine work uses its
+existing task/owner. Apply only activated concerns from the development discipline.
+
 ## Cold-start summary
 
-Record the outcome, current verified facts, governing authority, risk profile,
-and next executable action.
+Record original request/source separately from accepted interpretation, named end,
+verified facts, authority/allowed effects, boundaries, evidence and next action.
 
 ## Authority and risk classification
 
@@ -20,7 +23,9 @@ and next executable action.
 - Architecture: `ARCHITECTURE.md` § {{section}}
 - Contract: `docs/contracts/{{contract}}.md`
 - Backlog objective/task: {{id}}
-- Risk: `{{routine / material / high-risk}}` because {{reason}}
+- Risk: `{{material / high-risk}}` because {{actual effects, harm and recovery}}
+- Activated owners/required proof: {{links; no per-concern duplicate documents}}
+- Assumptions and owner-only decisions: {{facts versus inference; none or scope}}
 
 ## Complete end state
 
@@ -32,25 +37,28 @@ and next executable action.
 |---|---|---|---|
 | {{concern}} | {{fact}} | {{target}} | {{gap}} |
 
-## Seven-phase execution record
+## Execution and verification
 
-| Phase | Required output | Result/evidence or non-applicability reason |
-|---|---|---|
-| 1. Domain understanding | authority, terms, affected paths | {{record}} |
-| 2. Fixtures | sanitized source-shaped evidence/controlled boundary | {{record}} |
-| 3. Functional design | contract, trade-offs, acceptance | {{record}} |
-| 4. Tests first | acceptance checks observed failing | {{record}} |
-| 5. Implementation | smallest coherent change | {{record}} |
-| 6. Regression | affected and adjacent checks | {{record}} |
-| 7. Holistic evaluation | fresh-context report/blocked/exception | {{record}} |
+Order actual dependencies. Historical phases are optional techniques. Select
+failing guards when meaningful; otherwise name credible artifact, observation,
+interaction or review evidence. Do not invent tests or fixed scale counts.
+
+| Step | Dependency / observable result | Proof and limits | State / evidence |
+|---|---|---|---|
+| {{step}} | {{prerequisite/result}} | {{baseline/method}} | {{status/path}} |
 
 ## Review topology
+
+Complete when high-risk or an owning contract requires it; otherwise state why
+not required. Do not add independent reviews for routine/material ceremony.
 
 - Independent system/design-freeze lens: {{reviewer/result}}
 - Independent user/operator lens: {{reviewer/result}}
 - Independent engineering/maintenance lens: {{reviewer/result}}
 - Separate synthesis and human decisions: {{reviewer/result}}
 - Governance exception, if any: {{authority/scope/date/residual risk}}
+- Required fresh completion context: {{reviewer/result or not required}}
+- Context/source/model independence and actual supplied material: {{limits}}
 
 ## Risk register
 
@@ -60,7 +68,7 @@ and next executable action.
 
 ## Verification matrix
 
-| Outcome | Evidence class | Command/probe | Negative path | Durable record |
+| Original/contracted outcome and actual effect | Evidence class | Command/probe | Negative path | Durable record |
 |---|---|---|---|---|
 | {{outcome}} | {{class}} | `{{command}}` | {{failure check}} | {{path}} |
 
@@ -70,6 +78,8 @@ and next executable action.
 - Preflight and backup: {{plan}}
 - Abort signal and rollback: {{plan}}
 - Temp-artifact cleanup owner: {{owner}}
+- Trial, if needed: {{question, existing safety owners, disposable path, expiry,
+  abort, containment, cleanup evidence and escape/failed-cleanup escalation}}
 
 ## Progress and completion record
 
@@ -77,3 +87,5 @@ and next executable action.
 - Task/KR/objective/release completion layers: {{separate states}}
 - Contract/plan/issue/evidence updates: {{paths}}
 - Final revision and limitations: {{pending-or-result}}
+- Other shared work and integration/handoff state: {{scope/baseline/next action}}
+- Bounded end / ongoing authorization and priority source: {{actual authority}}

@@ -11,6 +11,7 @@ subject: {{contract-objective-or-release}}
 ## Claim and evidence class
 
 - Claim/completion layer: {{claim and task/KR/objective/release}}
+- Original request/source and accepted interpretation: {{distinct locators}}
 - Contract and revision: `{{path-and-revision}}`
 - Evidence class: {{unit/integration/source-shaped/artifact/real-runtime/manual}}
 - What this class does not prove: {{limitation}}
@@ -27,6 +28,18 @@ subject: {{contract-objective-or-release}}
 | Scenario/state | Expected | Observed evidence | Result |
 |---|---|---|---|
 | {{case}} | {{contract}} | {{result}} | pass/fail/partial |
+
+## Actual effects and evidence reuse
+
+Check promises against observations at the affected boundary in both directions:
+missing, extra, excessive, suppressed, stale, wrong-identity and partial effects
+when relevant. Name identity, allowed count/frequency, freshness and ordering for
+writes/requests/retries/notifications affecting the result. For pure docs, state
+that no product/runtime/external effects apply; no empty effect ledger.
+
+- Effect boundary and observed identity/count: {{facts and method, not helper success}}
+- Reused proof: {{artifact/dependency identity, criteria, method, freshness}}
+- Simulation/intervention and acquisition limits: {{actual versus unknown/not run}}
 
 ## Failure and recovery checks
 
@@ -52,3 +65,5 @@ subject: {{contract-objective-or-release}}
 `{{PASS / FAIL / PARTIAL / BLOCKED}}`
 
 State exactly which completion layer may close and which claims remain open.
+Check the original named end as well as the accepted contract. Passing a slice
+does not close its unfinished parent; sustained adoption requires later evidence.

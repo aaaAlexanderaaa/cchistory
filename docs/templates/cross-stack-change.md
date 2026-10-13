@@ -14,6 +14,9 @@ supersedes: []
 
 {{Complete end-to-end result, not only an endpoint or component.}}
 
+- Original request/source and accepted interpretation: {{separate locators}}
+- Activated owners and actual risk route: {{development discipline / PIPELINE}}
+
 ## Frozen-design anchors
 
 - `HIGH_LEVEL_DESIGN_FREEZE.md` § {{section}}
@@ -57,6 +60,10 @@ terminal states when reachable.
 | Scenario | Backend evidence | DTO consistency | User-visible evidence | Result |
 |---|---|---|---|---|
 | {{scenario}} | {{check}} | {{check}} | {{check}} | {{result}} |
+
+Verify original intent as well as DTO conformance and observe actual effects at
+the affected boundary. Check relevant counts/identity/freshness/ordering, missing,
+extra, suppressed and partial effects and recovery. Name runtime/simulation limits.
 
 ## Failure-category guards
 

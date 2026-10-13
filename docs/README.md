@@ -2,7 +2,7 @@
 doc_type: authority-map
 status: current
 authority: normative
-last_reconciled: 2026-07-26
+last_reconciled: 2026-10-12
 supersedes: []
 ---
 
@@ -22,6 +22,7 @@ operator, source-adapter, and design material.
 | [`design/CURRENT_RUNTIME_SURFACE.md`](design/CURRENT_RUNTIME_SURFACE.md) | Current repo-visible runtime inventory: entrypoints, registered adapters, routes, and verification surfaces |
 | [`ROADMAP.md`](ROADMAP.md) | Current milestone priorities and non-blocking future work |
 | [`../PIPELINE.md`](../PIPELINE.md) | Backlog and completion workflow for repository agents |
+| [`contracts/development-discipline.md`](contracts/development-discipline.md) | Collaboration, inquiry, activated quality concerns and actual-effect verification |
 | [`../BACKLOG.md`](../BACKLOG.md) | Active portfolio state, priority, task/KR/objective status, and blockers |
 
 When documents disagree, use this authority order:
@@ -37,6 +38,32 @@ When documents disagree, use this authority order:
 
 A lower role does not silently override a higher role. Broader enums in domain
 or DTO packages are schema allowance, not proof that a live adapter exists.
+
+## Task Context
+
+Start from the current repository's identity and task, not the template's full
+history. Preserve these facts in the existing task, plan or handoff as needed:
+
+| Fact | Required context |
+|---|---|
+| Outcome | Original request/source, accepted interpretation, named end and consequential preferences; distinguish implementer assumptions |
+| Current facts | Observed code/runtime/fixture state and decisive baseline identity; summaries are locators, not observations |
+| Authority | Relevant freeze sections, structural owner, current or accepted target contract and authorized operation set |
+| Boundaries | Activated concerns, allowed effects, risk/recovery and unresolved owner decisions |
+| Evidence | Acceptance, method/criteria/limitations, actual checks and next action or truthful blocker |
+
+Select context for the judgment: the owner-facing implementer may need detailed
+collaboration background; a worker needs its bounded result and constraints;
+an independent reviewer needs original intent as well as the accepted contract.
+Use current owners and active state first. Expand historical evidence only when
+provenance, an unresolved dependency or a conflict requires it. Completed plans,
+historical/superseded records and accepted targets are not proof of current
+implementation. A private profile has no implied cross-audience authorization.
+
+Record resumable state at its existing owner. Native assignments may carry short
+read-only context; ongoing shared writes use the active plan/handoff. No duplicate
+task registry or compulsory cold-start document for a routine edit. Unknown or
+full context inheritance must not be described as reduced context.
 
 ## Document Lifecycle And Routing
 
@@ -63,6 +90,12 @@ The first governed set is intentionally small. Historical design/source/guide
 documents remain readable without a flag-day frontmatter rewrite; add a
 document to `docs-policy.json` when it is materially revised or promoted to
 current authority.
+
+Edit the existing owner before creating a document. Split only when authority,
+audience or lifecycle needs differ; merge redundant working projections and
+retire obsolete entry links when work closes. Preserve indexed decision/evidence
+history. Document count and length do not measure governance quality. Heading or
+owner changes reconcile dependent links, templates and checker scope together.
 
 ## User And Operator Guides
 

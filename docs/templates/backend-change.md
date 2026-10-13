@@ -13,8 +13,12 @@ supersedes: []
 ## Outcome and scope
 
 - Outcome: {{observable system/operator result}}
+- Original request/source and accepted interpretation: {{separate facts}}
 - In scope: {{state/interface/lifecycle}}
 - Out of scope: {{non-goal}}
+
+Apply only activated concerns at their owners under the development discipline.
+Routine changes reconcile an existing owner without a new standalone contract.
 
 ## Frozen-design and architecture anchors
 
@@ -44,6 +48,7 @@ supersedes: []
 - Identity/deduplication key: {{key}}
 - Concurrent owner/order behavior: {{behavior}}
 - Retry and duplicate delivery: {{behavior}}
+- Allowed effect count/frequency, freshness and ordering: {{contract when relevant}}
 
 ## Failure and recovery
 
@@ -73,6 +78,11 @@ supersedes: []
 | Invariant/failure class | Controlled boundary | Expected result | Evidence |
 |---|---|---|---|
 | {{class}} | {{fixture/fake/fault}} | {{behavior}} | `{{test}}` |
+
+Observe promises and actual effects at the mutation/integration boundary,
+including relevant missing/extra/excessive/stale/wrong-identity/partial effects.
+Helper success does not prove external behavior. Name actual versus simulated
+evidence and valid reuse identities, dependencies, method, criteria and freshness.
 
 ## Reconciliation log
 

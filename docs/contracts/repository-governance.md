@@ -4,7 +4,7 @@ status: target
 authority: normative
 implementation: partial
 verification_status: partial
-last_reconciled: 2026-07-26
+last_reconciled: 2026-10-12
 review_due: 2026-10-24
 supersedes: []
 ---
@@ -65,6 +65,13 @@ Out of scope:
 > CCHistory's AI execution controls: independent lenses, fresh-context
 > evaluation, fixture-first implementation, portfolio review, and truthful
 > evidence classes.
+
+### source[3] — 2026-10-11
+
+> 项目纪律也更新一下，参考../template-project
+
+This request authorizes the scoped R47 discipline reconciliation. It does not
+replace source[1]'s July migration acceptance or authorize unrelated product work.
 
 ## Authority model
 
@@ -132,51 +139,65 @@ At minimum the architecture map preserves these directions:
 - Web/TUI own local interaction state, not hidden domain truth;
 - Lite production graphs never depend on Full storage or Full applications.
 
-Generic literal boundary checks complement, but never replace, existing
+Declared module-reference and legacy literal boundary checks complement existing
 TypeScript builds, `verify:lite`, `verify:product-profiles`, parity verifiers,
-and registry/runtime truth checks.
+and registry/runtime truth checks. `ARCHITECTURE.md` declares recognized syntax,
+normalization, fail-closed forms and unresolved graph limits; checker success
+does not claim complete runtime resolution.
 
-- from: source[2]
+- from: source[2], source[3]; selected adoption locators live in the R47 plan/evidence
 
 ## Material-change contract gate
 
-A material change changes product semantics, a public contract, durable state,
-multiple consumers, a user/operator workflow, authorization, migration, or an
-architecture boundary.
+`PIPELINE.md`'s Material-Change Contract Gate owns consequence-based routine,
+material and high-risk classification. A bounded authorized local change may
+reconcile its existing owner without a new standalone plan. Published integration
+commitments, durable semantics, new normative owners and coordinated commitments
+require material delivery; credible serious harm or isolation/authorization
+enforcement requires high-risk review. Category names and file count are not
+independent triggers; unavailable evidence cannot downgrade the route.
 
-Before implementation it must have:
+Before dependent material/high-risk implementation, the delivery must have:
 
 - a current or target contract;
 - a complete-end-state implementation plan;
 - explicit owner, states/triggers, failures, non-goals, and acceptance outcomes;
 - a risk classification and required independent-review depth.
 
-Routine fixes with an existing clear contract may proceed through the lighter
-path already allowed by `PIPELINE.md`, but still require a reproducer and
-category-level regression guard.
+Routine work uses credible focused verification, with a reproducer/category guard
+when it can expose the defect. Controlled experiments use existing safety owners,
+containment, expiry and cleanup evidence before running. Neither route creates
+permission or waives an activated owner's explicit acceptance requirements.
 
-- from: source[2]
+- from: source[2], source[3]
 
 ## AI execution and independent review
 
-The existing seven phases remain the execution contract for non-trivial work.
-High-risk architecture, governance, product-semantic, irreversible-data, and
-cross-stack changes additionally require independent review lenses for:
+The development discipline owns inquiry, concern activation and actual-effect
+verification; `PIPELINE.md` owns execution routes and completion. Material plans
+order actual dependencies toward one end state. Seven historical phase names
+remain useful techniques, not compulsory serial deliverables. High-risk work
+requires independent preimplementation lenses for:
 
 - frozen semantics and structural consistency;
 - user/operator experience;
 - engineering cost and long-term maintenance.
 
 A separate synthesis records agreement, disagreement, residual risk, and any
-decision requiring human authority. Final holistic evaluation should use a
-fresh context.
+decision requiring human authority. High-risk completion requires a fresh context
+outside proposal/implementation, receiving original intent, contract and observed
+result. Context independence, acquisition independence and model variation remain
+distinct. Review concurrency follows available capability/resource limits.
 
 When independent reviewers are unavailable, technical implementation may be
 completed, but the objective remains `verifying` or `blocked` unless the user
 grants a named governance exception. Same-context notes are never recorded as
-independent evidence.
+independent evidence. An authorized named end is delivered continuously without
+phase approvals; a completed bounded task grants no further portfolio authority.
+Work selection consumes the owner's scope and declared priority. Fixable technical
+uncertainty is investigated; only a proven missing owner decision blocks its path.
 
-- from: source[1], source[2]
+- from: source[1], source[2], source[3]
 
 ## Evidence classes and completion truth
 
@@ -258,8 +279,8 @@ This contract may become current only when:
 
 Mechanical implementation evidence is recorded in
 `docs/evidence/2026-07-26-repository-governance-technical-verification.md`.
-The document lifecycle and architecture fixture suites pass, as do the existing
-support-status, runtime-inventory, product-profile, and Lite gates. The final
+That dated record reports the document lifecycle and architecture fixture suites,
+support-status, runtime-inventory, product-profile and Lite gates passing. The final
 independent-review condition is still open, so this contract remains `target`
 and must not be treated as fully current governance.
 
@@ -275,3 +296,7 @@ and must not be treated as fully current governance.
   architecture map, incremental lifecycle, templates, archive routing, Node
   verifiers, fixture tests, scripts, and CI gate. Technical evidence passed;
   independent three-lens review and synthesis remain explicitly unresolved.
+- **2026-10-12 — R47 discipline reconciliation:** updated operative execution,
+  collaboration and checker-scope clauses using the selected current sibling
+  rules. The July R44 branch/review/synthesis acceptance and October 24 promise
+  remain open; R47 review is not substituted for that migration.

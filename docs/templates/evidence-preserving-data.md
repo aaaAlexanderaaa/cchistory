@@ -13,6 +13,7 @@ supersedes: []
 ## Scope and value hierarchy
 
 - Boundary: {{capture/parse/store/migrate/export/GC}}
+- Original request and accepted interpretation: {{distinct facts/locators}}
 - Tier 1 user/source input: {{fields and loss policy}}
 - Tier 2 interaction/process evidence: {{fields and policy}}
 - Tier 3 derived optimizations: {{fields and rebuild policy}}
@@ -49,6 +50,11 @@ supersedes: []
 | Preservation claim | Category-level guard | Fault/round-trip check | Durable evidence |
 |---|---|---|---|
 | {{claim}} | {{test}} | {{check}} | {{path}} |
+
+Observe actual preservation/mutation effects, including missing/extra/partial,
+wrong-identity and prematurely pruned evidence; report integrity identities and
+runtime/fixture limits. Activate relevant scale, time, concurrency or permission
+concerns at existing owners; no fixed item-count or template-filling requirement.
 
 ## Reconciliation log
 

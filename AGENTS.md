@@ -2,18 +2,20 @@
 
 ## Operating Order
 
-When an agent starts without a specific user instruction:
-
-1. Read `BACKLOG.md`.
-2. Follow the decision tree in `PIPELINE.md`.
-3. Before changing docs, code, data models, or source semantics, read
-   `HIGH_LEVEL_DESIGN_FREEZE.md`.
-4. Before changing ownership, dependencies, public contracts, or governance,
-   read `ARCHITECTURE.md`, `docs/README.md`, and the relevant current/target
-   contract under `docs/contracts/`.
-
-When the user gives a specific instruction, satisfy that instruction while still
-preserving the frozen design invariants.
+1. Establish the original request, accepted interpretation, named end, current
+   facts and authority using [task context](docs/README.md#task-context). Read
+   the relevant backlog/active plan and check shared work before edits.
+2. Follow `PIPELINE.md` for execution depth and work selection. An unfinished
+   authorized end remains the task; bounded completion grants no unsolicited
+   portfolio work. Without a specific instruction, establish existing ongoing
+   authority before selecting work from `BACKLOG.md`.
+3. Before changes, read the relevant sections of `HIGH_LEVEL_DESIGN_FREEZE.md`.
+   For ownership, dependency, contract or governance work also read
+   `ARCHITECTURE.md`, `docs/README.md` and the governing current/target contract.
+4. Use [development discipline](docs/contracts/development-discipline.md) for
+   inquiry, concern activation, decision boundaries and actual-effect checks.
+   Current authority comes before plans; expand history only for provenance,
+   unresolved dependencies or conflicts.
 
 ## Source Of Truth
 
@@ -25,6 +27,8 @@ preserving the frozen design invariants.
 - `docs/design/CURRENT_RUNTIME_SURFACE.md` is the current repository-visible
   runtime inventory.
 - `PIPELINE.md` defines work decomposition and completion rules.
+- `docs/contracts/development-discipline.md` defines collaboration, inquiry,
+  activated concerns and verification of promises and actual effects.
 - `BACKLOG.md` is the living work surface.
 
 Preserve these invariants unless the user explicitly asks for a redesign:
@@ -42,15 +46,15 @@ and support tiers live in
 
 ## Contract And Document Lifecycle Gate
 
-- A material change is one that changes product semantics, a public contract,
-  durable state, multiple consumers, a user/operator workflow, authorization,
-  migration, governance, or an architecture boundary.
+- Classify actual consequences using `PIPELINE.md`'s routine, controlled
+  experiment, material and high-risk routes. File counts and category names do
+  not select depth; unavailable evidence never permits a downgrade. All activated
+  owners and their explicit evidence/review requirements remain binding.
 - Before material implementation, land or reconcile the governing contract and
   a complete-end-state plan. Plans do not override the design freeze,
   architecture, or current contracts.
-- Classify the work as routine, material, or high-risk. High-risk architecture,
-  governance, semantic, irreversible-data, and cross-stack work requires the
-  independent review and fresh-context evidence defined in `PIPELINE.md`.
+- High-risk work requires the independent design and fresh completion contexts
+  defined in `PIPELINE.md`, including original user intent and actual evidence.
 - Same-context analysis is not independent evidence. If an independent context
   is required but unavailable, keep the owning KR/objective `verifying` or
   `blocked` unless the user grants a named governance exception.
@@ -112,6 +116,10 @@ Review the entrypoint before changing a surface:
 - `apps/api/src/app.ts`
 
 ## Frontend And Backend Development Discipline
+
+Apply the relevant existing owner/template proportionately; routine local work
+updates its owner without a standalone contract or plan. The development
+discipline owns concern triggers; do not fill every form for every change.
 
 Frontend changes translate dated user/operator intent into reachable states,
 layout, interaction, focus, accessibility, responsive behavior, and visible
@@ -212,10 +220,10 @@ services.
 
 ## Local Codex Desktop Profile
 
-Use this profile on the developer host at
-`/Users/alex/Workspace/my_opensource/cchistory`.
-
-Assume the host is memory constrained: about 4 GB RAM, with about 3 GB usable.
+Use this conservative profile for local Codex desktop work in the current
+checkout; no contributor-specific directory is required. Budget as a memory
+constrained host: about 4 GB RAM, with about 3 GB usable, unless the owner
+explicitly authorizes a different execution profile.
 
 - Do not run root `pnpm install` unless the user explicitly asks and accepts the
   memory tradeoff.
@@ -313,11 +321,11 @@ directory into repository instructions.
 
 ## Temp File And Disk Hygiene
 
-The operator store at `/root/.cchistory` is multi-gigabyte. Bundle exports,
+The configured operator store can be multi-gigabyte. Bundle exports,
 pre-bundle snapshots, and B.4a validator comparison dirs can each match
-that size. `/tmp` is on the same filesystem as the operator store, source
-capture roots, and tool caches — large temp artifacts must be managed
-explicitly, not abandoned.
+that size. Verify the actual store/temp filesystems and free capacity before
+large operations; do not assume `/tmp` provides separate disk headroom. Large
+temp artifacts must be managed explicitly, not abandoned.
 
 - Before creating any temp artifact expected to exceed 100 MiB (bundle
   exports, full-store snapshots, byte-diff comparison dirs), run `df -h /`

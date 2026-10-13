@@ -13,6 +13,8 @@ supersedes: []
 ## User outcome
 
 Describe what the user can understand or accomplish.
+Use the existing owner for routine local work. Material work uses this contract;
+activate only relevant concerns under the development discipline and PIPELINE.
 
 ## Raw stakeholder layer
 
@@ -65,6 +67,10 @@ Context: {{source}}
 | State/range | Structural evidence | Perceptual evidence | Interaction evidence | Result record |
 |---|---|---|---|---|
 | {{case}} | {{measurement/test}} | {{screenshot/review}} | {{probe}} | {{path}} |
+
+Check original intent and actual interaction effects: relevant missing/duplicate,
+suppressed, stale, wrong-target and partial behavior, including interruption and
+recovery. Record real runtime versus simulated/rendered evidence limits.
 
 ## Known abnormality classes
 

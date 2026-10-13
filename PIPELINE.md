@@ -2,125 +2,168 @@
 doc_type: pipeline
 status: current
 authority: normative
-last_reconciled: 2026-07-26
+last_reconciled: 2026-10-12
 supersedes: []
 ---
 
 # Agent Execution Pipeline
 
-This document defines the operational workflow for executing work in the
-CCHistory project. It bridges the gap between the design vision
-(`HIGH_LEVEL_DESIGN_FREEZE.md`), the quality bar
-(`docs/design/SELF_HOST_V1_RELEASE_GATE.md`), and the actual work that needs to
-happen.
-
-It answers four questions that other project documents do not:
-
-1. How does an agent discover what to do next?
-2. How does an agent break an objective into executable tasks?
-3. How does an agent know when a task or objective is complete?
-4. How does an agent handle design decisions that require independent evaluation?
+This document owns work selection, execution routes, independent review and
+completion in CCHistory. The [development discipline](docs/contracts/development-discipline.md)
+owns collaboration, inquiry, activated concerns and actual-effect verification.
+Use the smallest route that can credibly deliver the authorized outcome.
 
 ## Relationship To Other Documents
 
 | Document | Defines | Relationship to this pipeline |
-| --- | --- | --- |
-| `HIGH_LEVEL_DESIGN_FREEZE.md` | what to build and what invariants to preserve | all work must be traceable to frozen semantics |
-| `ARCHITECTURE.md` | structural owners, consumers, dependency direction, and enforcement | material boundary changes must preserve or explicitly reconcile it |
-| `docs/contracts/` | current and accepted target cross-surface behavior | material implementation is blocked until the governing contract exists |
-| `docs/README.md` | document authority, lifecycle, and routing | plans, issues, evidence, and archives keep their distinct roles |
-| `docs/design/SELF_HOST_V1_RELEASE_GATE.md` | quality bar for v1 release | the current P0 exit criteria |
-| `docs/ROADMAP.md` | directional priorities | source of objectives to decompose |
-| `BACKLOG.md` | living work surface | where decomposed objectives, KRs, and tasks live |
-| `AGENTS.md` | repository interaction rules and build commands | constrains how pipeline phases execute |
+|---|---|---|
+| `HIGH_LEVEL_DESIGN_FREEZE.md` | product semantics and frozen invariants | preserve or explicitly reconcile before dependent work |
+| `ARCHITECTURE.md` | structural owners and dependency direction | owns implementation boundaries |
+| `docs/contracts/` | current and accepted target behavior | material delivery reconciles its governing contract first |
+| `docs/README.md` | authority, task context and lifecycle | select current context; history is supporting evidence |
+| `docs/design/SELF_HOST_V1_RELEASE_GATE.md` | v1 release claims | applies when release completion is in scope |
+| `docs/ROADMAP.md` | directional priorities | consume owner priorities within authorized work |
+| `BACKLOG.md` | active portfolio state | tasks, priorities and truthful blockers |
+| `AGENTS.md` | repository operations and capabilities | constrains every execution route |
 
 ## How An Agent Enters The Pipeline
 
-When an agent starts a session without a specific user instruction, it must
-follow this decision tree:
-
-1. Read `BACKLOG.md`.
-2. If there are tasks with status `in_progress` or `blocked`:
-   - Resume the highest-priority in-progress task.
-   - If blocked, diagnose the blocker and either resolve it or escalate to the
-     user.
-3. If there are tasks with status `ready`:
-   - Pick the highest-priority ready task and begin execution at the
-     appropriate phase.
-4. If there are active or open KRs/objectives but no task is currently
-   executable (for example, all known tasks are `pending`, blocked by unmet
-   dependencies, or the KR has no task that truthfully covers the remaining
-   acceptance gap):
-   - Run a project-wide KR review sweep instead of repeatedly reviewing only
-     the currently blocked or pending task.
-   - Choose the highest-priority active/open KR, objective, or roadmap-owned
-     gap whose remaining user-facing goal is not yet covered by a truthful
-     executable task.
-   - Review that scope against its user-facing goal, edge cases, operator
-     workflow, output quality, scale behavior, and missing regression coverage.
-   - Convert the findings into backlog work before implementing anything:
-     add `ready` or `pending` tasks when the gap fits the current KR, add a new
-     KR when the gap is broader than one task, or add a new objective when no
-     current objective owns the problem.
-5. If all tasks under a KR are `done` but the KR itself is still `open`:
-   - Verify the KR acceptance criterion. If it passes, mark the KR `done`. If
-     it fails, create new tasks to close the gap.
-6. If all KRs under an objective are `done` but the objective is still `open`:
-   - Execute Phase 7 (Holistic Evaluation) for the objective. If it passes,
-     mark the objective `done`. If it fails, create corrective KRs.
-7. If all tasks are `done` and all KRs are `done` but there are objectives with
-   status `proposed` or `decomposing`:
-   - Pick the highest-priority undecomposed objective and begin the
-     decomposition process (Phases 1 through 3).
-8. If all objectives are `done`:
-   - Check `docs/ROADMAP.md` for new directional priorities not yet in the
-     backlog. If new priorities exist, create `proposed` objectives in
-     `BACKLOG.md` and begin decomposition.
-   - If no new priorities exist, run the release gate verification. If any gate
-     fails, create objectives for the failures.
-   - If all gates pass, report project completion status to the user.
-9. If none of the above yields work:
-   - Report to the user that all known work is complete and ask for direction.
+1. Identify the original request, accepted interpretation, named end and current
+   authority using [task context](docs/README.md#task-context). Read the relevant
+   backlog state and active plan before choosing or resuming work.
+2. A specific bounded request selects that work. Continue its implementation,
+   integration, verification and corrections through the named end without
+   repeated phase approval. A completed slice does not close its unfinished
+   parent outcome. Later owner feedback steers the work unless it stops or
+   replaces that end.
+3. Without a specific new request, first establish whether existing authority
+   covers unfinished work or ongoing work against an objective/portfolio.
+   Silence, a ready task, an agent recommendation or a roadmap entry does not
+   create that authority. Completing a bounded task is a valid stopping point;
+   do not turn it into an unsolicited portfolio scan.
+4. Within authorized ongoing work:
+   - resume truthful in-progress work and diagnose blockers at their affected
+     scope, continuing unaffected authorized work;
+   - consume the highest-priority ready task from the declared portfolio or
+     human owner; discovery does not grant authority to invent priorities;
+   - if none is executable, run the read-only KR review sweep below, record
+     candidates with facts, risk, dependencies and evidence limits, and consume
+     declared priority only within the existing authorized scope;
+   - if priority or new material scope is missing, present recommendations and
+     request that owner decision before dependent implementation;
+   - verify completed groups against their parent outcomes. Check roadmap or
+     release claims only when included in this ongoing assignment.
+5. Report the reached completion layer, residual limits and narrow blockers.
+   If no authorized work remains, stop. These rules create no scheduler,
+   standing autonomy charter or background-work authorization.
 
 ## Objective Lifecycle
 
-An objective moves through these states:
-
-```
+```text
 proposed -> decomposing -> active -> verifying -> done
 ```
 
-- `proposed`: directional intent from the roadmap, release gate, or user
-  request. No KRs yet.
-- `decomposing`: agent is executing Phases 1-3 to produce KRs, acceptance
-  criteria, and task breakdowns.
-- `active`: KRs and tasks exist and work is being executed.
-- `verifying`: all tasks done; running Phase 7 holistic evaluation.
-- `done`: all acceptance criteria verified and evaluation passed.
+- `proposed`: owner direction, without executable decomposition.
+- `decomposing`: investigate facts, reconcile authority and derive acceptance.
+- `active`: authorized implementation and integration are proceeding.
+- `verifying`: evaluate the integrated outcome and required evidence.
+- `done`: the named outcome and required evaluation pass, with final lifecycle.
+
+A narrow explicit repair need not create an objective/KR hierarchy. Record its
+scope, rationale and evidence in the existing task context. Portfolio and
+multi-step material work use the backlog and plan rather than a second register.
 
 ## Cross-Cutting Execution Constraints
 
 ### Material-Change Contract Gate
 
-Before non-trivial implementation, classify the change:
+Assess actual effects, users, owners, failure impact and recovery cost before
+implementation. Apply the highest profile whose conditions hold:
 
-- **routine:** a bounded repair under an existing clear contract, with no new
-  semantics, migration, public interface, or architecture boundary;
-- **material:** changes behavior, public contracts, durable state, multiple
-  consumers, or a user/operator workflow;
-- **high-risk:** changes frozen/structural semantics, governance,
-  authorization, irreversible data behavior, cross-process compatibility, or a
-  high-impact cross-stack interaction.
+- **routine:** authorized, bounded work within an existing owner, with low-impact
+  effects, inexpensive recovery and credible focused verification. It may add
+  authorized local behavior. Before new behavior, reconcile its existing
+  normative owner with trigger, observable result, failure/boundaries and
+  acceptance; unchanged behavior relies on the existing contract. No standalone
+  contract, plan or classification record is required.
+- **material:** changes a published API/event/schema/integration commitment,
+  durable-state semantics or migration; needs a new normative owner,
+  coordination across separately owned commitments, or substantial dependency
+  or recovery planning. Local presentation behavior, incidental consumer edits
+  and file count alone do not select this profile. Investigated delivery that
+  cannot meet routine conditions uses this route unless high-risk applies.
+- **high-risk:** changes authorization or isolation enforcement, or has a
+  credible path to serious confidentiality, integrity, availability, financial,
+  safety or critical user/operator harm. Broad exposure, difficult recovery or
+  consequential compatibility failure can establish this profile. Architecture,
+  governance and semantic changes prompt the assessment; their names alone do
+  not establish risk.
 
-Material and high-risk work requires a landed current or target contract under
-`docs/contracts/` and a complete-end-state plan under `docs/plans/` before
-implementation. Record the owner, states/triggers, failure and recovery,
-non-goals, acceptance outcomes, risk classification, and review topology.
+Reverting code does not undo disclosure, destructive writes or privilege grants.
+A one-line isolation change is high-risk; a bounded local sort can be routine.
+Investigate unknown technical impact before declaring it low. Missing evidence
+or reviewers never justifies a downgrade. Classification selects execution
+depth, not permission; every activated owning boundary remains binding.
 
-Routine defects may use the lighter path only after identifying the root
-category, preserving a reproducer, and adding a category-level guard. A task is
-not reclassified as routine merely because an independent reviewer is
-unavailable.
+Material/high-risk delivery requires a current or target contract and a
+complete-end-state plan on disk before dependent implementation. Name the
+original request, accepted interpretation, owner, states/triggers, failure and
+recovery, non-goals, compatibility, verification and review depth. Current
+conflicts block the dependent path until reconciled; an explicit instruction
+covering the rule change authorizes reconciliation without asking again.
+Required feature-contract evidence/review applies on every route.
+
+### Controlled Experiment
+
+When read-only investigation cannot resolve a named technical question, use a
+disposable non-production trial under the [development owner](docs/contracts/development-discipline.md#states-and-triggers).
+Before running, identify existing normative owners for every activated action.
+The scratch record grants no missing owner, permission, privilege or irreversible
+authority. Record question, disposable path, expiry, abort trigger, containment,
+cleanup owner/actions/evidence, and escalation for escape or failed cleanup.
+Discard scratch implementation at conclusion/expiry. Useful findings may inform
+a later delivery contract; survival never turns a trial into public behavior.
+
+### Independent Design And Completion Review
+
+High-risk work requires design review before implementation through independent
+system/contract, user/operator and engineering/maintenance lenses, plus appropriate
+specialist expertise for activated consequential concerns. Use distinct contexts
+that did not produce the proposal. Supply original request/source, accepted
+interpretation, contract and relevant baseline, rather than only the executor's
+interpretation. Review records identify actual supplied material, context/model
+where known, observations, limitations and required corrections.
+
+A separate independent synthesis reconciles agreement/disagreement, residual
+risk and any decision requiring human authority. Fix engineering defects inside
+scope; escalate only an unresolved owner decision. Review concurrency follows
+capability/resource limits, not a requirement to launch every worker at once.
+
+High-risk completion requires a fresh context outside proposal/implementation
+to evaluate original intent, accepted contract and observed result. Context
+independence, independent evidence acquisition and model variation are distinct;
+same-context sections or consensus cannot replace required evidence. If required
+independence is unavailable, keep the owning scope `verifying` or `blocked`
+with the exact condition unless the user grants a named scoped exception.
+Technical checks may finish; they cannot waive the missing review.
+
+### Written Coordination And Bounded Assignments
+
+Check active plans/handoffs for shared work before edits. Record scope and
+announce shared contract/fixture/file changes there; re-read shared files before
+editing. Preserve other workers' changes and run affected guards after integration.
+For delegation that is explicitly authorized or required by this pipeline, carry
+parent outcome, delegated result, authority/baseline, allowed writes/effects,
+relevant context, verification and stop/cancel condition in the assignment.
+Judgment-bearing work also carries decisive assumptions, freedom to revise,
+return-to-parent triggers and relevant experience locators. No second registry.
+
+Workers return artifacts/observations, baseline identity, checks actually run,
+unresolved assumptions and remaining work. The parent checks stale/conflicting
+or late output, integrates it and verifies the parent outcome. Passing worker
+tasks alone do not establish integration. Unknown/full context inheritance is
+not proof of reduced or independent context. Ordinary delegation remains an
+optional strategy subject to the current session's tool/authorization rules.
 
 ### Temporary Utilities And Command Surface
 
@@ -147,448 +190,173 @@ expand the repository-wide command surface.
 
 ## The Seven Phases
 
-Every non-trivial objective passes through seven phases. Not every phase
-requires the same depth for every objective. The pipeline specifies minimum
-requirements per phase and escalation triggers for when deeper work is needed.
+The historical phase names below remain useful techniques and evidence locators.
+They are not mandatory serial deliverables for every non-trivial objective.
+A material plan orders actual dependencies and selects credible evidence; use
+a technique only when it helps establish the claim or its owner requires it.
 
 ### Phase 1: Domain Understanding
 
-**Purpose**: ensure the agent understands the problem domain, the data
-structures involved, and the existing system context before making any design or
-implementation decisions.
+Inspect affected current authority, code/state and primary sources. Record
+decisive facts, assumptions and unknowns in existing task context; a separate
+research document is needed only when reusable findings justify it. Map affected
+owners/consumers. Preserve original user intent alongside its interpretation.
 
-**Entry condition**: an objective or KR has been assigned.
-
-**Exit condition**: a domain understanding document exists (as a section in
-`docs/design/` or as a research note referenced from the backlog) that another
-agent could read and continue from.
-
-**Minimum executable tasks**:
-
-1. Read and summarize relevant existing documentation (design freeze sections,
-   source docs in `docs/sources/`, existing adapter code if applicable).
-2. Identify what is unknown and what research is needed.
-3. For source adapter work: locate and analyze real source data structures,
-   storage formats, file layouts, and companion or sidecar files whose contents
-   affect derived session, turn, or project metadata. Record which artifacts are
-   transcript-bearing, which are evidence-only companions, and which must enter
-   capture scope. If local data samples are needed but unavailable, prefer
-   extending an existing generic collection path or produce a one-click
-   collection script for the user to run, then pause and ask the user to
-   execute it. Do not introduce KR-specific or objective-specific top-level
-   collection commands when a shared command plus parameters, manifest input, or
-   scoped helper script can satisfy the need.
-4. For system-level work: map affected code paths and contracts across packages.
-5. Produce a written summary that captures: what was learned, what assumptions
-   were made, what remains uncertain, and how this relates to existing system
-   semantics.
-
-**Escalation trigger**: if domain understanding reveals that the objective may
-require changes to `HIGH_LEVEL_DESIGN_FREEZE.md`, stop and report to the user
-before proceeding.
+For adapter work, examine real formats, file layouts and all companion/sidecar
+artifacts influencing derivation. Name transcript-bearing and evidence-only
+inputs and capture/export coverage. Use a permitted existing generic collection
+path or task-scoped helper for missing samples. A needed user action blocks that
+acquisition, not other authorized work. Frozen-semantic conflicts require explicit
+redesign authority before dependent changes.
 
 ### Phase 2: Test Data Preparation
 
-**Purpose**: ensure realistic, anonymized test data exists before any
-implementation begins.
+Reuse valid sanitized source-shaped fixtures; add cases needed for the affected
+claim and preserve existing coverage. Remove secrets and identifying content
+without destroying structural fidelity. When changing `mock_data/` or its
+generator/validator, run `pnpm run mock-data:validate`.
 
-**Entry condition**: Phase 1 is complete.
-
-**Exit condition**: anonymized fixture data exists in `mock_data/` and passes
-`pnpm run mock-data:validate`.
-
-**Minimum executable tasks**:
-
-1. Identify what fixture scenarios are needed (happy path, edge cases, error
-   cases, scale-representative cases).
-2. If real data samples exist, create anonymization scripts that strip all PII,
-   secrets, file paths, and project-specific content while preserving structural
-   fidelity.
-3. Place anonymized fixtures in `mock_data/{platform}/` following existing
-   conventions.
-4. Validate with `pnpm run mock-data:validate`.
-5. Document fixture scenarios and their coverage intent.
-
-**Minimum fixture scenarios for a new source platform**:
-
-- Minimal single-turn session.
-- Multi-turn session with assistant and tool context.
-- Session with tool usage and project/workspace signals.
-- Malformed or partial data (truncated JSON, missing fields, unknown item
-  kinds).
-- Scale-representative session (enough turns to exercise pagination or display
-  density).
+For a new source platform cover minimal and multi-turn sessions, assistant/tool
+context, project/workspace signals, malformed/partial/unknown records and a
+representative density or pagination case. Other work can use focused temporary
+fixtures instead of inventing a platform dataset.
 
 ### Phase 3: Functional Design
 
-**Purpose**: make design decisions explicit, evaluated from multiple
-perspectives, and documented before implementation.
+Reconcile the behavior at its owner: problem, chosen approach, causal mechanism,
+trade-offs, acceptance and affected consumers. Material contracts live in
+`docs/contracts/`; execution order in `docs/plans/`. A feature note cannot
+silently own both. Apply the independent protocol when high-risk or explicitly
+required by the owning contract.
 
-**Entry condition**: Phases 1 and 2 are complete.
-
-**Exit condition**: a design document exists with decided approach, trade-off
-analysis, and acceptance criteria.
-
-**This is the phase where AI limitations are most dangerous.** A single agent in
-a single context cannot reliably evaluate its own design from multiple
-perspectives. The following multi-perspective protocol is mandatory for
-non-trivial design decisions.
-
-#### Multi-Perspective Design Protocol
-
-Required for objectives that involve trade-offs, new semantics, or system-level
-changes. May be skipped for simple, well-scoped changes (e.g., adding a field,
-fixing a parser edge case).
-
-1. Launch at least three independent sub-agents simultaneously, each given the
-   same domain understanding document from Phase 1 and the same fixture data
-   from Phase 2, but each assigned a different evaluation lens:
-
-   - **Agent A (System Consistency)**: evaluate from the perspective of
-     consistency with existing system semantics and the design freeze. Does the
-     proposed approach preserve frozen invariants? Does it reuse existing
-     patterns or introduce new ones?
-   - **Agent B (User Experience)**: evaluate from the perspective of the end
-     user. How does the user encounter this feature? What expectations does the
-     user have? What happens when something goes wrong?
-   - **Agent C (Engineering Cost)**: evaluate from the perspective of
-     implementation cost, maintenance burden, and future extensibility. What is
-     the simplest approach that satisfies requirements? What technical debt does
-     each option create?
-
-   Each agent produces a written proposal containing: recommended approach,
-   trade-offs identified, risks and mitigations, and impact on the existing
-   system.
-
-2. A fourth independent agent (or the orchestrating agent after clearing its
-   context) evaluates all three proposals and produces a synthesis document
-   that:
-
-   - Identifies where proposals agree (high-confidence decisions).
-   - Identifies where proposals disagree (decisions requiring human judgment).
-   - Recommends a path forward with explicit reasoning.
-
-3. If disagreements exist on frozen invariants or user experience fundamentals,
-   pause and present the synthesis to the user for decision.
-
-If required independent contexts are unavailable, record the exact blocked
-state in `BACKLOG.md`. Same-context perspectives may help implementation but
-must be labeled non-independent and cannot satisfy this protocol. Only an
-explicit, scoped user governance exception can replace required independence.
-
-#### Design Document Format
-
-Regardless of whether the multi-perspective protocol was used, every design
-decision must be documented with:
-
-- Problem statement (one paragraph).
-- Decided approach (concrete, not abstract).
-- Trade-offs considered and rejected alternatives.
-- Acceptance criteria (verifiable by running commands or inspecting outputs).
-- Impact on existing system (which packages, which tests, which APIs).
-
-For material work, the normative result lives in `docs/contracts/` and the
-execution order lives in `docs/plans/`; a feature note under `docs/design/`
-cannot silently take both roles.
-
-For source-adapter design work, the design document must also state:
-
-- which non-transcript companion artifacts influence derivation
-- whether each such artifact enters capture scope as exportable evidence
-- which path-identity forms must be regression-covered when the change touches
-  shared normalization helpers
+Adapter designs name derivation companions and whether they enter exportable
+capture scope. Shared path/file-URI changes name required identity forms,
+including UNC/authority-preserving forms when the source family can emit them.
 
 ### Phase 4: Test Case Design
 
-**Purpose**: define verification before implementation, ensuring tests encode
-requirements rather than implementation details.
+Derive verification from acceptance, not implementation structure. Use a failing
+behavioral guard first when it can expose the defect or protect stable semantics;
+record the relevant baseline. Do not invent tests for ceremony. Artifact,
+interaction, structure/perception, fault injection or observation claims require
+those methods with their limits.
 
-**Entry condition**: Phase 3 is complete with accepted design and acceptance
-criteria.
-
-**Exit condition**: test cases exist, can be run (and fail), and cover all
-acceptance criteria from the design.
-
-**Minimum executable tasks**:
-
-1. For each acceptance criterion from Phase 3, write at least one test case.
-2. Tests must be behavioral, not implementation-focused:
-   - Good: `"syncing a new source creates turns viewable through the API"`
-   - Bad: `"parseRecord returns a SourceFragment with type='message'"`
-3. Tests must cover: happy path, edge cases identified in Phase 1, error
-   handling for malformed input, and regression guards if fixing a bug.
-4. Write tests in the appropriate package test file following existing patterns
-   (Node.js built-in test runner).
-5. Run tests to confirm they fail (the feature does not exist yet).
-
-Additional required cases:
-
-- If companion or sidecar files influence canonical metadata, include a test
-  that proves those files are captured or exported as evidence rather than only
-  read for derivation.
-- If a change touches shared path identity or file-URI normalization, include
-  UNC and authority-preserving file-URI coverage whenever the source family can
-  emit network-share paths.
-
-**Test naming convention**: test names should read as acceptance criteria.
-
-```
-"[feature/platform] [scenario] [expected outcome]"
-```
-
-Example: `"openclaw adapter multi-session sync creates committed project from
-repeated workspace evidence"`
-
-**Scale tests**: if the objective involves data that could grow large, include at
-least one test with 100+ items to verify performance does not degrade.
+Cover relevant success, malformed/partial/failure, recovery and a plausible
+sibling defect. Companions influencing canonical metadata need capture/export
+evidence guards. Path normalization needs applicable UNC/file-URI identity
+guards. For credible scale risk, test the concrete collection-growth,
+accumulation or rate/concurrency mechanism under the owning budget; no universal
+100/1,000-item gate substitutes for that evidence.
 
 ### Phase 5: Implementation
 
-**Purpose**: write code that makes the failing tests pass while preserving all
-existing tests.
+Implement the smallest coherent authorized change, integrate all required
+producers/consumers and correct within-scope failures through the named end.
+Preserve source quirks behind capture/parse, domain vocabulary, established API
+patterns and authoritative raw input. Do not introduce production `any`,
+hardcoded secrets or logging outside appropriate entrypoints.
 
-**Entry condition**: Phase 4 tests exist and fail.
-
-**Exit condition**: all new tests pass, all existing tests still pass, code
-compiles across affected packages.
-
-**Minimum executable tasks**:
-
-1. Implement the minimum code to make tests pass.
-2. Follow existing code patterns and conventions (see `AGENTS.md`).
-3. Build affected packages: `pnpm --filter <package> build`.
-4. Run affected package tests: `pnpm --filter <package> test`.
-5. Run adjacent package tests to verify no regressions.
-6. If the change affects the web surface, run lint: `cd apps/web && pnpm lint`.
-
-**Implementation rules**:
-
-- Source-specific quirks stop at the parse boundary.
-- New types must align with `packages/domain` terminology and the design freeze.
-- New API routes must mirror existing patterns in `apps/api/src/app.ts`.
-- No `any` types in production code.
-- No `console.log` except in CLI and server entrypoints.
-- No hardcoded secrets or sensitive data, even in test fixtures.
+Select package builds/typechecks and tests that prove affected claims under
+`AGENTS.md` host constraints. Avoid root aggregate builds or adjacent suites
+without a changed dependency or unresolved concern requiring them.
 
 ### Phase 6: Testing And Regression
 
-**Purpose**: verify that the implementation satisfies the objective, not just the
-individual test cases.
+Verify both promised behavior and actual effects at the affected boundary using
+the [development rule](docs/contracts/development-discipline.md#verify-promises-and-actual-effects).
+Check relevant missing/extra/excessive/suppressed/stale/wrong-identity/partial
+effects, failure and recovery; helper success cannot prove external behavior.
+Cross-reference acceptance to observed evidence and explicitly mark unknown/not
+run claims.
 
-**Entry condition**: Phase 5 is complete, all affected tests pass.
-
-**Exit condition**: full test suite passes, acceptance criteria verified
-end-to-end.
-
-**Minimum executable tasks**:
-
-1. Run the full test suite for all affected packages.
-2. Run web build if any DTO, presentation, or API changes were made.
-3. If the objective involves a source adapter, run the smoke probe:
-   `pnpm run probe:smoke -- --source-id={platform} --limit=1`.
-4. Cross-reference each acceptance criterion from Phase 3 against test results.
-5. If any acceptance criterion is not covered by passing tests, return to
-   Phase 4.
-
-Notes:
-
-- A successful web build does not substitute for `cd apps/web && pnpm lint`.
-- If a source adapter derives canonical metadata from a file, that file's
-  evidence-preservation path must be part of the regression proof before the
-  objective is considered clean.
-
-**Regression checklist**:
-
-- All affected package builds succeed.
-- All package tests pass (230+ tests across all packages; verify with `pnpm test`).
-- Web lint passes with zero warnings.
-- Web build succeeds (if web-affecting changes were made).
-- No new `any` types introduced.
-- No secrets or sensitive data in committed code.
-- `mock_data` validates if changed.
+Run the relevant package/profile/domain guards. Web layout changes need rendered
+structure and perceptual output; meaningful Web changes need lint and appropriate
+capped build. DTO/API/presentation changes select affected consumer checks by
+actual coupling. Use source smoke probes when they can observe the affected
+adapter. Evidence-preservation paths and changed fixture validation stay binding.
+Reuse checks only while artifact/dependencies, criteria, method and freshness
+remain valid; expand/repeat when changes, failures or unresolved risks justify it.
 
 ### Phase 7: Holistic Evaluation
 
-**Purpose**: step outside the implementation context and evaluate the change from
-system-level perspectives that implementation-focused testing cannot cover.
+Evaluate the integrated result against original intent and accepted contract,
+including activated boundaries, functional outcome, user/operator failure and
+recovery, compatibility and maintenance. A high-risk result requires the fresh
+completion context above. Other work uses the smallest credible review/evidence
+required by its owner, without a mandatory extra agent or report.
 
-**Entry condition**: Phase 6 regression is clean.
-
-**Exit condition**: evaluation report exists, issues found are resolved or
-documented as accepted known limitations.
-
-**This phase should be executed by a fresh agent context** to avoid the
-implementation bias of the agent that wrote the code.
-
-For high-risk work, record the evaluator/context identity and whether genuine
-fresh-context independence was achieved. If it was required but unavailable,
-technical checks may finish but the objective remains `verifying` or `blocked`
-unless the user records a named governance exception.
-
-**Evaluation dimensions**:
-
-1. **Boundary evaluation**: does the change stay within its intended scope? Do
-   source-specific details stay behind the parse boundary? Do package
-   boundaries remain clean?
-2. **Stability assessment**: could this change break under conditions not covered
-   by tests (empty data, corrupt data, very large data, concurrent access)?
-3. **Scalability evaluation**: does this change perform acceptably at the
-   operational envelope from the design freeze (tens of thousands of turns,
-   hundreds of thousands of events)?
-4. **Compatibility assessment**: does this change break existing stored data?
-   Does it require schema migration? Is the migration tested?
-5. **Security evaluation**: does this change introduce new input vectors? Are
-   they sanitized?
-6. **Maintainability assessment**: can a new contributor understand this change?
-   Does it follow existing patterns?
-
-**Output**: a brief evaluation report listing dimensions evaluated, issues found
-with severity, issues resolved during this phase, and known limitations
-accepted.
-
-**If issues are found**: return to Phase 5 or Phase 4 as appropriate, then
-re-run Phases 6 and 7.
-
-If a follow-up review later invalidates a previously recorded pass, update the
-objective note and `BACKLOG.md` immediately and create corrective work or reopen
-the owning objective instead of leaving stale "passed" claims in place.
+Use the real consumer's reachable context for a usability/discoverability claim;
+record manual/runtime versus simulation limits. Correct within-scope findings
+and rerun affected proof. A later invalidated pass updates/reopens the owning
+work immediately; do not leave stale completed claims.
 
 ## Task Decomposition Standard
 
-Every objective must be decomposed into tasks before execution. A task is the
-minimum executable unit of work.
-
 ### What Makes A Task Ready For Execution
 
-A task is ready when it meets all five criteria:
-
-1. **Singular**: it does one thing.
-2. **Verifiable**: it has a concrete acceptance criterion that can be checked by
-   running a command or inspecting an artifact.
-3. **Bounded**: an agent can complete it in a single session without requiring
-   intermediate user input (unless the task explicitly involves user
-   interaction such as "generate a script for the user to run").
-4. **Independent**: its dependencies are resolved (prerequisite tasks are done).
-5. **Traceable**: it maps back to a KR, which maps back to an objective, which
-   maps back to the design freeze or roadmap.
-
-Tasks that are known but not yet executable should use `pending`, not `ready`.
-Typical reasons include unmet prerequisite tasks, an unresolved design decision
-already tracked elsewhere, or waiting for a review sweep to decide the right
-scope.
+A ready task has a coherent result, credible acceptance, bounded scope, resolved
+dependencies and traceability to the authorized parent outcome/current owner.
+Known but non-executable work is `pending`; a proven blocker names evidence,
+affected scope and recovery. Work spanning sessions leaves resumable state at
+the existing plan/handoff. Routine explicit work needs no artificial KR hierarchy.
 
 ### Decomposition Process
 
-1. Start with the objective's acceptance criteria from Phase 3.
-2. For each acceptance criterion, ask: "what is the minimum set of changes
-   needed to make this criterion verifiable?"
-3. Each answer becomes a task.
-4. For each task, ask: "can this be done in one agent session?" If not, split
-   further.
-5. Order tasks by dependency (which tasks must complete before others can
-   start).
-6. Assign priorities based on the objective's priority.
+Start from the complete acceptance outcome, identify necessary changes and proof,
+order actual dependencies and split only where bounded work can proceed and
+integrate coherently. A checkpoint is not owner approval and task splitting does
+not replace doing the remaining parent work. Consume declared priorities.
 
 ### KR Review Sweep
 
-Use a KR review sweep when the backlog still has meaningful open work but no
-truthful executable task exists for the next step.
+This fallback applies only within authorized ongoing objective/portfolio work
+when no truthful executable task covers the next outcome. Survey that authorized
+scope read-only, rather than repeatedly revisiting one blocked task. Review
+whether the result meets user intent, output usability/density, realistic
+boundaries, operator recovery and missing regressions.
 
-The sweep is project-wide. Start by surveying the whole backlog plus any
-roadmap or release-gate priorities not yet represented there, then choose the
-highest-priority open KR, objective, or uncovered gap that can truthfully yield
-new executable work. Do not keep re-reviewing the same blocked task when the
-broader project still has other open work that has not yet been decomposed.
-
-Purpose:
-
-- prevent the project from stalling in a "no ready tasks" state
-- reassess whether the current KR decomposition still matches the user-facing
-  goal
-- surface quality, UX, boundary-case, operator-output, and regression gaps that
-  are easy to miss when work is driven only by bug reports
-
-Minimum review lenses:
-
-1. Does the current implementation or plan satisfy what the user actually cares
-   about?
-2. Are outputs usable and legible at realistic scale?
-3. Are there obvious edge cases or extreme-but-likely inputs that were not
-   accounted for?
-4. Is regression coverage missing for a behavior the KR implicitly depends on?
-5. Does the feature need clearer CLI/API/web wording, warnings, truncation
-   policy, highlighting, pagination, or drill-down affordances?
-
-Example review questions:
-
-- Should a CLI function or formatter have a dedicated regression test?
-- Does a CLI command need an explanatory note or output correction?
-- Are there missing edge cases around very large time ranges, result counts, or
-  unusually long turn content?
-- Does the current design force a poor UX for search snippets, stats windows, or
-  truncated content?
-
-Output rule:
-
-- Do not silently fix a non-trivial review finding as an ad hoc bug.
-- Record the finding in `BACKLOG.md` first as the smallest truthful unit:
-  task, KR, or objective.
-- Then execute the new work through the normal pipeline phases.
+Record candidate facts, risk, dependencies, evidence limits and the smallest
+truthful task/KR/objective at the existing backlog before material corrective
+implementation. Execute only if existing scope and declared priority authorize
+it; otherwise recommend candidates for an owner decision. Discovery alone
+grants no product direction or invented ranking. A finished bounded task does
+not activate this sweep.
 
 ### Granularity Guidelines
 
-| Task type | Typical granularity | Example |
-| --- | --- | --- |
-| Research | one topic per task | "analyze OpenClaw session storage structure on Linux hosts" |
-| Fixture creation | one scenario set per task | "create anonymized multi-turn OpenClaw fixture with tool usage" |
-| Design | one decision per task (use multi-agent for complex decisions) | "design turn-building strategy for high-volume automated sessions" |
-| Test writing | one acceptance criterion per task | "write test: openclaw sync creates turns viewable through API" |
-| Implementation | one coherent change per task | "implement OpenClaw record extraction from session files" |
-| Evaluation | one dimension per task (can parallelize) | "evaluate OpenClaw adapter boundary compliance" |
+Keep research to a question, fixtures to a scenario family, implementation to a
+coherent behavior and evaluation to an observable claim. Parallelize only when
+independent work and integration cost justify it under current capability rules.
+Do not split a coupled decision merely to occupy agents.
 
 ## Completion Evaluation
 
 ### Task Completion
 
-A task is complete when:
-
-1. Its acceptance criterion is met (verified by running the specified command or
-   check).
-2. No regressions were introduced (relevant test suite passes).
-3. The task status is updated in `BACKLOG.md`.
+The requested result is observed under functional and activated quality
+boundaries, actual-effect checks and required affected guards pass, limitations
+are explicit, and the existing task record is updated.
 
 ### KR Completion
 
-A KR is complete when:
-
-1. All its tasks are complete.
-2. The KR acceptance criterion is independently verified (not just "all tasks
-   done" but the criterion itself is checked).
-3. Cross-task integration is verified if applicable.
+Verify the integrated acceptance outcome, rather than infer it from task counts.
+Complete required independent evidence and cross-task integration. Lower-level
+passes do not close a missing parent claim.
 
 ### Objective Completion
 
-An objective is complete when:
-
-1. All its KRs are complete.
-2. Phase 7 holistic evaluation has been executed and passed.
-3. The objective's overall acceptance criteria are verified.
-4. The objective status is updated in `BACKLOG.md`.
-5. Any affected documentation is updated (`CURRENT_RUNTIME_SURFACE.md`, source
-   docs, etc.).
+Check original request and accepted end against the complete result; all required
+outcomes/evaluation pass. Update final lifecycle for affected contracts, plans,
+issues, guides, evidence and backlog. High-risk independence remains required.
+A bounded slice may close its KR while the named larger end remains open.
 
 ### Release Gate Completion
 
-The release gate is satisfied when:
-
-1. All objectives mapped to release gate conditions are complete.
-2. Each gate condition is independently verifiable by running a command or
-   inspecting an artifact.
-3. A gate verification pass (manual or scripted) confirms all six conditions.
+Every condition of the claimed release gate has its own reproducible evidence.
+Verify the applicable gate itself; do not infer release completion from an
+objective, checker pass or an arbitrary fixed number of gate conditions.
 
 ## Backlog Format
-
-The living backlog lives in `BACKLOG.md` at the repository root.
 
 ### Structure
 
@@ -596,60 +364,57 @@ The living backlog lives in `BACKLOG.md` at the repository root.
 ## Objective: [ID] [Title]
 Status: proposed | decomposing | active | verifying | done
 Priority: P0 | P1 | P2 | P3
-Source: ROADMAP.md | RELEASE_GATE.md | user request | bug report
-Gate: [which release gate condition, if applicable]
+Source: owner direction | roadmap | release gate | bug report
+Contract/Plan: [existing authority and execution locators]
 
 ### KR: [ID] [Title]
 Status: open | active | done
-Acceptance: [one-sentence verifiable criterion]
+Acceptance: [observable integrated outcome]
 
 - [ ] Task: [description]
   Status: pending | ready | in_progress | blocked | done
-  Acceptance: [how to verify]
-  Artifact: [file or command that proves completion]
+  Acceptance: [credible verification]
+  Artifact: [file or command]
 ```
 
 ### Rules
 
-1. `BACKLOG.md` is the single source of truth for current work.
-2. Only one task should be `in_progress` per agent session.
-3. Task status is updated in real time as work progresses.
-4. New objectives are added at the bottom of the active section.
-5. Completed objectives remain in a `## Completed` section until an intentional
-   compaction. Compaction moves them to a dated file under
-   `docs/archive/backlog/`, updates that stable index with objective ids and
-   acceptance evidence, and then removes them from the active surface. Silent
-   deletion is forbidden.
-6. An agent must read `BACKLOG.md` at the start of every session.
-7. Decomposition work (Phases 1-3) is itself tracked as tasks in the backlog
-   under the objective being decomposed.
-8. Findings from a KR review sweep are added to `BACKLOG.md` before any
-   non-trivial corrective implementation begins.
-9. Plans, issues, contracts, and evidence are not embedded into the backlog as
-   substitutes for their durable records; the backlog links to them and owns
-   only current portfolio state and priority.
+1. `BACKLOG.md` owns current portfolio state and declared priority; it grants
+   neither ongoing authority nor product meaning.
+2. Track one active coherent task per worker, with scope/coordination in the
+   existing plan or handoff. Update truthful status as work changes.
+3. Read relevant backlog state on entry; within authorized ongoing work, read
+   the portfolio before work selection/review.
+4. Record decomposition and material sweep findings at the existing parent;
+   routine explicit work can remain in its task context.
+5. Completed objectives stay until intentional indexed compaction into a dated
+   `docs/archive/backlog/` record with stable IDs and acceptance evidence.
+   Silent deletion and invented history are forbidden.
+6. Contracts, plans, issues and evidence retain their separate durable roles;
+   link them instead of embedding substitutes in the backlog.
 
 ## Agent Decision Points
 
 ### Must Stop And Consult The User
 
-1. Any change that would modify `HIGH_LEVEL_DESIGN_FREEZE.md`.
-2. Design decisions where the multi-perspective protocol produced unresolved
-   disagreements on user experience or frozen invariants.
-3. Tasks that require the user to run a script, provide data, or start a
-   service.
-4. Any situation where the agent cannot determine the next step from existing
-   documents.
-5. Any security concern discovered during evaluation.
-6. Any objective that appears to require capabilities outside the current
-   operational envelope (e.g., remote network access, multi-user scenarios).
+Pause only the dependent path after available investigation establishes missing
+material intent, authority, risk acceptance outside the authorized engineering
+envelope, or an unresolved conflict requiring owner judgment. Examples include
+an unrequested frozen redesign, a consequential trade-off left unresolved by
+review, or privileged/irreversible effects lacking permission. An explicit
+instruction already covering that decision does not need renewed approval.
+
+Name the exact source/rule, evidence, affected action, recovery option and
+concrete decision. For unavailable required capability/review/owner-started
+service, complete unaffected work and report the narrow blocked observation.
+A fixable security or implementation defect is execution work inside authority;
+uncertainty or a missing risk-budget declaration alone is not a user decision.
 
 ### May Proceed Autonomously
 
-1. Implementation tasks with clear acceptance criteria and no design ambiguity.
-2. Test writing based on accepted design documents.
-3. Bug fixes where the root cause is identified and the fix is straightforward.
-4. Documentation updates that reflect already-implemented changes.
-5. Fixture creation following existing patterns.
-6. Task decomposition for objectives where the scope is well understood and does
-   not involve trade-offs requiring human judgment.
+Investigate checkable facts, use permitted evidence-preserving fallbacks,
+choose reversible engineering methods inside authority, reconcile rules the
+user explicitly requested to change, prepare relevant fixtures/guards, integrate,
+verify and fix within-scope failures. Preserve disagreement and report risks
+truthfully; ordinary choices require no serial interviews. Stop when the bounded
+named end is reached unless ongoing work has separately been authorized.

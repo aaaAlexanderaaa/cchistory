@@ -15,12 +15,16 @@ subject: {{contract-or-initiative}}
 - Assigned lens: {{system consistency / user experience / engineering cost}}
 - Independence basis: {{why this context did not author the proposal}}
 - Required and achieved: {{yes/no and reason}}
+- Actual supplied context/model: {{known identity or unknown; inherited/full limits}}
+- Acquisition/standpoint/model variation: {{what changed; shared dependencies}}
 
 ## Inputs
 
 - Frozen semantics and architecture: {{paths}}
 - Shared domain summary and fixtures: {{paths}}
 - Proposal and verification evidence: {{paths}}
+- Original request/source and accepted interpretation: {{separate facts}}
+- Baseline identities and freshness: {{revision/hash/configuration}}
 
 ## Findings
 
@@ -44,3 +48,6 @@ subject: {{contract-or-initiative}}
 
 Same-context analysis must be labeled non-independent and cannot satisfy a
 mandatory independent-review task.
+Fresh context, independent acquisition and model variation are distinct. Review
+original intent, retain contrary/inconclusive findings and use a bounded recheck
+of corrected findings; do not relabel design review as completion evidence.

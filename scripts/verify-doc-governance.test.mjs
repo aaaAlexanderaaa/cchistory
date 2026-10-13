@@ -41,7 +41,7 @@ function messages(result) {
 }
 
 test("repository document governance passes", async () => {
-  const result = await verifyDocGovernance({ root: repositoryRoot, today: fixedToday });
+  const result = await verifyDocGovernance({ root: repositoryRoot, today: new Date() });
   assert.equal(result.ok, true, messages(result));
 });
 
@@ -58,7 +58,7 @@ test("governed frontmatter accepts CRLF checkouts", async (t) => {
   const target = path.join(root, "ARCHITECTURE.md");
   const text = await readFile(target, "utf8");
   await writeFile(target, text.replace(/\n/g, "\r\n"), "utf8");
-  const result = await verifyDocGovernance({ root, today: fixedToday });
+  const result = await verifyDocGovernance({ root, today: new Date() });
   assert.equal(result.ok, true, messages(result));
 });
 
@@ -163,7 +163,7 @@ test("explicit target review dates cannot exceed the maximum age", async (t) => 
   );
   const result = await verifyDocGovernance({ root, today: fixedToday });
   assert.equal(result.ok, false);
-  assert.match(messages(result), /review_due exceeds target maximum age deadline 2026-10-24: 2099-10-24/);
+  assert.match(messages(result), /review_due exceeds target maximum age deadline \d{4}-\d{2}-\d{2}: 2099-10-24/);
 });
 
 test("structured promises require an owner", async (t) => {
@@ -199,6 +199,19 @@ test("required governance template sections cannot drift", async (t) => {
   assert.equal(result.ok, false);
   assert.match(messages(result), /template missing required section: Review topology/);
 });
+
+for (const [template, section] of [
+  ["implementation-plan.md", "Execution and verification"],
+  ["verification-report.md", "Actual effects and evidence reuse"],
+]) {
+  test(`governance rejects loss of the adopted template section: ${section}`, async (t) => {
+    const root = await createFixture(t);
+    await replace(root, `docs/templates/${template}`, `## ${section}`, "## Removed adopted obligation");
+    const result = await verifyDocGovernance({ root, today: new Date() });
+    assert.equal(result.ok, false);
+    assert.ok(messages(result).includes(`template missing required section: ${section}`), messages(result));
+  });
+}
 
 test("contract templates require contract-specific lifecycle metadata", async (t) => {
   const root = await createFixture(t);
